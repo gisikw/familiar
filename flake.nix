@@ -25,6 +25,10 @@
             FAMILIAR_SHELL = "stt";
             packages = [ ];
           };
+          tts = pkgs.mkShell {
+            FAMILIAR_SHELL = "tts";
+            packages = [ ];
+          };
         };
       }
     );
