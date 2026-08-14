@@ -87,13 +87,15 @@ run_tts() {
 run_pi() {
   ensure_devshell pi "$@"
   export PI_CODING_AGENT_DIR="$STATE_DIR/pi"
+  export FAMILIAR_LOG_PATH="$STATE_DIR/log.jsonl"
   mkdir -p "$PI_CODING_AGENT_DIR"
   while true; do
-    jq -n --arg model "${MODEL_FILE%.*}" '{
+    jq -n --arg model "${MODEL_FILE%.*}" --arg ext "$REPO/extensions" '{
       lastChangelogVersion: "0.84.1",
       theme: "dark",
       defaultProvider: "llama.cpp",
-      defaultModel: $model
+      defaultModel: $model,
+      extensions: [ $ext ],
     }' > "$PI_CODING_AGENT_DIR/settings.json"
     jq -n --arg url "$LLAMA_BASE_URL" --arg model "${MODEL_FILE%.*}" '{
       "llama.cpp": {
@@ -124,7 +126,7 @@ run_pi() {
             }
           }
         ],
-        checkedAt: (now * 1000 | floor)
+        checkedAt: (now * 1000 | floor),
       }
     }' > "$PI_CODING_AGENT_DIR/models-store.json"
     command pi
