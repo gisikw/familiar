@@ -137,7 +137,8 @@ run_pi() {
     }' > "$PI_CODING_AGENT_DIR/models-store.json"
     command pi \
       --no-context-files \
-      --no-skills
+      --no-skills \
+      --skill "$REPO/skills/"
     sleep 1
   done
 }
