@@ -7,6 +7,10 @@ SELF="$(realpath "$0")"
 REPO="$(dirname $SELF)"
 STATE_DIR="$REPO/state"
 
+if [ -f "$REPO/.env" ]; then
+  set -a; . "$REPO/.env"; set +a
+fi
+
 MODEL_DIR="${FAMILIAR_MODEL_DIR:-$REPO/models}"
 MODEL_FILE="gemma-4-E4B-it-Q4_K_M.gguf"
 MODEL_URL="https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/$MODEL_FILE"
@@ -96,6 +100,7 @@ run_pi() {
       theme: "dark",
       defaultProvider: "llama.cpp",
       defaultModel: $model,
+      compaction: { enabled: false },
       extensions: [ $ext ],
     }' > "$PI_CODING_AGENT_DIR/settings.json"
     jq -n --arg url "$LLAMA_BASE_URL" --arg model "${MODEL_FILE%.*}" '{
@@ -130,7 +135,9 @@ run_pi() {
         checkedAt: (now * 1000 | floor),
       }
     }' > "$PI_CODING_AGENT_DIR/models-store.json"
-    command pi
+    command pi \
+      --no-context-files \
+      --no-skills
     sleep 1
   done
 }
