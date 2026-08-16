@@ -88,6 +88,7 @@ run_pi() {
   ensure_devshell pi "$@"
   export PI_CODING_AGENT_DIR="$STATE_DIR/pi"
   export FAMILIAR_LOG_PATH="$STATE_DIR/log.jsonl"
+  export FAMILIAR_SUBSCRIBER_PORT=1692
   mkdir -p "$PI_CODING_AGENT_DIR"
   while true; do
     jq -n --arg model "${MODEL_FILE%.*}" --arg ext "$REPO/extensions" '{
