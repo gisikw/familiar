@@ -10,6 +10,7 @@
         pkgs = nixpkgs.legacyPackages.${system};
         piShell = pkgs.mkShell {
           FAMILIAR_SHELL = "pi";
+          PI_PACKAGE_DIR = "${pkgs.pi-coding-agent}/lib/node_modules/pi-monorepo";
           packages = with pkgs; [ age jq sqlite pi-coding-agent tmux ];
         };
       in
