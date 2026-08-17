@@ -1,10 +1,37 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { formatSkillsForPrompt } from "@earendil-works/pi-coding-agent";
-import fs from "fs";
+import { readdir, readFile } from "node:fs/promises";
+import { join, extname } from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+const execFileP = promisify(execFile);
 
 export default function(pi: ExtensionAPI) {
   pi.on("before_agent_start", async (event, ctx) => {
-    const identity = "You're Terry the Test Agent";
+    const identityDir = process.env.FAMILIAR_IDENTITY_PATH;
+    const ageKey = process.env.FAMILIAR_AGE_KEY;
+
+    const files = (await readdir(identityDir)).sort();
+    const bodies = await Promise.all(
+      files
+        .map(f => join(identityDir, f))
+        .map(f => extname(f) === ".age"
+          ? execFileP("age", ["-i", ageKey, "--decrypt", f]).then(({ stdout }) => stdout)
+          : readFile(f, "utf-8"))
+    );
+    const identity = bodies
+      .map(body => {
+        const m = body.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+        if (!m) return body.trim();
+        const meta = Object.fromEntries(
+          m[1].split("\n").filter(Boolean)
+            .map(line => line.split(":"))
+            .map(([k, ...v]) => [k.trim(), v.join(":").trim()])
+        );
+        return meta.disabled === "true" ? "" : m[2].trim();
+      })
+      .filter(Boolean)
+      .join("\n\n");
 
     const { skills = [], cwd, selectedTools = [], toolSnippets = {} } = event.systemPromptOptions;
 
@@ -14,15 +41,15 @@ export default function(pi: ExtensionAPI) {
       .join("\n");
 
     const guidelines = `
-      Guidelines:
-      - Use bash for file operations like ls, rg, find; use read to examine files instead of cat or sed
-      - Use edit for precise changes: edits[].oldText must match the file exactly
-      - Each edits[].oldText matches against the original file, not the result of earlier edits — never emit overlapping or nested edits; merge nearby changes into one entry
-      - When changing multiple locations in one file, use one edit call with multiple edits[] entries, not multiple calls
-      - Keep edits[].oldText as small as possible while still unique in the file
-      - Use write only for new files or complete rewrites
-      - You can inspect PI_* environment variables for current model and session details
-    `.split("\n").map(l => l.trim()).filter(Boolean).join("\n");
+        Guidelines:
+        - Use bash for file operations like ls, rg, find; use read to examine files instead of cat or sed
+        - Use edit for precise changes: edits[].oldText must match the file exactly
+        - Each edits[].oldText matches against the original file, not the result of earlier edits — never emit overlapping or nested edits; merge nearby changes into one entry
+        - When changing multiple locations in one file, use one edit call with multiple edits[] entries, not multiple calls
+        - Keep edits[].oldText as small as possible while still unique in the file
+        - Use write only for new files or complete rewrites
+        - You can inspect PI_* environment variables for current model and session details
+      `.split("\n").map(l => l.trim()).filter(Boolean).join("\n");
     const orientation = `Current working directory: ${cwd}`;
 
     const systemPrompt = [

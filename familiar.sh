@@ -7,6 +7,10 @@ SELF="$(realpath "$0")"
 REPO="$(dirname $SELF)"
 STATE_DIR="$REPO/state"
 
+# Defaults
+export FAMILIAR_IDENTITY_PATH="${FAMILIAR_IDENTITY_PATH:-$REPO/identity}"
+export FAMILIAR_AGE_KEY="${FAMILIAR_AGE_KEY:-$STATE_DIR/age.key}"
+
 if [ -f "$REPO/.env" ]; then
   set -a; . "$REPO/.env"; set +a
 fi
@@ -163,6 +167,37 @@ run_pi() {
   done
 }
 
+handle_age() {
+  target=${2:-}
+  if [ -z "${target}" ]; then
+    echo "Usage: ./familiar.sh age <target>"
+    exit 1
+  fi
+
+  ensure_devshell pi "$@"
+
+  if [ ! -f "$FAMILIAR_AGE_KEY" ]; then
+    echo "Generating age key to $FAMILIAR_AGE_KEY"
+    mkdir -p "$(dirname "$FAMILIAR_AGE_KEY")"
+    age-keygen -o "$FAMILIAR_AGE_KEY" >/dev/null
+  fi
+
+  pubkey=$(age-keygen -y "$FAMILIAR_AGE_KEY")
+
+  if test ! -t 0; then
+    age -r "$pubkey" -o "$target"
+  else
+    tmp=$(mktemp); orig=$(mktemp)
+    trap 'rm -f "$tmp" "$orig"' EXIT
+    if [ -f "$target" ]; then
+      age -i "$FAMILIAR_AGE_KEY" --decrypt -o "$tmp" "$target"
+    fi
+    cp "$tmp" "$orig"
+    "${EDITOR:-vi}" "$tmp"
+    cmp -s "$tmp" "$orig" || age -r "$pubkey" -o "$target" "$tmp"
+  fi
+}
+
 start() {
   ensure_devshell pi "$@"
   setup_llama; setup_stt; setup_tts
@@ -181,5 +216,6 @@ case ${1:-} in
   stt)    run_stt "$@" ;;
   tts)    run_tts "$@" ;;
   kill)   tmux -L "$TMUX_SERVER" kill-server 2>/dev/null; exit 0 ;;
+  age)    handle_age "$@" ;;
   *)      start "$@" ;;
 esac

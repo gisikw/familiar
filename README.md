@@ -1,6 +1,6 @@
 # Familiar
 
-A portable, personal, persistent, progressively-enhanced agent framework.
+A portable, personal, progressively-enhanced agent framework.
 
 ## Installation
 
@@ -22,6 +22,18 @@ A portable, personal, persistent, progressively-enhanced agent framework.
    ./familiar.sh
    ```
 
+## Privacy
+
+Some components are optionally encrypted at rest using [age](https://github.com/FiloSottile/age).
+
+Edit or create new files via:
+   ```bash
+   echo "My dog's name is Fido" | ./familiar.sh age ./identity/01-household.md.age
+   ./familiar.sh age ./identity/00-private.md.age # opens in $EDITOR, reencrypting on close
+   ```
+
+The files are decrypted at runtime. On first use, a key will be generated at
+$FAMILIAR_AGE_KEY, which defaults to ./state/age.key.
 
 ## Primitives
 
