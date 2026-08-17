@@ -61,7 +61,10 @@ export class AudioCache {
         const res = await fetch(`${url}/v1/audio/speech`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ input: entry.text }),
+          body: JSON.stringify({
+            input: entry.text,
+            ...(process.env.FAMILIAR_TTS_VOICE ? { voice: process.env.FAMILIAR_TTS_VOICE } : {}),
+          }),
           signal: AbortSignal.timeout(300_000),
         });
         if (!res.ok) throw new Error(`tts ${res.status}`);
