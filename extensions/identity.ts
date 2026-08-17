@@ -11,7 +11,10 @@ export default function(pi: ExtensionAPI) {
     const identityDir = process.env.FAMILIAR_IDENTITY_PATH;
     const ageKey = process.env.FAMILIAR_AGE_KEY;
 
-    const files = (await readdir(identityDir)).sort();
+    // Identity is prose only: .md and .md.age. Anything else under identity/
+    // (e.g. voices/kokoro/*.pt.age — binary, decrypted and baked into the
+    // TTS gguf by run_tts) must never be decrypted into the prompt.
+    const files = (await readdir(identityDir)).sort().filter(f => /\.md(\.age)?$/.test(f));
     const bodies = await Promise.all(
       files
         .map(f => join(identityDir, f))

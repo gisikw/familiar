@@ -51,6 +51,13 @@
             cp bin/tts-cli $out/bin/ 2>/dev/null || cp bin/cli $out/bin/tts-cli 2>/dev/null || true
           '';
         };
+        # Voice baking: gguf+torch env for scripts/bake-kokoro-voices.py,
+        # which injects decrypted identity voice packs (identity/voices/kokoro/
+        # *.pt.age) into the Kokoro gguf. Runs at runtime (run_tts), not in a
+        # derivation: the packs are age-encrypted and the key is runtime
+        # state, so a pure build can't decrypt them — and shouldn't, or the
+        # voice lands in the world-readable nix store.
+        bakePython = pkgs.python3.withPackages (ps: with ps; [ gguf torch ]);
         piShell = pkgs.mkShell (modelEnv // {
           FAMILIAR_SHELL = "pi";
           PI_PACKAGE_DIR = "${pkgs.pi-coding-agent}/lib/node_modules/pi-monorepo";
@@ -71,7 +78,7 @@
           });
           tts = pkgs.mkShell (modelEnv // {
             FAMILIAR_SHELL = "tts";
-            packages = with pkgs; [ tts-cpp curl ];
+            packages = with pkgs; [ tts-cpp curl age bakePython ];
           });
         };
       }

@@ -99,14 +99,56 @@ spawn_tts() {
 
 run_tts() {
   ensure_devshell tts "$@"
+  # Custom voices: committed under identity/voices/kokoro/ as <name>.pt.age
+  # (encrypted) or plain <name>.pt, staged to state/voices/kokoro/<name>.pt
+  # (decrypt or copy), then baked into a local copy of the Kokoro gguf.
+  # tts-server only speaks voices embedded in the gguf (--voice selects,
+  # never loads), so baking is what makes a pack selectable;
+  # FAMILIAR_TTS_VOICE is runtime selection only.
+  # NOTE: <name>'s first char routes espeak phonemization (a=en-US, b=en-GB,
+  # e=es, ...; see KOKORO_LANG_TO_ESPEAK_ID in TTS.cpp) — name packs like
+  # af_exo, not exo.
   if [ ! -f "$MODEL_DIR/$FAMILIAR_TTS_MODEL_FILE" ]; then
     mkdir -p "$MODEL_DIR"
     curl -fL --retry 5 -C - -o "$MODEL_DIR/$FAMILIAR_TTS_MODEL_FILE.part" "$FAMILIAR_TTS_MODEL_URL" \
       && mv "$MODEL_DIR/$FAMILIAR_TTS_MODEL_FILE.part" "$MODEL_DIR/$FAMILIAR_TTS_MODEL_FILE"
   fi
+  local tts_model="$MODEL_DIR/$FAMILIAR_TTS_MODEL_FILE"
+  local baked="$MODEL_DIR/baked-$FAMILIAR_TTS_MODEL_FILE"
+  local voices_src="$REPO/identity/voices/kokoro"
+  local voices_dir="$STATE_DIR/voices/kokoro"
+  local packs=() rebake="" f name pt
+  if [ -d "$voices_src" ]; then
+    for f in "$voices_src"/*.pt "$voices_src"/*.pt.age; do
+      [ -e "$f" ] || continue
+      name="$(basename "$f")"; name="${name%.age}"; name="${name%.pt}"
+      pt="$voices_dir/$name.pt"
+      mkdir -p "$voices_dir"
+      if [ ! -f "$pt" ] || [ "$f" -nt "$pt" ]; then
+        case "$f" in
+          *.age) age -i "$FAMILIAR_AGE_KEY" --decrypt -o "$pt" "$f" ;;
+          *)     cp "$f" "$pt" ;;
+        esac
+      fi
+      packs+=("$pt")
+      if [ ! -f "$baked" ] || [ "$pt" -nt "$baked" ]; then rebake=1; fi
+    done
+  fi
+  if [ "${#packs[@]}" -gt 0 ]; then
+    if [ ! -f "$baked" ] \
+      || [ -n "$rebake" ] \
+      || [ "$tts_model" -nt "$baked" ] \
+      || [ "$REPO/scripts/bake-kokoro-voices.py" -nt "$baked" ]; then
+      python3 "$REPO/scripts/bake-kokoro-voices.py" \
+        "$tts_model" "$baked.part" "${packs[@]}" \
+        && mv "$baked.part" "$baked"
+    fi
+    tts_model="$baked"
+  fi
   while true; do
     tts-server \
-      --model-path "$MODEL_DIR/$FAMILIAR_TTS_MODEL_FILE" \
+      --model-path "$tts_model" \
+      ${FAMILIAR_TTS_VOICE:+--voice "$FAMILIAR_TTS_VOICE"} \
       --host 127.0.0.1 \
       --port 9933;
     sleep 1;
