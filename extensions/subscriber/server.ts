@@ -1,18 +1,19 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import http from "http";
-import fs from "fs";
+import { debugLog, errorLog } from "../lib/debug.ts";
+import { INGRESS_DISPOSITION, type SubmitPayload } from "./protocol.ts";
+import { StreamHub } from "./hub.ts";
+import { AudioCache } from "./audio.ts";
 
-type SubmitPayload =
-  | { type: "text"; content: string }
-  | { type: "audio"; id: number; seq: number; data: string; segments?: number; text?: string };
+/* --- HTTP server + ingress ------------------------------------------------ */
 
-const INGRESS_DISPOSITION = "steer";
-
-class SubscriberManager {
+export class SubscriberManager {
   private server: http.Server;
   private pi: ExtensionAPI;
-  private audioSegmentBuffer; // TODO: type?
+  private audioSegmentBuffer;
   public ctx: ExtensionContext;
+  public hub = new StreamHub();
+  public audio = new AudioCache(this.hub);
 
   constructor(pi: ExtensionAPI) {
     this.server = http.createServer(this.handleRequest.bind(this));
@@ -25,23 +26,31 @@ class SubscriberManager {
   }
 
   close() {
+    this.hub.close();
     this.server.closeAllConnections();
     this.server.close();
   }
 
   handleRequest(req: http.IncomingMessage, res: http.ServerResponse) {
-    const { pathname } = new URL(req.url, "http://localhost");
-    if (pathname === "/stream") this.handleStream(req, res);
-    else if (pathname === "/submit") this.handleSubmit(req, res);
-    else {
-      res.statusCode = 404;
+    try {
+      const { pathname, searchParams } = new URL(req.url, "http://localhost");
+      const segmentMatch = pathname.match(/^\/segments\/(\d+)\/(\d+)\/audio$/);
+      if (pathname === "/stream") this.hub.attach(req, res, searchParams.get("audio") === "1");
+      else if (pathname === "/submit") this.handleSubmit(req, res).catch((err) => {
+        errorLog("subscriber", { submitError: String(err) });
+        res.statusCode = 500;
+        res.end();
+      });
+      else if (segmentMatch) this.audio.serve(Number(segmentMatch[1]), Number(segmentMatch[2]), res);
+      else {
+        res.statusCode = 404;
+        res.end();
+      }
+    } catch (err) {
+      errorLog("subscriber", { requestError: String(err) });
+      res.statusCode = 500;
       res.end();
     }
-  }
-
-  handleStream(_req: http.IncomingMessage, res: http.ServerResponse) {
-    res.write("Definitely gonna handle stream");
-    res.end();
   }
 
   private readBody(req: http.IncomingMessage): Promise<string> {
@@ -80,14 +89,14 @@ class SubscriberManager {
     return this.transcribe(data)
       .catch(() => this.transcribe(data))
       .catch((err) => {
-        fs.appendFile(`${process.env.FAMILIAR_LOG_PATH}.subscriber`, `${JSON.stringify({ error: String(err) })} \n`, 'utf8', () => { });
+        errorLog("subscriber", { error: String(err) });
         return "[transcribed segment missing]";
       });
   }
 
   private sendParts(...parts) {
     const draft = this.ctx.ui?.getEditorText?.() ?? "";
-    fs.appendFile(`${process.env.FAMILIAR_LOG_PATH}.sendPartsDebug`, `${JSON.stringify({ draft })} \n`, 'utf8', () => { });
+    debugLog("sendPartsDebug", { draft });
     const dispatchParts = parts
       .concat([draft])
       .map(part => typeof part === "string" ? { type: "text", text: part } : part)
@@ -133,7 +142,7 @@ class SubscriberManager {
             })
             .catch((err) => {
               // Dispatch must never escape to uncaughtException and kill pi.
-              fs.appendFile(`${process.env.FAMILIAR_LOG_PATH}.subscriber`, `${JSON.stringify({ dispatchError: String(err), id })} \n`, 'utf8', () => { });
+              errorLog("subscriber", { dispatchError: String(err), id });
             })
             .finally(() => { delete this.audioSegmentBuffer[id]; });
         }
@@ -142,51 +151,4 @@ class SubscriberManager {
 
     res.end();
   }
-}
-
-class EventCache {
-  private messages = {};
-  private messageId = 1;
-  private responseId;
-  private revisionId = 1;
-
-  private segments = {};
-  private segmentId = 1;
-
-  handleMessageUpdate({ assistantMessageEvent }, ctx) {
-    const eventType = assistantMessageEvent.type;
-
-    if (eventType != "text_start" && eventType != "text_delta" && eventType != "text_end")
-      return;
-
-    this.messages[this.messageId] = assistantMessageEvent.partial.content
-      .filter(b => b.type === "text")
-      .map(b => b.text)
-      .join("");
-
-    const output = {
-      id: `${this.messageId}${eventType === "text_end" ? "" : `:${this.revisionId++}`}`,
-      event: "message",
-      content: this.messages[this.messageId]
-    };
-
-    fs.appendFile(`${process.env.FAMILIAR_LOG_PATH}.output`, `${JSON.stringify(output)} \n`, 'utf8', () => { });
-
-    if (eventType === "text_end") {
-      this.messageId++;
-      this.revisionId = 1;
-    }
-  }
-}
-
-export default function(pi: ExtensionAPI) {
-  const manager = new SubscriberManager(pi);
-  const eventCache = new EventCache();
-  pi.on("session_start", async (_event, ctx) => {
-    manager.start(Number(process.env.FAMILIAR_SUBSCRIBER_PORT ?? 1692));
-    manager.ctx = ctx; // Should manager.ctx be a Promise that we resolve here?
-  });
-  pi.on("session_shutdown", async () => { manager.close(); });
-  pi.on("message_update", async (event, ctx) => { eventCache.handleMessageUpdate(event, ctx) });
-  // pi.on("message_end", async (event, ctx) => { eventCache.handleMessage(event, ctx) });
 }
