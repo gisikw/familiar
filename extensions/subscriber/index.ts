@@ -10,7 +10,7 @@ import { Firehose } from "./firehose.ts";
 
 export default function(pi: ExtensionAPI) {
   const manager = new SubscriberManager(pi);
-  const firehose = new Firehose(manager.hub, manager.audio);
+  const firehose = new Firehose(manager.hub, manager.audio, manager.echoes);
 
   // Handler bodies are wrapped: an egress bug must cost a log line, never pi.
   const guard = (fn: () => void) => {

@@ -10,17 +10,30 @@
  *   GET  /stream?audio=1            SSE firehose. audio=1 marks an audio
  *                                   listener (drives proactive synthesis).
  *   POST /submit                    Ingress (text or chunked audio takes).
+ *   POST /cancel                    Abort the in-flight turn. Idempotent,
+ *                                   fire-and-forget, 204 always. The
+ *                                   interrupted message locks at its partial
+ *                                   content (the existing abort protocol).
  *   GET  /segments/:mid/:idx/audio  Synthesized wav for a segment.
  *                                   202 = synthesizing (retry), 404 = unknown/evicted, 503 = failed.
  *
  * Stream events (one JSON object per SSE `data:` line):
  *
+ *   SessionEvent   — sent to every client as the FIRST event on each attach,
+ *                    before history replay; never part of history. The id is
+ *                    minted per server process: a changed id means the
+ *                    message-id space reset — drop any cached transcript and
+ *                    take the replay as truth.
  *   MessageEvent   — assistant/user message content. `revision` present
  *                    means mutable (a newer revision of the same id
  *                    supersedes it); revision ABSENT means locked — the
  *                    server will never change this message again. There is
  *                    no delta replay and no abort signal: an interrupted
  *                    turn simply locks at its final partial content.
+ *                    `created_at` is the ISO time the message began, stable
+ *                    across revisions. `correlation_id` on a user message
+ *                    echoes the client-chosen submit id (take or text) that
+ *                    produced it.
  *   ToolEvent      — tool call liveness. Name + truncated args, no results.
  *   SegmentEvent   — a synthesizable chunk was detected. `synthesizing`
  *                    reports whether synthesis was proactively started
@@ -36,12 +49,22 @@
  * message (no customType) re-opens broadcasting.
  */
 
+export interface SessionEvent {
+  event: "session";
+  /** Epoch id, minted per server process. Never appears in history. */
+  id: string;
+}
+
 export interface MessageEvent {
   event: "message";
   id: number;
   role: "user" | "assistant";
   content: string;
   revision?: number;
+  /** ISO timestamp of message creation; stable across revisions. */
+  created_at?: string;
+  /** Client-chosen submit id (take or text) echoed on the user message it produced. */
+  correlation_id?: number;
 }
 
 export interface ToolEvent {
@@ -69,7 +92,7 @@ export interface SegmentAudioEvent {
 export type StreamEvent = MessageEvent | ToolEvent | SegmentEvent | SegmentAudioEvent;
 
 export type SubmitPayload =
-  | { type: "text"; content: string }
+  | { type: "text"; content: string; id?: number }
   | { type: "audio"; id: number; seq: number; data: string; segments?: number; text?: string };
 
 export const INGRESS_DISPOSITION = "steer";
@@ -80,6 +103,8 @@ export const PRIVATE_TYPES = new Set(["handoff-request", "orientation"]);
 export const TOOL_ARGS_MAX = 300;
 export const HISTORY_MAX = 500;
 export const AUDIO_CACHE_MAX = 200;
+// Dispatched-but-unechoed submits kept for correlation matching.
+export const PENDING_ECHO_MAX = 50;
 
 // Segmentation: emit at sentence boundaries ([.!?] followed by whitespace —
 // avoids splitting decimals/versions) once the buffer clears a minimum

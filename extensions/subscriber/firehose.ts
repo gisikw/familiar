@@ -6,6 +6,7 @@ import {
 import { messageText, speakable } from "./text.ts";
 import type { StreamHub } from "./hub.ts";
 import type { AudioCache } from "./audio.ts";
+import type { PendingEchoes } from "./echo.ts";
 
 /* --- Firehose: pi events → stream events ---------------------------------- */
 
@@ -16,8 +17,9 @@ export class Firehose {
   private segmentIndex = 0;
   private privateTurn = false;
   private streamingAssistant = false;
+  private startedAt = ""; // creation time of the in-flight assistant message, stable across revisions
 
-  constructor(private hub: StreamHub, private audio: AudioCache) { }
+  constructor(private hub: StreamHub, private audio: AudioCache, private echoes: PendingEchoes) { }
 
   onMessageStart(message: any) {
     const customType = message?.customType;
@@ -30,7 +32,12 @@ export class Firehose {
       this.privateTurn = false;
       const content = messageText(message);
       if (content.trim()) {
-        this.hub.publish({ event: "message", id: ++this.messageId, role: "user", content });
+        this.hub.publish({
+          event: "message", id: ++this.messageId, role: "user", content,
+          created_at: new Date().toISOString(),
+          // Claim by exact dispatched text; undefined (uncorrelated) on miss.
+          correlation_id: this.echoes.claim(content),
+        });
       }
     } else if (message?.role === "assistant") {
       this.beginAssistant();
@@ -51,6 +58,7 @@ export class Firehose {
         role: "assistant",
         content,
         revision: this.revisionId++,
+        created_at: this.startedAt,
       });
     }
     // text_end = the model closed this text block (moving to a tool call or
@@ -93,6 +101,7 @@ export class Firehose {
     this.revisionId = 1;
     this.consumed = 0;
     this.segmentIndex = 0;
+    this.startedAt = new Date().toISOString();
   }
 
   private finishAssistant(content: string) {
@@ -102,7 +111,7 @@ export class Firehose {
     if (!this.privateTurn) {
       this.chunkSegments(content, true);
       if (content.trim()) {
-        this.hub.publish({ event: "message", id: this.messageId, role: "assistant", content });
+        this.hub.publish({ event: "message", id: this.messageId, role: "assistant", content, created_at: this.startedAt });
       }
     }
     this.revisionId = 1;

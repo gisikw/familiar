@@ -4,6 +4,7 @@ import { debugLog, errorLog } from "../lib/debug.ts";
 import { INGRESS_DISPOSITION, type SubmitPayload } from "./protocol.ts";
 import { StreamHub } from "./hub.ts";
 import { AudioCache } from "./audio.ts";
+import { PendingEchoes } from "./echo.ts";
 
 /* --- HTTP server + ingress ------------------------------------------------ */
 
@@ -14,6 +15,7 @@ export class SubscriberManager {
   public ctx: ExtensionContext;
   public hub = new StreamHub();
   public audio = new AudioCache(this.hub);
+  public echoes = new PendingEchoes();
 
   constructor(pi: ExtensionAPI) {
     this.server = http.createServer(this.handleRequest.bind(this));
@@ -36,6 +38,7 @@ export class SubscriberManager {
       const { pathname, searchParams } = new URL(req.url, "http://localhost");
       const segmentMatch = pathname.match(/^\/segments\/(\d+)\/(\d+)\/audio$/);
       if (pathname === "/stream") this.hub.attach(req, res, searchParams.get("audio") === "1");
+      else if (pathname === "/cancel") this.handleCancel(req, res);
       else if (pathname === "/submit") this.handleSubmit(req, res).catch((err) => {
         errorLog("subscriber", { submitError: String(err) });
         res.statusCode = 500;
@@ -94,7 +97,26 @@ export class SubscriberManager {
       });
   }
 
-  private sendParts(...parts) {
+  // Abort the in-flight turn. Idempotent fire-and-forget: aborting an idle
+  // agent is a no-op, so 204 unconditionally. The interrupted assistant
+  // message locks at its partial content via the existing agent_end path.
+  private handleCancel(req: http.IncomingMessage, res: http.ServerResponse) {
+    if (req.method !== "POST") {
+      res.statusCode = 405;
+      return res.end();
+    }
+    try {
+      this.ctx?.abort?.();
+    } catch (err) {
+      errorLog("subscriber", { cancelError: String(err) });
+    }
+    res.statusCode = 204;
+    res.end();
+  }
+
+  // correlationId: client-chosen submit id (take or text). Recorded against
+  // the exact dispatched text so the firehose can attach it to pi's echo.
+  private sendParts(correlationId: number | undefined, ...parts) {
     const draft = this.ctx.ui?.getEditorText?.() ?? "";
     debugLog("sendPartsDebug", { draft });
     const dispatchParts = parts
@@ -102,6 +124,10 @@ export class SubscriberManager {
       .map(part => typeof part === "string" ? { type: "text", text: part } : part)
       .filter(part => !!part && typeof part.text === "string" && !!part.text.trim());
     if (!dispatchParts.length) return;
+    if (correlationId !== undefined) {
+      // Must mirror messageText(): text parts joined with "".
+      this.echoes.push(correlationId, dispatchParts.map((p) => p.text).join(""));
+    }
     this.pi.sendUserMessage(dispatchParts, { deliverAs: INGRESS_DISPOSITION });
     if (draft.trim()) this.ctx.ui.setEditorText("");
   }
@@ -119,7 +145,7 @@ export class SubscriberManager {
     }
 
     if (payload.type === "text") {
-      this.sendParts(payload.content);
+      this.sendParts(payload.id, payload.content);
     } else {
       const { id, seq, data, segments } = payload;
       const take = this.audioSegmentBuffer[id] = this.audioSegmentBuffer[id] || {};
@@ -138,7 +164,7 @@ export class SubscriberManager {
           const ordered = Array.from({ length: segments }, (_, i) => take[i]);
           Promise.all(ordered.map((seg) => seg.transcription))
             .then((transcriptions) => {
-              this.sendParts(transcriptions.join(" "), payload.text);
+              this.sendParts(id, transcriptions.join(" "), payload.text);
             })
             .catch((err) => {
               // Dispatch must never escape to uncaughtException and kill pi.

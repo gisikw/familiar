@@ -1,6 +1,6 @@
 import http from "http";
 import { debugLog } from "../lib/debug.ts";
-import { HISTORY_MAX, type MessageEvent, type StreamEvent } from "./protocol.ts";
+import { HISTORY_MAX, type MessageEvent, type SessionEvent, type StreamEvent } from "./protocol.ts";
 
 /* --- SSE hub: client registry, history replay, broadcast ------------------ */
 
@@ -9,6 +9,9 @@ export class StreamHub {
   private history: StreamEvent[] = [];
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   inflight: MessageEvent | null = null;
+  // Epoch identity: new per server process. Clients compare across attaches
+  // to detect a message-id-space reset (stale-cache poisoning, delta doc #3).
+  readonly session: string = crypto.randomUUID();
 
   attach(req: http.IncomingMessage, res: http.ServerResponse, audio: boolean) {
     res.writeHead(200, {
@@ -17,6 +20,9 @@ export class StreamHub {
       "Connection": "keep-alive",
     });
     res.write(":connected\n\n");
+    // First event on EVERY attach, before replay — deliberately outside
+    // history so it can never scroll off or be skipped by partial replay.
+    this.write(res, { event: "session", id: this.session });
     for (const event of this.history) this.write(res, event);
     if (this.inflight) this.write(res, this.inflight);
 
@@ -65,7 +71,7 @@ export class StreamHub {
     for (const c of this.clients) this.write(c.res, event);
   }
 
-  private write(res: http.ServerResponse, event: StreamEvent) {
+  private write(res: http.ServerResponse, event: StreamEvent | SessionEvent) {
     res.write(`data: ${JSON.stringify(event)}\n\n`);
   }
 }
