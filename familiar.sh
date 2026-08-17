@@ -12,8 +12,6 @@ if [ -f "$REPO/.env" ]; then
 fi
 
 MODEL_DIR="${FAMILIAR_MODEL_DIR:-$REPO/models}"
-MODEL_FILE="gemma-4-E4B-it-Q4_K_M.gguf"
-MODEL_URL="https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/$MODEL_FILE"
 
 ensure_devshell() {
   local shell=$1; shift
@@ -37,10 +35,10 @@ spawn_llama() {
 
 run_llama() {
   ensure_devshell llama "$@"
-  if [ ! -f "$MODEL_DIR/$MODEL_FILE" ]; then
+  if [ ! -f "$MODEL_DIR/$FAMILIAR_MODEL_FILE" ]; then
     mkdir -p "$MODEL_DIR"
-    curl -fL --retry 5 -C - -o "$MODEL_DIR/$MODEL_FILE.part" "$MODEL_URL" \
-      && mv "$MODEL_DIR/$MODEL_FILE.part" "$MODEL_DIR/$MODEL_FILE"
+    curl -fL --retry 5 -C - -o "$MODEL_DIR/$FAMILIAR_MODEL_FILE.part" "$FAMILIAR_MODEL_URL" \
+      && mv "$MODEL_DIR/$FAMILIAR_MODEL_FILE.part" "$MODEL_DIR/$FAMILIAR_MODEL_FILE"
   fi
   while true; do
     llama-server \
@@ -56,7 +54,7 @@ run_llama() {
 
 setup_stt() {
   if [ -z "${FAMILIAR_STT_URL:-}" ]; then
-    export FAMILIAR_STT_URL="http://localhost:0"
+    export FAMILIAR_STT_URL="http://localhost:9932"
     NEED_STT=1;
   fi
 }
@@ -69,11 +67,21 @@ spawn_stt() {
 
 run_stt() {
   ensure_devshell stt "$@"
+  if [ ! -f "$MODEL_DIR/$FAMILIAR_STT_MODEL_FILE" ]; then
+    mkdir -p "$MODEL_DIR"
+    curl -fL --retry 5 -C - -o "$MODEL_DIR/$FAMILIAR_STT_MODEL_FILE.part" "$FAMILIAR_STT_MODEL_URL" \
+      && mv "$MODEL_DIR/$FAMILIAR_STT_MODEL_FILE.part" "$MODEL_DIR/$FAMILIAR_STT_MODEL_FILE"
+  fi
+  while true; do
+    STT_MODEL="$MODEL_DIR/$FAMILIAR_STT_MODEL_FILE" PORT=9932 \
+      bun "$REPO/scripts/stt-server.ts";
+    sleep 1;
+  done
 }
 
 setup_tts() {
   if [ -z "${FAMILIAR_TTS_URL:-}" ]; then
-    export FAMILIAR_TTS_URL="http://localhost:0"
+    export FAMILIAR_TTS_URL="http://localhost:9933"
     NEED_TTS=1;
   fi
 }
@@ -85,7 +93,19 @@ spawn_tts() {
 }
 
 run_tts() {
-  ensure_devshell stt "$@"
+  ensure_devshell tts "$@"
+  if [ ! -f "$MODEL_DIR/$FAMILIAR_TTS_MODEL_FILE" ]; then
+    mkdir -p "$MODEL_DIR"
+    curl -fL --retry 5 -C - -o "$MODEL_DIR/$FAMILIAR_TTS_MODEL_FILE.part" "$FAMILIAR_TTS_MODEL_URL" \
+      && mv "$MODEL_DIR/$FAMILIAR_TTS_MODEL_FILE.part" "$MODEL_DIR/$FAMILIAR_TTS_MODEL_FILE"
+  fi
+  while true; do
+    tts-server \
+      --model-path "$MODEL_DIR/$FAMILIAR_TTS_MODEL_FILE" \
+      --host 127.0.0.1 \
+      --port 9933;
+    sleep 1;
+  done
 }
 
 run_pi() {
@@ -95,7 +115,7 @@ run_pi() {
   export FAMILIAR_SUBSCRIBER_PORT=1692
   mkdir -p "$PI_CODING_AGENT_DIR"
   while true; do
-    jq -n --arg model "${MODEL_FILE%.*}" --arg ext "$REPO/extensions" '{
+    jq -n --arg model "${FAMILIAR_MODEL_FILE%.*}" --arg ext "$REPO/extensions" '{
       lastChangelogVersion: "0.84.1",
       theme: "dark",
       defaultProvider: "llama.cpp",
@@ -103,7 +123,7 @@ run_pi() {
       compaction: { enabled: false },
       extensions: [ $ext ],
     }' > "$PI_CODING_AGENT_DIR/settings.json"
-    jq -n --arg url "$LLAMA_BASE_URL" --arg model "${MODEL_FILE%.*}" '{
+    jq -n --arg url "$LLAMA_BASE_URL" --arg model "${FAMILIAR_MODEL_FILE%.*}" '{
       "llama.cpp": {
         "models": [
           {
