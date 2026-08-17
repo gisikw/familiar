@@ -11,6 +11,11 @@ STATE_DIR="$REPO/state"
 export FAMILIAR_IDENTITY_PATH="${FAMILIAR_IDENTITY_PATH:-$REPO/identity}"
 export FAMILIAR_AGE_KEY="${FAMILIAR_AGE_KEY:-$STATE_DIR/age.key}"
 export FAMILIAR_HANDOFF_PATH="${FAMILIAR_HANDOFF_PATH:-$STATE_DIR/handoffs}"
+# Session storage. Overriding this is the deliberate escape hatch for a wedged
+# session: point it at a clean-room dir to bail out without touching the main
+# continuity line. Not a first-class verb on purpose — forking continuity
+# should have friction.
+export PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR:-$STATE_DIR/pi}"
 
 if [ -f "$REPO/.env" ]; then
   set -a; . "$REPO/.env"; set +a
@@ -157,7 +162,6 @@ run_tts() {
 
 run_pi() {
   ensure_devshell pi "$@"
-  export PI_CODING_AGENT_DIR="$STATE_DIR/pi"
   export FAMILIAR_LOG_PATH="$STATE_DIR/log.jsonl"
   export FAMILIAR_SUBSCRIBER_PORT=1692
   mkdir -p "$PI_CODING_AGENT_DIR"
@@ -218,7 +222,12 @@ run_pi() {
         checkedAt: (now * 1000 | floor),
       }
     }' > "$PI_CODING_AGENT_DIR/models-store.json"
+    # --continue resumes the most recent session (falls through to a fresh one
+    # when none exists — verified in SessionManager.continueRecent). Bounces
+    # and crash respawns keep continuity; /clear stays the only way to end a
+    # session, and it writes a handoff first.
     command pi \
+      --continue \
       --no-context-files \
       --no-skills \
       --skill "$REPO/skills/"

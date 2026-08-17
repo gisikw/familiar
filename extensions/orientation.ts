@@ -84,13 +84,23 @@ export default function(pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     currentCtx = ctx;
+    const entries = ctx.sessionManager.getEntries();
     // Re-learn prior orientation outputs so they stay masked after restore.
-    for (const entry of ctx.sessionManager.getEntries()) {
+    for (const entry of entries) {
       if (entry.type === "custom" && entry.customType === ENTRY_TYPE) {
         const data = entry.data as { text?: string; thinking?: string[] };
         if (data?.text) knownOutputs.add(data.text);
         for (const t of data?.thinking ?? []) knownOutputs.add(t);
       }
+    }
+    // A resumed session already woke up once (pi --continue after a bounce or
+    // crash respawn). Any prior conversation or orientation entry means the
+    // next input is mid-conversation, not a first message — do not re-orient.
+    if (entries.some((e) =>
+      e.type === "message" ||
+      (e.type === "custom" && e.customType === ENTRY_TYPE)
+    )) {
+      phase = "done";
     }
   });
 
