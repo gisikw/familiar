@@ -63,13 +63,35 @@ class SubscriberManager {
     return null;
   }
 
+  private transcribe(data: string): Promise<string> {
+    const url = process.env.FAMILIAR_STT_URL;
+    if (!url) return Promise.reject(new Error("FAMILIAR_STT_URL not set"));
+    return fetch(url, { method: "POST", body: Buffer.from(data, "base64") })
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`stt ${res.status}: ${(await res.text()).slice(0, 200)}`);
+        const { text } = await res.json();
+        return typeof text === "string" ? text : "";
+      });
+  }
+
+  // One retry on transcription failure; after that the segment resolves to a
+  // bracketed placeholder so inference proceeds on the segments we do have.
+  private transcribeWithRetry(data: string): Promise<string> {
+    return this.transcribe(data)
+      .catch(() => this.transcribe(data))
+      .catch((err) => {
+        fs.appendFile(`${process.env.FAMILIAR_LOG_PATH}.subscriber`, `${JSON.stringify({ error: String(err) })} \n`, 'utf8', () => { });
+        return "[transcribed segment missing]";
+      });
+  }
+
   private sendParts(...parts) {
     const draft = this.ctx.ui?.getEditorText?.() ?? "";
     fs.appendFile(`${process.env.FAMILIAR_LOG_PATH}.sendPartsDebug`, `${JSON.stringify({ draft })} \n`, 'utf8', () => { });
     const dispatchParts = parts
       .concat([draft])
       .map(part => typeof part === "string" ? { type: "text", text: part } : part)
-      .filter(({ text }) => !!text && !!text.trim());
+      .filter(part => !!part && typeof part.text === "string" && !!part.text.trim());
     if (!dispatchParts.length) return;
     this.pi.sendUserMessage(dispatchParts, { deliverAs: INGRESS_DISPOSITION });
     if (draft.trim()) this.ctx.ui.setEditorText("");
@@ -91,25 +113,29 @@ class SubscriberManager {
       this.sendParts(payload.content);
     } else {
       const { id, seq, data, segments } = payload;
-      this.audioSegmentBuffer[id] = this.audioSegmentBuffer[id] || {};
-      this.audioSegmentBuffer[id][seq] = this.audioSegmentBuffer[id][seq] || {};
-      this.audioSegmentBuffer[id][seq].data = data;
-      this.audioSegmentBuffer[id][seq].transcription = new Promise((tRes, tRej) => {
-        // TODO: Proactively start transcribing
-      });
+      const take = this.audioSegmentBuffer[id] = this.audioSegmentBuffer[id] || {};
+      if (take[seq] === undefined) {
+        take[seq] = { data, transcription: this.transcribeWithRetry(data) };
+      }
 
       if (segments > 0) {
         const missingSegments = Array.from({ length: segments }, (_, i) => i)
-          .filter((i) => this.audioSegmentBuffer[id][i] === undefined);
+          .filter((i) => take[i] === undefined);
 
         if (missingSegments.length) {
           res.statusCode = 409;
           res.write(JSON.stringify({ missing: missingSegments }));
         } else {
-          const ordered = Array.from({ length: segments }, (_, i) => this.audioSegmentBuffer[id][i]);
-          Promise.all(ordered.map((seg) => seg.transcription)).then((transcriptions) => {
-            this.sendParts(transcriptions.join(" "), payload.text);
-          });
+          const ordered = Array.from({ length: segments }, (_, i) => take[i]);
+          Promise.all(ordered.map((seg) => seg.transcription))
+            .then((transcriptions) => {
+              this.sendParts(transcriptions.join(" "), payload.text);
+            })
+            .catch((err) => {
+              // Dispatch must never escape to uncaughtException and kill pi.
+              fs.appendFile(`${process.env.FAMILIAR_LOG_PATH}.subscriber`, `${JSON.stringify({ dispatchError: String(err), id })} \n`, 'utf8', () => { });
+            })
+            .finally(() => { delete this.audioSegmentBuffer[id]; });
         }
       }
     }
