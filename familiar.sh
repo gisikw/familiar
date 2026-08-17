@@ -10,6 +10,7 @@ STATE_DIR="$REPO/state"
 # Defaults
 export FAMILIAR_IDENTITY_PATH="${FAMILIAR_IDENTITY_PATH:-$REPO/identity}"
 export FAMILIAR_AGE_KEY="${FAMILIAR_AGE_KEY:-$STATE_DIR/age.key}"
+export FAMILIAR_HANDOFF_PATH="${FAMILIAR_HANDOFF_PATH:-$STATE_DIR/handoffs}"
 
 if [ -f "$REPO/.env" ]; then
   set -a; . "$REPO/.env"; set +a

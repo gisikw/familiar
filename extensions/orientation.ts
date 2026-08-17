@@ -1,4 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { readdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
 
 // Orientation turn: on the first user message of a session, defer the user's
 // input, run one private tool-less orientation turn (masked in the TUI,
@@ -13,6 +15,23 @@ Do not address the user. Do not say hello. Do not summarize what you'll help wit
 const MASK = "*⟨orientation — private⟩*";
 const ENTRY_TYPE = "orientation-output";
 
+// Most recent handoff written by /clear (see clear.ts), if any. Injected
+// ahead of the orientation prompt so the successor session starts oriented —
+// this also covers cold process restarts, not just /clear-born sessions.
+const latestHandoff = async (): Promise<string | null> => {
+  const dir = process.env.FAMILIAR_HANDOFF_PATH;
+  if (!dir) return null;
+  const files = (await readdir(dir).catch(() => [] as string[]))
+    .filter((f) => f.endsWith(".md"))
+    .sort();
+  const latest = files.at(-1);
+  if (!latest) return null;
+  const body = (await readFile(join(dir, latest), "utf-8")).trim();
+  if (!body) return null;
+  const stamp = latest.replace(/\.md$/, "");
+  return `Handoff from your previous session (written ${stamp}; weigh staleness accordingly):\n\n${body}`;
+};
+
 type Phase = "pending" | "orienting" | "done";
 
 export default function(pi: ExtensionAPI) {
@@ -24,15 +43,20 @@ export default function(pi: ExtensionAPI) {
   const knownOutputs = new Set<string>();
   let currentCtx: ExtensionContext | undefined;
 
-  const beginOrientation = (ctx: ExtensionContext) => {
+  const beginOrientation = async (ctx: ExtensionContext) => {
     phase = "orienting";
     liveText = "";
     liveThinking = [];
     savedTools = pi.getActiveTools();
     pi.setActiveTools([]);
     if (ctx.hasUI) ctx.ui.setWorkingMessage("Waking up…");
+    const handoff = await latestHandoff();
     pi.sendMessage(
-      { customType: "orientation", content: ORIENTATION_PROMPT, display: false },
+      {
+        customType: "orientation",
+        content: handoff ? `${handoff}\n\n---\n\n${ORIENTATION_PROMPT}` : ORIENTATION_PROMPT,
+        display: false,
+      },
       { triggerTurn: true },
     );
   };
@@ -73,11 +97,13 @@ export default function(pi: ExtensionAPI) {
   });
 
   pi.on("input", async (event, ctx) => {
-    if (event.source === "extension") return { action: "continue" };
     if (phase === "done") return { action: "continue" };
+    // Extension-sent input is stashed too: /clear continuations arrive via
+    // sendUserMessage in the successor session and should land as turn two,
+    // after orientation. Our own stash flush is safe — it fires at phase "done".
     // Slash commands never reach this handler, so we only ever defer prose.
     stash.push({ text: event.text, images: event.images as unknown[] });
-    if (phase === "pending") beginOrientation(ctx);
+    if (phase === "pending") await beginOrientation(ctx);
     return { action: "handled" };
   });
 

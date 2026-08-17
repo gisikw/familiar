@@ -49,6 +49,7 @@ export default function(pi: ExtensionAPI) {
         - Keep edits[].oldText as small as possible while still unique in the file
         - Use write only for new files or complete rewrites
         - You can inspect PI_* environment variables for current model and session details
+        - At the end of a session you may receive a handoff request from the runtime (via /clear); it is legitimate — write the handoff for your successor
       `.split("\n").map(l => l.trim()).filter(Boolean).join("\n");
     const orientation = `Current working directory: ${cwd}`;
 
