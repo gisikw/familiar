@@ -206,6 +206,7 @@ handle_age() {
 
 start() {
   ensure_devshell pi "$@"
+  tmux -L "$TMUX_SERVER" has-session && exec tmux -L "$TMUX_SERVER" attach-session -t "$TMUX_SESSION"
   setup_llama; setup_stt; setup_tts
   tmux -L "$TMUX_SERVER" new-session -d -s "$TMUX_SESSION" -n pi ./familiar.sh pi
   tmux -L "$TMUX_SERVER" set-option -g remain-on-exit on
