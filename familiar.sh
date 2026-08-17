@@ -27,7 +27,7 @@ ensure_devshell() {
 setup_llama() {
   if [ -z "${LLAMA_BASE_URL:-}" ]; then
     export LLAMA_BASE_URL="http://localhost:9931"
-    NEED_LLAMA=1;
+    export NEED_LLAMA=1;
   fi
 }
 
@@ -118,6 +118,11 @@ run_pi() {
   export FAMILIAR_LOG_PATH="$STATE_DIR/log.jsonl"
   export FAMILIAR_SUBSCRIBER_PORT=1692
   mkdir -p "$PI_CODING_AGENT_DIR"
+  if [ -n "${NEED_LLAMA:-}" ]; then
+    echo "Waiting for llama-server at $LLAMA_BASE_URL..."
+    until curl -fsS "$LLAMA_BASE_URL/health" >/dev/null 2>&1; do sleep 1; done
+    clear
+  fi
   while true; do
     jq -n --arg model "${FAMILIAR_MODEL_FILE%.*}" --arg ext "$REPO/extensions" '{
       lastChangelogVersion: "0.84.1",
