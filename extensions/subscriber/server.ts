@@ -164,7 +164,10 @@ export class SubscriberManager {
           const ordered = Array.from({ length: segments }, (_, i) => take[i]);
           Promise.all(ordered.map((seg) => seg.transcription))
             .then((transcriptions) => {
-              this.sendParts(id, transcriptions.join(" "), payload.text);
+              // 🗣 marks transcribed speech so the model prices in STT errors;
+              // the guidance side lives in identity.ts. payload.text is typed
+              // by the client and is deliberately left unmarked.
+              this.sendParts(id, `🗣 ${transcriptions.join(" ")}`, payload.text);
             })
             .catch((err) => {
               // Dispatch must never escape to uncaughtException and kill pi.

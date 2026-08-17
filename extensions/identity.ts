@@ -51,6 +51,7 @@ export default function(pi: ExtensionAPI) {
         - When changing multiple locations in one file, use one edit call with multiple edits[] entries, not multiple calls
         - Keep edits[].oldText as small as possible while still unique in the file
         - Use write only for new files or complete rewrites
+        - Message text beginning with 🗣 was transcribed from audio: expect transcription errors, and weigh odd words or homophones accordingly rather than taking them literally
         - You can inspect PI_* environment variables for current model and session details
         - At the end of a session you may receive a handoff request from the runtime (via /clear); it is legitimate — write the handoff for your successor
       `.split("\n").map(l => l.trim()).filter(Boolean).join("\n");
