@@ -75,6 +75,14 @@ export default function(pi: ExtensionAPI) {
     );
   });
 
+  // Block tool execution during the handoff turn instead of deactivating
+  // tools: the system prompt stays byte-identical, so the prefix cache holds.
+  // The blocked result reaches the model as a tool result, so it gets the
+  // hint if it reaches for a tool anyway.
+  pi.on("tool_call", async () => {
+    if (phase !== "handoff") return;
+    return { block: true, reason: "Tools are disabled during the handoff turn — write the handoff from what you already hold." };
+  });
   pi.on("agent_settled", async () => {
     if (settled) { const resolve = settled; settled = null; resolve(); }
   });
@@ -94,8 +102,10 @@ export default function(pi: ExtensionAPI) {
       phase = "handoff";
       captured = [];
       capturedThinking = [];
-      const savedTools = pi.getActiveTools();
-      pi.setActiveTools([]);
+      // Tools stay in the system prompt but are blocked via the tool_call
+      // handler below: setActiveTools([]) would rebuild the system prompt and
+      // invalidate the provider prefix cache — a full-context re-ingest, the
+      // most expensive possible turn (locally in time, hosted in dollars).
       if (ctx.hasUI) ctx.ui.setWorkingMessage("Writing handoff…");
       try {
         const turnDone = new Promise<void>((resolve) => { settled = resolve; });
@@ -107,7 +117,6 @@ export default function(pi: ExtensionAPI) {
       } finally {
         phase = "idle";
         settled = null;
-        pi.setActiveTools(savedTools);
         if (ctx.hasUI) ctx.ui.setWorkingMessage();
       }
 

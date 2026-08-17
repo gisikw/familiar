@@ -37,7 +37,6 @@ type Phase = "pending" | "orienting" | "done";
 export default function(pi: ExtensionAPI) {
   let phase: Phase = "pending";
   let stash: { text: string; images?: unknown[] }[] = [];
-  let savedTools: string[] | null = null;
   let liveText = "";
   let liveThinking: string[] = [];
   const knownOutputs = new Set<string>();
@@ -47,8 +46,9 @@ export default function(pi: ExtensionAPI) {
     phase = "orienting";
     liveText = "";
     liveThinking = [];
-    savedTools = pi.getActiveTools();
-    pi.setActiveTools([]);
+    // Tools stay in the system prompt but are blocked via the tool_call
+    // handler below: setActiveTools([]) would rebuild the system prompt and
+    // invalidate the provider prefix cache — a full-context re-ingest.
     if (ctx.hasUI) ctx.ui.setWorkingMessage("Waking up…");
     const handoff = await latestHandoff();
     pi.sendMessage(
@@ -63,8 +63,6 @@ export default function(pi: ExtensionAPI) {
 
   const endOrientation = (ctx: ExtensionContext) => {
     phase = "done";
-    if (savedTools) pi.setActiveTools(savedTools);
-    savedTools = null;
     if (ctx.hasUI) ctx.ui.setWorkingMessage();
     if (liveText.trim() || liveThinking.length) {
       knownOutputs.add(liveText);
@@ -120,6 +118,12 @@ export default function(pi: ExtensionAPI) {
       .map((b: any) => b.thinking);
   });
 
+  // Block tool execution during the orientation turn instead of deactivating
+  // tools: the system prompt stays byte-identical, so the prefix cache holds.
+  pi.on("tool_call", async () => {
+    if (phase !== "orienting") return;
+    return { block: true, reason: "Tools are disabled during the orientation turn — the conversation has not started yet." };
+  });
   pi.on("agent_settled", async (_event, ctx) => {
     if (phase === "orienting") endOrientation(ctx);
   });
