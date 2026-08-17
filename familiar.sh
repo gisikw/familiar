@@ -125,14 +125,25 @@ run_pi() {
     clear
   fi
   while true; do
-    jq -n --arg model "${FAMILIAR_MODEL_FILE%.*}" --arg ext "$REPO/extensions" '{
-      lastChangelogVersion: "0.84.1",
-      theme: "dark",
-      defaultProvider: "llama.cpp",
-      defaultModel: $model,
-      compaction: { enabled: false },
-      extensions: [ $ext ],
-    }' > "$PI_CODING_AGENT_DIR/settings.json"
+    # Merge, don't clobber: pi persists /model + thinking-level choices into
+    # settings.json; keep them across crash respawns. FAMILIAR_DEFAULT_MODEL
+    # (+ FAMILIAR_DEFAULT_PROVIDER, default llama.cpp) only seeds when no
+    # persisted choice exists. Pi itself falls back to the first available
+    # model if the saved default can't be resolved (findInitialModel).
+    prev=$(jq -ce . "$PI_CODING_AGENT_DIR/settings.json" 2>/dev/null || echo '{}')
+    jq -n --argjson prev "$prev" \
+      --arg provider "${FAMILIAR_DEFAULT_PROVIDER:-llama.cpp}" \
+      --arg model "${FAMILIAR_DEFAULT_MODEL:-${FAMILIAR_MODEL_FILE%.*}}" \
+      --arg ext "$REPO/extensions" '
+      $prev + {
+        lastChangelogVersion: "0.84.1",
+        theme: "dark",
+        compaction: { enabled: false },
+        extensions: [ $ext ]
+      }
+      | .defaultProvider //= $provider
+      | .defaultModel //= $model
+    ' > "$PI_CODING_AGENT_DIR/settings.json"
     jq -n --arg url "$LLAMA_BASE_URL" --arg model "${FAMILIAR_MODEL_FILE%.*}" '{
       "llama.cpp": {
         "models": [
