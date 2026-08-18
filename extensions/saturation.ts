@@ -11,8 +11,15 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 // Injections ride before_agent_start as appended messages — prefix cache
 // unaffected. Rising-edge only: each bucket fires once per session, and a
 // fresh session (post-/clear) starts with a clean slate.
+//
+// Also maintains a persistent footer segment via ctx.ui.setStatus — the
+// built-in footer shows saturation against the model's real window; this
+// shows it against the artificial cap (e.g. "61%/200k").
 
 const BUCKET_SIZE = 5;
+
+const fmtTokens = (n: number): string =>
+  n >= 1_000_000 ? `${(n / 1_000_000).toFixed(n % 1_000_000 ? 1 : 0)}M` : `${Math.round(n / 1000)}k`;
 
 export default function(pi: ExtensionAPI) {
   const cap = Number(process.env.FAMILIAR_MAX_CONTEXT) || 200_000;
@@ -20,12 +27,31 @@ export default function(pi: ExtensionAPI) {
   const critical = Number(process.env.FAMILIAR_SATURATION_CRITICAL) || 80;
   let lastBucket = 0;
 
-  pi.on("before_agent_start", async (_event, ctx) => {
+  const saturation = (ctx: { getContextUsage: () => { tokens?: number | null; contextWindow: number } | null }) => {
     const usage = ctx.getContextUsage();
-    if (usage?.tokens == null) return;
-
+    if (usage?.tokens == null) return null;
     const limit = usage.contextWindow > 0 ? Math.min(cap, usage.contextWindow) : cap;
-    const percent = (usage.tokens / limit) * 100;
+    return { percent: (usage.tokens / limit) * 100, limit };
+  };
+
+  const updateStatus = (ctx: any) => {
+    if (!ctx.hasUI) return;
+    const s = saturation(ctx);
+    if (!s) return;
+    const text = `${Math.trunc(s.percent)}%/${fmtTokens(s.limit)}`;
+    const color = s.percent >= critical ? "error" : s.percent >= warn ? "warning" : "dim";
+    ctx.ui.setStatus("saturation", ctx.ui.theme.fg(color, text));
+  };
+
+  pi.on("session_start", async (_event, ctx) => updateStatus(ctx));
+  pi.on("turn_end", async (_event, ctx) => updateStatus(ctx));
+
+  pi.on("before_agent_start", async (_event, ctx) => {
+    updateStatus(ctx);
+    const s = saturation(ctx);
+    if (!s) return;
+
+    const { percent } = s;
     const bucket = Math.floor(percent / BUCKET_SIZE) * BUCKET_SIZE;
     if (percent < warn || bucket <= lastBucket) return;
     lastBucket = bucket;
