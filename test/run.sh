@@ -13,3 +13,7 @@ trap 'kill $MOCK 2>/dev/null || true' EXIT
 sleep 0.5
 
 bun harness.ts
+
+# Zip extension: markers, scheduled editorial branching, paged recommendations,
+# and customized /tree summaries. Self-contained; model calls are stubbed.
+bun zip.ts
