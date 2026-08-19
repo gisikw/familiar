@@ -134,6 +134,8 @@ export interface Settlement {
 
 interface WatcherEvent {
   at: string;
+  /** Which pass emitted this. Events are pass-scoped; see eventsFor(). */
+  pass?: number;
   phase: string;
   status: string;
   reason?: string;
@@ -217,6 +219,14 @@ const events = (id: string): WatcherEvent[] =>
         return [];
       }
     });
+
+// Events from *this* pass only. One job writes one event log across every
+// pass, so an unscoped read lets a previous pass's terminal event settle the
+// current one instantly — harvesting the pre-steer verdict and stopping the
+// poller before the real work finishes. Events predating pass-tagging are
+// treated as pass 1.
+const eventsFor = (id: string, pass: number): WatcherEvent[] =>
+  events(id).filter((e) => (e.pass ?? 1) === pass);
 
 /* --- herdr ---------------------------------------------------------------- */
 
@@ -422,17 +432,33 @@ export default function (pi: ExtensionAPI) {
   // deliverAs steer + triggerTurn: lands after the current turn if one is
   // running, wakes the agent if idle. Returns whether delivery is confirmed —
   // a throwing sendMessage (e.g. mid-teardown) leaves no marker and retries.
+  // Atomically take ownership of a delivery. Returns false when someone else
+  // already has it. A tool result and the background poller can both be
+  // holding the same settlement; exactly one of them may deliver it.
+  const claim = (marker: string): boolean => {
+    try {
+      fs.writeFileSync(marker, "", { flag: "wx" });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   const send = (marker: string, lines: string[]): boolean => {
     if (fs.existsSync(marker)) return true;
+    // Claim the marker *before* sending: relay() and subagent_await can race
+    // for the same settlement, and a lost race means the verdict arrives
+    // twice. Roll back if the send fails so the poller can retry.
+    if (!claim(marker)) return true;
     try {
       pi.sendMessage(
         { customType: "subagent-settlement", content: lines.join("\n"), display: true },
         { deliverAs: "steer", triggerTurn: true },
       );
     } catch {
+      try { fs.unlinkSync(marker); } catch { /* nothing to roll back */ }
       return false;
     }
-    fs.writeFileSync(marker, "");
     return true;
   };
 
@@ -480,6 +506,17 @@ export default function (pi: ExtensionAPI) {
       if (relay(settle(cmd, pass, { status, reason }))) stopPolling(id);
     };
 
+    // Each pass gets its own deadline: a steered or resurrected job is
+    // legitimately still working long after the original dispatch, and must
+    // not be force-killed because the first pass's budget elapsed.
+    const passStartedAt = (pass: number): number => {
+      const first = eventsFor(id, pass)[0];
+      const stamp = readText(path.join(dir, `started-${pass}`)).trim();
+      if (stamp) return Date.parse(stamp);
+      if (first) return Date.parse(first.at);
+      return Date.parse(cmd.created_at);
+    };
+
     const tick = () => {
       const pass = currentPass(id);
       const existing = readJSON<Settlement>(path.join(dir, `settlement-${pass}.json`));
@@ -488,8 +525,7 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      const evs = events(id);
-      const last = evs[evs.length - 1];
+      const last = eventsFor(id, pass).at(-1);
 
       if (last) {
         if (last.status === "blocked") {
@@ -498,6 +534,9 @@ export default function (pi: ExtensionAPI) {
         }
         if (last.status === "done" || last.status === "idle") return finish(pass, "done");
         if (last.status === "unknown") {
+          // Herdr says `unknown` does not prove completion, so only treat it
+          // as terminal once the agent is actually gone from the session.
+          if (agentState(id)) return;
           return finish(pass, "done", "agent state unclassified; verdict harvested from transcript");
         }
         if (last.status === "error") {
@@ -508,13 +547,22 @@ export default function (pi: ExtensionAPI) {
 
       // Backstop: the watcher enforces its own timeout, but if the watcher
       // itself died the job must not sit open forever.
-      if (Date.now() > Date.parse(cmd.created_at) + (cmd.timeout + 120) * 1000) {
+      if (Date.now() > passStartedAt(pass) + (cmd.timeout + 120) * 1000) {
         finish(pass, "timeout", `exceeded ${cmd.timeout}s (watcher silent)`);
       }
     };
 
-    pollers.set(id, setInterval(tick, POLL_MS));
-    tick();
+    const tickGuarded = () => {
+      // A throw here would kill the interval silently and strand the job.
+      try {
+        tick();
+      } catch {
+        /* transient: disk hiccup, torn write. Next tick retries. */
+      }
+    };
+
+    pollers.set(id, setInterval(tickGuarded, POLL_MS));
+    tickGuarded();
   };
 
   /* --- resurrection ------------------------------------------------------- */
@@ -542,6 +590,9 @@ export default function (pi: ExtensionAPI) {
 
     fs.writeFileSync(path.join(dir, "resumes"), String(resumes + 1));
     fs.writeFileSync(path.join(dir, "resume-prompt.txt"), RESUME_PROMPT);
+    // The revived pass starts its clock now: the original budget was spent by
+    // a life that no longer exists.
+    fs.writeFileSync(path.join(dir, `started-${pass}`), new Date().toISOString());
     recordPlacement(cmd.id, placed);
     spawnWatcher(cmd.id, "resume");
     monitor(cmd.id);
@@ -643,6 +694,7 @@ export default function (pi: ExtensionAPI) {
       // Durable before the slow side effects begin.
       fs.writeFileSync(path.join(dirPath, "prompt.txt"), prompt + verdictFooter(agentKind, cwd));
       fs.writeFileSync(path.join(dirPath, "pass"), String(pass));
+      fs.writeFileSync(path.join(dirPath, `started-${pass}`), new Date().toISOString());
       writeJSON(path.join(dirPath, "command.json"), command);
       recordPlacement(id, placed);
 
@@ -701,7 +753,7 @@ export default function (pi: ExtensionAPI) {
           const pass = currentPass(id);
           const s = readJSON<Settlement>(path.join(jobDir(id), `settlement-${pass}.json`));
           if (s) {
-            fs.writeFileSync(path.join(jobDir(id), `relayed-${pass}`), ""); // this result IS the relay
+            claim(path.join(jobDir(id), `relayed-${pass}`)); // this result IS the relay
             stopPolling(id);
             return ok({
               id: s.id, pass: s.pass, status: s.status, reason: s.reason,
@@ -709,8 +761,8 @@ export default function (pi: ExtensionAPI) {
               ...(s.workdir ? { workdir: s.workdir, branch: s.branch } : {}),
             });
           }
-          if (events(id).at(-1)?.status === "blocked") {
-            fs.writeFileSync(path.join(jobDir(id), `blocked-${pass}`), "");
+          if (eventsFor(id, pass).at(-1)?.status === "blocked") {
+            claim(path.join(jobDir(id), `blocked-${pass}`));
             return ok({ id, pass, status: "blocked", tail: agentTail(id), note: "answer with subagent_respond" });
           }
         }
@@ -741,7 +793,7 @@ export default function (pi: ExtensionAPI) {
         if (!cmd) return { id, error: "unknown id" };
         const pass = currentPass(id);
         const s = readJSON<Settlement>(path.join(jobDir(id), `settlement-${pass}.json`));
-        const last = events(id).at(-1);
+        const last = eventsFor(id, pass).at(-1);
         return {
           id,
           pass,
@@ -779,6 +831,7 @@ export default function (pi: ExtensionAPI) {
       const pass = currentPass(params.id) + 1;
       fs.writeFileSync(path.join(dir, `prompt-${pass}.txt`), params.text);
       fs.writeFileSync(path.join(dir, "pass"), String(pass));
+      fs.writeFileSync(path.join(dir, `started-${pass}`), new Date().toISOString());
       spawnWatcher(params.id, "respond", String(pass));
       monitor(params.id);
       return ok({ id: params.id, pass });
@@ -809,7 +862,7 @@ export default function (pi: ExtensionAPI) {
       const tab = readText(path.join(dir, "tab")).trim();
       if (!cmd.isolated && tab) herdr(["tab", "close", tab]);
       stopPolling(params.id);
-      fs.writeFileSync(path.join(dir, `relayed-${pass}`), ""); // the tool result IS the relay
+      claim(path.join(dir, `relayed-${pass}`)); // the tool result IS the relay
       return ok({ id: s.id, pass: s.pass, status: s.status, result: s.result, ...(s.workdir ? { workdir: s.workdir, branch: s.branch } : {}) });
     },
   });

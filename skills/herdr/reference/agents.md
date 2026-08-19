@@ -51,6 +51,8 @@ herdr agent prompt reviewer "Review the current diff and report only actionable 
 
 `agent prompt` atomically submits text and encoded Enter while honoring the pane's live bracketed-paste mode. It rejects an agent already waiting at an approval or question dialog with `agent_blocked` before sending any input. For normal agent work, `--wait` is enough: it waits for the first settled `idle`, `done`, or `blocked` state. Do not repeat those defaults with `--until`.
 
+**Answering a blocked agent needs a different channel.** Because `agent prompt` refuses a blocked target outright, an answer must be typed into the pane instead: `herdr pane send-text <pane> "<answer>"` followed by `herdr pane send-keys <pane> enter`, then `agent wait` for the turn it produces. `agent send-keys` only accepts key names, not arbitrary text, so the pane surface is the one that works. This is what `subagent_respond` does when its target is blocked.
+
 A prompt sent from a non-working state must produce an observed lifecycle change within five seconds. Otherwise Herdr returns `agent_prompt_stalled` instead of waiting indefinitely. This wait tracks lifecycle state, not an individual turn; if the agent is already working, completion of the active turn may satisfy it.
 
 Use `--until` only for a state-specific workflow, such as waiting for an already-running agent to request input:
