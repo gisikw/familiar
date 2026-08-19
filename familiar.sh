@@ -573,11 +573,29 @@ drop_handle() {
   return 0
 }
 
+# nc dialects disagree about flags in ways that are not merely cosmetic: -N on
+# OpenBSD's nc means "shutdown the socket after EOF on stdin", while Apple's nc
+# uses -N for an adaptive write timeout that takes an argument. Passing the
+# wrong one is not a warning, it is an immediate exit. So the flag is probed by
+# running it, not by assuming it, and the client always bounds its own read.
+drop_server_nc_flags() {
+  local probe="${TMPDIR:-/tmp}/familiar-nc-probe.$$" pid flags="-lU"
+  rm -f "$probe"
+  nc -lNU "$probe" >/dev/null 2>&1 </dev/null &
+  pid=$!
+  sleep 0.4
+  if kill -0 "$pid" 2>/dev/null && [ -S "$probe" ]; then flags="-lNU"; fi
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  rm -f "$probe"
+  printf '%s' "$flags"
+}
+
 # The server. nc handles one connection then exits, so the loop rebinds each
 # time; the fifo turns nc's stdout back into the handler's stdin, which is how
 # you get a request/response exchange out of a tool that only does streams.
 drop_serve() {
-  local sock=${2:-} fifo
+  local sock=${2:-} fifo nc_flags fails=0
   if [ -z "$sock" ]; then
     echo "Usage: familiar.sh drop-serve <socket-path>" >&2
     return 1
@@ -585,6 +603,7 @@ drop_serve() {
   command -v nc >/dev/null 2>&1 || { echo "drop-serve requires nc" >&2; return 1; }
   command -v base64 >/dev/null 2>&1 || { echo "drop-serve requires base64" >&2; return 1; }
 
+  nc_flags=$(drop_server_nc_flags)
   mkdir -p "$(dirname "$sock")"
   fifo="$sock.fifo"
   rm -f "$sock" "$fifo"
@@ -596,23 +615,33 @@ drop_serve() {
     # `|| true` is load-bearing under `set -e`: a bare command as the loop body
     # aborts the whole function on any non-zero exit, so one hung-up client
     # would take the server down with it and leave the tunnel pointing at
-    # nothing.
-    drop_handle < "$fifo" | nc -lNU "$sock" > "$fifo" || true
+    # nothing. It must not, however, turn a listener that can never bind into a
+    # hot spin, so an immediate failure is counted and eventually fatal.
+    if drop_handle < "$fifo" | nc $nc_flags "$sock" > "$fifo"; then
+      fails=0
+    else
+      fails=$((fails + 1))
+      if [ "$fails" -ge 5 ]; then
+        echo "drop-serve: nc failed $fails times in a row on $sock; giving up" >&2
+        return 1
+      fi
+      sleep 1
+    fi
   done
 }
 
 # A short exchange whose reply fits in a variable (HELLO, STAT). The socket is
 # rebound between connections, so a miss is retried rather than believed.
 #
-# No -N on the client: it half-closes the socket as soon as stdin ends, and the
-# server's nc treats that as end-of-connection and exits before the reply is
-# written — a silent empty response with a zero exit status. The half-close was
-# never needed anyway, since the server reads a line and returns on the newline.
-# The server's -N is what ends the exchange, and the client's EOF comes from it.
+# -w bounds the read: when the server can shutdown after EOF the reply ends
+# promptly and the timeout never elapses, and when it cannot, this is what keeps
+# a fetch from hanging forever. No -N on the client — it half-closes as soon as
+# stdin ends, and a server that treats that as end-of-connection exits before
+# writing the reply, which reads as a silent empty response with a zero status.
 drop_ask() {
   local sock=$1 req=$2 out attempt=1
   while [ "$attempt" -le 3 ]; do
-    out=$(printf '%s\n' "$req" | nc -U "$sock" 2>/dev/null || true)
+    out=$(printf '%s\n' "$req" | nc -w 2 -U "$sock" 2>/dev/null || true)
     if [ -n "$out" ]; then printf '%s' "$out"; return 0; fi
     attempt=$((attempt + 1))
     sleep 0.2
@@ -651,7 +680,7 @@ drop_fetch() {
   # connections, so a first attempt can arrive during the gap.
   attempt=1
   while [ "$attempt" -le 3 ]; do
-    printf 'GET %s\n' "$path" | nc -U "$found" > "$tmp" 2>/dev/null || true
+    printf 'GET %s\n' "$path" | nc -w 30 -U "$found" > "$tmp" 2>/dev/null || true
     [ -s "$tmp" ] && break
     attempt=$((attempt + 1))
     sleep 0.2
