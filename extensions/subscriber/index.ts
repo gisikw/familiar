@@ -18,10 +18,15 @@ export default function(pi: ExtensionAPI) {
   };
 
   pi.on("session_start", async (_event, ctx) => {
-    manager.start(Number(process.env.FAMILIAR_SUBSCRIBER_PORT ?? 1692));
+    // Unlike the firehose handlers this one is on pi's startup path, so a
+    // throw here would abort session start outright.
+    guard(() => manager.start(
+      Number(process.env.FAMILIAR_SUBSCRIBER_PORT ?? 1692),
+      process.env.FAMILIAR_SUBSCRIBER_HOST ?? "127.0.0.1",
+    ));
     manager.ctx = ctx;
   });
-  pi.on("session_shutdown", async () => { manager.close(); });
+  pi.on("session_shutdown", async () => { guard(() => manager.close()); });
 
   pi.on("message_start", async (event) => guard(() => firehose.onMessageStart(event.message)));
   pi.on("message_update", async (event) => guard(() => firehose.onMessageUpdate(event.message, event.assistantMessageEvent)));

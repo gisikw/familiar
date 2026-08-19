@@ -21,10 +21,17 @@ export class SubscriberManager {
     this.server = http.createServer(this.handleRequest.bind(this));
     this.pi = pi;
     this.audioSegmentBuffer = {};
+    // An 'error' event with no listener is re-thrown as an uncaught exception.
+    // listen() reports EADDRINUSE asynchronously, so no try/catch around
+    // start() can catch it — and session_start is not guarded. A port
+    // conflict must cost the subscriber, never the agent.
+    this.server.on("error", (err) => {
+      errorLog("subscriber", { serverError: String(err) });
+    });
   }
 
-  start(port: number) {
-    if (!this.server.listening) this.server.listen(port);
+  start(port: number, host: string) {
+    if (!this.server.listening) this.server.listen(port, host);
   }
 
   close() {
