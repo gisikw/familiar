@@ -74,6 +74,9 @@
         piShell = pkgs.mkShell (modelEnv // {
           FAMILIAR_SHELL = "pi";
           FAMILIAR_INTERACTIVE_SHELL = "${pkgs.bashInteractive}/bin/bash";
+          # Subagents run as Herdr agents in their own panes/worktrees.
+          # The extension refuses to dispatch unless this is "herdr".
+          FAMILIAR_SUBAGENT_MODE = "herdr";
           PI_PACKAGE_DIR = "${pkgs.pi-coding-agent}/lib/node_modules/pi-monorepo";
           packages = with pkgs; [ age curl jq sqlite pi-coding-agent familiarHerdr familiarSplash ];
         });
