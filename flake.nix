@@ -2,9 +2,13 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    herdr = {
+      url = "github:gisikw/herdr/left-nav-pty";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = { self, nixpkgs, flake-utils, herdr }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
@@ -61,7 +65,7 @@
         piShell = pkgs.mkShell (modelEnv // {
           FAMILIAR_SHELL = "pi";
           PI_PACKAGE_DIR = "${pkgs.pi-coding-agent}/lib/node_modules/pi-monorepo";
-          packages = with pkgs; [ age curl jq sqlite pi-coding-agent tmux ];
+          packages = with pkgs; [ age curl jq sqlite pi-coding-agent herdr.packages.${system}.default ];
         });
       in
       {

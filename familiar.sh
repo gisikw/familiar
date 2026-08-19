@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-TMUX_SERVER=familiar
-TMUX_SESSION=familiar
 SELF="$(realpath "$0")"
-REPO="$(dirname $SELF)"
+REPO="$(dirname "$SELF")"
 STATE_DIR="$REPO/state"
+HERDR_STATE_DIR="$STATE_DIR/herdr"
+HERDR_COLD_START=0
+export HERDR_SESSION="${HERDR_SESSION:-familiar}"
+export HERDR_CONFIG_PATH="${HERDR_CONFIG_PATH:-$HERDR_STATE_DIR/config.toml}"
 
 # Defaults
 export FAMILIAR_IDENTITY_PATH="${FAMILIAR_IDENTITY_PATH:-$REPO/identity}"
@@ -37,12 +39,6 @@ setup_llama() {
   fi
 }
 
-spawn_llama() {
-  if [ -n "${NEED_LLAMA:-}" ]; then
-    tmux -L "$TMUX_SERVER" new-window -d -t "$TMUX_SESSION" -n llama ./familiar.sh llama
-  fi
-}
-
 run_llama() {
   ensure_devshell llama "$@"
   if [ ! -f "$MODEL_DIR/$FAMILIAR_MODEL_FILE" ]; then
@@ -65,13 +61,7 @@ run_llama() {
 setup_stt() {
   if [ -z "${FAMILIAR_STT_URL:-}" ]; then
     export FAMILIAR_STT_URL="http://localhost:9932"
-    NEED_STT=1;
-  fi
-}
-
-spawn_stt() {
-  if [ -n "${NEED_STT:-}" ]; then
-    tmux -L "$TMUX_SERVER" new-window -d -t "$TMUX_SESSION" -n stt ./familiar.sh stt
+    export NEED_STT=1;
   fi
 }
 
@@ -92,13 +82,7 @@ run_stt() {
 setup_tts() {
   if [ -z "${FAMILIAR_TTS_URL:-}" ]; then
     export FAMILIAR_TTS_URL="http://localhost:9933"
-    NEED_TTS=1;
-  fi
-}
-
-spawn_tts() {
-  if [ -n "${NEED_TTS:-}" ]; then
-    tmux -L "$TMUX_SERVER" new-window -d -t "$TMUX_SESSION" -n tts ./familiar.sh tts
+    export NEED_TTS=1;
   fi
 }
 
@@ -164,7 +148,16 @@ run_pi() {
   ensure_devshell pi "$@"
   export FAMILIAR_LOG_PATH="$STATE_DIR/log.jsonl"
   export FAMILIAR_SUBSCRIBER_PORT=1692
-  mkdir -p "$PI_CODING_AGENT_DIR"
+  mkdir -p "$PI_CODING_AGENT_DIR" "$HERDR_STATE_DIR/skill"
+  # Keep the orchestration skill byte-for-byte aligned with the pinned Herdr
+  # binary. Herdr bundles it deliberately; materialize it because Pi's --skill
+  # surface consumes paths rather than stdin.
+  herdr --skill > "$HERDR_STATE_DIR/skill/SKILL.md.part"
+  if ! cmp -s "$HERDR_STATE_DIR/skill/SKILL.md.part" "$HERDR_STATE_DIR/skill/SKILL.md"; then
+    mv "$HERDR_STATE_DIR/skill/SKILL.md.part" "$HERDR_STATE_DIR/skill/SKILL.md"
+  else
+    rm "$HERDR_STATE_DIR/skill/SKILL.md.part"
+  fi
   if [ -n "${NEED_LLAMA:-}" ]; then
     echo "Waiting for llama-server at $LLAMA_BASE_URL..."
     until curl -fsS "$LLAMA_BASE_URL/health" >/dev/null 2>&1; do sleep 1; done
@@ -232,7 +225,8 @@ run_pi() {
       --continue \
       --no-context-files \
       --no-skills \
-      --skill "$REPO/skills/"
+      --skill "$REPO/skills/" \
+      --skill "$HERDR_STATE_DIR/skill/"
     sleep 1
   done
 }
@@ -268,17 +262,148 @@ handle_age() {
   fi
 }
 
+write_herdr_config() {
+  mkdir -p "$HERDR_STATE_DIR" "$(dirname "$HERDR_CONFIG_PATH")"
+  cat > "$HERDR_CONFIG_PATH" <<EOF
+onboarding = false
+
+[terminal]
+new_cwd = "follow"
+
+[update]
+version_check = false
+manifest_check = false
+
+[[keys.command]]
+key = "prefix+shift+q"
+type = "shell"
+command = "\$HERDR_BIN_PATH server stop"
+description = "stop the Familiar Herdr server"
+
+[ui]
+sidebar_width = 30
+sidebar_min_width = 24
+sidebar_max_width = 36
+prompt_new_workspace_name = false
+
+[ui.sidebar.pty]
+command = "$REPO/scripts/herdr-sidebar.sh"
+rows = 12
+cwd = "$REPO"
+EOF
+}
+
+herdr_server_running() {
+  herdr status server --json 2>/dev/null | jq -e '.running == true' >/dev/null
+}
+
+wait_for_herdr() {
+  local tries=0
+  until herdr_server_running; do
+    tries=$((tries + 1))
+    if [ "$tries" -ge 100 ]; then
+      echo "Herdr server did not become ready; see $HERDR_STATE_DIR/server.stdout.log" >&2
+      return 1
+    fi
+    sleep 0.1
+  done
+}
+
+start_herdr_server() {
+  if herdr_server_running; then return; fi
+  HERDR_COLD_START=1
+  nohup herdr server </dev/null >"$HERDR_STATE_DIR/server.stdout.log" 2>&1 &
+  wait_for_herdr
+}
+
+run_in_herdr_pane() {
+  local pane=$1 role=$2 command
+  printf -v command '%q %q' "$SELF" "$role"
+  herdr pane rename "$pane" "$role" >/dev/null
+  herdr pane run "$pane" "$command" >/dev/null
+}
+
+split_herdr_pane() {
+  local pane=$1 direction=$2
+  herdr pane split "$pane" --direction "$direction" --cwd "$REPO" --no-focus \
+    | jq -er '.result.pane.pane_id'
+}
+
+populate_familiar_workspace() {
+  local workspace=$1 pi_tab=$2 pi_root=$3
+  local service_response service_root pane direction role
+  local -a services=()
+
+  [ -n "${NEED_LLAMA:-}" ] && services+=(llama)
+  [ -n "${NEED_STT:-}" ] && services+=(stt)
+  [ -n "${NEED_TTS:-}" ] && services+=(tts)
+  if [ "${#services[@]}" -gt 0 ]; then
+    service_response=$(herdr tab create --workspace "$workspace" --cwd "$REPO" --label services --no-focus)
+    service_root=$(jq -er '.result.root_pane.pane_id' <<<"$service_response")
+    run_in_herdr_pane "$service_root" "${services[0]}"
+    for role in "${services[@]:1}"; do
+      direction=right
+      [ "$role" = tts ] && direction=down
+      pane=$(split_herdr_pane "$service_root" "$direction")
+      run_in_herdr_pane "$pane" "$role"
+    done
+  fi
+
+  run_in_herdr_pane "$pi_root" pi
+  herdr tab focus "$pi_tab" >/dev/null
+}
+
+ensure_familiar_workspace() {
+  local id_file="$HERDR_STATE_DIR/workspace-id" workspace pi_root pi_tab response old_tab
+  local -a old_tabs=()
+  if [ -s "$id_file" ]; then
+    workspace=$(<"$id_file")
+    if herdr workspace get "$workspace" >/dev/null 2>&1; then
+      if [ "$HERDR_COLD_START" != 1 ]; then return; fi
+
+      # Snapshot restore deliberately revives layout, not arbitrary processes.
+      # Keep the workspace itself (and therefore its sidebar ordering), but
+      # replace its shell-only tabs with our declarative live layout. Create
+      # replacements first so closing the old last tab cannot close the space.
+      mapfile -t old_tabs < <(
+        herdr tab list --workspace "$workspace" | jq -er '.result.tabs[].tab_id'
+      )
+      response=$(herdr tab create --workspace "$workspace" --cwd "$REPO" --label pi --no-focus)
+      pi_root=$(jq -er '.result.root_pane.pane_id' <<<"$response")
+      pi_tab=$(jq -er '.result.tab.tab_id' <<<"$response")
+      populate_familiar_workspace "$workspace" "$pi_tab" "$pi_root"
+      for old_tab in "${old_tabs[@]}"; do
+        herdr tab close "$old_tab" >/dev/null
+      done
+      return
+    fi
+  fi
+
+  response=$(herdr workspace create --cwd "$REPO" --label Familiar --focus)
+  workspace=$(jq -er '.result.workspace.workspace_id' <<<"$response")
+  pi_root=$(jq -er '.result.root_pane.pane_id' <<<"$response")
+  pi_tab=$(jq -er '.result.tab.tab_id' <<<"$response")
+  printf '%s\n' "$workspace" > "$id_file"
+  herdr tab rename "$pi_tab" pi >/dev/null
+  populate_familiar_workspace "$workspace" "$pi_tab" "$pi_root"
+}
+
 start() {
   ensure_devshell pi "$@"
-  tmux -L "$TMUX_SERVER" has-session && exec tmux -L "$TMUX_SERVER" attach-session -t "$TMUX_SESSION"
+  if [ "${HERDR_ENV:-}" = 1 ]; then
+    echo "Familiar is already running inside Herdr session $HERDR_SESSION" >&2
+    return 1
+  fi
   setup_llama; setup_stt; setup_tts
-  tmux -L "$TMUX_SERVER" new-session -d -s "$TMUX_SESSION" -n pi ./familiar.sh pi
-  tmux -L "$TMUX_SERVER" set-option -g remain-on-exit on
-  tmux -L "$TMUX_SERVER" set -g extended-keys on
-  tmux -L "$TMUX_SERVER" set -g extended-keys-format csi-u
-  tmux -L "$TMUX_SERVER" bind-key Q kill-server
-  spawn_llama; spawn_stt; spawn_tts
-  exec tmux -L "$TMUX_SERVER" attach-session -t "$TMUX_SESSION"
+  write_herdr_config
+  start_herdr_server
+  ensure_familiar_workspace
+  exec herdr --session "$HERDR_SESSION"
+}
+
+stop() {
+  ensure_devshell pi "$@"
+  herdr session stop "$HERDR_SESSION" --json 2>/dev/null || herdr server stop 2>/dev/null || true
 }
 
 case ${1:-} in
@@ -286,7 +411,7 @@ case ${1:-} in
   llama)  run_llama "$@" ;;
   stt)    run_stt "$@" ;;
   tts)    run_tts "$@" ;;
-  kill)   tmux -L "$TMUX_SERVER" kill-server 2>/dev/null; exit 0 ;;
+  kill)   stop "$@" ;;
   age)    handle_age "$@" ;;
   *)      start "$@" ;;
 esac
