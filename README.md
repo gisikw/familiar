@@ -34,12 +34,6 @@ A portable, personal, progressively-enhanced agent framework.
    ./familiar.sh
    ```
 
-   This launches the isolated `familiar` Herdr session and its Familiar
-   workspace. Pi and locally managed model or speech services remain alive
-   across detach/reattach; after a full server restart, Familiar keeps its
-   restored workspace position but replaces the shell-only restored tabs with a
-   fresh live layout.
-
 ## Privacy
 
 Some components are optionally encrypted at rest using [age](https://github.com/FiloSottile/age).

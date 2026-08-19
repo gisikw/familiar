@@ -67,6 +67,7 @@
         });
         piShell = pkgs.mkShell (modelEnv // {
           FAMILIAR_SHELL = "pi";
+          FAMILIAR_INTERACTIVE_SHELL = "${pkgs.bashInteractive}/bin/bash";
           PI_PACKAGE_DIR = "${pkgs.pi-coding-agent}/lib/node_modules/pi-monorepo";
           packages = with pkgs; [ age curl jq sqlite pi-coding-agent familiarHerdr ];
         });
