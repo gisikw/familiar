@@ -62,6 +62,12 @@
         # state, so a pure build can't decrypt them — and shouldn't, or the
         # voice lands in the world-readable nix store.
         bakePython = pkgs.python3.withPackages (ps: with ps; [ gguf torch ]);
+        familiarSplash = pkgs.buildGoModule {
+          pname = "familiar-splash";
+          version = "0.1.0";
+          src = ./scripts/splash;
+          vendorHash = null;
+        };
         familiarHerdr = herdr.packages.${system}.default.overrideAttrs (old: {
           patches = (old.patches or [ ]) ++ [ ./patches/herdr-left-nav-pty.patch ];
         });
@@ -69,7 +75,7 @@
           FAMILIAR_SHELL = "pi";
           FAMILIAR_INTERACTIVE_SHELL = "${pkgs.bashInteractive}/bin/bash";
           PI_PACKAGE_DIR = "${pkgs.pi-coding-agent}/lib/node_modules/pi-monorepo";
-          packages = with pkgs; [ age curl jq sqlite pi-coding-agent familiarHerdr ];
+          packages = with pkgs; [ age curl jq sqlite pi-coding-agent familiarHerdr familiarSplash ];
         });
       in
       {

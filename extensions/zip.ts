@@ -9,7 +9,7 @@ import {
   type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { uuidv7 } from "@earendil-works/pi-ai";
-import { Loader, Text } from "@earendil-works/pi-tui";
+import { Loader, Text, type AutocompleteItem } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { errorLog } from "./lib/debug.ts";
 
@@ -697,6 +697,19 @@ Return JSON only: {"candidates":[{"id":"<user entry id>","label":"<short name>",
 
   pi.registerCommand("zip", {
     description: "/zip <anchor> [--append text | --replace text]",
+    getArgumentCompletions: (prefix: string): AutocompleteItem[] | null => {
+      const input = prefix.trimStart();
+      if (/\s/.test(input)) return null;
+      const found = ctxRef ? activeMarkers(ctxRef) : [...markers.values()];
+      const items = found
+        .filter((marker) => marker.name.startsWith(input))
+        .map((marker) => ({
+          value: marker.name,
+          label: marker.name,
+          description: `#${marker.entryId}`,
+        }));
+      return items.length ? items : null;
+    },
     handler: async (args, ctx) => {
       ctxRef = ctx;
       const input = args.trim();

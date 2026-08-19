@@ -13,6 +13,8 @@ export HERDR_CONFIG_PATH="${HERDR_CONFIG_PATH:-$HERDR_STATE_DIR/config.toml}"
 export FAMILIAR_IDENTITY_PATH="${FAMILIAR_IDENTITY_PATH:-$REPO/identity}"
 export FAMILIAR_AGE_KEY="${FAMILIAR_AGE_KEY:-$STATE_DIR/age.key}"
 export FAMILIAR_HANDOFF_PATH="${FAMILIAR_HANDOFF_PATH:-$STATE_DIR/handoffs}"
+export FAMILIAR_RELOAD_REQUEST_PATH="${FAMILIAR_RELOAD_REQUEST_PATH:-$HERDR_STATE_DIR/reload-request}"
+export FAMILIAR_RELOAD_COMPLETE_PATH="${FAMILIAR_RELOAD_COMPLETE_PATH:-$HERDR_STATE_DIR/reload-complete}"
 # Session storage. Overriding this is the deliberate escape hatch for a wedged
 # session: point it at a clean-room dir to bail out without touching the main
 # continuity line. Not a first-class verb on purpose — forking continuity
@@ -148,20 +150,11 @@ run_pi() {
   ensure_devshell pi "$@"
   export FAMILIAR_LOG_PATH="$STATE_DIR/log.jsonl"
   export FAMILIAR_SUBSCRIBER_PORT=1692
-  mkdir -p "$PI_CODING_AGENT_DIR" "$HERDR_STATE_DIR/skill"
-  # Keep the orchestration skill byte-for-byte aligned with the pinned Herdr
-  # binary. Herdr bundles it deliberately; materialize it because Pi's --skill
-  # surface consumes paths rather than stdin.
-  herdr --skill > "$HERDR_STATE_DIR/skill/SKILL.md.part"
-  if ! cmp -s "$HERDR_STATE_DIR/skill/SKILL.md.part" "$HERDR_STATE_DIR/skill/SKILL.md"; then
-    mv "$HERDR_STATE_DIR/skill/SKILL.md.part" "$HERDR_STATE_DIR/skill/SKILL.md"
-  else
-    rm "$HERDR_STATE_DIR/skill/SKILL.md.part"
-  fi
+  mkdir -p "$PI_CODING_AGENT_DIR"
   if [ -n "${NEED_LLAMA:-}" ]; then
-    echo "Waiting for llama-server at $LLAMA_BASE_URL..."
-    until curl -fsS "$LLAMA_BASE_URL/health" >/dev/null 2>&1; do sleep 1; done
-    clear
+    until curl -fsS --max-time 0.5 "$LLAMA_BASE_URL/health" >/dev/null 2>&1; do
+      sleep 0.1
+    done
   fi
   while true; do
     # Merge, don't clobber: pi persists /model + thinking-level choices into
@@ -225,8 +218,11 @@ run_pi() {
       --continue \
       --no-context-files \
       --no-skills \
-      --skill "$REPO/skills/" \
-      --skill "$HERDR_STATE_DIR/skill/"
+      --skill "$REPO/skills/"
+    if [ -f "$FAMILIAR_RELOAD_REQUEST_PATH" ]; then
+      herdr server stop >/dev/null 2>&1 || true
+      return
+    fi
     sleep 1
   done
 }
@@ -268,6 +264,7 @@ write_herdr_config() {
 onboarding = false
 
 [terminal]
+default_shell = "$FAMILIAR_INTERACTIVE_SHELL"
 new_cwd = "follow"
 
 [update]
@@ -318,7 +315,11 @@ start_herdr_server() {
 
 run_in_herdr_pane() {
   local pane=$1 role=$2 command
-  printf -v command '%q %q' "$SELF" "$role"
+  if [ "$role" = pi ]; then
+    printf -v command 'printf "\\033[2J\\033[H"; %q %q' "$SELF" "$role"
+  else
+    printf -v command '%q %q' "$SELF" "$role"
+  fi
   herdr pane rename "$pane" "$role" >/dev/null
   herdr pane run "$pane" "$command" >/dev/null
 }
@@ -327,6 +328,46 @@ split_herdr_pane() {
   local pane=$1 direction=$2
   herdr pane split "$pane" --direction "$direction" --cwd "$REPO" --no-focus \
     | jq -er '.result.pane.pane_id'
+}
+
+wait_for_pi_pane() {
+  local pane=$1 response
+  while true; do
+    if response=$(herdr agent get "$pane" 2>/dev/null) \
+      && jq -e '.result.agent.agent == "pi"' <<<"$response" >/dev/null; then
+      return
+    fi
+    sleep 0.1
+  done
+}
+
+launch_pi_with_splash() {
+  local workspace=$1 pi_tab=$2 pi_pane=$3 response splash_tab splash_pane
+  local ready_file handoff_file command
+
+  response=$(herdr tab create --workspace "$workspace" --cwd "$REPO" --label loading --no-focus)
+  splash_tab=$(jq -er '.result.tab.tab_id' <<<"$response")
+  splash_pane=$(jq -er '.result.root_pane.pane_id' <<<"$response")
+  ready_file="$HERDR_STATE_DIR/splash-ready-${splash_pane//:/-}"
+  handoff_file="$HERDR_STATE_DIR/splash-handoff-${splash_pane//:/-}"
+  rm -f "$ready_file" "$handoff_file"
+
+  printf -v command '%q %q %q %q' \
+    familiar-splash "$ready_file" "$handoff_file" "$pi_pane"
+  herdr pane run "$splash_pane" "$command" >/dev/null
+  run_in_herdr_pane "$pi_pane" pi
+  herdr tab focus "$splash_tab" >/dev/null
+
+  # Finish the cut beside the attaching Herdr client. Both tabs have full-size
+  # PTYs, so focusing Pi before closing the splash causes no resize redraw.
+  (
+    wait_for_pi_pane "$pi_pane"
+    : > "$ready_file"
+    until [ -e "$handoff_file" ]; do sleep 0.05; done
+    herdr tab focus "$pi_tab" >/dev/null
+    herdr tab close "$splash_tab" >/dev/null
+    rm -f "$ready_file" "$handoff_file"
+  ) >/dev/null 2>&1 &
 }
 
 populate_familiar_workspace() {
@@ -349,8 +390,7 @@ populate_familiar_workspace() {
     done
   fi
 
-  run_in_herdr_pane "$pi_root" pi
-  herdr tab focus "$pi_tab" >/dev/null
+  launch_pi_with_splash "$workspace" "$pi_tab" "$pi_root"
 }
 
 ensure_familiar_workspace() {
@@ -389,6 +429,7 @@ ensure_familiar_workspace() {
 }
 
 start() {
+  local client_status
   ensure_devshell pi "$@"
   if [ "${HERDR_ENV:-}" = 1 ]; then
     echo "Familiar is already running inside Herdr session $HERDR_SESSION" >&2
@@ -396,9 +437,24 @@ start() {
   fi
   setup_llama; setup_stt; setup_tts
   write_herdr_config
-  start_herdr_server
-  ensure_familiar_workspace
-  exec herdr --session "$HERDR_SESSION"
+
+  while true; do
+    start_herdr_server
+    ensure_familiar_workspace
+    if herdr --session "$HERDR_SESSION"; then
+      client_status=0
+    else
+      client_status=$?
+    fi
+    if [ ! -f "$FAMILIAR_RELOAD_REQUEST_PATH" ]; then
+      return "$client_status"
+    fi
+    mv -f "$FAMILIAR_RELOAD_REQUEST_PATH" "$FAMILIAR_RELOAD_COMPLETE_PATH"
+    # Re-enter through the updated script and flake, not this process's stale
+    # function definitions or dev shell. The replacement server will restore
+    # the workspace, resume Pi, and consume reload-complete.
+    exec env -u FAMILIAR_SHELL -u FAMILIAR_INTERACTIVE_SHELL "$SELF"
+  done
 }
 
 stop() {
