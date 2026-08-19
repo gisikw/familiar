@@ -3,7 +3,7 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     herdr = {
-      url = "github:gisikw/herdr/left-nav-pty";
+      url = "github:herdrdev/herdr";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -62,10 +62,13 @@
         # state, so a pure build can't decrypt them — and shouldn't, or the
         # voice lands in the world-readable nix store.
         bakePython = pkgs.python3.withPackages (ps: with ps; [ gguf torch ]);
+        familiarHerdr = herdr.packages.${system}.default.overrideAttrs (old: {
+          patches = (old.patches or [ ]) ++ [ ./patches/herdr-left-nav-pty.patch ];
+        });
         piShell = pkgs.mkShell (modelEnv // {
           FAMILIAR_SHELL = "pi";
           PI_PACKAGE_DIR = "${pkgs.pi-coding-agent}/lib/node_modules/pi-monorepo";
-          packages = with pkgs; [ age curl jq sqlite pi-coding-agent herdr.packages.${system}.default ];
+          packages = with pkgs; [ age curl jq sqlite pi-coding-agent familiarHerdr ];
         });
       in
       {
