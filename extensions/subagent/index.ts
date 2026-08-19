@@ -570,30 +570,42 @@ export default function (pi: ExtensionAPI) {
   // A child is not a process we hope survives; it is a session file we can
   // relaunch. Herdr's panes die with the server (every /refamiliarize), so
   // rebuild the topology and run pi against the same --session-id.
-  const resurrect = (cmd: DispatchCommand) => {
+  //
+  // Returns an error string, or null once the topology is ready for a watcher.
+  // Shared by the startup spool scan and by respond(): a child that died is
+  // not a dead end, because its history is a file.
+  const reviveTopology = (cmd: DispatchCommand): string | null => {
     const dir = jobDir(cmd.id);
-    const pass = currentPass(cmd.id);
-    const give = (reason: string) => {
-      const s = settle(cmd, pass, { status: "crashed", reason });
-      if (!relay(s)) monitor(cmd.id);
-    };
-
-    if (cmd.kind !== NATIVE_KIND) return give(`${cmd.kind} agent lost with its pane; not resumable`);
+    if (cmd.kind !== NATIVE_KIND) return `${cmd.kind} agent lost with its pane; not resumable`;
     const resumes = Number(readText(path.join(dir, "resumes")).trim()) || 0;
-    if (resumes >= MAX_RESUMES) return give(`abandoned after ${resumes} resurrection attempts`);
+    if (resumes >= MAX_RESUMES) return `abandoned after ${resumes} resurrection attempts`;
 
     const label = `${cmd.label} ↺`;
     const placed = cmd.isolated
       ? reopenWorktree(cmd.origin, cmd.cwd, label)
       : placeInSharedWorkspace(cmd.cwd, label);
-    if ("error" in placed) return give(`resurrection failed: ${placed.error}`);
+    if ("error" in placed) return placed.error;
 
     fs.writeFileSync(path.join(dir, "resumes"), String(resumes + 1));
+    recordPlacement(cmd.id, placed);
+    return null;
+  };
+
+  const resurrect = (cmd: DispatchCommand) => {
+    const dir = jobDir(cmd.id);
+    const pass = currentPass(cmd.id);
+
+    const error = reviveTopology(cmd);
+    if (error) {
+      const s = settle(cmd, pass, { status: "crashed", reason: `resurrection failed: ${error}` });
+      if (!relay(s)) monitor(cmd.id);
+      return;
+    }
+
     fs.writeFileSync(path.join(dir, "resume-prompt.txt"), RESUME_PROMPT);
     // The revived pass starts its clock now: the original budget was spent by
     // a life that no longer exists.
     fs.writeFileSync(path.join(dir, `started-${pass}`), new Date().toISOString());
-    recordPlacement(cmd.id, placed);
     spawnWatcher(cmd.id, "resume");
     monitor(cmd.id);
   };
@@ -825,16 +837,26 @@ export default function (pi: ExtensionAPI) {
       if (gate) return fail(gate);
 
       const dir = jobDir(params.id);
-      if (!readJSON<DispatchCommand>(path.join(dir, "command.json"))) return fail("unknown id");
-      if (!agentState(params.id)) return fail("agent is no longer live", { id: params.id });
+      const cmd = readJSON<DispatchCommand>(path.join(dir, "command.json"));
+      if (!cmd) return fail("unknown id");
+
+      // A settled or reaped child still has its transcript, and pi children
+      // carry pre-minted session ids precisely so history outlives the pane.
+      // Refusing here would strand recoverable work behind an error message.
+      const revived = !agentState(params.id);
+      if (revived) {
+        const error = reviveTopology(cmd);
+        if (error) return fail(`agent is gone and could not be revived: ${error}`, { id: params.id });
+      }
 
       const pass = currentPass(params.id) + 1;
       fs.writeFileSync(path.join(dir, `prompt-${pass}.txt`), params.text);
       fs.writeFileSync(path.join(dir, "pass"), String(pass));
       fs.writeFileSync(path.join(dir, `started-${pass}`), new Date().toISOString());
-      spawnWatcher(params.id, "respond", String(pass));
+      // revive relaunches pi first; respond talks to an agent already standing.
+      spawnWatcher(params.id, revived ? "revive" : "respond", String(pass));
       monitor(params.id);
-      return ok({ id: params.id, pass });
+      return ok({ id: params.id, pass, ...(revived ? { revived: true } : {}) });
     },
   });
 

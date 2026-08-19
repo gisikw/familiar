@@ -16,6 +16,8 @@
 #   resume        same, against the same pi session id, with a resume nudge
 #   attach        agent is already live; just wait
 #   respond <n>   deliver prompt-<n>.txt to a live agent, wait
+#   revive <n>    relaunch a dead agent on its own session id, then deliver
+#                 prompt-<n>.txt to it — a reaped child is not a lost one
 #
 # Invariant: this script never exits without appending a terminal event, so a
 # job can never sit "running" forever because a step failed quietly.
@@ -162,6 +164,10 @@ attach)
   observe
   ;;
 respond)
+  deliver "prompt-${ARG:?pass}.txt"
+  ;;
+revive)
+  start_agent || exit 1
   deliver "prompt-${ARG:?pass}.txt"
   ;;
 *)
