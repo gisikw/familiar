@@ -23,7 +23,7 @@ ART
 
 while true; do
   sleep "$((180 + RANDOM % 421))"
-  printf '\033[5;10H(- -)'
+  printf '\033[4;10H(- -)'
   sleep 0.12
-  printf '\033[5;10H(o o)'
+  printf '\033[4;10H(o o)'
 done
