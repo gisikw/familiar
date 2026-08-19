@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SELF="$(realpath "$0")"
+SELF="$(realpath "$0" 2>/dev/null || { cd "$(dirname "$0")" && printf '%s/%s' "$(pwd -P)" "$(basename "$0")"; })"
 REPO="$(dirname "$SELF")"
 STATE_DIR="$REPO/state"
 HERDR_STATE_DIR="$STATE_DIR/herdr"
@@ -434,6 +434,308 @@ ensure_familiar_workspace() {
   populate_familiar_workspace "$workspace" "$pi_tab" "$pi_root"
 }
 
+# --- image drop transport ----------------------------------------------------
+#
+# Dragging a file onto a terminal types its *path* into the tty. Over ssh that
+# path names a file on the machine holding the mouse, not the one running the
+# agent, so the bytes never cross. These verbs carry them: `connect` opens a
+# session with a reverse socket wired back to a small file server, `drop-serve`
+# is that server, and `drop-fetch` pulls a path across it.
+#
+# The client half runs on a stock machine — no nix, no jq, no bun. It needs only
+# bash 3.2, nc, and base64, all present on a clean macOS install. That is why
+# the protocol is line-oriented text, the payload is base64, and the response is
+# framed by the server closing the connection: those are the primitives that
+# survive having no package manager.
+#
+# One socket per client machine, named for that machine, so two laptops
+# connected at once do not land on the same path. The remote side asks every
+# socket which one actually has the file, rather than trying to work out which
+# client is in front of the human — a question a long-lived server cannot answer,
+# since panes inherit the environment of whoever started it, not whoever is
+# looking at it.
+
+DROP_MAX_BYTES="${FAMILIAR_DROP_MAX_BYTES:-33554432}"
+DROP_DIR="${FAMILIAR_DROP_DIR:-${HOME:-/tmp}/.familiar/drop}"
+
+# The reverse tunnel means a remote host can read files off the client. This
+# list is the only thing between it and the rest of the disk, so it is narrow on
+# purpose: scratch space (where screenshots land) and the three directories a
+# person actually drags from. Not $HOME, and deliberately not ~/Documents.
+drop_allow_roots() {
+  if [ -n "${FAMILIAR_DROP_ALLOW:-}" ]; then
+    printf '%s\n' "$FAMILIAR_DROP_ALLOW" | tr ':' '\n'
+    return
+  fi
+  printf '%s\n' "${TMPDIR:-/tmp}" /tmp /var/folders \
+    "${HOME:-/nonexistent}/Desktop" \
+    "${HOME:-/nonexistent}/Downloads" \
+    "${HOME:-/nonexistent}/Pictures"
+}
+
+drop_permitted() {
+  local path=$1 root
+  case $path in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  case $path in
+    *..*) return 1 ;;
+  esac
+  while IFS= read -r root; do
+    [ -n "$root" ] || continue
+    root=${root%/}
+    case $path in
+      "$root"/*) return 0 ;;
+    esac
+  done <<EOF
+$(drop_allow_roots)
+EOF
+  return 1
+}
+
+# Extension mapping rather than file(1): one less thing that has to exist on the
+# client, and deterministic for the formats that matter.
+drop_mime() {
+  case $(printf '%s' "${1##*.}" | tr 'A-Z' 'a-z') in
+    png)       printf 'image/png' ;;
+    jpg|jpeg)  printf 'image/jpeg' ;;
+    gif)       printf 'image/gif' ;;
+    webp)      printf 'image/webp' ;;
+    bmp)       printf 'image/bmp' ;;
+    heic)      printf 'image/heic' ;;
+    svg)       printf 'image/svg+xml' ;;
+    pdf)       printf 'application/pdf' ;;
+    txt|md|log)printf 'text/plain' ;;
+    *)         printf 'application/octet-stream' ;;
+  esac
+}
+
+# Size, without trusting a stat dialect to fail cleanly. `stat -f` means
+# *filesystem* status on GNU and *format* on BSD, so the BSD spelling succeeds
+# on Linux and hands back a block of filesystem info instead of a number. Each
+# result is therefore checked for digits rather than for exit status, and wc is
+# the fallback that needs no dialect at all.
+drop_size() {
+  local n=""
+  n=$(stat -c %s "$1" 2>/dev/null) || n=""
+  case $n in ''|*[!0-9]*) n="" ;; esac
+  if [ -z "$n" ]; then
+    n=$(stat -f %z "$1" 2>/dev/null) || n=""
+    case $n in ''|*[!0-9]*) n="" ;; esac
+  fi
+  if [ -z "$n" ]; then
+    n=$(wc -c < "$1" 2>/dev/null | tr -d ' ')
+    case $n in ''|*[!0-9]*) n=0 ;; esac
+  fi
+  printf '%s' "$n"
+}
+
+# One request line in, one response out. `OK <size> <mime>` then base64 for GET;
+# `OK <host> <os>` for HELLO; `ERR <reason>` otherwise. Paths may contain
+# spaces, so the argument is everything after the first word rather than a
+# field split.
+drop_handle() {
+  local line verb arg size mime
+  IFS= read -r line || return 0
+  line=${line%$'\r'}
+  verb=${line%% *}
+  arg=${line#* }
+  [ "$arg" = "$verb" ] && arg=""
+
+  case $verb in
+    HELLO)
+      printf 'OK %s %s\n' "$(hostname -s 2>/dev/null || printf unknown)" "$(uname -s)"
+      return 0
+      ;;
+    STAT|GET) ;;
+    *)
+      printf 'ERR unknown verb\n'
+      return 0
+      ;;
+  esac
+
+  if [ -z "$arg" ]; then printf 'ERR missing path\n'; return 0; fi
+  if ! drop_permitted "$arg"; then printf 'ERR path not permitted\n'; return 0; fi
+  if [ ! -f "$arg" ]; then printf 'ERR no such file\n'; return 0; fi
+  if [ ! -r "$arg" ]; then printf 'ERR not readable\n'; return 0; fi
+
+  size=$(drop_size "$arg")
+  if [ "$size" -gt "$DROP_MAX_BYTES" ]; then
+    printf 'ERR too large: %s bytes exceeds %s\n' "$size" "$DROP_MAX_BYTES"
+    return 0
+  fi
+  mime=$(drop_mime "$arg")
+  printf 'OK %s %s\n' "$size" "$mime"
+  if [ "$verb" = GET ]; then
+    base64 < "$arg"
+  fi
+  return 0
+}
+
+# The server. nc handles one connection then exits, so the loop rebinds each
+# time; the fifo turns nc's stdout back into the handler's stdin, which is how
+# you get a request/response exchange out of a tool that only does streams.
+drop_serve() {
+  local sock=${2:-} fifo
+  if [ -z "$sock" ]; then
+    echo "Usage: familiar.sh drop-serve <socket-path>" >&2
+    return 1
+  fi
+  command -v nc >/dev/null 2>&1 || { echo "drop-serve requires nc" >&2; return 1; }
+  command -v base64 >/dev/null 2>&1 || { echo "drop-serve requires base64" >&2; return 1; }
+
+  mkdir -p "$(dirname "$sock")"
+  fifo="$sock.fifo"
+  rm -f "$sock" "$fifo"
+  mkfifo "$fifo" || return 1
+  trap 'rm -f "$sock" "$fifo"' EXIT INT TERM
+
+  while :; do
+    rm -f "$sock"
+    # `|| true` is load-bearing under `set -e`: a bare command as the loop body
+    # aborts the whole function on any non-zero exit, so one hung-up client
+    # would take the server down with it and leave the tunnel pointing at
+    # nothing.
+    drop_handle < "$fifo" | nc -lNU "$sock" > "$fifo" || true
+  done
+}
+
+# A short exchange whose reply fits in a variable (HELLO, STAT). The socket is
+# rebound between connections, so a miss is retried rather than believed.
+#
+# No -N on the client: it half-closes the socket as soon as stdin ends, and the
+# server's nc treats that as end-of-connection and exits before the reply is
+# written — a silent empty response with a zero exit status. The half-close was
+# never needed anyway, since the server reads a line and returns on the newline.
+# The server's -N is what ends the exchange, and the client's EOF comes from it.
+drop_ask() {
+  local sock=$1 req=$2 out attempt=1
+  while [ "$attempt" -le 3 ]; do
+    out=$(printf '%s\n' "$req" | nc -U "$sock" 2>/dev/null || true)
+    if [ -n "$out" ]; then printf '%s' "$out"; return 0; fi
+    attempt=$((attempt + 1))
+    sleep 0.2
+  done
+  return 1
+}
+
+# Pull a client-side path across whichever connected client actually has it.
+drop_fetch() {
+  local path=${2:-} dest=${3:-} sock reply status found="" tmp size mime attempt
+  if [ -z "$path" ]; then
+    echo "Usage: familiar.sh drop-fetch <client-path> [destination]" >&2
+    return 1
+  fi
+
+  for sock in "$DROP_DIR"/*.sock; do
+    [ -S "$sock" ] || continue
+    reply=$(drop_ask "$sock" "STAT $path") || continue
+    case $reply in
+      OK\ *) found=$sock; break ;;
+    esac
+  done
+
+  if [ -z "$found" ]; then
+    echo "no connected client has $path (looked in $DROP_DIR)" >&2
+    return 1
+  fi
+
+  if [ -z "$dest" ]; then
+    mkdir -p "$STATE_DIR/uploads"
+    dest="$STATE_DIR/uploads/${path##*/}"
+  fi
+
+  tmp=$(mktemp "${TMPDIR:-/tmp}/familiar-drop.XXXXXX") || return 1
+  # Same rebind window as drop_ask: the server drops the socket between
+  # connections, so a first attempt can arrive during the gap.
+  attempt=1
+  while [ "$attempt" -le 3 ]; do
+    printf 'GET %s\n' "$path" | nc -U "$found" > "$tmp" 2>/dev/null || true
+    [ -s "$tmp" ] && break
+    attempt=$((attempt + 1))
+    sleep 0.2
+  done
+
+  status=$(head -n 1 "$tmp")
+  case $status in
+    OK\ *) ;;
+    *)
+      rm -f "$tmp"
+      echo "${status:-no response from $found}" >&2
+      return 1
+      ;;
+  esac
+
+  # -d is GNU, -D is BSD; the remote is usually Linux but this costs nothing.
+  if ! tail -n +2 "$tmp" | { base64 -d 2>/dev/null || base64 -D 2>/dev/null; } > "$dest"; then
+    rm -f "$tmp"
+    echo "could not decode payload for $path" >&2
+    return 1
+  fi
+  rm -f "$tmp"
+
+  size=${status#OK }
+  mime=${size#* }
+  size=${size%% *}
+  printf '%s\n' "$dest"
+  echo "fetched $size bytes ($mime) from ${found##*/}" >&2
+}
+
+# Open an ssh session with the drop server wired back through it. The server
+# lives and dies with this command: no stray daemon outlives the session that
+# needed it.
+connect() {
+  shift 2>/dev/null || true
+  local target=${1:-} client_id local_sock remote_dir daemon status waited
+  if [ -z "$target" ]; then
+    echo "Usage: ./familiar.sh connect <[user@]host> [command...]" >&2
+    return 1
+  fi
+  shift
+
+  command -v nc >/dev/null 2>&1 || { echo "connect requires nc" >&2; return 1; }
+
+  client_id=$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf client)
+  client_id=$(printf '%s' "$client_id" | tr -cd '[:alnum:]._-')
+  [ -n "$client_id" ] || client_id=client
+  local_sock="${TMPDIR:-/tmp}/familiar-drop-$client_id.sock"
+
+  # One round trip that both creates the directory and reports where it is:
+  # the forward needs an absolute remote path, and only the remote knows $HOME.
+  remote_dir=$(ssh "$target" 'd="${FAMILIAR_DROP_DIR:-$HOME/.familiar/drop}"; mkdir -p "$d" && chmod 700 "$d" && printf %s "$d"') || {
+    echo "could not prepare the drop directory on $target" >&2
+    return 1
+  }
+
+  "$SELF" drop-serve "$local_sock" &
+  daemon=$!
+  trap 'kill "$daemon" 2>/dev/null || true; rm -f "$local_sock" "$local_sock.fifo"' EXIT INT TERM
+
+  waited=0
+  while [ ! -S "$local_sock" ] && [ "$waited" -lt 25 ]; do
+    sleep 0.2
+    waited=$((waited + 1))
+  done
+  if [ ! -S "$local_sock" ]; then
+    echo "drop server did not come up at $local_sock" >&2
+    return 1
+  fi
+
+  # StreamLocalBindUnlink clears a socket left behind by a session that died
+  # badly; ExitOnForwardFailure makes a forward that cannot be established loud
+  # rather than silently dropping the feature for the whole session.
+  status=0
+  if [ $# -gt 0 ]; then
+    ssh -o StreamLocalBindUnlink=yes -o ExitOnForwardFailure=yes \
+      -R "$remote_dir/$client_id.sock:$local_sock" -t "$target" "$@" || status=$?
+  else
+    ssh -o StreamLocalBindUnlink=yes -o ExitOnForwardFailure=yes \
+      -R "$remote_dir/$client_id.sock:$local_sock" -t "$target" || status=$?
+  fi
+  return "$status"
+}
+
 start() {
   local client_status
   ensure_devshell pi "$@"
@@ -469,11 +771,14 @@ stop() {
 }
 
 case ${1:-} in
-  pi)     run_pi "$@" ;;
-  llama)  run_llama "$@" ;;
-  stt)    run_stt "$@" ;;
-  tts)    run_tts "$@" ;;
-  kill)   stop "$@" ;;
-  age)    handle_age "$@" ;;
-  *)      start "$@" ;;
+  pi)         run_pi "$@" ;;
+  llama)      run_llama "$@" ;;
+  stt)        run_stt "$@" ;;
+  tts)        run_tts "$@" ;;
+  kill)       stop "$@" ;;
+  age)        handle_age "$@" ;;
+  connect)    connect "$@" ;;
+  drop-serve) drop_serve "$@" ;;
+  drop-fetch) drop_fetch "$@" ;;
+  *)          start "$@" ;;
 esac
