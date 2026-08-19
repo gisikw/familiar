@@ -4,12 +4,34 @@ import { readdir, readFile } from "node:fs/promises";
 import { join, extname } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { errorLog } from "./lib/debug.ts";
 const execFileP = promisify(execFile);
 
 export default function(pi: ExtensionAPI) {
+  // Last successfully built prompt. This handler runs before *every* turn and
+  // reassembles identity from disk each time — which is what lets identity
+  // edits take effect live, and also what puts a filesystem read, an env var,
+  // and an `age` subprocess on the critical path of every response. A single
+  // transient failure (key rotated, perms changed, spawn hiccup under load)
+  // would otherwise throw into pi's turn setup and leave the agent unable to
+  // answer at all, with nothing explaining why. Degrade instead: keep the last
+  // known-good prompt, and fall through to pi's own default if we never had
+  // one. Waking diminished beats not waking.
+  let lastGood: string | undefined;
+
   pi.on("before_agent_start", async (event, ctx) => {
+    try {
+      return { systemPrompt: await buildPrompt(event) };
+    } catch (err) {
+      errorLog("identity", { promptBuildFailed: String(err), degraded: lastGood ? "last-good" : "pi-default" });
+      return lastGood ? { systemPrompt: lastGood } : undefined;
+    }
+  });
+
+  const buildPrompt = async (event: any): Promise<string> => {
     const identityDir = process.env.FAMILIAR_IDENTITY_PATH;
     const ageKey = process.env.FAMILIAR_AGE_KEY;
+    if (!identityDir) throw new Error("FAMILIAR_IDENTITY_PATH is unset");
 
     // Identity is prose only: .md and .md.age. Anything else under identity/
     // (e.g. voices/kokoro/*.pt.age — binary, decrypted and baked into the
@@ -19,7 +41,7 @@ export default function(pi: ExtensionAPI) {
       files
         .map(f => join(identityDir, f))
         .map(f => extname(f) === ".age"
-          ? execFileP("age", ["-i", ageKey, "--decrypt", f]).then(({ stdout }) => stdout)
+          ? execFileP("age", ["-i", ageKey!, "--decrypt", f]).then(({ stdout }) => stdout)
           : readFile(f, "utf-8"))
     );
     const identity = bodies
@@ -66,6 +88,10 @@ export default function(pi: ExtensionAPI) {
       orientation
     ].filter(Boolean).join("\n\n");
 
-    return { systemPrompt };
-  });
+    // Only cache a prompt that actually carries identity: an empty or
+    // unreadable identity dir would otherwise poison the fallback with a
+    // scaffolding-only prompt and make the degradation permanent.
+    if (identity) lastGood = systemPrompt;
+    return systemPrompt;
+  };
 }

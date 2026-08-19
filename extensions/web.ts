@@ -1,5 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 
 // Web tools: search + fetch, ported from muse (~/Projects/muse/web.go).
 //
@@ -22,6 +24,11 @@ const SEARCH_MAX_COUNT = 20;
 const SNIPPET_MAX_CHARS = 1000;
 const FETCH_MAX_CHARS = 50 * 1024;
 const TIMEOUT_MS = 20_000;
+// Wire-bytes ceiling, distinct from FETCH_MAX_CHARS: the character cap applies
+// to converted output, and HTML shrinks a lot on the way to markdown. This is
+// the bound on what we're willing to hold in memory to get there.
+const BODY_MAX_BYTES = 8 * 1024 * 1024;
+const MAX_REDIRECTS = 5;
 
 type SearchResult = { url: string; title: string; snippet?: string; content?: string };
 type SearchOutput = {
@@ -41,10 +48,109 @@ const withTimeout = (signal?: AbortSignal): AbortSignal =>
 const truncateChars = (s: string, max: number): [string, boolean] =>
   s.length > max ? [s.slice(0, max) + "…", true] : [s, false];
 
+// resp.text()/json() buffer the whole body before anything can cap it, so a
+// large or endless response is bounded only by the 20s timeout — long enough
+// to pull hundreds of MB into one string, and a body past V8's max string
+// length throws RangeError outright. Read incrementally and stop at the cap.
+const readBounded = async (resp: Response, max = BODY_MAX_BYTES): Promise<string> => {
+  if (!resp.body) return "";
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder("utf-8", { fatal: false });
+  const chunks: string[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > max) {
+        chunks.push(decoder.decode(value.subarray(0, value.byteLength - (total - max)), { stream: true }));
+        break;
+      }
+      chunks.push(decoder.decode(value, { stream: true }));
+    }
+  } finally {
+    // Releases the socket whether we finished or bailed at the cap.
+    await reader.cancel().catch(() => {});
+  }
+  chunks.push(decoder.decode());
+  return chunks.join("");
+};
+
+const errorBody = async (resp: Response): Promise<string> =>
+  (await readBounded(resp, 4096).catch(() => "")).slice(0, 200);
+
+/* --- SSRF guard ------------------------------------------------------------
+ *
+ * fetch() takes whatever URL it is handed, and the model can be steered by the
+ * very pages it reads — so a hostile page can ask the agent to fetch a local
+ * address. This box runs services on loopback (the subscriber's ingress among
+ * them, behind an nginx auth layer that a direct hit would bypass), so the
+ * default is: public destinations only.
+ *
+ * Validation is per-hop against resolved addresses, not just the literal host,
+ * because a public name can resolve into private space and a redirect can walk
+ * there from an innocuous starting URL.
+ *
+ * FAMILIAR_FETCH_ALLOW_PRIVATE=1 opts back in, for deliberately pointing the
+ * agent at something on the LAN or tailnet.
+ */
+
+const v4Private = (ip: string): boolean => {
+  const [a, b] = ip.split(".").map(Number);
+  return (
+    a === 0 || a === 127 || a === 10 ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 169 && b === 254) ||            // link-local, incl. cloud metadata
+    (a === 100 && b >= 64 && b <= 127) ||  // CGNAT, where tailnets live
+    a >= 224                               // multicast + reserved
+  );
+};
+
+const v6Private = (ip: string): boolean => {
+  const addr = ip.toLowerCase().replace(/^\[|\]$/g, "").split("%")[0];
+  if (addr === "::1" || addr === "::") return true;
+  const mapped = addr.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  if (mapped) return v4Private(mapped[1]);
+  return /^f[cd]/.test(addr) || /^fe[89ab]/.test(addr);
+};
+
+const isPrivateAddress = (ip: string): boolean =>
+  isIP(ip) === 6 ? v6Private(ip) : v4Private(ip);
+
+const assertFetchable = async (raw: string): Promise<URL> => {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`not a valid URL: ${raw}`);
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error(`refusing to fetch ${url.protocol} URL (http/https only)`);
+  }
+  if (process.env.FAMILIAR_FETCH_ALLOW_PRIVATE === "1") return url;
+
+  const host = url.hostname.replace(/^\[|\]$/g, "");
+  const addresses = isIP(host)
+    ? [host]
+    : (await lookup(host, { all: true }).catch(() => [])).map((a) => a.address);
+  if (!addresses.length) throw new Error(`could not resolve ${host}`);
+  if (addresses.some(isPrivateAddress)) {
+    throw new Error(
+      `refusing to fetch ${host}: resolves to a private or loopback address. ` +
+      `Set FAMILIAR_FETCH_ALLOW_PRIVATE=1 to allow local network fetches.`,
+    );
+  }
+  return url;
+};
+
 const decodeEntities = (s: string): string =>
   s
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
-    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
+    // Out-of-range code points throw RangeError, which would take down the
+    // whole tool call over one malformed entity; leave those as written.
+    .replace(/&#x([0-9a-fA-F]+);/g, (m, h) => safeCodePoint(parseInt(h, 16), m))
+    .replace(/&#(\d+);/g, (m, d) => safeCodePoint(Number(d), m))
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
@@ -53,6 +159,14 @@ const decodeEntities = (s: string): string =>
     .replace(/&nbsp;/g, " ");
 
 const stripTags = (s: string): string => decodeEntities(s.replace(/<[^>]*>/g, "")).trim();
+
+const safeCodePoint = (n: number, original: string): string => {
+  try {
+    return String.fromCodePoint(n);
+  } catch {
+    return original;
+  }
+};
 
 /* --- search providers ----------------------------------------------------- */
 
@@ -66,8 +180,8 @@ async function braveSearch(query: string, count: number, signal?: AbortSignal): 
     },
     signal: withTimeout(signal),
   });
-  if (!resp.ok) throw new Error(`brave returned ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
-  const body = (await resp.json()) as {
+  if (!resp.ok) throw new Error(`brave returned ${resp.status}: ${await errorBody(resp)}`);
+  const body = JSON.parse(await readBounded(resp)) as {
     grounding?: { generic?: { url: string; title: string; snippets?: string[] }[] };
   };
   const results: SearchResult[] = (body.grounding?.generic ?? []).map((r) => ({
@@ -83,8 +197,8 @@ async function searxngSearch(query: string, count: number, signal?: AbortSignal)
   const base = process.env.FAMILIAR_SEARXNG_URL!.replace(/\/+$/, "");
   const url = `${base}/search?${new URLSearchParams({ q: query, format: "json" })}`;
   const resp = await fetch(url, { headers: { Accept: "application/json" }, signal: withTimeout(signal) });
-  if (!resp.ok) throw new Error(`searxng returned ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
-  const body = (await resp.json()) as { results?: { url: string; title: string; content?: string }[] };
+  if (!resp.ok) throw new Error(`searxng returned ${resp.status}: ${await errorBody(resp)}`);
+  const body = JSON.parse(await readBounded(resp)) as { results?: { url: string; title: string; content?: string }[] };
   const results: SearchResult[] = (body.results ?? []).slice(0, count).map((r) => ({
     url: r.url,
     title: r.title,
@@ -106,7 +220,7 @@ async function ddgSearch(query: string, count: number, signal?: AbortSignal): Pr
     signal: withTimeout(signal),
   });
   if (!resp.ok) throw new Error(`duckduckgo returned ${resp.status}`);
-  const html = await resp.text();
+  const html = await readBounded(resp);
 
   const links = [...html.matchAll(/<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g)];
   const snippets = [...html.matchAll(/<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g)];
@@ -194,20 +308,34 @@ function htmlToMarkdown(html: string): string {
 }
 
 async function localFetch(rawURL: string, signal?: AbortSignal): Promise<{ url: string; content: string; truncated: boolean }> {
-  const resp = await fetch(rawURL, {
-    headers: {
-      "User-Agent": "familiar/1.0",
-      Accept: "text/html,application/xhtml+xml,text/plain,text/markdown,*/*",
-    },
-    signal: withTimeout(signal),
-    redirect: "follow",
-  });
-  if (!resp.ok) throw new Error(`fetch returned ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
-  const body = await resp.text();
+  const deadline = withTimeout(signal);
+  // Redirects are followed by hand so every hop gets validated; `follow` would
+  // let a public URL bounce into private space unchecked.
+  let target = await assertFetchable(rawURL);
+  let resp: Response;
+  for (let hop = 0; ; hop++) {
+    resp = await fetch(target, {
+      headers: {
+        "User-Agent": "familiar/1.0",
+        Accept: "text/html,application/xhtml+xml,text/plain,text/markdown,*/*",
+      },
+      signal: deadline,
+      redirect: "manual",
+    });
+    if (resp.status < 300 || resp.status > 399) break;
+    const location = resp.headers.get("location");
+    if (!location) break;
+    if (hop >= MAX_REDIRECTS) throw new Error(`too many redirects (>${MAX_REDIRECTS}) from ${rawURL}`);
+    await resp.body?.cancel().catch(() => {});
+    target = await assertFetchable(new URL(location, target).href);
+  }
+
+  if (!resp.ok) throw new Error(`fetch returned ${resp.status}: ${await errorBody(resp)}`);
+  const body = await readBounded(resp);
   const type = resp.headers.get("content-type") ?? "";
   const content = /html/.test(type) || /^\s*</.test(body) ? htmlToMarkdown(body) : body.trim();
   const [bounded, truncated] = truncateChars(content, FETCH_MAX_CHARS);
-  return { url: resp.url || rawURL, content: bounded, truncated };
+  return { url: resp.url || target.href, content: bounded, truncated };
 }
 
 /* --- registration ---------------------------------------------------------- */

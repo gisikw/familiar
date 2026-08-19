@@ -5,6 +5,7 @@ import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { extname, join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { errorLog } from "./lib/debug.ts";
 import { Type } from "typebox";
 
 const execFileP = promisify(execFile);
@@ -64,7 +65,11 @@ const latestHandoff = async (): Promise<string | null> => {
     .sort();
   const latest = files.at(-1);
   if (!latest) return null;
-  const body = (await readFile(join(dir, latest), "utf-8")).trim();
+  // Orientation must survive an unreadable archive. The caller has already
+  // entered the orienting phase, where input is stashed rather than answered,
+  // and only the turn this triggers can leave it — so a throw here strands the
+  // session silently. Waking with no memory beats not waking.
+  const body = (await readFile(join(dir, latest), "utf-8").catch(() => "")).trim();
   return body || null;
 };
 
@@ -106,7 +111,12 @@ export default function handoffExtension(pi: ExtensionAPI) {
 
     // A handoff compaction is already in model context. A genuinely empty
     // session instead orients from the most recent external archive, if any.
-    const archived = virginSession ? await latestHandoff() : null;
+    let archived: string | null = null;
+    try {
+      archived = virginSession ? await latestHandoff() : null;
+    } catch (err) {
+      errorLog("handoff", { orientationReadError: String(err) });
+    }
     virginSession = false;
     pi.sendMessage(
       {

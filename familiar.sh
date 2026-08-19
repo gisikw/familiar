@@ -57,7 +57,7 @@ run_llama() {
       --host 127.0.0.1 \
       --port 9931 \
       -ngl 999 \
-      -c 32768;
+      -c 32768 || true;
     sleep 1;
   done
 }
@@ -78,7 +78,7 @@ run_stt() {
   fi
   while true; do
     STT_MODEL="$MODEL_DIR/$FAMILIAR_STT_MODEL_FILE" PORT=9932 \
-      bun "$REPO/scripts/stt-server.ts";
+      bun "$REPO/scripts/stt-server.ts" || true;
     sleep 1;
   done
 }
@@ -143,7 +143,7 @@ run_tts() {
       --model-path "$tts_model" \
       ${FAMILIAR_TTS_VOICE:+--voice "$FAMILIAR_TTS_VOICE"} \
       --host 127.0.0.1 \
-      --port 9933;
+      --port 9933 || true;
     sleep 1;
   done
 }
@@ -214,11 +214,17 @@ run_pi() {
     # when none exists — verified in SessionManager.continueRecent). Bounces
     # and crash respawns keep continuity; /clear stays the only way to end a
     # session, and it writes a handoff first.
+    #
+    # `|| true` is load-bearing under `set -e`: a bare command as the loop body
+    # aborts the whole function on any non-zero exit, so a crashed pi would
+    # skip both the reload check below and the respawn — leaving a dead pane
+    # with no supervisor, and stalling /refamiliarize unless shutdown happened
+    # to exit 0.
     command pi \
       --continue \
       --no-context-files \
       --no-skills \
-      --skill "$REPO/skills/"
+      --skill "$REPO/skills/" || true
     if [ -f "$FAMILIAR_RELOAD_REQUEST_PATH" ]; then
       herdr server stop >/dev/null 2>&1 || true
       return
