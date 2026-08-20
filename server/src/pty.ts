@@ -84,6 +84,12 @@ export class PtyBridge {
   }
 
   handleUpgrade(req: http.IncomingMessage, socket: any, head: Buffer) {
+    // Disable Nagle on the raw TCP socket before ws wraps it. SSH clients set
+    // TCP_NODELAY for exactly this workload (interactive keystroke echo); Node
+    // sockets default to Nagle ON, which holds small writes hoping to batch
+    // more and — interacting with delayed ACKs — can add tens of ms per echo.
+    // This is the main feel difference vs the ssh-based Electron path.
+    socket.setNoDelay?.(true);
     this.wss.handleUpgrade(req, socket, head, (ws) => this.wss.emit("connection", ws, req));
   }
 
