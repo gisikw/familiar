@@ -152,6 +152,11 @@ run_tts() {
 run_pi() {
   ensure_devshell pi "$@"
   mkdir -p "$PI_CODING_AGENT_DIR"
+  # Unified theme: regenerate the pi theme JSON from the canonical palette +
+  # FAMILIAR_THEME_* on every (re)start. Cold restart picks up [theme] changes
+  # with no rebuild; pi hot-reloads the active custom theme file on edit too.
+  mkdir -p "$PI_CODING_AGENT_DIR/themes"
+  bash "$REPO/scripts/familiar-theme.sh" pi > "$PI_CODING_AGENT_DIR/themes/familiar.json"
   if [ -n "${NEED_LLAMA:-}" ]; then
     until curl -fsS --max-time 0.5 "$LLAMA_BASE_URL/health" >/dev/null 2>&1; do
       sleep 0.1
@@ -169,10 +174,12 @@ run_pi() {
     jq -n --argjson prev "$prev" \
       --arg provider "${FAMILIAR_DEFAULT_PROVIDER:-llama.cpp}" \
       --arg model "${FAMILIAR_DEFAULT_MODEL:-${FAMILIAR_MODEL_FILE%.*}}" \
+      --arg dir "$PI_CODING_AGENT_DIR" \
       --arg ext "$REPO/extensions" '
       $prev + {
         lastChangelogVersion: "0.84.1",
-        theme: "dark",
+        theme: "familiar",
+        themes: [ ($dir + "/themes") ],
         compaction: { enabled: true, reserveTokens: 4096 },
         extensions: [ $ext ]
       }
@@ -267,8 +274,15 @@ handle_age() {
 
 write_herdr_config() {
   mkdir -p "$HERDR_STATE_DIR" "$(dirname "$HERDR_CONFIG_PATH")"
+  # Unified theme: generate the [theme]/[theme.custom] block from the canonical
+  # palette + FAMILIAR_THEME_* env (scripts/familiar-theme.sh). A bad color
+  # aborts (set -e) before a broken config is written.
+  local theme_block
+  theme_block="$(bash "$REPO/scripts/familiar-theme.sh" herdr)"
   cat > "$HERDR_CONFIG_PATH" <<EOF
 onboarding = false
+
+$theme_block
 
 [terminal]
 default_shell = "$FAMILIAR_INTERACTIVE_SHELL"

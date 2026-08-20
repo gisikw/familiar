@@ -8,11 +8,15 @@
     />
     <title>Familiar — offline</title>
     <style>
+      /* Offline shell fallback. This page is shown precisely WHEN the familiar
+         server is unreachable, so it CANNOT fetch the runtime /theme.css. These
+         literals are therefore a static mirror of the familiar-dark defaults
+         (server/src/theme/defaults.json) — keep them in sync by hand. */
       :root {
         --bg: #1e1e2e;
         --fg: #cdd6f4;
         --muted: #a6adc8;
-        --accent: #89b4fa;
+        --accent: #32b08d;
         --panel: #181825;
         --border: #313244;
       }

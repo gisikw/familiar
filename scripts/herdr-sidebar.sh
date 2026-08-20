@@ -17,7 +17,10 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MARK_SVG="$REPO/assets/familiar-mark.svg"
-ACCENT="#32b08d"   # oklch(0.68 0.12 170) -> precise sRGB
+# Accent for the rasterized mark: resolved from the unified Familiar theme
+# (canonical palette + FAMILIAR_THEME_* env). Falls back to the default teal
+# (oklch(0.68 0.12 170) -> precise sRGB) if the generator can't run.
+ACCENT="$(bash "$REPO/scripts/familiar-theme.sh" accent 2>/dev/null || echo '#32b08d')"
 
 printf '\033[?25l'
 trap 'printf "\033[?25h"' EXIT
