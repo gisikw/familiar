@@ -30,7 +30,37 @@ function pass() {
 
 async function run() {
   const { spawn, resizePty, killPty } = require("../main/pty");
+  const {
+    resolveShell,
+    resolveCwd,
+    sanitizeEnv,
+    ensureSpawnHelperExecutable,
+  } = require("../main/pty");
   const { saveDrop } = require("../main/drops");
+
+  // 0. Robustness helpers (macOS posix_spawnp hardening).
+  const helper = ensureSpawnHelperExecutable();
+  log("spawn-helper check:", JSON.stringify(helper));
+  const rShell = resolveShell();
+  if (!require("fs").existsSync(rShell) && rShell !== "/bin/sh") {
+    return fail("resolveShell returned a nonexistent path: " + rShell);
+  }
+  log("resolveShell:", rShell);
+  const rCwd = resolveCwd();
+  if (!require("fs").existsSync(rCwd)) return fail("resolveCwd nonexistent: " + rCwd);
+  log("resolveCwd:", rCwd);
+  const sEnv = sanitizeEnv({
+    ...process.env,
+    NIX_STORE: "/nix/store",
+    NIX_CFLAGS: "x",
+    IN_NIX_SHELL: "impure",
+    PATH: "/nix/store/abc/bin:/usr/bin:/bin",
+  });
+  if (sEnv.NIX_STORE || sEnv.NIX_CFLAGS || sEnv.IN_NIX_SHELL) {
+    return fail("sanitizeEnv left nix vars behind");
+  }
+  if (/\/nix\/store/.test(sEnv.PATH)) return fail("sanitizeEnv left /nix/store in PATH");
+  log("sanitizeEnv OK, PATH:", sEnv.PATH);
 
   // 1. PTY spins up and echoes.
   let pty;

@@ -6,14 +6,14 @@
   "main": "src/main/main.js",
   "scripts": {
     "start": "electron .",
-    "postinstall": "node scripts/vendor-restty.js"
+    "fix-pty": "node scripts/ensure-spawn-helper.js",
+    "postinstall": "node scripts/postinstall.js"
   },
   "dependencies": {
     "node-pty": "^1.1.0",
     "restty": "^0.2.6"
   },
   "devDependencies": {
-    "@electron/rebuild": "^4.2.0",
     "electron": "^43.4.1"
   }
 }

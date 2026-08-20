@@ -93,6 +93,53 @@ function escapeHtml(s) {
 }
 
 // ---------------------------------------------------------------------------
+// Fatal diagnostic panel. If the shell fails to spawn, replace the black
+// terminal with a readable report instead of leaving a dead window. This is
+// the single most important recovery path: the next launch tells us exactly
+// what's wrong even if a fix attempt missed.
+// ---------------------------------------------------------------------------
+function showFatal(info) {
+  const root = document.getElementById("terminal");
+  if (!root) return;
+  const d = (info && info.diagnostics) || {};
+  const v = (info && info.versions) || {};
+  const helper = Array.isArray(d.spawnHelper)
+    ? d.spawnHelper
+        .map((h) =>
+          h.error
+            ? `  ${h.path} — ERROR ${h.error}`
+            : `  ${h.path} — mode ${((h.mode || 0) >>> 0).toString(8)}`
+        )
+        .join("\n")
+    : "  (none found)";
+
+  const lines = [
+    info && info.message ? info.message : "The shell failed to start.",
+    info && info.cause ? `cause: ${info.cause}` : null,
+    "",
+    `shell:        ${d.shell || "?"}  (exists: ${d.shellExists})`,
+    `cwd:          ${d.cwd || "?"}  (exists: ${d.cwdExists})`,
+    `platform:     ${d.platform || "?"} ${d.arch || ""}`,
+    `electron:     ${v.electron || "?"}`,
+    `node:         ${v.node || "?"}   modules(ABI): ${v.modules || "?"}`,
+    `PATH head:    ${(d.pathHead || []).join(":") || "?"}`,
+    "",
+    "spawn-helper (must be executable, mode 755):",
+    helper,
+    "",
+    "Most likely fixes:",
+    "  1. Rebuild the native module for Electron:  npm run rebuild",
+    "  2. Ensure your shell exists / $SHELL is valid.",
+    "  3. Re-install outside nix-shell if PATH points into /nix/store.",
+  ].filter((x) => x !== null);
+
+  root.innerHTML =
+    '<pre class="fatal">' + escapeHtml(lines.join("\n")) + "</pre>";
+}
+
+familiar.pty.onFatal(showFatal);
+
+// ---------------------------------------------------------------------------
 // Boot restty
 // ---------------------------------------------------------------------------
 const root = document.getElementById("terminal");

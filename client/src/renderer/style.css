@@ -100,3 +100,22 @@ body {
 #drop-hint.active {
   display: flex;
 }
+
+/* Fatal diagnostic panel (shown in place of the terminal when the shell fails
+   to spawn). Readable light-on-dark monospace so it stands out on the black
+   terminal surface. */
+.fatal {
+  margin: 0;
+  padding: 20px 22px;
+  height: 100%;
+  width: 100%;
+  box-sizing: border-box;
+  overflow: auto;
+  background: #1b1b1f;
+  color: #f4f4f5;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

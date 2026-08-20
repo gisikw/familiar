@@ -12,12 +12,14 @@ saves a copy into `~/.familiar/drops/`, and shows a brief toast.
 
 ## Run it (macOS)
 
-Requirements: a recent Node LTS (18+), Xcode Command Line Tools (for building
-the `node-pty` native module — `xcode-select --install` if you haven't).
+Requirements: a recent Node (18+). **No Xcode / Python toolchain needed** —
+`node-pty` 1.1.0 ships prebuilt N-API binaries (N-API is ABI-stable across Node
+and Electron, so nothing is compiled and no `electron-rebuild` step is
+required). `nix-shell -p nodejs_22` (or plain Node) is sufficient.
 
 ```bash
 cd client
-npm install     # builds node-pty, downloads Electron, vendors the restty bundle
+npm install     # fetches deps, vendors restty, fixes node-pty spawn-helper perms
 npm start
 ```
 
@@ -30,17 +32,45 @@ npm install && npm start` to update.
 > - restty prefers **WebGPU** and falls back to **WebGL2** automatically. On
 >   Apple Silicon you'll get WebGPU/Metal — the renderer feel Kevin liked in the
 >   demo.
-> - `npm install` compiles `node-pty` against Electron's ABI via
->   `@electron/rebuild` (runs automatically). If you ever hot-swap the Electron
->   version, re-run `npx electron-rebuild -f -w node-pty`.
 > - No packaging/signing is set up — this runs from source only.
+
+### If the terminal doesn't start (`posix_spawnp failed`)
+
+node-pty's macOS `spawn-helper` binary ships in the npm tarball **without its
+executable bit** (mode 0644); posix_spawnp then fails. `npm install` fixes this
+automatically (postinstall) and the app re-fixes it at startup. If you still hit
+it (a copy dropped the bit, or Gatekeeper quarantined it):
+
+```bash
+npm run fix-pty        # chmod +x every node-pty spawn-helper, strip quarantine
+# or manually:
+chmod +x node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper
+xattr -d com.apple.quarantine node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper 2>/dev/null || true
+```
+
+If the shell still fails, the window shows a **readable diagnostic** in place of
+the black screen (resolved shell + whether it exists, cwd, spawn-helper paths
+with their stat mode, and electron/node/ABI versions) — screenshot that and
+report it. For raw data you can also run:
+
+```bash
+ls -la node_modules/node-pty/build/Release/ 2>/dev/null; \
+ls -la node_modules/node-pty/prebuilds/darwin-arm64/; \
+file node_modules/node-pty/prebuilds/darwin-arm64/*.node \
+     node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper
+```
 
 ## What it does
 
 - **Terminal:** `node-pty` spawns `$SHELL -l` with `TERM=xterm-256color`,
-  `COLORTERM=truecolor`. Full keyboard passthrough, bracketed paste, mouse
-  reporting, and scrollback are handled by libghostty-vt inside restty — the
-  same VT core as Ghostty. Rows/cols resync to the pty on window resize.
+  `COLORTERM=truecolor`. The child env is **sanitized**: `NIX_*` vars are
+  dropped and any `/nix/store/*` entries are pruned from `PATH` (with the
+  standard system dirs ensured) so a shell installed via `nix-shell` doesn't
+  inherit build-only paths that won't resolve. The shell and cwd are both
+  validated to exist before spawn (falling back `$SHELL` → /bin/zsh → /bin/bash
+  → /bin/sh, and homedir → $HOME → /tmp → /). Full keyboard passthrough,
+  bracketed paste, mouse reporting, and scrollback are handled by libghostty-vt
+  inside restty — the same VT core as Ghostty. Rows/cols resync on window resize.
 - **Drag & drop:** dropping image(s)/file(s) onto the window is intercepted at
   the `window` capture phase; the default is prevented (**no path is pasted**),
   the bytes are written to `~/.familiar/drops/<name>` (with a short content-hash
@@ -52,17 +82,19 @@ npm install && npm start` to update.
 ```
 client/
   package.json            electron app; main = src/main/main.js
-  scripts/vendor-restty.js postinstall: copies restty's self-contained ESM
-                          bundle into src/renderer/vendor/
+  scripts/
+    postinstall.js        vendor restty + fix spawn-helper perms
+    vendor-restty.js      copy restty's self-contained ESM bundle into renderer
+    ensure-spawn-helper.js chmod +x node-pty spawn-helper (also `npm run fix-pty`)
   src/
     main/                 main process (Node)
-      main.js             window, IPC wiring, drop + font handlers
-      pty.js              node-pty spawn/resize/kill
+      main.js             window, IPC wiring, drop + font handlers, fatal report
+      pty.js              node-pty spawn/resize/kill; shell/cwd/env hardening
       drops.js            ~/.familiar/drops persistence
     preload/preload.js    contextIsolation bridge (window.familiar.*)
     renderer/             renderer (no Node)
       index.html          CSP allows wasm-unsafe-eval; light frame
-      style.css           light-mode chrome + toast + drop hint
+      style.css           light-mode chrome + toast + drop hint + fatal panel
       renderer.js         boots restty, custom IPC PtyTransport, drop capture
       fonts/              bundled JetBrains Mono (loaded as buffers; offline)
       vendor/             restty.esm.js (git-ignored; created on install)

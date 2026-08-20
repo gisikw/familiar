@@ -22,6 +22,11 @@ contextBridge.exposeInMainWorld("familiar", {
       ipcRenderer.on("pty:status", h);
       return () => ipcRenderer.removeListener("pty:status", h);
     },
+    onFatal: (cb) => {
+      const h = (_e, info) => cb(info);
+      ipcRenderer.on("pty:fatal", h);
+      return () => ipcRenderer.removeListener("pty:fatal", h);
+    },
   },
   // Persist a dropped file's bytes; returns {saved, name, bytes}.
   saveDrop: (name, bytes) => ipcRenderer.invoke("drop:save", { name, bytes }),

@@ -11,6 +11,17 @@ if (process.argv.includes("--selftest")) {
 
 const { spawn: spawnPty, resizePty, killPty } = require("./pty");
 const { saveDrop } = require("./drops");
+const {
+  ensureSpawnHelperExecutable,
+} = require("../../scripts/ensure-spawn-helper.js");
+
+// Self-heal node-pty's spawn-helper permissions at startup, before any spawn.
+// (Also done at install time and inside spawn(); belt and suspenders.)
+try {
+  ensureSpawnHelperExecutable();
+} catch (_) {
+  /* best-effort */
+}
 
 // ---------------------------------------------------------------------------
 // Single window, near-zero chrome. macOS: hiddenInset titlebar.
@@ -55,20 +66,44 @@ function startPty(cols, rows) {
     killPty(pty);
     pty = null;
   }
-  pty = spawnPty({
-    cols: cols || 80,
-    rows: rows || 24,
-    onData: (data) => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send("pty:data", data);
-      }
-    },
-    onExit: ({ exitCode }) => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send("pty:exit", exitCode);
-      }
-    },
-  });
+  try {
+    pty = spawnPty({
+      cols: cols || 80,
+      rows: rows || 24,
+      onData: (data) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send("pty:data", data);
+        }
+      },
+      onExit: ({ exitCode }) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send("pty:exit", exitCode);
+        }
+      },
+    });
+  } catch (err) {
+    // Cause #5: never let a spawn failure become an uncaught exception on a
+    // black screen. Ship a full, readable diagnostic INTO the window.
+    pty = null;
+    const payload = {
+      message: (err && err.message) || String(err),
+      cause: err && err.cause ? String(err.cause.message || err.cause) : null,
+      stack: (err && err.stack) || null,
+      diagnostics: (err && err.diagnostics) || null,
+      versions: {
+        electron: process.versions.electron,
+        node: process.versions.node,
+        modules: process.versions.modules,
+        chrome: process.versions.chrome,
+      },
+    };
+    // eslint-disable-next-line no-console
+    console.error("[familiar] pty spawn failed:", payload);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("pty:fatal", payload);
+    }
+    return;
+  }
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send("pty:status", { shell: pty.shellName });
   }
