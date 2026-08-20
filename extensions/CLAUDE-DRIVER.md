@@ -1,6 +1,6 @@
 # claude-driver — tiamat-retirement claude driver (pi extension)
 
-Status as of 2026-08-20. Implements RESEARCH-retire-tiamat.md.
+Status as of 2026-08-20. Implements architectural settlement from retired RESEARCH-retire-tiamat.md (archived in $FAMILIAR_ARTIFACT_DIR).
 
 ## What this is
 

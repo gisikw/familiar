@@ -2,7 +2,8 @@
 //
 // A double-loopback gateway OWNED BY THE PI EXTENSION, in-process with pi, that
 // lets pi talk to Anthropic by driving the real `claude` CLI headlessly instead
-// of routing through the tiamat Go service. See RESEARCH-retire-tiamat.md.
+// of routing through the tiamat Go service. See CLAUDE-DRIVER.md (operational docs);
+// architectural rationale in $FAMILIAR_ARTIFACT_DIR/RESEARCH-retire-tiamat.md.
 //
 // v0: single-turn text chat.  v1b (this file now): multi-turn transcript
 // authority + tools. Each pi request is a FRESH deterministic projection of the
