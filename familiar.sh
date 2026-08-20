@@ -289,6 +289,15 @@ sidebar_width = 30
 sidebar_min_width = 24
 sidebar_max_width = 36
 prompt_new_workspace_name = false
+# The Familiar workspace holds only the pi tab (services live in their own
+# workspace), so this hides the tab row exactly when Kevin is looking at pi.
+hide_tab_bar_when_single_tab = true
+# Reclaim the scrollbar column — the thin line on the right edge of an
+# otherwise unsplit pane.
+pane_scrollbars = false
+# No outside frame around the pane area either; splits keep their internal
+# dividers via pane_borders (default true).
+pane_outer_borders = false
 
 [ui.sidebar.pty]
 command = "$REPO/scripts/herdr-sidebar.sh"
@@ -399,8 +408,19 @@ populate_familiar_workspace() {
   [ -n "${NEED_LLAMA:-}" ] && services+=(llama)
   [ -n "${NEED_STT:-}" ] && services+=(stt)
   [ -n "${NEED_TTS:-}" ] && services+=(tts)
+  # Services live in their OWN workspace (not a second tab in the Familiar
+  # workspace): with ui.hide_tab_bar_when_single_tab, this leaves the Familiar
+  # workspace single-tab so the tab row disappears while looking at pi.
+  # Reuse/replace the previous services workspace across cold starts so they
+  # do not accumulate in the sidebar.
+  local services_id_file="$HERDR_STATE_DIR/services-workspace-id" old_services
   if [ "${#services[@]}" -gt 0 ]; then
-    service_response=$(herdr tab create --workspace "$workspace" --cwd "$REPO" --label services --no-focus)
+    if [ -s "$services_id_file" ]; then
+      old_services=$(<"$services_id_file")
+      herdr workspace close "$old_services" >/dev/null 2>&1 || true
+    fi
+    service_response=$(herdr workspace create --cwd "$REPO" --label services --no-focus)
+    jq -er '.result.workspace.workspace_id' <<<"$service_response" > "$services_id_file"
     service_root=$(jq -er '.result.root_pane.pane_id' <<<"$service_response")
     run_in_herdr_pane "$service_root" "${services[0]}"
     for role in "${services[@]:1}"; do
