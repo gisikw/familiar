@@ -72,6 +72,37 @@ start_agent() {
   return 0
 }
 
+# Herdr's wait surface can observe a momentary idle edge between an assistant's
+# progress narration and its next tool call. A single idle sample is therefore
+# not terminal. Require the candidate state to remain non-working for two
+# seconds; if work resumes, reattach the waiter instead of settling the job.
+settle_when_stable() { # settle_when_stable <candidate-status>
+  local candidate="$1" current i
+  for i in 1 2 3 4; do
+    sleep 0.5
+    current="$(herdr agent get "$NAME" 2>/dev/null | jq -r '.result.agent.agent_status // "unknown"')"
+    case "$current" in
+      working|starting)
+        log "transient ${candidate} edge; agent resumed ${current}, re-waiting"
+        observe
+        return $?
+        ;;
+      blocked)
+        emit blocked
+        return 0
+        ;;
+      idle|done|unknown)
+        candidate="$current"
+        ;;
+      *)
+        candidate=unknown
+        ;;
+    esac
+  done
+  log "stable terminal state: $candidate"
+  emit "$candidate"
+}
+
 # --- deliver a prompt and block until the agent settles ----------------------
 # A blocked agent cannot be prompted: Herdr rejects submission with
 # agent_blocked before sending any input. Answering one means typing into its
@@ -101,9 +132,9 @@ deliver() { # deliver <prompt-file>
     return 1
   fi
   status="$(printf '%s' "$out" | jq -r '.result.agent.agent_status // "unknown"')"
-  log "settled: $status"
-  emit "$status"
-  return 0
+  log "wait candidate: $status"
+  settle_when_stable "$status"
+  return $?
 }
 
 # --- answer a blocked agent --------------------------------------------------
@@ -146,9 +177,9 @@ observe() {
     return 1
   fi
   status="$(printf '%s' "$out" | jq -r '.result.agent.agent_status // "unknown"')"
-  log "settled: $status"
-  emit "$status"
-  return 0
+  log "wait candidate: $status"
+  settle_when_stable "$status"
+  return $?
 }
 
 case "$PHASE" in
