@@ -5,19 +5,28 @@
 // matches; Tab/Enter inserts the emoji (written to pty as UTF-8), Esc dismisses.
 // Toggle with Cmd/Ctrl-E.
 //
-// SHIPPED OFF BY DEFAULT (feature flag). Rationale, honestly: we tap keystrokes
-// blind — we can't see whether the remote line is a shell prompt, a vim command
-// line, or a TUI. Triggering on bare `:`+2 word chars means `:wq<Enter>` in vim
-// builds query "wq", pops the picker, and Enter would commit an emoji instead of
-// writing+quitting. There is no reliable way to distinguish those contexts from
-// the renderer, so the picker fights vim by construction. It's kept behind
-// EMOJI_DEFAULT_ENABLED=false and Cmd/Ctrl-E so it never touches typing unless a
-// user opts in for a shell session. When enabled, commit erases the typed
-// `:query` (readline DEL) before inserting the glyph so it actually replaces.
+// SHIPPED ON BY DEFAULT, with a debounce as the safety valve. The honest
+// hazard is unchanged: we tap keystrokes blind — we can't see whether the
+// remote line is a shell prompt, a vim command line, or a TUI. `:wq<Enter>` in
+// vim still builds query "wq", and if the picker were up Enter would commit an
+// emoji instead of writing+quitting. What makes default-on tolerable is that
+// the picker no longer pops the instant you reach `:`+2 chars: it waits for
+// typing to settle (EMOJI_DEBOUNCE_MS) first. A `:wq<Enter>` typed at any human
+// speed fires and clears the timer before it ever elapses, so the overlay never
+// appears — you only see it when you type a `:name` and then pause. Cmd/Ctrl-E
+// still toggles it off for a session where even that is unwelcome. On commit we
+// erase the typed `:query` (readline DEL) before inserting the glyph so it
+// actually replaces — which only makes sense at a shell/readline prompt, so if
+// you live in a TUI, toggle it off.
 // ---------------------------------------------------------------------------
 
-// Feature flag: default OFF so it can't hijack vim's `:wq` etc. Cmd/Ctrl-E on.
-export const EMOJI_DEFAULT_ENABLED = false;
+// Feature flag: default ON. The debounce below (not opt-out) is what keeps it
+// from hijacking fast-typed `:wq` etc. Cmd/Ctrl-E toggles per session.
+export const EMOJI_DEFAULT_ENABLED = true;
+
+// How long typing must settle after `:`+2 chars before the picker pops. Each
+// keystroke resets this, so a burst of typing never flashes the overlay.
+export const EMOJI_DEBOUNCE_MS = 1000;
 
 let EMOJI = null; // { shortname: "😀", ... }
 let NAMES = []; // sorted shortnames for matching
@@ -63,14 +72,17 @@ export function search(query, limit = 8) {
 // sends a string to the shell; `getCursorRect` returns the on-screen cursor
 // rectangle for anchoring (falls back to bottom-left).
 export class EmojiCompleter {
-  constructor({ writeToPty, getCursorRect, enabled }) {
+  constructor({ writeToPty, getCursorRect, enabled, debounceMs }) {
     this.writeToPty = writeToPty;
     this.getCursorRect = getCursorRect || (() => null);
     this.enabled = enabled === undefined ? EMOJI_DEFAULT_ENABLED : enabled;
+    this.debounceMs = debounceMs === undefined ? EMOJI_DEBOUNCE_MS : debounceMs;
     this.query = ""; // chars typed after the trigger ':'
+    this.tracking = false; // building a query; picker not yet shown (in debounce)
     this.active = false; // picker visible
     this.matches = [];
     this.selected = 0;
+    this._timer = null; // pending debounce timer
     this._buildDom();
   }
 
@@ -88,9 +100,41 @@ export class EmojiCompleter {
   }
 
   dismiss() {
+    this._cancelTimer();
     this.active = false;
+    this.tracking = false;
+    this._pendingColon = false;
     this.query = "";
     this.el.hidden = true;
+  }
+
+  // Debounce plumbing: after `:`+2 chars we arm a timer and re-arm it on every
+  // subsequent keystroke, so the picker only surfaces once typing pauses.
+  _cancelTimer() {
+    if (this._timer) {
+      clearTimeout(this._timer);
+      this._timer = null;
+    }
+  }
+
+  _scheduleShow() {
+    this._cancelTimer();
+    this._timer = setTimeout(() => this._activate(), this.debounceMs);
+  }
+
+  _activate() {
+    this._timer = null;
+    if (!this.enabled || !this.tracking || this.query.length < 2) return;
+    this.tracking = false;
+    this.active = true;
+    this._update();
+  }
+
+  _reset() {
+    this._cancelTimer();
+    this.tracking = false;
+    this._pendingColon = false;
+    this.query = "";
   }
 
   _render() {
@@ -127,8 +171,8 @@ export class EmojiCompleter {
     if (m) {
       // The colon + query chars were already echoed to the shell line, so
       // replace them: send readline DEL (0x7f) for each, then the glyph. This
-      // only makes sense at a shell/readline prompt — another reason the
-      // feature is opt-in.
+      // only makes sense at a shell/readline prompt — if you live in a TUI,
+      // toggle the feature off (Cmd/Ctrl-E).
       const erase = "\x7f".repeat(this.query.length + 1);
       this.writeToPty(erase + m.emoji);
     }
@@ -180,25 +224,41 @@ export class EmojiCompleter {
       }
     }
 
-    // Not active: watch for a ':' that starts a trigger. We can't see the shell
-    // buffer, so we begin tracking on ':' and require 2+ following word chars.
+    // Not active (picker hidden). We may still be `tracking`: query built,
+    // waiting out the debounce. Extend the query and re-arm the timer on each
+    // word char; the picker only pops once typing pauses for debounceMs. A
+    // fast-typed `:wq<Enter>` clears the timer (Enter is not a word char) long
+    // before it fires, so the overlay never appears.
     if (e.key === ":") {
+      this._cancelTimer();
       this.query = "";
       this.active = false;
+      this.tracking = false;
       this._pendingColon = true;
       return false;
     }
-    if (this._pendingColon && e.key.length === 1 && /\w/.test(e.key)) {
+    if ((this._pendingColon || this.tracking) && e.key.length === 1 && /\w/.test(e.key)) {
       this.query += e.key;
       if (this.query.length >= 2) {
-        this.active = true;
-        this._update();
+        this._pendingColon = false;
+        this.tracking = true;
+        this._scheduleShow(); // arm/re-arm; picker shows after the pause
       }
       return false;
     }
-    if (this._pendingColon) {
-      this._pendingColon = false;
-      this.query = "";
+    // Backspace while tracking: shrink the query, drop out below the threshold.
+    if (this.tracking && e.key === "Backspace") {
+      this.query = this.query.slice(0, -1);
+      if (this.query.length < 2) {
+        this._reset();
+      } else {
+        this._scheduleShow();
+      }
+      return false;
+    }
+    // Any other key abandons an in-flight trigger; the key is still forwarded.
+    if (this._pendingColon || this.tracking) {
+      this._reset();
     }
     return false;
   }
