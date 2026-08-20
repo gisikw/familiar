@@ -171,19 +171,44 @@ async function boot() {
   // Pass as in-memory buffers so restty never touches the network.
   // ProggyClean Nerd Font is the PRIMARY face (Nerd glyphs for Kevin's
   // prompt/statusline); JetBrains Mono stays as the fallback chain.
+  //
+  // WHY THE EMOJI FONT IS HERE (root-cause fix): restty renders via a
+  // canvas/WebGL(GPU) glyph atlas, NOT the DOM, so there is no CSS
+  // font-family chain doing per-glyph fallback for us. restty does its own
+  // per-glyph fallback by walking THIS `fonts` array: for an emoji codepoint
+  // (e.g. U+1FAB6 FEATHER) it looks for an entry it classifies as a color
+  // emoji font (label matches /apple color emoji|noto color emoji|openmoji|
+  // .../). If none is present it falls back to index 0 (ProggyClean), which
+  // has NO emoji glyphs -> blank/tofu. By passing our OWN fonts array we
+  // *replaced* restty's built-in default fallback chain (which included
+  // emoji + symbol fonts), so emoji stopped rendering entirely.
+  //
+  // OpenMoji (black-glyf) is bundled purely as a CMAP PROVIDER: restty's
+  // color-glyph path rasterizes emoji through a canvas 2D CSS stack
+  // ("Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",...), and for an
+  // OpenMoji-labelled entry it deliberately uses ONLY that platform stack
+  // (it strips the OpenMoji family). So the actual pixels come from the OS
+  // color emoji font (Apple Color Emoji on macOS, Noto Color Emoji on Linux);
+  // OpenMoji just supplies the glyph-id mapping and is a small (~1.5MB) black
+  // font rather than a huge (~10MB+) color file. ProggyClean already carries
+  // the full Nerd Font symbol ranges, so no separate symbol fallback needed.
   let fonts;
   try {
-    const [proggy, regular, bold, italic] = await Promise.all([
+    const [proggy, regular, bold, italic, openmoji] = await Promise.all([
       familiar.readFont("ProggyCleanNerdFontMono-Regular.ttf"),
       familiar.readFont("JetBrainsMono-Regular.ttf"),
       familiar.readFont("JetBrainsMono-Bold.ttf"),
       familiar.readFont("JetBrainsMono-Italic.ttf"),
+      familiar.readFont("OpenMoji-black-glyf.ttf"),
     ]);
     fonts = [
-      { data: proggy }, // primary: Nerd Font glyphs
-      { data: regular }, // fallback faces
+      { data: proggy }, // primary: Nerd Font glyphs (full symbol coverage)
+      { data: regular }, // text fallback faces
       { data: bold, weight: 700 },
       { data: italic, style: "italic" },
+      // Emoji cmap provider -> platform color emoji via restty's canvas stack.
+      // `name` MUST contain "OpenMoji" so restty classifies it as color emoji.
+      { data: openmoji, name: "OpenMoji" },
     ];
   } catch (err) {
     // eslint-disable-next-line no-console
