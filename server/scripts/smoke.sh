@@ -8,7 +8,16 @@ cd "$(dirname "$0")/.."
 PORT=17692
 export FAMILIAR_SERVER_PORT=$PORT
 export FAMILIAR_SERVER_HOST=127.0.0.1
-export FAMILIAR_ATTACH_CMD="bash --norc -i"
+# Stand-in attach for the smoke: an ABSOLUTE-path, non-interactive shell.
+# node-pty spawns via execvp(), which resolves a *bare* command name against
+# the child's PATH — in a pure/stripped devShell that PATH can be empty, so
+# `bash ...` fails with "execvp(3) failed: No such file or directory". Using
+# $(command -v bash) sidesteps PATH resolution entirely, and dropping -i avoids
+# interactive job-control quirks (SIGTTOU / "no job control" noise) in envs
+# with no controlling tty. Byte-in→byte-out is proven either way. The real
+# production attach (FAMILIAR_ATTACH_CMD -> herdr) must likewise be reachable
+# on the services-pane PATH; see README.
+export FAMILIAR_ATTACH_CMD="$(command -v bash) --norc"
 export FAMILIAR_DEBUG_LEVEL=error
 
 pass=0; fail=0
