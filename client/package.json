@@ -1,17 +1,12 @@
 {
   "name": "familiar-client",
-  "version": "0.1.0",
-  "description": "Familiar — a minimal daily-driver terminal app wrapping the restty (libghostty-vt) renderer.",
+  "version": "0.2.0",
+  "description": "Familiar — a thin Electron chrome shell around the familiar server's browser terminal.",
   "private": true,
   "main": "src/main/main.js",
   "scripts": {
     "start": "electron .",
-    "fix-pty": "node scripts/ensure-spawn-helper.js",
-    "postinstall": "node scripts/postinstall.js"
-  },
-  "dependencies": {
-    "node-pty": "^1.1.0",
-    "restty": "^0.2.6"
+    "selftest": "electron . --selftest"
   },
   "devDependencies": {
     "electron": "^43.4.1"
