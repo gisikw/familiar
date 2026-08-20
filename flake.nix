@@ -107,15 +107,15 @@
             FAMILIAR_SHELL = "server";
             packages = with pkgs; [ nodejs_22 python3 gnumake gcc curl ];
           };
-          # The Electron terminal app under client/. node-pty ships prebuilt
-          # N-API binaries (ABI-stable), so only a matching Node is needed —
-          # this is the single source of truth for that version.
-          # The bundled ProggyClean TTF (client/src/renderer/fonts) is missing
-          # some Nerd Font glyphs; the full upstream face is pulled in here so
-          # it's available system-side for the fallback path.
+          # The Electron chrome shell under client/. It is a DUMB CLIENT: a
+          # frameless Electron window that loads the familiar server's served
+          # terminal page (FAMILIAR_BASE_URL). No node-pty, no vendored restty,
+          # no bundled fonts — the served page owns all of that. Only Electron
+          # (pulled from npm) plus a matching Node to drive it is needed; this
+          # is the single source of truth for that version.
           client = pkgs.mkShell {
             FAMILIAR_SHELL = "client";
-            packages = with pkgs; [ nodejs_22 nerd-fonts.proggy-clean-tt ];
+            packages = with pkgs; [ nodejs_22 ];
           };
         };
       }

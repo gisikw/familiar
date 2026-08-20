@@ -1,176 +1,193 @@
-// Headless self-test harness. Launched via `electron . --selftest`.
-// It boots the app, waits for the shell prompt, sends `echo FAMILIAR_OK`,
-// simulates a file drop, verifies ~/.familiar/drops/ received a copy, writes a
-// screenshot, and exits 0/1. Used for CI-style verification on a headless box.
+// Headless self-test harness for the DUMB CLIENT. Launched via
+// `electron . --selftest`.
+//
+// The client no longer owns a pty, a renderer, or drops — the served page does.
+// So this harness verifies the shell's own responsibilities:
+//   1. config: base-URL resolution (env > userData JSON > default) + normalize.
+//   2. bounds persistence round-trips through the JSON config.
+//   3. the offline/retry page is present and loads in a BrowserWindow, and its
+//      retry button is wired to the app:retry IPC.
+//   4. (optional, opt-in) if FAMILIAR_SELFTEST_LIVE=1 and a reachable
+//      FAMILIAR_BASE_URL is set, load it in a partitioned window and confirm a
+//      main-frame document loads (an end-to-end "the page renders" smoke). This
+//      is skipped by default because the sandbox has no display/server; state
+//      it rather than fake it.
+//
+// Exit 0 = pass, 1 = fail. Electron itself needs a display; on a headless box
+// this runs under xvfb or Electron's offscreen path — where that's not
+// available we still run the pure-config checks below (they need no window).
+
 const { app, BrowserWindow, ipcMain } = require("electron");
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
 
-const DROPS_DIR = path.join(os.homedir(), ".familiar", "drops");
+const cfg = require("../main/config");
+
 const OUT = path.join(os.tmpdir(), "familiar-selftest");
 fs.mkdirSync(OUT, { recursive: true });
-
-let ptyOutput = "";
 
 function log(...a) {
   // eslint-disable-next-line no-console
   console.log("[selftest]", ...a);
 }
-
 function fail(msg) {
   log("FAIL:", msg);
   app.exit(1);
 }
-
 function pass() {
   log("PASS");
   app.exit(0);
 }
 
-async function run() {
-  const { spawn, resizePty, killPty } = require("../main/pty");
-  const {
-    resolveShell,
-    resolveCwd,
-    sanitizeEnv,
-    ensureSpawnHelperExecutable,
-  } = require("../main/pty");
-  const { saveDrop } = require("../main/drops");
-
-  // 0. Robustness helpers (macOS posix_spawnp hardening).
-  const helper = ensureSpawnHelperExecutable();
-  log("spawn-helper check:", JSON.stringify(helper));
-  const rShell = resolveShell();
-  if (!require("fs").existsSync(rShell) && rShell !== "/bin/sh") {
-    return fail("resolveShell returned a nonexistent path: " + rShell);
+// --- Pure-config checks (no window needed) --------------------------------
+function checkConfig() {
+  // normalizeBaseUrl
+  const cases = [
+    ["https://familiar.gisi.network/", "https://familiar.gisi.network"],
+    ["https://familiar.gisi.network", "https://familiar.gisi.network"],
+    ["http://localhost:1692/", "http://localhost:1692"],
+    ["  https://x.example/sub/  ", "https://x.example/sub"],
+    ["ftp://nope", null],
+    ["not a url", null],
+    ["", null],
+  ];
+  for (const [input, want] of cases) {
+    const got = cfg.normalizeBaseUrl(input);
+    if (got !== want) {
+      return `normalizeBaseUrl(${JSON.stringify(input)}) = ${JSON.stringify(
+        got
+      )}, want ${JSON.stringify(want)}`;
+    }
   }
-  log("resolveShell:", rShell);
-  const rCwd = resolveCwd();
-  if (!require("fs").existsSync(rCwd)) return fail("resolveCwd nonexistent: " + rCwd);
-  log("resolveCwd:", rCwd);
+  log("normalizeBaseUrl OK");
 
-  // 0b. Revision assets: fonts present + emoji map parses.
-  const rroot = path.join(__dirname, "..", "renderer");
-  for (const f of [
-    "fonts/ProggyCleanNerdFontMono-Regular.ttf",
-    "fonts/JetBrainsMono-Regular.ttf",
-    "fonts/OpenMoji-black-glyf.ttf",
-    "vendor/emoji.json",
-  ]) {
-    if (!fs.existsSync(path.join(rroot, f))) return fail("missing asset: " + f);
+  // Default when nothing set.
+  const savedEnv = process.env.FAMILIAR_BASE_URL;
+  delete process.env.FAMILIAR_BASE_URL;
+  const def = cfg.resolveBaseUrl(null, {});
+  if (def !== cfg.DEFAULT_BASE_URL) {
+    return `default base url = ${def}, want ${cfg.DEFAULT_BASE_URL}`;
   }
-  const emojiMap = JSON.parse(
-    fs.readFileSync(path.join(rroot, "vendor", "emoji.json"), "utf8")
-  );
-  if (!emojiMap.rocket || emojiMap.rocket !== "🚀")
-    return fail("emoji map bad (rocket)");
-  log("assets OK: proggy font + jetbrains + openmoji cmap + emoji(" + Object.keys(emojiMap).length + ")");
-  const sEnv = sanitizeEnv({
-    ...process.env,
-    NIX_STORE: "/nix/store",
-    NIX_CFLAGS: "x",
-    IN_NIX_SHELL: "impure",
-    PATH: "/nix/store/abc/bin:/usr/bin:/bin",
+  log("default base URL OK:", def);
+
+  // Env wins over file.
+  process.env.FAMILIAR_BASE_URL = "https://env.example";
+  const viaEnv = cfg.resolveBaseUrl(null, { baseUrl: "https://file.example" });
+  if (viaEnv !== "https://env.example") {
+    return `env should win, got ${viaEnv}`;
+  }
+  // File used when env absent/invalid.
+  delete process.env.FAMILIAR_BASE_URL;
+  const viaFile = cfg.resolveBaseUrl(null, { baseUrl: "https://file.example" });
+  if (viaFile !== "https://file.example") {
+    return `file base url should win over default, got ${viaFile}`;
+  }
+  if (savedEnv === undefined) delete process.env.FAMILIAR_BASE_URL;
+  else process.env.FAMILIAR_BASE_URL = savedEnv;
+  log("resolveBaseUrl precedence OK (env > file > default)");
+
+  // Bounds round-trip through the real userData JSON.
+  cfg.writeConfigFile(app, { bounds: { x: 5, y: 6, width: 700, height: 500 } });
+  const back = cfg.readConfigFile(app);
+  if (
+    !back.bounds ||
+    back.bounds.width !== 700 ||
+    back.bounds.height !== 500 ||
+    back.bounds.x !== 5
+  ) {
+    return "bounds did not round-trip through config.json: " + JSON.stringify(back);
+  }
+  log("bounds persistence OK ->", cfg.configPath(app));
+
+  return null;
+}
+
+// --- Offline page render smoke -------------------------------------------
+async function checkOfflinePage() {
+  const OFFLINE = path.join(__dirname, "..", "main", "offline.html");
+  if (!fs.existsSync(OFFLINE)) throw new Error("offline.html missing");
+
+  let retried = false;
+  ipcMain.on("app:retry", () => {
+    retried = true;
   });
-  if (sEnv.NIX_STORE || sEnv.NIX_CFLAGS || sEnv.IN_NIX_SHELL) {
-    return fail("sanitizeEnv left nix vars behind");
-  }
-  if (/\/nix\/store/.test(sEnv.PATH)) return fail("sanitizeEnv left /nix/store in PATH");
-  log("sanitizeEnv OK, PATH:", sEnv.PATH);
 
-  // 1. PTY spins up and echoes.
-  let pty;
-  await new Promise((resolve) => {
-    pty = spawn({
-      cols: 80,
-      rows: 24,
-      onData: (d) => {
-        ptyOutput += d;
-      },
-      onExit: () => {},
-    });
-    setTimeout(resolve, 800);
-  });
-  log("shell:", pty.shellName);
-
-  pty.write("echo FAMILIAR_OK_$((6*7))\n");
-  await new Promise((r) => setTimeout(r, 1200));
-
-  if (!/FAMILIAR_OK_42/.test(ptyOutput)) {
-    killPty(pty);
-    return fail("pty did not echo expected output. Got:\n" + ptyOutput.slice(-400));
-  }
-  log("pty echo OK");
-
-  // 2. Resize does not throw.
-  resizePty(pty, 120, 40);
-  log("resize OK");
-  killPty(pty);
-
-  // 3. Drop persistence: save a fake screenshot and confirm bytes landed.
-  const bytes = Buffer.from("\x89PNG\r\n\x1a\nFAMILIAR-TEST-BYTES");
-  const res = saveDrop("screenshot.png", bytes);
-  if (!fs.existsSync(res.saved)) return fail("drop file not written: " + res.saved);
-  const back = fs.readFileSync(res.saved);
-  if (!back.equals(bytes)) return fail("drop bytes mismatch");
-  if (!res.saved.startsWith(DROPS_DIR)) return fail("drop not under drops dir");
-  log("drop persisted OK ->", res.saved);
-
-  // 4. Render smoke test: load the real renderer in a window and screenshot.
   const win = new BrowserWindow({
-    width: 900,
+    width: 800,
     height: 600,
     show: false,
     webPreferences: {
       preload: path.join(__dirname, "..", "preload", "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
     },
   });
 
-  // The renderer will call pty:start etc.; wire minimal handlers so it boots.
-  let livePty = null;
-  ipcMain.on("pty:start", (_e, { cols, rows }) => {
-    livePty = spawn({
-      cols,
-      rows,
-      onData: (d) => win.webContents.send("pty:data", d),
-      onExit: (c) => win.webContents.send("pty:exit", c.exitCode),
-    });
-    win.webContents.send("pty:status", { shell: livePty.shellName });
+  await win.loadFile(OFFLINE, {
+    search: "url=https://familiar.gisi.network&err=selftest",
   });
-  ipcMain.on("pty:input", (_e, d) => livePty && livePty.write(d));
-  ipcMain.on("pty:resize", (_e, { cols, rows }) => livePty && resizePty(livePty, cols, rows));
-  ipcMain.handle("drop:save", async (_e, { name, b }) => saveDrop(name, Buffer.from(b || [])));
-  ipcMain.handle("font:read", async (_e, name) => {
-    const file = path.join(__dirname, "..", "renderer", "fonts", path.basename(name));
-    const buf = fs.readFileSync(file);
-    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-  });
+  await new Promise((r) => setTimeout(r, 400));
 
-  await win.loadFile(path.join(__dirname, "..", "renderer", "index.html"));
-  await new Promise((r) => setTimeout(r, 2500));
+  // The page should show the base URL we passed.
+  const urlText = await win.webContents.executeJavaScript(
+    "document.getElementById('url').textContent"
+  );
+  if (!/familiar\.gisi\.network/.test(urlText)) {
+    throw new Error("offline page did not render base URL, got: " + urlText);
+  }
 
-  // Send a visible command through the live terminal and capture.
-  if (livePty) livePty.write("echo RENDERED && ls\n");
-  await new Promise((r) => setTimeout(r, 1500));
+  // Preload bridge must be present and retry() must reach main.
+  const hasBridge = await win.webContents.executeJavaScript(
+    "!!(window.familiar && typeof window.familiar.retry === 'function')"
+  );
+  if (!hasBridge) throw new Error("preload bridge (familiar.retry) missing");
+
+  await win.webContents.executeJavaScript("window.familiar.retry(); true");
+  await new Promise((r) => setTimeout(r, 200));
+  if (!retried) throw new Error("app:retry IPC did not fire from offline page");
 
   const img = await win.webContents.capturePage();
-  const shot = path.join(OUT, "render.png");
+  const shot = path.join(OUT, "offline.png");
   fs.writeFileSync(shot, img.toPNG());
-  log("screenshot written ->", shot, `(${img.getSize().width}x${img.getSize().height})`);
+  log("offline page OK; screenshot ->", shot);
+  win.destroy();
+}
 
-  // Pull the backend restty selected (webgpu/webgl2) for the record.
-  try {
-    const backend = await win.webContents.executeJavaScript(
-      "window.__familiarBackend || 'unknown'"
-    );
-    log("restty backend:", backend);
-  } catch (_) {}
+// --- Optional live smoke --------------------------------------------------
+async function checkLive() {
+  if (process.env.FAMILIAR_SELFTEST_LIVE !== "1") {
+    log("live smoke SKIPPED (set FAMILIAR_SELFTEST_LIVE=1 + FAMILIAR_BASE_URL)");
+    return;
+  }
+  const base = cfg.resolveBaseUrl(app);
+  log("live smoke: loading", base);
+  const win = new BrowserWindow({
+    width: 900,
+    height: 600,
+    show: false,
+    webPreferences: {
+      partition: "persist:familiar-selftest",
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  await win.loadURL(base);
+  await new Promise((r) => setTimeout(r, 2000));
+  const title = await win.webContents.executeJavaScript("document.title");
+  log("live smoke loaded, document.title:", JSON.stringify(title));
+  const img = await win.webContents.capturePage();
+  fs.writeFileSync(path.join(OUT, "live.png"), img.toPNG());
+  win.destroy();
+}
 
-  if (livePty) killPty(livePty);
+async function run() {
+  const cfgErr = checkConfig();
+  if (cfgErr) return fail(cfgErr);
+  await checkOfflinePage();
+  await checkLive();
   pass();
 }
 

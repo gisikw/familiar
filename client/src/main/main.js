@@ -1,7 +1,5 @@
-const { app, BrowserWindow, ipcMain, session } = require("electron");
+const { app, BrowserWindow, ipcMain, session, Menu } = require("electron");
 const path = require("path");
-const os = require("os");
-const fs = require("fs");
 
 // Self-test mode: hand off to the headless verification harness.
 if (process.argv.includes("--selftest")) {
@@ -9,85 +7,165 @@ if (process.argv.includes("--selftest")) {
   return;
 }
 
-const { spawn: spawnPty, resizePty, killPty } = require("./pty");
-const { saveDrop } = require("./drops");
-const {
-  ensureSpawnHelperExecutable,
-} = require("../../scripts/ensure-spawn-helper.js");
+const { resolveBaseUrl, readConfigFile, writeConfigFile } = require("./config");
 
-// Self-heal node-pty's spawn-helper permissions at startup, before any spawn.
-// (Also done at install time and inside spawn(); belt and suspenders.)
-try {
-  ensureSpawnHelperExecutable();
-} catch (_) {
-  /* best-effort */
+// ---------------------------------------------------------------------------
+// Familiar is a DUMB CLIENT: a thin, near-chromeless Electron window that loads
+// the terminal PAGE served by the familiar server (default
+// https://familiar.gisi.network, root "/"). The served page owns EVERYTHING —
+// restty, the pty WebSocket, mouse/emoji handling, and drag-and-drop upload.
+// Electron contributes only native chrome: an edgeless window, zoom chords, a
+// persistent login session (so the Pocket ID cookie survives restarts), and an
+// offline retry courtesy page.
+//
+// A persistent session partition means auth "just works": the window is a real
+// browser context, so oauth2-proxy / Pocket ID redirects complete inline and
+// the cookie is stored on disk under the partition. On the tailnet, identity
+// auth passes and no redirect happens at all.
+// ---------------------------------------------------------------------------
+
+// Persistent partition -> cookies (incl. the auth session) survive restarts.
+const PARTITION = "persist:familiar";
+const OFFLINE_PAGE = path.join(__dirname, "offline.html");
+
+let mainWindow = null;
+let baseUrl = null;
+
+// Reconnect backoff state for the "server unreachable" path.
+let retryTimer = null;
+let retryDelay = 0;
+const RETRY_MIN = 1000;
+const RETRY_MAX = 30000;
+
+function clearRetry() {
+  if (retryTimer) {
+    clearTimeout(retryTimer);
+    retryTimer = null;
+  }
 }
 
-// ---------------------------------------------------------------------------
-// Single window, near-zero chrome. macOS: hiddenInset titlebar.
-// ---------------------------------------------------------------------------
-let mainWindow = null;
-let pty = null;
+function scheduleRetry() {
+  clearRetry();
+  retryDelay = retryDelay ? Math.min(RETRY_MAX, retryDelay * 2) : RETRY_MIN;
+  retryTimer = setTimeout(() => loadApp(), retryDelay);
+}
+
+// Load the served terminal page. On failure, swap in the local offline page
+// (which auto-retries); success resets the backoff.
+function loadApp() {
+  clearRetry();
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.loadURL(baseUrl).catch((err) => {
+    showOffline(err && (err.message || String(err)));
+  });
+}
+
+function showOffline(detail) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const q = new URLSearchParams({
+    url: baseUrl || "",
+    err: detail || "load failed",
+  }).toString();
+  mainWindow
+    .loadFile(OFFLINE_PAGE, { search: q })
+    .catch(() => {
+      /* offline page is bundled; this should never fail */
+    });
+  scheduleRetry();
+}
+
+function persistBounds() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    const b = mainWindow.getBounds();
+    writeConfigFile(app, { bounds: b });
+  } catch (_) {
+    /* best-effort */
+  }
+}
 
 function createWindow() {
+  const cfg = readConfigFile(app);
+  const bounds = cfg.bounds || {};
+
   mainWindow = new BrowserWindow({
-    width: 1024,
-    height: 680,
-    backgroundColor: "#1e1e2e", // matches terminal bg so no light letterbox flashes
-    // Edgeless: no native titlebar at all. frame:false removes the whole chrome;
-    // a slim -webkit-app-region:drag strip in the renderer keeps it draggable,
-    // and Cmd-Q / Cmd-W still close it (menu accelerators below).
+    width: bounds.width || 1024,
+    height: bounds.height || 680,
+    x: Number.isInteger(bounds.x) ? bounds.x : undefined,
+    y: Number.isInteger(bounds.y) ? bounds.y : undefined,
+    backgroundColor: "#1e1e2e", // matches terminal bg so no light flash on load
+    // Edgeless: no native titlebar. The served page (and our offline page) each
+    // carry a slim -webkit-app-region:drag strip so the window stays draggable.
     frame: false,
     titleBarStyle: process.platform === "darwin" ? "hidden" : "default",
     trafficLightPosition:
       process.platform === "darwin" ? { x: 12, y: 10 } : undefined,
     webPreferences: {
       preload: path.join(__dirname, "..", "preload", "preload.js"),
+      partition: PARTITION, // persistent -> auth cookie survives restarts
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
     },
   });
 
-  mainWindow.loadFile(path.join(__dirname, "..", "renderer", "index.html"));
-
   // ---------------------------------------------------------------------------
-  // Keyboard passthrough EXCEPTION: claim Cmd/Ctrl +/-/0 for font zoom BEFORE
-  // the renderer forwards keystrokes to the pty, so remote apps (pi) can't eat
-  // them. We intercept at the main process, tell the renderer to change font
-  // size, and swallow the chord (never sent to the pty).
+  // Zoom chords. The page is a real web document now, so Cmd/Ctrl +/-/0 map to
+  // webContents zoom. We intercept BEFORE the keystroke reaches the page (so a
+  // remote TUI can't eat it) and swallow it.
   // ---------------------------------------------------------------------------
   mainWindow.webContents.on("before-input-event", (event, input) => {
     if (input.type !== "keyDown") return;
     const mod = process.platform === "darwin" ? input.meta : input.control;
     if (!mod) return;
-    // key is the physical key; handle both '='/'+' and '-'/'_' and '0'.
     const k = input.key;
-    let action = null;
-    if (k === "+" || k === "=") action = "in";
-    else if (k === "-" || k === "_") action = "out";
-    else if (k === "0") action = "reset";
-    if (!action) return;
-    event.preventDefault(); // do NOT let this reach the renderer/pty
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send("zoom:font", action);
-    }
+    const wc = mainWindow.webContents;
+    let handled = true;
+    if (k === "+" || k === "=") wc.setZoomLevel(wc.getZoomLevel() + 0.5);
+    else if (k === "-" || k === "_") wc.setZoomLevel(wc.getZoomLevel() - 0.5);
+    else if (k === "0") wc.setZoomLevel(0);
+    else handled = false;
+    if (handled) event.preventDefault();
   });
 
-  mainWindow.on("closed", () => {
-    mainWindow = null;
-    if (pty) {
-      killPty(pty);
-      pty = null;
+  // Server unreachable / TLS / DNS failure -> offline page + backoff retry.
+  // (-3 == ERR_ABORTED, fired for in-page nav we caused; ignore it.)
+  mainWindow.webContents.on(
+    "did-fail-load",
+    (_e, errorCode, errorDesc, validatedURL, isMainFrame) => {
+      if (!isMainFrame) return;
+      if (errorCode === -3) return;
+      // Don't loop if the offline page itself is what failed.
+      if (validatedURL && validatedURL.startsWith("file:")) return;
+      showOffline(`${errorDesc} (${errorCode})`);
     }
+  );
+
+  // Successful load of the real app -> reset backoff.
+  mainWindow.webContents.on("did-finish-load", () => {
+    const url = mainWindow.webContents.getURL();
+    if (url && !url.startsWith("file:")) retryDelay = 0;
   });
+
+  // Open target=_blank / window.open in the same window rather than spawning
+  // chrome-less popups (keeps the shell "single window").
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+
+  mainWindow.on("resize", persistBounds);
+  mainWindow.on("move", persistBounds);
+  mainWindow.on("close", persistBounds);
+  mainWindow.on("closed", () => {
+    clearRetry();
+    mainWindow = null;
+  });
+
+  loadApp();
 }
 
-// Minimal menu so Cmd-Q / Cmd-W still work on an edgeless (frameless) window,
-// plus standard copy/paste. Without a menu, frameless macOS windows lose these
-// accelerators.
+// Minimal menu so Cmd-Q / Cmd-W and copy/paste still work on a frameless
+// window (macOS drops these accelerators without a menu). Zoom items give a
+// menu-driven path in addition to the before-input-event chords.
 function installMenu() {
-  const { Menu } = require("electron");
   const isMac = process.platform === "darwin";
   const template = [
     ...(isMac
@@ -101,14 +179,14 @@ function installMenu() {
               { role: "hideOthers" },
               { role: "unhide" },
               { type: "separator" },
-              { role: "quit" }, // Cmd-Q
+              { role: "quit" },
             ],
           },
         ]
       : []),
     {
       label: "File",
-      submenu: [isMac ? { role: "close" } : { role: "quit" }], // Cmd-W / Ctrl-Q
+      submenu: [isMac ? { role: "close" } : { role: "quit" }],
     },
     {
       label: "Edit",
@@ -122,96 +200,39 @@ function installMenu() {
         { role: "selectAll" },
       ],
     },
+    {
+      label: "View",
+      submenu: [
+        { role: "reload" },
+        { role: "forceReload" },
+        { type: "separator" },
+        { role: "resetZoom" },
+        { role: "zoomIn" },
+        { role: "zoomOut" },
+        { type: "separator" },
+        { role: "togglefullscreen" },
+        { role: "toggleDevTools" },
+      ],
+    },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
-// ---------------------------------------------------------------------------
-// PTY lifecycle. The renderer owns the restty terminal; we own the shell.
-// Data flows main -> renderer as UTF-8 strings ('pty:data'); renderer -> main
-// as input strings ('pty:input'). Backpressure: node-pty is a stream; we relay
-// synchronously and let Electron's IPC queue absorb bursts. We also pause the
-// pty if the renderer signals it is behind (see 'pty:flow').
-// ---------------------------------------------------------------------------
-function startPty(cols, rows) {
-  if (pty) {
-    killPty(pty);
-    pty = null;
-  }
-  try {
-    pty = spawnPty({
-      cols: cols || 80,
-      rows: rows || 24,
-      onData: (data) => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send("pty:data", data);
-        }
-      },
-      onExit: ({ exitCode }) => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send("pty:exit", exitCode);
-        }
-      },
-    });
-  } catch (err) {
-    // Cause #5: never let a spawn failure become an uncaught exception on a
-    // black screen. Ship a full, readable diagnostic INTO the window.
-    pty = null;
-    const payload = {
-      message: (err && err.message) || String(err),
-      cause: err && err.cause ? String(err.cause.message || err.cause) : null,
-      stack: (err && err.stack) || null,
-      diagnostics: (err && err.diagnostics) || null,
-      versions: {
-        electron: process.versions.electron,
-        node: process.versions.node,
-        modules: process.versions.modules,
-        chrome: process.versions.chrome,
-      },
-    };
-    // eslint-disable-next-line no-console
-    console.error("[familiar] pty spawn failed:", payload);
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send("pty:fatal", payload);
-    }
-    return;
-  }
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send("pty:status", { shell: pty.shellName });
-  }
-}
-
 app.whenReady().then(() => {
-  // Belt-and-suspenders: forbid the renderer from ever navigating to a
-  // dropped file:// URL even if a drop handler were bypassed.
-  session.defaultSession.webRequest.onBeforeRequest(
-    { urls: ["file:///*drops/*"] },
-    (details, cb) => cb({ cancel: false })
-  );
+  baseUrl = resolveBaseUrl(app);
+  // eslint-disable-next-line no-console
+  console.log("[familiar] base URL:", baseUrl, "partition:", PARTITION);
 
-  ipcMain.on("pty:start", (_e, { cols, rows }) => startPty(cols, rows));
-  ipcMain.on("pty:input", (_e, data) => {
-    if (pty) pty.write(data);
+  // Renderer (offline page) can ask us to retry loading the app now.
+  ipcMain.on("app:retry", () => {
+    retryDelay = 0;
+    loadApp();
   });
-  ipcMain.on("pty:resize", (_e, { cols, rows }) => {
-    if (pty) resizePty(pty, cols, rows);
-  });
+  // Expose the resolved base URL to the offline page if it asks.
+  ipcMain.handle("app:baseUrl", () => baseUrl);
 
-  // Drag-and-drop capture: renderer intercepts the drop, prevents default,
-  // and forwards {name, bytes} here. We persist into ~/.familiar/drops/.
-  ipcMain.handle("drop:save", async (_e, { name, bytes }) => {
-    return saveDrop(name, Buffer.from(bytes));
-  });
-
-  // Serve bundled font bytes to the renderer. CSP blocks fetch() of file://
-  // fonts, so we read them here and hand back an ArrayBuffer. Only allow
-  // basenames within the fonts dir (no traversal).
-  ipcMain.handle("font:read", async (_e, name) => {
-    const safe = path.basename(String(name || ""));
-    const file = path.join(__dirname, "..", "renderer", "fonts", safe);
-    const buf = fs.readFileSync(file);
-    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-  });
+  // Ensure the partitioned session exists (persistent cookie store on disk).
+  session.fromPartition(PARTITION);
 
   createWindow();
   installMenu();

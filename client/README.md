@@ -1,16 +1,38 @@
-# Familiar (client v0)
+# Familiar (client)
 
-The simplest possible daily-driver terminal app: a single, near-chromeless
-window wrapping a **real Ghostty-grade terminal** via
-[**restty**](https://github.com/wiedymi/restty) (libghostty-vt compiled to WASM,
-rendered to the DOM with WebGPU and a WebGL2 fallback), backed by a login shell
-through `node-pty`.
+A **dumb client**: a thin, near-chromeless Electron window that **loads the
+terminal page served by the familiar server** (default
+`https://familiar.gisi.network`). The served page owns *everything* that makes
+the terminal work — the [restty](https://github.com/wiedymi/restty)
+(libghostty-vt → WASM) renderer, the `/pty` WebSocket bridge, mouse/emoji
+handling, its own fonts, and drag-and-drop file **upload**. This app contributes
+only native chrome.
 
-It also **captures files dropped onto the window** — instead of pasting the
-local file path into the terminal (the usual annoyance), it swallows the drop,
-saves a copy into `~/.familiar/drops/`, and shows a brief toast.
+Previously the client spawned a **local** shell via `node-pty` and rendered
+restty itself. That's gone: there is no local pty, no vendored restty, no
+bundled fonts, no drops-to-disk. The server got good enough that the browser
+terminal feels equivalent, so the Electron app collapsed to a shell around it.
 
-## Run it (macOS)
+## What Electron still does
+
+- **Window chrome:** one frameless/edgeless window. A slim
+  `-webkit-app-region: drag` strip (provided by the served page and by our
+  offline page) keeps it movable. macOS traffic lights float over a hidden
+  titlebar; `Cmd-Q` / `Cmd-W`, copy/paste, and zoom live in a minimal menu.
+- **Zoom chords:** `Cmd/Ctrl` `+` / `-` / `0` map to `webContents` zoom
+  (`setZoomLevel`). They're intercepted in the main process *before* reaching
+  the page, so a remote TUI can't eat them.
+- **Persistent auth session:** the window uses a persistent session partition
+  (`persist:familiar`), so cookies — including the oauth2-proxy / Pocket ID
+  session — are stored on disk and survive restarts. See **Auth** below.
+- **Persistent window bounds:** position/size are saved to `config.json` and
+  restored on next launch.
+- **Offline courtesy:** if the server can't be reached (offline, down, TLS/DNS
+  error) the window swaps in a local `offline.html` with a **Retry** button; the
+  main process also auto-retries with exponential backoff (1s → 30s). A
+  successful load resets the backoff.
+
+## Run it
 
 From the repo root:
 
@@ -18,124 +40,105 @@ From the repo root:
 ./familiar.sh client
 ```
 
-That's it. This enters the `client` Nix devShell (which pins the Node version —
-see `devShells.client` in `flake.nix`, the single source of truth), runs
-`npm install` only when it's stale (node_modules missing or `package-lock.json`
-newer), then `npm start`. A window opens with your `$SHELL` (login shell)
-running. `git pull && ./familiar.sh client` to update.
+This enters the `client` Nix devShell (pins Node — see `devShells.client` in
+`flake.nix`), runs `npm install` when stale, then `npm start`. A window opens and
+loads the configured server. `git pull && ./familiar.sh client` to update.
 
-**No Xcode / Python toolchain needed** — `node-pty` 1.1.0 ships prebuilt N-API
-binaries (N-API is ABI-stable across Node and Electron, so nothing is compiled
-and no `electron-rebuild` step is required).
-
-If you'd rather run it by hand (any recent Node 18+ works):
+By hand (any recent Node 18+):
 
 ```bash
 cd client
-npm install     # fetches deps, vendors restty, fixes node-pty spawn-helper perms
+npm install     # just fetches electron
 npm start
 ```
 
-> First launch notes for macOS:
-> - The titlebar is **hiddenInset** (traffic-light buttons float over a light
->   frame; the terminal itself is dark). Content is padded clear of the buttons.
-> - restty prefers **WebGPU** and falls back to **WebGL2** automatically. On
->   Apple Silicon you'll get WebGPU/Metal — the renderer feel Kevin liked in the
->   demo.
-> - No packaging/signing is set up — this runs from source only.
+## Config
 
-### If the terminal doesn't start (`posix_spawnp failed`)
+The **only** thing the client needs to know is the server's base URL; every
+endpoint (the terminal page at `/`, the `/pty` WebSocket, `/upload`) is derived
+from that origin by the served page — no paths are hard-coded here.
 
-node-pty's macOS `spawn-helper` binary ships in the npm tarball **without its
-executable bit** (mode 0644); posix_spawnp then fails. `npm install` fixes this
-automatically (postinstall) and the app re-fixes it at startup. If you still hit
-it (a copy dropped the bit, or Gatekeeper quarantined it):
+Resolution order (first hit wins):
 
-```bash
-npm run fix-pty        # chmod +x every node-pty spawn-helper, strip quarantine
-# or manually:
-chmod +x node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper
-xattr -d com.apple.quarantine node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper 2>/dev/null || true
+1. `FAMILIAR_BASE_URL` environment variable
+2. `"baseUrl"` in `<userData>/config.json`
+3. Default: `https://familiar.gisi.network`
+
+`config.json` (in Electron's `userData` dir — e.g. `~/Library/Application
+Support/familiar-client/config.json` on macOS) also stores window `bounds`.
+Example:
+
+```json
+{
+  "baseUrl": "http://localhost:1692",
+  "bounds": { "x": 100, "y": 100, "width": 1024, "height": 680 }
+}
 ```
 
-If the shell still fails, the window shows a **readable diagnostic** in place of
-the black screen (resolved shell + whether it exists, cwd, spawn-helper paths
-with their stat mode, and electron/node/ABI versions) — screenshot that and
-report it. For raw data you can also run:
+Point it at a local server for development:
 
 ```bash
-ls -la node_modules/node-pty/build/Release/ 2>/dev/null; \
-ls -la node_modules/node-pty/prebuilds/darwin-arm64/; \
-file node_modules/node-pty/prebuilds/darwin-arm64/*.node \
-     node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper
+FAMILIAR_BASE_URL=http://localhost:1692 npm start
 ```
 
-## What it does
+## Auth
 
-- **Terminal:** `node-pty` spawns `$SHELL -l` with `TERM=xterm-256color`,
-  `COLORTERM=truecolor`. The child env is **sanitized**: `NIX_*` vars are
-  dropped and any `/nix/store/*` entries are pruned from `PATH` (with the
-  standard system dirs ensured) so a shell installed via `nix-shell` doesn't
-  inherit build-only paths that won't resolve. The shell and cwd are both
-  validated to exist before spawn (falling back `$SHELL` → /bin/zsh → /bin/bash
-  → /bin/sh, and homedir → $HOME → /tmp → /). Full keyboard passthrough,
-  bracketed paste, mouse reporting, and scrollback are handled by libghostty-vt
-  inside restty — the same VT core as Ghostty. Rows/cols resync on window resize.
-- **Drag & drop:** dropping image(s)/file(s) onto the window is intercepted at
-  the `window` capture phase; the default is prevented (**no path is pasted**),
-  the bytes are written to `~/.familiar/drops/<name>` (with a short content-hash
-  suffix on collisions and a `manifest.jsonl` log), and a toast confirms
-  `captured <name>`. No upload, no injection — that's the whole v0 scope.
+`familiar.gisi.network` sits behind oauth2-proxy / Pocket ID for off-tailnet
+requests; on-tailnet requests pass via identity auth.
+
+Because the window is a **real browser context**, auth "just works": when the
+server returns a redirect to Pocket ID, the window follows it, Kevin completes
+the login inline, and the resulting cookie is written to the **persistent
+partition** on disk. Subsequent launches reuse that cookie until it expires. The
+`/pty` WebSocket and `/upload` POST both originate from the same page/session, so
+they carry the cookie automatically — no cookie-copying, no separate auth
+window. On the tailnet, identity auth passes and no redirect happens at all.
+
+### Limitations
+
+- If the auth cookie **expires** while the app is open, the next navigation (or a
+  `/pty` reconnect) will 302 to Pocket ID; the login page renders in-window and,
+  once completed, you're back. A dropped WebSocket during an expired session
+  surfaces via the served page's own reconnect UI.
+- The persistent cookie lives under Electron's `userData`; deleting it (or using
+  a different `userData`) forces a fresh login.
+- `window.open`/`target=_blank` from the page is denied (single-window shell);
+  auth redirects are top-level navigations, so this doesn't affect login.
 
 ## Layout
 
 ```
 client/
   package.json            electron app; main = src/main/main.js
-  scripts/
-    postinstall.js        vendor restty + fix spawn-helper perms
-    vendor-restty.js      copy restty's self-contained ESM bundle into renderer
-    ensure-spawn-helper.js chmod +x node-pty spawn-helper (also `npm run fix-pty`)
   src/
-    main/                 main process (Node)
-      main.js             window, IPC wiring, drop + font handlers, fatal report
-      pty.js              node-pty spawn/resize/kill; shell/cwd/env hardening
-      drops.js            ~/.familiar/drops persistence
-    preload/preload.js    contextIsolation bridge (window.familiar.*)
-    renderer/             renderer (no Node)
-      index.html          CSP allows wasm-unsafe-eval; light frame
-      style.css           light-mode chrome + toast + drop hint + fatal panel
-      renderer.js         boots restty, custom IPC PtyTransport, drop capture
-      fonts/              bundled JetBrains Mono (loaded as buffers; offline)
-      vendor/             restty.esm.js (git-ignored; created on install)
+    main/
+      main.js             window, zoom chords, session partition, offline retry
+      config.js           base-URL resolution + config.json (bounds) persistence
+      offline.html        local retry page shown when the server is unreachable
+    preload/preload.js    tiny bridge: offline page -> app:retry / app:baseUrl
     selftest/selftest.js  headless verification harness (electron . --selftest)
 ```
 
-## How restty is consumed
-
-restty is a **published npm package** (`restty`, MIT). It ships a fully
-self-contained standalone browser ESM bundle (`dist/restty.esm.js`, ~4 MB) with
-the **WASM embedded as base64** and `text-shaper` bundled in — no separate WASM
-asset to serve, no bundler required. `scripts/vendor-restty.js` copies that one
-file into `src/renderer/vendor/` on `postinstall`, and the renderer imports it
-directly as an ES module. No Vite/esbuild needed.
-
-restty normally talks to a WebSocket PTY server; it also exposes a
-`ptyTransport` interface. We implement that interface over Electron IPC
-(`preload -> main -> node-pty`) so there's no WebSocket server in the loop.
-
-### Caveats
-- restty is **early-release** ("some APIs may still change"). Pinned to
-  `^0.2.6`.
-- Its default font fallback chain fetches Nerd/Noto fonts from a CDN. That
-  violates our CSP and won't work offline, so we **bundle JetBrains Mono** and
-  hand restty the font bytes as in-memory buffers (via `window.familiar.readFont`
-  over IPC — `fetch()` of `file://` fonts is also CSP-blocked). Emoji/CJK/Nerd
-  glyphs beyond the bundled face won't render until more faces are bundled.
-- CSP needs `script-src 'self' 'wasm-unsafe-eval'` for WASM instantiation.
+There is deliberately no `renderer/` tree anymore — the UI is the remote page.
 
 ## Verify (headless)
 
-`electron . --selftest` runs a harness that boots the pty, checks `echo`,
-resizes, exercises the drop persistence, loads the real renderer, and writes a
-screenshot to `$TMPDIR/familiar-selftest/render.png`. Exit 0 = pass.
+```bash
+npm run selftest      # electron . --selftest
+```
+
+The harness checks:
+
+1. **config** — `normalizeBaseUrl` cases and `resolveBaseUrl` precedence
+   (env > `config.json` > default); window-bounds round-trip through the JSON.
+2. **offline page** — loads `offline.html` in a window, confirms it renders the
+   base URL and that the preload bridge's `retry()` reaches the `app:retry` IPC;
+   writes `$TMPDIR/familiar-selftest/offline.png`.
+3. **live smoke (opt-in)** — with `FAMILIAR_SELFTEST_LIVE=1` and a reachable
+   `FAMILIAR_BASE_URL`, actually loads the server page in a partitioned window
+   and screenshots it. Skipped by default (needs a display + a running server).
+
+> The config checks run as pure Node and need no display. The window checks need
+> Electron to open a window (a display or xvfb). On a headless CI box without a
+> GPU/display, run the config assertions directly:
+> `node -e "require('./src/main/config') ..."`.
