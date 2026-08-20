@@ -1,0 +1,102 @@
+:root {
+  --frame-bg: #f4f4f5;
+  --frame-fg: #1f2328;
+  --toast-bg: #ffffff;
+  --toast-border: #d4d4d8;
+  --toast-shadow: rgba(0, 0, 0, 0.12);
+  --accent: #2563eb;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--frame-bg);
+  color: var(--frame-fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+
+#app {
+  position: relative;
+  height: 100vh;
+  width: 100vw;
+  /* Small light-mode inset so the dark terminal reads as "framed". On macOS the
+     hiddenInset titlebar overlaps the top; the top padding keeps content clear
+     of the traffic-light buttons. */
+  padding: 6px 6px 6px 6px;
+  padding-top: env(titlebar-area-height, 28px);
+  background: var(--frame-bg);
+}
+
+#terminal {
+  position: relative;
+  height: 100%;
+  width: 100%;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #000;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.14);
+}
+
+/* Toasts: unobtrusive, bottom-right, light-mode. */
+#toast-stack {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 50;
+  pointer-events: none;
+}
+
+.toast {
+  background: var(--toast-bg);
+  border: 1px solid var(--toast-border);
+  color: var(--frame-fg);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  line-height: 1.3;
+  box-shadow: 0 4px 12px var(--toast-shadow);
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 160ms ease, transform 160ms ease;
+  max-width: 320px;
+}
+
+.toast.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.toast .icon {
+  color: var(--accent);
+  margin-right: 6px;
+}
+
+/* Drop hint overlay — appears while dragging over the window. */
+#drop-hint {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--accent);
+  background: rgba(244, 244, 245, 0.72);
+  border: 3px dashed var(--accent);
+  border-radius: 12px;
+  z-index: 60;
+  pointer-events: none;
+}
+
+#drop-hint.active {
+  display: flex;
+}

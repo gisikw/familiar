@@ -1,0 +1,19 @@
+{
+  "name": "familiar-client",
+  "version": "0.1.0",
+  "description": "Familiar — a minimal daily-driver terminal app wrapping the restty (libghostty-vt) renderer.",
+  "private": true,
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "postinstall": "node scripts/vendor-restty.js"
+  },
+  "dependencies": {
+    "node-pty": "^1.1.0",
+    "restty": "^0.2.6"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.2.0",
+    "electron": "^43.4.1"
+  }
+}

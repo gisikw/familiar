@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'"
+    />
+    <title>Familiar</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <!-- Light-mode frame chrome. The terminal surface paints its own dark bg. -->
+    <div id="app">
+      <div id="terminal"></div>
+      <div id="toast-stack" aria-live="polite"></div>
+    </div>
+    <div id="drop-hint">Drop to capture</div>
+    <script type="module" src="renderer.js"></script>
+  </body>
+</html>

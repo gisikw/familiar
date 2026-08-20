@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# Vendored at install time by scripts/vendor-restty.js (postinstall).
+src/renderer/vendor/restty.esm.js
