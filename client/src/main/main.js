@@ -33,8 +33,14 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1024,
     height: 680,
-    backgroundColor: "#f4f4f5", // light-mode frame; terminal paints its own dark bg
-    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
+    backgroundColor: "#1e1e2e", // matches terminal bg so no light letterbox flashes
+    // Edgeless: no native titlebar at all. frame:false removes the whole chrome;
+    // a slim -webkit-app-region:drag strip in the renderer keeps it draggable,
+    // and Cmd-Q / Cmd-W still close it (menu accelerators below).
+    frame: false,
+    titleBarStyle: process.platform === "darwin" ? "hidden" : "default",
+    trafficLightPosition:
+      process.platform === "darwin" ? { x: 12, y: 10 } : undefined,
     webPreferences: {
       preload: path.join(__dirname, "..", "preload", "preload.js"),
       contextIsolation: true,
@@ -45,6 +51,29 @@ function createWindow() {
 
   mainWindow.loadFile(path.join(__dirname, "..", "renderer", "index.html"));
 
+  // ---------------------------------------------------------------------------
+  // Keyboard passthrough EXCEPTION: claim Cmd/Ctrl +/-/0 for font zoom BEFORE
+  // the renderer forwards keystrokes to the pty, so remote apps (pi) can't eat
+  // them. We intercept at the main process, tell the renderer to change font
+  // size, and swallow the chord (never sent to the pty).
+  // ---------------------------------------------------------------------------
+  mainWindow.webContents.on("before-input-event", (event, input) => {
+    if (input.type !== "keyDown") return;
+    const mod = process.platform === "darwin" ? input.meta : input.control;
+    if (!mod) return;
+    // key is the physical key; handle both '='/'+' and '-'/'_' and '0'.
+    const k = input.key;
+    let action = null;
+    if (k === "+" || k === "=") action = "in";
+    else if (k === "-" || k === "_") action = "out";
+    else if (k === "0") action = "reset";
+    if (!action) return;
+    event.preventDefault(); // do NOT let this reach the renderer/pty
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("zoom:font", action);
+    }
+  });
+
   mainWindow.on("closed", () => {
     mainWindow = null;
     if (pty) {
@@ -52,6 +81,49 @@ function createWindow() {
       pty = null;
     }
   });
+}
+
+// Minimal menu so Cmd-Q / Cmd-W still work on an edgeless (frameless) window,
+// plus standard copy/paste. Without a menu, frameless macOS windows lose these
+// accelerators.
+function installMenu() {
+  const { Menu } = require("electron");
+  const isMac = process.platform === "darwin";
+  const template = [
+    ...(isMac
+      ? [
+          {
+            label: app.name,
+            submenu: [
+              { role: "about" },
+              { type: "separator" },
+              { role: "hide" },
+              { role: "hideOthers" },
+              { role: "unhide" },
+              { type: "separator" },
+              { role: "quit" }, // Cmd-Q
+            ],
+          },
+        ]
+      : []),
+    {
+      label: "File",
+      submenu: [isMac ? { role: "close" } : { role: "quit" }], // Cmd-W / Ctrl-Q
+    },
+    {
+      label: "Edit",
+      submenu: [
+        { role: "undo" },
+        { role: "redo" },
+        { type: "separator" },
+        { role: "cut" },
+        { role: "copy" },
+        { role: "paste" },
+        { role: "selectAll" },
+      ],
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
 // ---------------------------------------------------------------------------
@@ -142,6 +214,7 @@ app.whenReady().then(() => {
   });
 
   createWindow();
+  installMenu();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

@@ -10,8 +10,11 @@
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <!-- Light-mode frame chrome. The terminal surface paints its own dark bg. -->
+    <!-- Edgeless frame. A slim strip at the very top is the only draggable
+         region (so the window can be moved without a titlebar). The terminal
+         surface paints its own dark bg; the frame bg matches it. -->
     <div id="app">
+      <div id="drag-strip"></div>
       <div id="terminal"></div>
       <div id="toast-stack" aria-live="polite"></div>
     </div>

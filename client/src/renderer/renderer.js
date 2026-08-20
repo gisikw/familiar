@@ -1,6 +1,14 @@
 import { Restty } from "./vendor/restty.esm.js";
+import { DecsetTracker, encodeMouse, domButtonToCode } from "./mouse.js";
+import { EmojiCompleter, loadEmoji } from "./emoji.js";
 
 const { familiar } = window;
+
+// Shared app-mouse tracker: fed by pty output, read by the mouse layer.
+const decset = new DecsetTracker();
+// Last known grid geometry (kept in sync by the transport.resize below).
+let gridCols = 80;
+let gridRows = 24;
 
 // ---------------------------------------------------------------------------
 // Custom PtyTransport: restty is renderer-side only and normally talks to a
@@ -23,7 +31,11 @@ function createIpcPtyTransport() {
   return {
     connect(options) {
       cbs = options.callbacks || {};
-      offData = familiar.pty.onData((data) => cbs.onData && cbs.onData(data));
+      offData = familiar.pty.onData((data) => {
+        // Watch output for app mouse-mode toggles (DECSET 1000/1002/1003/1006).
+        decset.feed(data);
+        cbs.onData && cbs.onData(data);
+      });
       offExit = familiar.pty.onExit(
         (code) => cbs.onExit && cbs.onExit(code | 0)
       );
@@ -31,6 +43,8 @@ function createIpcPtyTransport() {
         (s) => cbs.onStatus && cbs.onStatus(s.shell || "shell")
       );
       familiar.pty.start({ cols: options.cols || 80, rows: options.rows || 24 });
+      gridCols = options.cols || 80;
+      gridRows = options.rows || 24;
       connected = true;
       // restty expects an onConnect ping to flip its lifecycle to connected.
       if (cbs.onConnect) cbs.onConnect();
@@ -46,6 +60,8 @@ function createIpcPtyTransport() {
     },
     resize(cols, rows) {
       if (!connected) return false;
+      gridCols = cols;
+      gridRows = rows;
       familiar.pty.resize({ cols, rows });
       return true;
     },
@@ -128,7 +144,7 @@ function showFatal(info) {
     helper,
     "",
     "Most likely fixes:",
-    "  1. Rebuild the native module for Electron:  npm run rebuild",
+    "  1. Make the pty helper executable:  npm run fix-pty",
     "  2. Ensure your shell exists / $SHELL is valid.",
     "  3. Re-install outside nix-shell if PATH points into /nix/store.",
   ].filter((x) => x !== null);
@@ -146,18 +162,26 @@ const root = document.getElementById("terminal");
 const transport = createIpcPtyTransport();
 let restty = null;
 
+// Font sizing state for Cmd/Ctrl +/-/0 zoom.
+const DEFAULT_FONT_SIZE = 14;
+let fontSize = DEFAULT_FONT_SIZE;
+
 async function boot() {
   // Load bundled font bytes via IPC (CSP blocks fetch() of file:// fonts).
   // Pass as in-memory buffers so restty never touches the network.
+  // ProggyClean Nerd Font is the PRIMARY face (Nerd glyphs for Kevin's
+  // prompt/statusline); JetBrains Mono stays as the fallback chain.
   let fonts;
   try {
-    const [regular, bold, italic] = await Promise.all([
+    const [proggy, regular, bold, italic] = await Promise.all([
+      familiar.readFont("ProggyCleanNerdFontMono-Regular.ttf"),
       familiar.readFont("JetBrainsMono-Regular.ttf"),
       familiar.readFont("JetBrainsMono-Bold.ttf"),
       familiar.readFont("JetBrainsMono-Italic.ttf"),
     ]);
     fonts = [
-      { data: regular },
+      { data: proggy }, // primary: Nerd Font glyphs
+      { data: regular }, // fallback faces
       { data: bold, weight: 700 },
       { data: italic, style: "italic" },
     ];
@@ -173,7 +197,7 @@ async function boot() {
     },
     terminal: {
       renderer: "auto", // WebGPU, WebGL2 fallback
-      fontSize: 14,
+      fontSize: DEFAULT_FONT_SIZE,
       autoResize: true, // restty syncs cols/rows -> transport.resize on layout
       ...(fonts ? { fonts } : {}),
     },
@@ -183,12 +207,192 @@ async function boot() {
   restty.connectPty("ipc://familiar");
   restty.focus();
 
+  // We own app-mouse; disable restty's own mouse reporting so clicks aren't
+  // double-encoded. Selection (shift-drag / no-app-mouse drag) still works.
+  try {
+    restty.setMouseMode("off");
+  } catch (_) {
+    /* older restty without setMouseMode */
+  }
+
+  wireFontZoom();
+  wireAppMouse();
+  wireEmoji();
+
   // Expose selected renderer backend for diagnostics/self-test.
   try {
     window.__familiarBackend = restty.getBackend();
   } catch (_) {
     window.__familiarBackend = "unknown";
   }
+}
+
+// ---------------------------------------------------------------------------
+// Font zoom. main sends "zoom:font" (in|out|reset) for Cmd/Ctrl +/-/0. restty
+// changes the font size; autoResize recomputes rows/cols and calls
+// transport.resize -> pty. Those chords never reach the pty (swallowed in main).
+// ---------------------------------------------------------------------------
+function wireFontZoom() {
+  familiar.onZoomFont((action) => {
+    if (action === "in") fontSize = Math.min(48, fontSize + 1);
+    else if (action === "out") fontSize = Math.max(6, fontSize - 1);
+    else fontSize = DEFAULT_FONT_SIZE;
+    try {
+      restty.setFontSize(fontSize);
+      restty.updateSize(true);
+    } catch (_) {
+      /* ignore */
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// App-mouse forwarding. When the remote app requests mouse tracking (DECSET),
+// translate pointer events over the terminal into SGR/X10 reports and write to
+// the pty. Capture phase so restty's canvas listeners don't also act.
+// ---------------------------------------------------------------------------
+function pointerToCell(ev) {
+  const rect = root.getBoundingClientRect();
+  const x = ev.clientX - rect.left;
+  const y = ev.clientY - rect.top;
+  const cellW = rect.width / Math.max(1, gridCols);
+  const cellH = rect.height / Math.max(1, gridRows);
+  let col = Math.floor(x / Math.max(1, cellW)) + 1;
+  let row = Math.floor(y / Math.max(1, cellH)) + 1;
+  col = Math.min(Math.max(1, col), gridCols);
+  row = Math.min(Math.max(1, row), gridRows);
+  return { col, row };
+}
+
+function wireAppMouse() {
+  let pressedButton = null;
+
+  const send = (kind, ev) => {
+    if (!decset.isActive()) return false;
+    const { col, row } = pointerToCell(ev);
+    const button =
+      kind === "wheel"
+        ? ev.deltaY < 0
+          ? 64
+          : 65
+        : domButtonToCode(ev.button);
+    const seq = encodeMouse(kind, {
+      format: decset.format(),
+      button,
+      col,
+      row,
+      mods: { shift: ev.shiftKey, alt: ev.altKey, ctrl: ev.ctrlKey },
+      motion: decset.motion(),
+    });
+    transport.sendInput(seq);
+    return true;
+  };
+
+  root.addEventListener(
+    "pointerdown",
+    (ev) => {
+      if (!decset.isActive()) return; // let restty selection work
+      pressedButton = ev.button;
+      if (send("down", ev)) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        root.setPointerCapture && root.setPointerCapture(ev.pointerId);
+      }
+    },
+    true
+  );
+  root.addEventListener(
+    "pointerup",
+    (ev) => {
+      if (!decset.isActive()) return;
+      pressedButton = null;
+      if (send("up", ev)) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+    },
+    true
+  );
+  root.addEventListener(
+    "pointermove",
+    (ev) => {
+      if (!decset.isActive()) return;
+      const motion = decset.motion();
+      if (motion === "none") return;
+      if (motion === "drag" && pressedButton === null) return;
+      // For motion reports, use the held button (or 3=released base).
+      const btn = pressedButton === null ? 3 : domButtonToCode(pressedButton);
+      const { col, row } = pointerToCell(ev);
+      const seq = encodeMouse("move", {
+        format: decset.format(),
+        button: btn,
+        col,
+        row,
+        mods: { shift: ev.shiftKey, alt: ev.altKey, ctrl: ev.ctrlKey },
+        motion,
+      });
+      transport.sendInput(seq);
+      ev.preventDefault();
+      ev.stopPropagation();
+    },
+    true
+  );
+  root.addEventListener(
+    "wheel",
+    (ev) => {
+      if (!decset.isActive()) return;
+      if (send("wheel", ev)) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+    },
+    { capture: true, passive: false }
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Emoji completion. Intercept keydown at capture phase, before restty forwards
+// to the pty. The completer decides whether to consume the key.
+// ---------------------------------------------------------------------------
+let emojiCompleter = null;
+async function wireEmoji() {
+  try {
+    await loadEmoji();
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("emoji load failed", err);
+    return;
+  }
+  emojiCompleter = new EmojiCompleter({
+    writeToPty: (s) => transport.sendInput(s),
+    getCursorRect: () => {
+      // Best-effort: anchor at bottom-left of terminal (restty has no public
+      // cursor-rect API). Good enough for a floating picker.
+      const r = root.getBoundingClientRect();
+      return { left: r.left + 8, top: r.bottom - 40, bottom: r.bottom - 8 };
+    },
+  });
+
+  window.addEventListener(
+    "keydown",
+    (e) => {
+      // Cmd/Ctrl-E toggles the feature.
+      const mod = navigator.platform.startsWith("Mac") ? e.metaKey : e.ctrlKey;
+      if (mod && (e.key === "e" || e.key === "E")) {
+        const on = emojiCompleter.toggle();
+        toast(on ? "emoji completion on" : "emoji completion off");
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      const consumed = emojiCompleter.handleKeydown(e);
+      if (consumed) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    },
+    true // capture: run before restty's key handler
+  );
 }
 
 boot();

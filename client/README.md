@@ -12,19 +12,29 @@ saves a copy into `~/.familiar/drops/`, and shows a brief toast.
 
 ## Run it (macOS)
 
-Requirements: a recent Node (18+). **No Xcode / Python toolchain needed** —
-`node-pty` 1.1.0 ships prebuilt N-API binaries (N-API is ABI-stable across Node
-and Electron, so nothing is compiled and no `electron-rebuild` step is
-required). `nix-shell -p nodejs_22` (or plain Node) is sufficient.
+From the repo root:
+
+```bash
+./familiar.sh client
+```
+
+That's it. This enters the `client` Nix devShell (which pins the Node version —
+see `devShells.client` in `flake.nix`, the single source of truth), runs
+`npm install` only when it's stale (node_modules missing or `package-lock.json`
+newer), then `npm start`. A window opens with your `$SHELL` (login shell)
+running. `git pull && ./familiar.sh client` to update.
+
+**No Xcode / Python toolchain needed** — `node-pty` 1.1.0 ships prebuilt N-API
+binaries (N-API is ABI-stable across Node and Electron, so nothing is compiled
+and no `electron-rebuild` step is required).
+
+If you'd rather run it by hand (any recent Node 18+ works):
 
 ```bash
 cd client
 npm install     # fetches deps, vendors restty, fixes node-pty spawn-helper perms
 npm start
 ```
-
-That's it. A window opens with your `$SHELL` (login shell) running. `git pull &&
-npm install && npm start` to update.
 
 > First launch notes for macOS:
 > - The titlebar is **hiddenInset** (traffic-light buttons float over a light

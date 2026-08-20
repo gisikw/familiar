@@ -1,10 +1,12 @@
 :root {
-  --frame-bg: #f4f4f5;
-  --frame-fg: #1f2328;
+  --term-bg: #1e1e2e; /* matches restty default dark bg so no letterbox */
+  --frame-fg: #cdd6f4;
   --toast-bg: #ffffff;
   --toast-border: #d4d4d8;
   --toast-shadow: rgba(0, 0, 0, 0.12);
   --accent: #2563eb;
+  --pad: 12px;
+  --drag-h: 8px;
 }
 
 * {
@@ -16,7 +18,7 @@ body {
   margin: 0;
   height: 100%;
   overflow: hidden;
-  background: var(--frame-bg);
+  background: var(--term-bg);
   color: var(--frame-fg);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
 }
@@ -25,12 +27,23 @@ body {
   position: relative;
   height: 100vh;
   width: 100vw;
-  /* Small light-mode inset so the dark terminal reads as "framed". On macOS the
-     hiddenInset titlebar overlaps the top; the top padding keeps content clear
-     of the traffic-light buttons. */
-  padding: 6px 6px 6px 6px;
-  padding-top: env(titlebar-area-height, 28px);
-  background: var(--frame-bg);
+  /* 12px inset padding on all sides; bg matches the terminal so the inset reads
+     as breathing room, not a letterbox. Top gets a bit more to clear the
+     traffic lights on macOS (frameless). */
+  padding: calc(var(--pad) + var(--drag-h)) var(--pad) var(--pad) var(--pad);
+  background: var(--term-bg);
+}
+
+/* Slim draggable strip at the very top (the only -webkit-app-region:drag area).
+   Everything else stays interactive so terminal clicks/selection work. */
+#drag-strip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: calc(var(--pad) + var(--drag-h));
+  -webkit-app-region: drag;
+  z-index: 40;
 }
 
 #terminal {
@@ -39,8 +52,7 @@ body {
   width: 100%;
   border-radius: 8px;
   overflow: hidden;
-  background: #000;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.14);
+  background: var(--term-bg);
 }
 
 /* Toasts: unobtrusive, bottom-right, light-mode. */
@@ -90,7 +102,7 @@ body {
   font-size: 18px;
   font-weight: 600;
   color: var(--accent);
-  background: rgba(244, 244, 245, 0.72);
+  background: rgba(30, 30, 46, 0.72);
   border: 3px dashed var(--accent);
   border-radius: 12px;
   z-index: 60;
@@ -99,6 +111,46 @@ body {
 
 #drop-hint.active {
   display: flex;
+}
+
+/* Emoji completion picker: floating, dark, anchored near the cursor. */
+#emoji-picker {
+  position: fixed;
+  z-index: 70;
+  min-width: 200px;
+  max-width: 320px;
+  background: #181825;
+  border: 1px solid #313244;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  padding: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  overflow: hidden;
+}
+
+.emoji-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 5px;
+  color: #cdd6f4;
+  white-space: nowrap;
+}
+
+.emoji-row.sel {
+  background: #45475a;
+}
+
+.emoji-glyph {
+  font-size: 16px;
+  width: 20px;
+  text-align: center;
+}
+
+.emoji-name {
+  color: #a6adc8;
 }
 
 /* Fatal diagnostic panel (shown in place of the terminal when the shell fails

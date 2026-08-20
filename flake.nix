@@ -97,6 +97,13 @@
             FAMILIAR_SHELL = "tts";
             packages = with pkgs; [ tts-cpp curl age bakePython ];
           });
+          # The Electron terminal app under client/. node-pty ships prebuilt
+          # N-API binaries (ABI-stable), so only a matching Node is needed —
+          # this is the single source of truth for that version.
+          client = pkgs.mkShell {
+            FAMILIAR_SHELL = "client";
+            packages = with pkgs; [ nodejs_22 ];
+          };
         };
       }
     );

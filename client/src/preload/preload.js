@@ -33,4 +33,11 @@ contextBridge.exposeInMainWorld("familiar", {
   // Read a bundled font's bytes from disk (avoids CSP fetch restrictions on
   // file:// URLs). Returns an ArrayBuffer.
   readFont: (name) => ipcRenderer.invoke("font:read", name),
+  // Font-zoom chords (Cmd/Ctrl +/-/0) intercepted in main before they reach
+  // the pty. cb receives "in" | "out" | "reset".
+  onZoomFont: (cb) => {
+    const h = (_e, action) => cb(action);
+    ipcRenderer.on("zoom:font", h);
+    return () => ipcRenderer.removeListener("zoom:font", h);
+  },
 });

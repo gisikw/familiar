@@ -49,6 +49,22 @@ async function run() {
   const rCwd = resolveCwd();
   if (!require("fs").existsSync(rCwd)) return fail("resolveCwd nonexistent: " + rCwd);
   log("resolveCwd:", rCwd);
+
+  // 0b. Revision assets: fonts present + emoji map parses.
+  const rroot = path.join(__dirname, "..", "renderer");
+  for (const f of [
+    "fonts/ProggyCleanNerdFontMono-Regular.ttf",
+    "fonts/JetBrainsMono-Regular.ttf",
+    "vendor/emoji.json",
+  ]) {
+    if (!fs.existsSync(path.join(rroot, f))) return fail("missing asset: " + f);
+  }
+  const emojiMap = JSON.parse(
+    fs.readFileSync(path.join(rroot, "vendor", "emoji.json"), "utf8")
+  );
+  if (!emojiMap.rocket || emojiMap.rocket !== "🚀")
+    return fail("emoji map bad (rocket)");
+  log("assets OK: proggy font + jetbrains + emoji(" + Object.keys(emojiMap).length + ")");
   const sEnv = sanitizeEnv({
     ...process.env,
     NIX_STORE: "/nix/store",
