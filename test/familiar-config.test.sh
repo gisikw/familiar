@@ -60,13 +60,15 @@ assert_eq "$out" 'a path with spaces/devshell' "recursive precedence"
 cat >"$CONFIG" <<'TOML'
 pi_offline = 1
 anthropic_base_url = "https://example.invalid/v1"
+llama_base_url = "http://localhost:9999"
+herdr_session = "config-test"
 TOML
 chmod 600 "$CONFIG"
 out=$(env -i PATH="$PATH" HOME="${HOME:-/tmp}" FAMILIAR_CONFIG_PATH="$CONFIG" bash -c '
   set -eu; source "$1/scripts/familiar-config.sh"; familiar_config_load "$1"
-  printf "%s/%s" "$PI_OFFLINE" "$ANTHROPIC_BASE_URL"
+  printf "%s/%s/%s/%s" "$PI_OFFLINE" "$ANTHROPIC_BASE_URL" "$LLAMA_BASE_URL" "$HERDR_SESSION"
 ' bash "$REPO")
-assert_eq "$out" '1/https://example.invalid/v1' "upstream compatibility exports"
+assert_eq "$out" '1/https://example.invalid/v1/http://localhost:9999/config-test' "upstream compatibility exports"
 
 secret='DO_NOT_PRINT_CONFIG_SECRET_7e21'
 printf 'token = "unterminated %s\n' "$secret" >"$CONFIG"

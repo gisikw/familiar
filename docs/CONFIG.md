@@ -57,10 +57,12 @@ The provenance marker and all loaded values survive `nix develop` and
 
 A few upstream programs require established non-Familiar names. Familiar maps
 `FAMILIAR_PI_TELEMETRY`, `FAMILIAR_PI_OFFLINE`, and
-`FAMILIAR_PI_SKIP_VERSION_CHECK` to their `PI_*` counterparts, and maps
-`FAMILIAR_ANTHROPIC_BASE_URL`, `FAMILIAR_ANTHROPIC_API_KEY`, and
-`FAMILIAR_ANTHROPIC_AUTH_TOKEN` to `ANTHROPIC_*`. An upstream name that was
-explicitly ambient is preserved. Local configuration should always use the
+`FAMILIAR_PI_SKIP_VERSION_CHECK` and `FAMILIAR_PI_CODING_AGENT_DIR` to
+their `PI_*` counterparts, and maps `FAMILIAR_ANTHROPIC_BASE_URL`,
+`FAMILIAR_ANTHROPIC_API_KEY`, and `FAMILIAR_ANTHROPIC_AUTH_TOKEN` to
+`ANTHROPIC_*`. The same bridge covers `LLAMA_BASE_URL`, `HERDR_SESSION`, and
+`HERDR_CONFIG_PATH`. An upstream name that was explicitly ambient is preserved.
+Local configuration should always use the
 generic Familiar names shown in `familiar.toml.example`.
 
 ## Changes and failures

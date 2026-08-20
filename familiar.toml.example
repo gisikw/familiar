@@ -13,16 +13,28 @@ pi_offline = 1
 pi_skip_version_check = 1
 
 # Paths and model/service examples.
+# pi_coding_agent_dir = "./state/pi"
 # identity_path = "./identity"
 # age_key = "./state/age.key"
 # handoff_path = "./state/handoffs"
+# handoff_prompt_path = "/private/path/prompt.md.age"
+# inbox_dir = "./state/inbox"
 # model_dir = "./models"
 # log_path = "./state/log.jsonl"
+# herdr_session = "familiar"
+# herdr_config_path = "./state/herdr/config.toml"
+# model_file = "model.gguf"                 # set file + URL together
+# model_url = "https://models.example.invalid/model.gguf"
+# llama_base_url = "https://llama.example.invalid" # omit to spawn local
 # default_provider = "llama.cpp"
 # default_model = "provider/model-id"
-# stt_url = "https://stt.example.invalid"
-# tts_url = "https://tts.example.invalid"
+# stt_url = "https://stt.example.invalid"   # omit to spawn local
+# tts_url = "https://tts.example.invalid"   # omit to spawn local
 # tts_voice = "af_exo"
+# stt_model_file = "stt.gguf"
+# stt_model_url = "https://models.example.invalid/stt.gguf"
+# tts_model_file = "tts.gguf"
+# tts_model_url = "https://models.example.invalid/tts.gguf"
 
 # Provider configuration. These remain FAMILIAR_* in local configuration;
 # Familiar bridges them to ANTHROPIC_* only when launching upstream consumers.
@@ -34,8 +46,15 @@ pi_skip_version_check = 1
 # Web tools and subagents.
 # searxng_url = "https://search.example.invalid"
 # brave_api_key = "replace-locally"
+# brave_url = "https://api.search.brave.com"
+# fetch_allow_private = false
+# subagent_mode = "herdr"
 # subagent_model = "anthropic/claude-haiku-4-5"
 # subagent_timeout = 1800
+# subagent_dir = "./state/subagents"
+# subagent_session_dir = "./state/pi/subagent-sessions"
+# artifact_dir = "./state/artifacts"
+# subscriber_port = 1692
 # zip_model = "anthropic/claude-haiku-4-5"
 # tz = "America/Chicago"
 # debug_level = "debug"

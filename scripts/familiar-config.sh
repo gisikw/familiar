@@ -19,7 +19,7 @@ familiar_config_capture_explicit() {
     name=${name#declare -x }
     name=${name%%=*}
     case "$name" in
-      FAMILIAR_*|PI_TELEMETRY|PI_OFFLINE|PI_SKIP_VERSION_CHECK|ANTHROPIC_BASE_URL|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN)
+      FAMILIAR_*|PI_TELEMETRY|PI_OFFLINE|PI_SKIP_VERSION_CHECK|PI_CODING_AGENT_DIR|ANTHROPIC_BASE_URL|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|LLAMA_BASE_URL|HERDR_SESSION|HERDR_CONFIG_PATH)
         names="${names:+$names:}$name" ;;
     esac
   done < <(export -p)
@@ -85,7 +85,11 @@ familiar_config_load() {
   familiar_config_alias PI_TELEMETRY FAMILIAR_PI_TELEMETRY
   familiar_config_alias PI_OFFLINE FAMILIAR_PI_OFFLINE
   familiar_config_alias PI_SKIP_VERSION_CHECK FAMILIAR_PI_SKIP_VERSION_CHECK
+  familiar_config_alias PI_CODING_AGENT_DIR FAMILIAR_PI_CODING_AGENT_DIR
   familiar_config_alias ANTHROPIC_BASE_URL FAMILIAR_ANTHROPIC_BASE_URL
   familiar_config_alias ANTHROPIC_API_KEY FAMILIAR_ANTHROPIC_API_KEY
   familiar_config_alias ANTHROPIC_AUTH_TOKEN FAMILIAR_ANTHROPIC_AUTH_TOKEN
+  familiar_config_alias LLAMA_BASE_URL FAMILIAR_LLAMA_BASE_URL
+  familiar_config_alias HERDR_SESSION FAMILIAR_HERDR_SESSION
+  familiar_config_alias HERDR_CONFIG_PATH FAMILIAR_HERDR_CONFIG_PATH
 }
