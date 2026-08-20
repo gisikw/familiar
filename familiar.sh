@@ -13,6 +13,7 @@ export HERDR_CONFIG_PATH="${HERDR_CONFIG_PATH:-$HERDR_STATE_DIR/config.toml}"
 export FAMILIAR_IDENTITY_PATH="${FAMILIAR_IDENTITY_PATH:-$REPO/identity}"
 export FAMILIAR_AGE_KEY="${FAMILIAR_AGE_KEY:-$STATE_DIR/age.key}"
 export FAMILIAR_HANDOFF_PATH="${FAMILIAR_HANDOFF_PATH:-$STATE_DIR/handoffs}"
+export FAMILIAR_INBOX_DIR="${FAMILIAR_INBOX_DIR:-$STATE_DIR/inbox}"
 export FAMILIAR_RELOAD_REQUEST_PATH="${FAMILIAR_RELOAD_REQUEST_PATH:-$HERDR_STATE_DIR/reload-request}"
 export FAMILIAR_RELOAD_COMPLETE_PATH="${FAMILIAR_RELOAD_COMPLETE_PATH:-$HERDR_STATE_DIR/reload-complete}"
 export FAMILIAR_LOG_PATH="${FAMILIAR_LOG_PATH:-$STATE_DIR/log.jsonl}"
@@ -765,6 +766,21 @@ connect() {
   return "$status"
 }
 
+# The Electron terminal app under client/. Runs in the `client` devShell so the
+# Node version lives only in flake.nix. npm install runs only when node_modules
+# is missing or package-lock.json is newer than it (cheap staleness check), so a
+# normal launch skips it. bash 3.2 compatible: no associative arrays, and the
+# staleness test is a plain `-nt`.
+client() {
+  ensure_devshell client "$@"
+  local dir="$REPO/client"
+  cd "$dir" || { echo "no client dir at $dir" >&2; return 1; }
+  if [ ! -d node_modules ] || [ package-lock.json -nt node_modules ]; then
+    npm install || return 1
+  fi
+  npm start
+}
+
 start() {
   local client_status
   ensure_devshell pi "$@"
@@ -799,12 +815,59 @@ stop() {
   herdr session stop "$HERDR_SESSION" --json 2>/dev/null || herdr server stop 2>/dev/null || true
 }
 
+# Out-of-process enqueue (protocol path b): write an atomic envelope into the
+# inbox drop-box. The inbox extension drains state/inbox/incoming/ on its timer
+# and promotes each envelope into a queue item. Mirrors the herdr marker-file
+# pattern: no daemon, no socket, just a file the resident process picks up.
+# Envelope schema is documented in extensions/inbox/PROTOCOL.md.
+#   familiar.sh inbox-enqueue --summary "..." [--priority N] [--type notify|question|review]
+#                             [--body TEXT | --body-file F] [--source S] [--deadline EPOCH_MS]
+inbox_enqueue() {
+  shift || true
+  local priority=2 type=notify summary="" body="" source="cli" deadline=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --priority)   priority="$2"; shift 2 ;;
+      --type)       type="$2"; shift 2 ;;
+      --summary)    summary="$2"; shift 2 ;;
+      --body)       body="$2"; shift 2 ;;
+      --body-file)  body="$(cat "$2")"; shift 2 ;;
+      --source)     source="$2"; shift 2 ;;
+      --deadline)   deadline="$2"; shift 2 ;;
+      *) echo "inbox-enqueue: unknown arg $1" >&2; return 2 ;;
+    esac
+  done
+  if [ -z "$summary" ]; then
+    echo "inbox-enqueue: --summary is required" >&2; return 2
+  fi
+  [ -z "$body" ] && body="$summary"
+  local incoming="$FAMILIAR_INBOX_DIR/incoming"
+  mkdir -p "$incoming"
+  local id file tmp
+  id="cli-$(date +%Y%m%d-%H%M%S)-$RANDOM"
+  file="$incoming/$id.json"; tmp="$file.tmp"
+  jq -n \
+    --argjson priority "$priority" \
+    --arg type "$type" \
+    --arg summary "$summary" \
+    --arg body "$body" \
+    --arg source "$source" \
+    --arg deadline "$deadline" \
+    '{priority: $priority, type: $type, summary: $summary, body: $body, source: $source}
+     + (if $deadline == "" then {} else {suggested_deadline: ($deadline|tonumber)} end)' \
+    > "$tmp"
+  mv -f "$tmp" "$file"   # atomic: the extension only ever sees a whole file
+  echo "$id"
+}
+
 case ${1:-} in
   pi)         run_pi "$@" ;;
   llama)      run_llama "$@" ;;
   stt)        run_stt "$@" ;;
   tts)        run_tts "$@" ;;
-  kill)       stop "$@" ;;
+  kill)          stop "$@" ;;
+  inbox-enqueue) inbox_enqueue "$@" ;;
+  client)     client "$@" ;;
   age)        handle_age "$@" ;;
   connect)    connect "$@" ;;
   drop-serve) drop_serve "$@" ;;
