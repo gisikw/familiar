@@ -1,0 +1,39 @@
+{
+  "$comment": "CANONICAL Familiar theme — single source of truth. Both the boot-time bash/jq generator (scripts/familiar-theme.sh) and the runtime Node module (server/src/theme/resolve.ts) read THIS file, so color literals live exactly once. Env vars FAMILIAR_THEME_<ROLE> / FAMILIAR_THEME_ANSI_<NAME> overlay these defaults (contract: the [theme] TOML section is flattened to FAMILIAR_THEME_* by the config-loader agent). Preserves the current dark visual: base #1e1e2e / text #cdd6f4 (Catppuccin-Mocha-aligned so restty's built-in match holds) with Kevin's teal accent #32b08d == oklch(0.68 0.12 170).",
+  "name": "familiar-dark",
+  "roles": {
+    "background": "#1e1e2e",
+    "surface": "#181825",
+    "surfaceDim": "#11111b",
+    "overlay": "#313244",
+    "text": "#cdd6f4",
+    "muted": "#a6adc8",
+    "accent": "#32b08d",
+    "success": "#a6e3a1",
+    "warning": "#f9e2af",
+    "error": "#f38ba8",
+    "border": "#313244",
+    "borderMuted": "#45475a",
+    "selectionBg": "#45475a",
+    "cursor": "#32b08d",
+    "cursorText": "#1e1e2e"
+  },
+  "ansi": {
+    "black": "#45475a",
+    "red": "#f38ba8",
+    "green": "#a6e3a1",
+    "yellow": "#f9e2af",
+    "blue": "#89b4fa",
+    "magenta": "#f5c2e7",
+    "cyan": "#94e2d5",
+    "white": "#bac2de",
+    "brightBlack": "#585b70",
+    "brightRed": "#f38ba8",
+    "brightGreen": "#a6e3a1",
+    "brightYellow": "#f9e2af",
+    "brightBlue": "#89b4fa",
+    "brightMagenta": "#f5c2e7",
+    "brightCyan": "#94e2d5",
+    "brightWhite": "#a6adc8"
+  }
+}
