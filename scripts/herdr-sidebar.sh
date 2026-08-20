@@ -125,9 +125,20 @@ run_kitty() {
   fi
   rm -rf "$tmp"
   printf '\033[11;8HF A M I L I A R'
-  # The image persists across redraws; just stay alive. No image animation — a
-  # re-transmit "blink" wasn't worth the flicker risk on the tiny surface.
-  while true; do sleep 3600; done
+  # Herdr replays text state to late-attaching clients, but a kitty APC image
+  # transmitted before a client attached is not part of the replayed grid — the
+  # experimental kitty path forwards live sequences only. Re-transmit on a slow
+  # loop so any client attached at the time sees the mark within a minute.
+  local retmp
+  while true; do
+    sleep 45
+    retmp="$(mktemp -d)"
+    if render_png "$retmp"; then
+      printf '\033[2;8H'
+      transmit_png "$retmp/mark.png" || true
+    fi
+    rm -rf "$retmp"
+  done
 }
 
 if can_image && run_kitty; then
