@@ -260,6 +260,28 @@ app.whenReady().then(() => {
   // Ensure the partitioned session exists (persistent cookie store on disk).
   session.fromPartition(PARTITION);
 
+  // Microphone for tap-to-talk voice capture. The served page calls
+  // getUserMedia({audio:true}); Electron must grant the `media` permission or
+  // the prompt is silently denied. We only allow audio media, and only for our
+  // own base origin — everything else stays denied.
+  const part = session.fromPartition(PARTITION);
+  const isOwnOrigin = (url) => {
+    try { return !!baseUrl && new URL(url).origin === new URL(baseUrl).origin; }
+    catch (_) { return false; }
+  };
+  part.setPermissionRequestHandler((wc, permission, callback, details) => {
+    if (permission === "media") {
+      const mediaTypes = (details && details.mediaTypes) || [];
+      const audioOnly = mediaTypes.length === 0 || mediaTypes.every((t) => t === "audio");
+      return callback(audioOnly && isOwnOrigin(details && details.requestingUrl || ""));
+    }
+    return callback(false);
+  });
+  part.setPermissionCheckHandler((wc, permission, requestingOrigin) => {
+    if (permission === "media") return isOwnOrigin(requestingOrigin);
+    return false;
+  });
+
   createWindow();
   installMenu();
 
