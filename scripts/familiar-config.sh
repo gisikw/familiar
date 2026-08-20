@@ -37,7 +37,8 @@ familiar_config_alias() {
 }
 
 familiar_config_load() {
-  local repo=$1 config=${FAMILIAR_CONFIG_PATH:-$repo/familiar.toml}
+  local repo=$1
+  local config=${FAMILIAR_CONFIG_PATH:-$repo/familiar.toml}
   local stream name length value mode
 
   if [[ ! -v _FAMILIAR_CONFIG_EXPLICIT_ENV ]]; then

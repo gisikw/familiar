@@ -152,13 +152,13 @@ const AWAIT_POLL_MS = 500;
 const MAX_RESUMES = 2;
 const DEFAULT_TIMEOUT_S = Number(process.env.FAMILIAR_SUBAGENT_TIMEOUT) || 1800;
 const DEFAULT_MODEL = process.env.FAMILIAR_SUBAGENT_MODEL;
-const MODE = process.env.FAMILIAR_SUBAGENT_MODE;
-const ARTIFACT_ROOT = process.env.FAMILIAR_ARTIFACT_DIR || path.join(REPO, "state", "artifacts");
-
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const EXT_DIR = path.dirname(HERE);
 const REPO = path.dirname(EXT_DIR);
 const WATCHER = path.join(HERE, "watcher.sh");
+const MODE = process.env.FAMILIAR_SUBAGENT_MODE;
+const ARTIFACT_ROOT = process.env.FAMILIAR_ARTIFACT_DIR || path.join(REPO, "state", "artifacts");
+
 const SPOOL = process.env.FAMILIAR_SUBAGENT_DIR || path.join(REPO, "state", "subagents");
 const AGENT_DIR = process.env.PI_CODING_AGENT_DIR || path.join(process.env.HOME || "~", ".pi", "agent");
 const SESSION_DIR = process.env.FAMILIAR_SUBAGENT_SESSION_DIR || path.join(AGENT_DIR, "subagent-sessions");
