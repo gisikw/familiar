@@ -26,6 +26,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseAnthropicBody, type AnthropicRequest } from "./lib/anthropic-body.ts";
+import { enforceImagePolicy, ImagePolicyError } from "./lib/image-policy.ts";
 import { runClaude, synthesizeCleanSSE, type SSEFrame } from "./lib/claude-runner.ts";
 import { createClaudeFacingHandler } from "./lib/loopback-b.ts";
 import {
@@ -153,13 +154,15 @@ export default function (pi: ExtensionAPI) {
       let sentAny = false;
 
       try {
-        // Reject unsupported content explicitly rather than dropping pixels.
-        for (const m of parsed.messages) {
-          for (const c of m.content) {
-            if (c.type === "image") {
-              throw Object.assign(new Error("image content blocks are not yet supported by the local claude driver (inline base64 projection pending); refusing to silently drop pixels"), { code: "unsupported_content" });
-            }
-          }
+        // Validate images end-to-end (real Anthropic caps; never silently drop
+        // pixels). Direct user image blocks AND image-bearing tool_results are
+        // projected as inline base64 — the only representation Claude Code
+        // 2.1.197 accepts headlessly (a local-file source is rejected upstream).
+        try {
+          enforceImagePolicy(parsed.messages);
+        } catch (e) {
+          if (e instanceof ImagePolicyError) throw Object.assign(e, { code: "unsupported_content" });
+          throw e;
         }
 
         // --- Projection: whole transcript minus trailing user content -------
@@ -184,13 +187,20 @@ export default function (pi: ExtensionAPI) {
           cleanupPaths.push(projectionPath);
         }
 
-        // --- stdin line: trailing user text, OR continuation after tool ------
+        // --- stdin line: trailing user text/images, OR continuation after tool
         const last = parsed.messages[parsed.messages.length - 1];
         const continuation = last && last.role === "tool";
         const trailingUserText = last && last.role === "user"
           ? last.content.map((c) => (c.type === "text" ? c.text ?? "" : "")).join("")
           : "";
-        const stdinContent = continuation ? CONTINUATION_PROMPT : (trailingUserText || "Continue.");
+        // A trailing user message with image blocks must ride as a stream-json
+        // content array (inline base64) — plain-text stdin cannot carry pixels.
+        // Verified against Claude Code 2.1.197 (inline base64 via stdin works).
+        const trailingImages = last && last.role === "user"
+          ? last.content.filter((c) => c.type === "image")
+          : [];
+        const trailingHasImages = trailingImages.length > 0;
+        const stdinContent = continuation ? CONTINUATION_PROMPT : (trailingUserText || (trailingHasImages ? "" : "Continue."));
 
         // --- system prompt file ---------------------------------------------
         let systemPromptFile: string | undefined;
@@ -225,13 +235,36 @@ export default function (pi: ExtensionAPI) {
         }
 
         const model = claudeModelArg(parsed.model);
-        log("turn", { sessionId, useResume, continuation, hasTools, stdinLen: stdinContent.length, model });
+        log("turn", { sessionId, useResume, continuation, hasTools, stdinLen: stdinContent.length, trailingHasImages, model });
+
+        // Build the stdin. Three shapes:
+        //  • continuation (leaf tool_result): stream-json continuation line.
+        //  • trailing user WITH images: stream-json content array (inline
+        //    base64 image blocks + any text) so pixels reach claude.
+        //  • trailing user text only: plain-text stdin (verbatim streaming).
+        let stdin: string;
+        let streamJsonInput = false;
+        if (continuation) {
+          stdin = JSON.stringify({ type: "user", message: { role: "user", content: CONTINUATION_PROMPT }, parent_tool_use_id: null }) + "\n";
+          streamJsonInput = true;
+        } else if (trailingHasImages) {
+          const contentBlocks: unknown[] = [];
+          for (const c of last!.content) {
+            if (c.type === "text" && (c.text ?? "") !== "") contentBlocks.push({ type: "text", text: c.text });
+            else if (c.type === "image") contentBlocks.push({ type: "image", source: { type: "base64", media_type: c.imageMediaType ?? "", data: c.imageData ?? "" } });
+          }
+          if (!contentBlocks.some((b) => (b as { type: string }).type === "text")) {
+            contentBlocks.push({ type: "text", text: "Describe this image." });
+          }
+          stdin = JSON.stringify({ type: "user", message: { role: "user", content: contentBlocks }, parent_tool_use_id: null }) + "\n";
+          streamJsonInput = true;
+        } else {
+          stdin = stdinContent;
+        }
 
         const run = runClaude({
-          stdin: continuation
-            ? JSON.stringify({ type: "user", message: { role: "user", content: CONTINUATION_PROMPT }, parent_tool_use_id: null }) + "\n"
-            : stdinContent,
-          streamJsonInput: continuation,
+          stdin,
+          streamJsonInput,
           configDir,
           claudeBaseUrl,
           model,

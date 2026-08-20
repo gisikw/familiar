@@ -98,6 +98,7 @@ export function parseAnthropicBody(body: AnthropicRequest): ParsedRequest {
     const trailing: ContentBlock[] = [];
     for (const b of am.content) {
       if (b.type === "tool_result") {
+        const images = toolResultImages(b.content);
         toolMsgs.push({
           id: syntheticId("tool"),
           createdAt: nextTs(),
@@ -108,6 +109,7 @@ export function parseAnthropicBody(body: AnthropicRequest): ParsedRequest {
               toolResultFor: b.tool_use_id,
               toolOutput: toolResultOutput(b.content),
               isError: b.is_error,
+              ...(images.length ? { toolResultImages: images } : {}),
             },
           ],
         });
@@ -131,8 +133,9 @@ export function parseAnthropicBody(body: AnthropicRequest): ParsedRequest {
   };
 }
 
-// Anthropic tool_result.content is string | array of blocks. Flatten to the
-// value projectUserMessage expects (string or JSON value).
+// Anthropic tool_result.content is string | array of blocks. Flatten the TEXT
+// portion to the value projectUserMessage expects (string or JSON value).
+// Image blocks are extracted separately by toolResultImages so pixels survive.
 function toolResultOutput(content: unknown): unknown {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
@@ -140,7 +143,29 @@ function toolResultOutput(content: unknown): unknown {
       .filter((b) => b && typeof b === "object" && (b as { type?: string }).type === "text")
       .map((b) => String((b as { text?: unknown }).text ?? ""));
     if (texts.length) return texts.join("\n");
+    // Array with only non-text (e.g. images) → no textual stdout. Return "" so
+    // the projected tool_result carries the images without a bogus JSON stdout.
+    const onlyImages = content.every((b) => b && typeof b === "object" && (b as { type?: string }).type === "image");
+    if (onlyImages) return "";
     return content;
   }
   return content ?? "";
+}
+
+// toolResultImages — pull inline base64 image blocks out of an Anthropic
+// tool_result.content array (e.g. Familiar's read tool / uploaded screenshots).
+// url/file sources are NOT extracted here (Claude Code headless only accepts
+// inline base64; a url-only source would be rejected downstream by the policy).
+function toolResultImages(content: unknown): { data: string; mediaType: string }[] {
+  if (!Array.isArray(content)) return [];
+  const out: { data: string; mediaType: string }[] = [];
+  for (const b of content) {
+    if (b && typeof b === "object" && (b as { type?: string }).type === "image") {
+      const src = (b as { source?: { type?: string; media_type?: string; data?: string } }).source;
+      if (src && (src.type === "base64" || src.data)) {
+        out.push({ data: src.data ?? "", mediaType: src.media_type ?? "" });
+      }
+    }
+  }
+  return out;
 }

@@ -41,6 +41,10 @@ export interface ContentBlock {
   isError?: boolean;
   imageData?: string;
   imageMediaType?: string;
+  // image-bearing tool results (e.g. Familiar's read tool / uploaded
+  // screenshots): the images ride alongside any textual toolOutput and are
+  // projected as inline base64 blocks inside the tool_result content array.
+  toolResultImages?: { data: string; mediaType: string }[];
 }
 
 export interface Message {
@@ -260,15 +264,16 @@ function claudeUsageFor(m: Message): Record<string, number> {
 // ---- toolUseResult display metadata (json_helpers.go toolUseResultFor) -------
 
 function toolUseResultFor(c: ContentBlock): unknown {
+  const hasImages = Array.isArray(c.toolResultImages) && c.toolResultImages.length > 0;
   const out = c.toolOutput;
   const stdoutFallback = rawContentString(out);
   if (out && typeof out === "object" && !Array.isArray(out)) {
     const obj = out as Record<string, unknown>;
     const stdout = "stdout" in obj ? String(obj.stdout) : stdoutFallback;
     const stderr = "stderr" in obj ? String(obj.stderr) : "";
-    return { stdout, stderr, interrupted: false, isImage: false, noOutputExpected: false };
+    return { stdout, stderr, interrupted: false, isImage: hasImages, noOutputExpected: false };
   }
-  return { stdout: stdoutFallback, stderr: "", interrupted: false, isImage: false, noOutputExpected: false };
+  return { stdout: stdoutFallback, stderr: "", interrupted: false, isImage: hasImages, noOutputExpected: false };
 }
 
 // ---- message projection -----------------------------------------------------
@@ -283,12 +288,25 @@ function projectUserMessage(m: Message): { role: string; content: unknown } {
         blocks.push({ type: "text", text: c.text ?? "" });
         break;
       case "tool_result": {
-        const content = rawContentString(c.toolOutput);
+        const textContent = rawContentString(c.toolOutput);
+        const images = Array.isArray(c.toolResultImages) ? c.toolResultImages : [];
         const block: Record<string, unknown> = {
           type: "tool_result",
           tool_use_id: c.toolResultFor ?? "",
-          content,
         };
+        if (images.length > 0) {
+          // Array content: text (if any) THEN each image as an inline base64
+          // block. Verified against Claude Code 2.1.197 — image-bearing
+          // tool_result array content projects and resumes correctly.
+          const arr: unknown[] = [];
+          if (textContent !== "") arr.push({ type: "text", text: textContent });
+          for (const im of images) {
+            arr.push({ type: "image", source: { type: "base64", media_type: im.mediaType ?? "", data: im.data } });
+          }
+          block.content = arr;
+        } else {
+          block.content = textContent;
+        }
         if (c.isError !== undefined) block.is_error = c.isError;
         blocks.push(block);
         break;
