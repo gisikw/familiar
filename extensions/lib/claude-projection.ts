@@ -119,15 +119,18 @@ export function rewriteToolNamesForProjection(messages: Message[], toolNames: st
   });
 }
 
-// claudeProjectKey — port of tiamat claudeProjectKey: absolute, cleaned workDir
-// with '/' → '-'. This is the directory name under <configDir>/projects/ where
-// claude looks up <sessionId>.jsonl for --resume.
+// claudeProjectKey — the directory name under <configDir>/projects/ where
+// claude looks up <sessionId>.jsonl for --resume. VERIFIED against Claude Code
+// 2.1.197 (by letting it create a session and inspecting the dir it made):
+// claude replaces EVERY non-alphanumeric character with '-' (no collapsing),
+// so '/home/dev/.herdr' → '-home-dev--herdr'. tiamat's Go only replaced '/'
+// because its workdirs had no dots; this port matches the CLI's actual rule so
+// resume works from paths containing '.', '_', etc.
 export function claudeProjectKey(workDir: string): string {
   let cleaned = workDir.replace(/\\/g, "/").replace(/\/+$/, "");
-  // collapse redundant separators / trailing slash; keep it simple (POSIX).
   cleaned = cleaned.replace(/\/{2,}/g, "/");
   if (cleaned === "." || cleaned === "") return "-";
-  return cleaned.replace(/\//g, "-");
+  return cleaned.replace(/[^a-zA-Z0-9]/g, "-");
 }
 
 // 1M-context families that take the [1m] window suffix (port of tiamat

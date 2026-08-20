@@ -203,8 +203,9 @@ describe("v1b helpers (session id / trim / tool-rewrite / project key / model ar
     expect(out[2].content[0].toolName).toBe("not_allowed"); // not in allowed set
   });
 
-  test("claudeProjectKey mirrors tiamat: abs path, slashes → dashes", () => {
+  test("claudeProjectKey matches Claude Code 2.1.197: every non-alnum → dash", () => {
     expect(claudeProjectKey("/home/dev/Projects/tiamat")).toBe("-home-dev-Projects-tiamat");
+    expect(claudeProjectKey("/home/dev/.herdr/worktrees/x")).toBe("-home-dev--herdr-worktrees-x");
     expect(claudeProjectKey("/tmp/")).toBe("-tmp");
     expect(claudeProjectKey("")).toBe("-");
   });
