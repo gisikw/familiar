@@ -75,7 +75,7 @@ describe("runner buildEnv — ANTHROPIC_* scrub (critical: tiamat env must not l
     process.env.ANTHROPIC_AUTH_TOKEN = "leak2";
     process.env.FAMILIAR_ANTHROPIC_OAUTH = "oauth-must-not-reach-child";
     try {
-      const env = buildEnv({ prompt: "", configDir: "/tmp/cfg" });
+      const env = buildEnv({ stdin: "", configDir: "/tmp/cfg" });
       expect(Object.keys(env).some((k) => k.startsWith("ANTHROPIC_") && k !== "ANTHROPIC_BASE_URL")).toBe(false);
       expect(env.ANTHROPIC_API_KEY).toBeUndefined();
       expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
@@ -87,21 +87,22 @@ describe("runner buildEnv — ANTHROPIC_* scrub (critical: tiamat env must not l
   });
 
   test("sets claude-facing ANTHROPIC_BASE_URL only when provided (loopback B)", () => {
-    const a = buildEnv({ prompt: "", configDir: "/tmp/cfg" });
+    const a = buildEnv({ stdin: "", configDir: "/tmp/cfg" });
     expect(a.ANTHROPIC_BASE_URL).toBeUndefined();
-    const b = buildEnv({ prompt: "", configDir: "/tmp/cfg", claudeBaseUrl: "http://127.0.0.1:9/x" });
+    const b = buildEnv({ stdin: "", configDir: "/tmp/cfg", claudeBaseUrl: "http://127.0.0.1:9/x" });
     expect(b.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:9/x");
   });
 });
 
 describe("runner buildArgs", () => {
   test("v0 defaults", () => {
-    expect(buildArgs({ prompt: "", configDir: "" })).toEqual([
-      "-p", "--output-format", "stream-json", "--include-partial-messages", "--verbose",
+    expect(buildArgs({ stdin: "", configDir: "" })).toEqual([
+      "-p", "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--permission-mode", "default",
     ]);
   });
-  test("resume + model + mcp + allowedTools", () => {
-    const a = buildArgs({ prompt: "", configDir: "", resume: "sid", model: "claude-opus-4-8", mcpConfigFile: "m.json", allowedTools: ["mcp__pi__bash", "mcp__pi__read"] });
+  test("resume + model + mcp + allowedTools + stream-json input", () => {
+    const a = buildArgs({ stdin: "", configDir: "", resume: "sid", model: "claude-opus-4-8", mcpConfigFile: "m.json", allowedTools: ["mcp__pi__bash", "mcp__pi__read"], streamJsonInput: true });
+    expect(a).toContain("--input-format");
     expect(a).toContain("--resume");
     expect(a).toContain("sid");
     expect(a).toContain("--model");

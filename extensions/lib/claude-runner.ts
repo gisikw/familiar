@@ -1,31 +1,39 @@
 // claude-runner.ts — spawn a single-shot headless `claude -p` and translate its
-// stream-json stdout into Anthropic Messages SSE frames.
+// stream-json stdout into Anthropic Messages SSE.
 //
-// KEY FINDING (verified against claude CLI 2.1.197): with
-// `--include-partial-messages`, claude emits `{"type":"stream_event","event":{…}}`
-// lines whose `.event` payload is VERBATIM Anthropic SSE (message_start,
-// content_block_start/delta/stop, message_delta, message_stop). So the pi-facing
-// gateway forwards those `.event` objects straight through — no re-synthesis of
-// text deltas needed. The trailing `{"type":"result",…}` line carries
-// authoritative usage/cost and is used only as a fallback + for teardown.
+// TWO MODES:
+//  • verbatim  (no tools): with --include-partial-messages, claude emits
+//    {"type":"stream_event","event":{…}} lines whose .event is VERBATIM
+//    Anthropic SSE. A text-only turn is a single message, so we forward those
+//    frames straight through (nice token-by-token streaming). Verified E2E.
+//  • collapse  (tools present): claude 2.1.197 discovers MCP tools via an
+//    internal ToolSearch meta-tool, which emits EXTRA assistant messages
+//    (thinking + ToolSearch tool_use) before the real mcp__pi__* call. Pi needs
+//    exactly ONE Anthropic message per request, so we DROP thinking/ToolSearch/
+//    builtin noise, accumulate user-facing text, and let the caller synthesize
+//    one clean message. The real tool call is captured out-of-band by the MCP
+//    stub (CAPTURE file) — see mcp-stub.ts.
 //
-// Env hygiene: inherited ANTHROPIC_* (e.g. pi's tiamat ANTHROPIC_BASE_URL /
-// ANTHROPIC_API_KEY) MUST be scrubbed or claude routes to the wrong backend and
-// 400s ("unsupported role system"). We set exactly the env claude needs.
+// Env hygiene: inherited ANTHROPIC_* (pi's tiamat routing) MUST be scrubbed or
+// claude 400s. We also NEVER leak FAMILIAR_ANTHROPIC_OAUTH into the child
+// (materialized only into CLAUDE_CONFIG_DIR/.credentials.json).
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 export interface RunnerOptions {
-  prompt: string; // stdin user line (v0) — the trailing user text
+  stdin: string; // full stdin content (verbatim text prompt OR stream-json line)
+  streamJsonInput?: boolean; // use --input-format stream-json (stdin is a JSON line)
   configDir: string; // CLAUDE_CONFIG_DIR (ephemeral, holds .credentials.json)
   claudeBaseUrl?: string; // claude's ANTHROPIC_BASE_URL → loopback B (optional)
   model?: string;
   systemPromptFile?: string;
-  sessionId?: string; // --session-id (fresh) — omit to let claude generate
+  sessionId?: string; // --session-id (fresh)
   resume?: string; // --resume <id>
   mcpConfigFile?: string;
   allowedTools?: string[];
+  settingsFile?: string;
   cwd?: string;
   signal?: AbortSignal;
+  claudePath?: string;
 }
 
 export interface SSEFrame {
@@ -34,16 +42,30 @@ export interface SSEFrame {
 }
 
 export interface RunResult {
-  frames: AsyncIterable<SSEFrame>;
-  done: Promise<{ isError: boolean; errorText?: string; usage?: unknown; cost?: number }>;
+  frames: AsyncIterable<SSEFrame>; // verbatim event stream (all frames)
+  done: Promise<RunDone>;
 }
 
-// Build the argv. Kept close to tiamat's DispatchStream invocation.
+export interface RunDone {
+  isError: boolean;
+  errorText?: string;
+  usage?: any; // authoritative usage from the result line
+  cost?: number;
+  // collapse aids:
+  text: string; // accumulated user-facing text_delta across all messages
+  finalMessageId?: string;
+  model?: string;
+  stopReason?: string; // stop_reason of the LAST message
+}
+
 export function buildArgs(o: RunnerOptions): string[] {
-  const args = ["-p", "--output-format", "stream-json", "--include-partial-messages", "--verbose"];
+  const args = ["-p"];
   if (o.resume) args.push("--resume", o.resume);
   else if (o.sessionId) args.push("--session-id", o.sessionId);
   if (o.systemPromptFile) args.push("--system-prompt-file", o.systemPromptFile);
+  if (o.streamJsonInput) args.push("--input-format", "stream-json");
+  args.push("--output-format", "stream-json", "--include-partial-messages", "--verbose", "--permission-mode", "default");
+  if (o.settingsFile) args.push("--settings", o.settingsFile);
   if (o.mcpConfigFile) args.push("--strict-mcp-config", "--mcp-config", o.mcpConfigFile);
   if (o.model) args.push("--model", o.model);
   if (o.allowedTools && o.allowedTools.length) args.push("--allowedTools=" + o.allowedTools.join(","));
@@ -53,10 +75,8 @@ export function buildArgs(o: RunnerOptions): string[] {
 export function buildEnv(o: RunnerOptions): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [k, v] of Object.entries(process.env)) {
-    // Scrub inherited tiamat routing and the source OAuth secret. The latter
-    // has already been materialized into CLAUDE_CONFIG_DIR/.credentials.json;
-    // the child neither needs nor should inherit it.
-    if (k.startsWith("ANTHROPIC_") || k === "FAMILIAR_ANTHROPIC_OAUTH") continue;
+    if (k.startsWith("ANTHROPIC_")) continue; // scrub inherited tiamat routing
+    if (k === "FAMILIAR_ANTHROPIC_OAUTH") continue; // never leak the secret source
     env[k] = v;
   }
   env.CLAUDE_CONFIG_DIR = o.configDir;
@@ -66,7 +86,7 @@ export function buildEnv(o: RunnerOptions): NodeJS.ProcessEnv {
 
 export function runClaude(o: RunnerOptions): RunResult {
   const args = buildArgs(o);
-  const child: ChildProcessWithoutNullStreams = spawn("claude", args, {
+  const child: ChildProcessWithoutNullStreams = spawn(o.claudePath ?? "claude", args, {
     env: buildEnv(o),
     cwd: o.cwd ?? process.cwd(),
     stdio: ["pipe", "pipe", "pipe"],
@@ -77,16 +97,14 @@ export function runClaude(o: RunnerOptions): RunResult {
     else o.signal.addEventListener("abort", () => child.kill("SIGTERM"), { once: true });
   }
 
-  // v0: single user line on stdin (Anthropic stream-json input not required —
-  // claude -p accepts the prompt as text stdin when not using --input-format).
-  child.stdin.write(o.prompt);
+  child.stdin.write(o.stdin);
   child.stdin.end();
 
   const queue: SSEFrame[] = [];
   let resolveNext: (() => void) | null = null;
   let finished = false;
-  let doneResolve!: (v: { isError: boolean; errorText?: string; usage?: unknown; cost?: number }) => void;
-  const done = new Promise<{ isError: boolean; errorText?: string; usage?: unknown; cost?: number }>((r) => (doneResolve = r));
+  let doneResolve!: (v: RunDone) => void;
+  const done = new Promise<RunDone>((r) => (doneResolve = r));
 
   const push = (f: SSEFrame) => {
     queue.push(f);
@@ -95,7 +113,7 @@ export function runClaude(o: RunnerOptions): RunResult {
 
   let buf = "";
   let stderr = "";
-  let result: { isError: boolean; errorText?: string; usage?: unknown; cost?: number } = { isError: false };
+  const acc: RunDone = { isError: false, text: "" };
   let sawStreamEvents = false;
 
   const handleLine = (line: string) => {
@@ -107,26 +125,30 @@ export function runClaude(o: RunnerOptions): RunResult {
       case "stream_event":
         if (obj.event && obj.event.type) {
           sawStreamEvents = true;
-          push({ event: obj.event.type, data: obj.event });
+          const ev = obj.event;
+          // accumulate user-facing text for collapse mode
+          if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta") {
+            acc.text += ev.delta.text ?? "";
+          }
+          if (ev.type === "message_start" && ev.message) {
+            acc.finalMessageId = ev.message.id;
+            acc.model = ev.message.model;
+          }
+          if (ev.type === "message_delta" && ev.delta?.stop_reason) {
+            acc.stopReason = ev.delta.stop_reason;
+          }
+          push({ event: ev.type, data: ev });
         }
         break;
       case "assistant":
-        // Non-partial fallback: if the CLI ever omits stream_events (older
-        // versions / --include-partial-messages unsupported), synthesize from
-        // the consolidated assistant message.
-        if (!sawStreamEvents && obj.message) {
-          synthesizeFromAssistant(obj.message, push);
-        }
-        // capture error text surfaced as an assistant text block
-        if (obj.error && obj.error !== "unknown") result.errorText = String(obj.error);
+        if (!sawStreamEvents && obj.message) synthesizeFromAssistant(obj.message, push);
+        if (obj.error && obj.error !== "unknown") acc.errorText = String(obj.error);
         break;
       case "result":
-        result = {
-          isError: !!obj.is_error,
-          errorText: obj.is_error ? String(obj.result ?? "claude error") : undefined,
-          usage: obj.usage,
-          cost: typeof obj.total_cost_usd === "number" ? obj.total_cost_usd : undefined,
-        };
+        acc.isError = !!obj.is_error;
+        if (obj.is_error) acc.errorText = String(obj.result ?? "claude error");
+        acc.usage = obj.usage;
+        if (typeof obj.total_cost_usd === "number") acc.cost = obj.total_cost_usd;
         break;
     }
   };
@@ -135,9 +157,8 @@ export function runClaude(o: RunnerOptions): RunResult {
     buf += chunk.toString("utf8");
     let idx: number;
     while ((idx = buf.indexOf("\n")) >= 0) {
-      const line = buf.slice(0, idx);
+      handleLine(buf.slice(0, idx));
       buf = buf.slice(idx + 1);
-      handleLine(line);
     }
   });
   child.stderr.on("data", (c: Buffer) => { stderr += c.toString("utf8"); });
@@ -146,14 +167,15 @@ export function runClaude(o: RunnerOptions): RunResult {
     if (finished) return;
     finished = true;
     if (buf.trim()) handleLine(buf);
-    if (!result.isError && stderr && !sawStreamEvents && queue.length === 0) {
-      result = { isError: true, errorText: stderr.trim().slice(0, 500) };
+    if (!acc.isError && stderr && !sawStreamEvents && queue.length === 0) {
+      acc.isError = true;
+      acc.errorText = stderr.trim().slice(0, 500);
     }
-    doneResolve(result);
+    doneResolve(acc);
     if (resolveNext) { resolveNext(); resolveNext = null; }
   };
   child.on("close", finalize);
-  child.on("error", (e) => { result = { isError: true, errorText: String(e) }; finalize(); });
+  child.on("error", (e) => { acc.isError = true; acc.errorText = String(e); finalize(); });
 
   const frames: AsyncIterable<SSEFrame> = {
     [Symbol.asyncIterator]() {
@@ -172,7 +194,8 @@ export function runClaude(o: RunnerOptions): RunResult {
   return { frames, done };
 }
 
-// Fallback SSE synthesis from a consolidated assistant message (no partials).
+// Fallback SSE synthesis from a consolidated assistant message (older CLIs
+// without --include-partial-messages support).
 function synthesizeFromAssistant(message: any, push: (f: SSEFrame) => void): void {
   push({ event: "message_start", data: { type: "message_start", message: { ...message, content: [] } } });
   const content = Array.isArray(message.content) ? message.content : [];
@@ -193,4 +216,36 @@ function synthesizeFromAssistant(message: any, push: (f: SSEFrame) => void): voi
   const stopReason = content.some((b: any) => b.type === "tool_use") ? "tool_use" : "end_turn";
   push({ event: "message_delta", data: { type: "message_delta", delta: { stop_reason: stopReason, stop_sequence: null }, usage: message.usage ?? {} } });
   push({ event: "message_stop", data: { type: "message_stop" } });
+}
+
+// synthesizeCleanSSE — build ONE clean Anthropic SSE message for pi from a
+// collapsed turn. Used in tools mode. `tool` (if present) is the captured MCP
+// call with pi's PLAIN tool name.
+export function synthesizeCleanSSE(
+  d: RunDone,
+  tool: { id: string; name: string; input: unknown } | null,
+): SSEFrame[] {
+  const frames: SSEFrame[] = [];
+  const msgId = d.finalMessageId ?? "msg_" + Math.random().toString(36).slice(2);
+  frames.push({
+    event: "message_start",
+    data: { type: "message_start", message: { id: msgId, type: "message", role: "assistant", model: d.model ?? "claude", content: [], stop_reason: null, stop_sequence: null, usage: d.usage ?? {} } },
+  });
+  let idx = 0;
+  if (d.text && d.text.length) {
+    frames.push({ event: "content_block_start", data: { type: "content_block_start", index: idx, content_block: { type: "text", text: "" } } });
+    frames.push({ event: "content_block_delta", data: { type: "content_block_delta", index: idx, delta: { type: "text_delta", text: d.text } } });
+    frames.push({ event: "content_block_stop", data: { type: "content_block_stop", index: idx } });
+    idx++;
+  }
+  if (tool) {
+    frames.push({ event: "content_block_start", data: { type: "content_block_start", index: idx, content_block: { type: "tool_use", id: tool.id, name: tool.name, input: {} } } });
+    frames.push({ event: "content_block_delta", data: { type: "content_block_delta", index: idx, delta: { type: "input_json_delta", partial_json: JSON.stringify(tool.input ?? {}) } } });
+    frames.push({ event: "content_block_stop", data: { type: "content_block_stop", index: idx } });
+    idx++;
+  }
+  const stopReason = tool ? "tool_use" : "end_turn";
+  frames.push({ event: "message_delta", data: { type: "message_delta", delta: { stop_reason: stopReason, stop_sequence: null }, usage: d.usage ?? {} } });
+  frames.push({ event: "message_stop", data: { type: "message_stop" } });
+  return frames;
 }

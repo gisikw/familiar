@@ -6,6 +6,11 @@ import {
   projectClaudeCodeJSONL,
   appendToolResultResumeGuard,
   uuidFromString,
+  sessionIdFromSeed,
+  messagesForProjection,
+  rewriteToolNamesForProjection,
+  claudeProjectKey,
+  claudeModelArg,
   CONTINUATION_PROMPT,
   type Message,
   type ProjectionOptions,
@@ -166,5 +171,50 @@ describe("appendToolResultResumeGuard", () => {
     const { projection, appended } = appendToolResultResumeGuard(proj, OPTS);
     expect(appended).toBe(false);
     expect(projection).toBe(proj);
+  });
+});
+
+describe("v1b helpers (session id / trim / tool-rewrite / project key / model arg)", () => {
+  test("sessionIdFromSeed is deterministic and UUID-shaped (version nibble 5)", () => {
+    const a = sessionIdFromSeed("conv:abc");
+    const b = sessionIdFromSeed("conv:abc");
+    expect(a).toBe(b);
+    expect(a).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(sessionIdFromSeed("conv:xyz")).not.toBe(a);
+  });
+
+  test("messagesForProjection drops a trailing user message, keeps trailing tool", () => {
+    const u = (id: string): Message => ({ id, role: "user", content: [{ type: "text", text: id }] });
+    const t = (id: string): Message => ({ id, role: "tool", content: [{ type: "tool_result", toolResultFor: "x", toolOutput: "y" }] });
+    expect(messagesForProjection([u("a"), u("b")]).map((m) => m.id)).toEqual(["a"]);
+    expect(messagesForProjection([u("a"), t("b")]).map((m) => m.id)).toEqual(["a", "b"]);
+    expect(messagesForProjection([])).toEqual([]);
+  });
+
+  test("rewriteToolNamesForProjection prefixes only allowed, non-mcp assistant tool_use names", () => {
+    const msgs: Message[] = [
+      { id: "1", role: "assistant", content: [{ type: "tool_use", toolUseId: "t1", toolName: "bash", toolInput: {} }] },
+      { id: "2", role: "assistant", content: [{ type: "tool_use", toolUseId: "t2", toolName: "mcp__pi__already", toolInput: {} }] },
+      { id: "3", role: "assistant", content: [{ type: "tool_use", toolUseId: "t3", toolName: "not_allowed", toolInput: {} }] },
+    ];
+    const out = rewriteToolNamesForProjection(msgs, ["bash", "read"], "pi");
+    expect(out[0].content[0].toolName).toBe("mcp__pi__bash");
+    expect(out[1].content[0].toolName).toBe("mcp__pi__already"); // untouched
+    expect(out[2].content[0].toolName).toBe("not_allowed"); // not in allowed set
+  });
+
+  test("claudeProjectKey mirrors tiamat: abs path, slashes → dashes", () => {
+    expect(claudeProjectKey("/home/dev/Projects/tiamat")).toBe("-home-dev-Projects-tiamat");
+    expect(claudeProjectKey("/tmp/")).toBe("-tmp");
+    expect(claudeProjectKey("")).toBe("-");
+  });
+
+  test("claudeModelArg adds [1m] only for 1M-context families", () => {
+    expect(claudeModelArg("claude-opus-4-8")).toBe("claude-opus-4-8[1m]");
+    expect(claudeModelArg("claude-sonnet-4-20250514")).toBe("claude-sonnet-4-20250514[1m]");
+    expect(claudeModelArg("claude-opus-4-8[1m]")).toBe("claude-opus-4-8[1m]"); // idempotent
+    expect(claudeModelArg("claude-haiku-4-5")).toBe("claude-haiku-4-5"); // not a 1M family
+    expect(claudeModelArg(undefined)).toBeUndefined();
+    expect(claudeModelArg("claude_code")).toBe("claude_code");
   });
 });

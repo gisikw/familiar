@@ -75,6 +75,76 @@ export function uuidFromString(seed: string): string {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
 }
 
+// sessionIdFromSeed — deterministic UUID-shaped session id (port of tiamat
+// turn/service.go SessionID). Version nibble 0x50 marks it distinct from the
+// row-UUID scheme (0x40). Claude --session-id / --resume require UUID shape.
+export function sessionIdFromSeed(seed: string): string {
+  const sum = createHash("sha256").update("tiamat.claude_code.session.v1:" + seed, "utf8").digest();
+  const id = Buffer.from(sum.subarray(0, 16));
+  id[6] = (id[6] & 0x0f) | 0x50;
+  id[8] = (id[8] & 0x3f) | 0x80;
+  const h = id.toString("hex");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
+}
+
+// messagesForProjection — port of tiamat messagesForClaudeProjection: drop a
+// trailing user message (it becomes the stdin prompt for the current turn).
+// A trailing tool message is KEPT (its continuation prompt is the stdin line).
+export function messagesForProjection(messages: Message[]): Message[] {
+  if (messages.length === 0) return [];
+  const last = messages[messages.length - 1];
+  if (last.role === "user") return messages.slice(0, -1);
+  return messages;
+}
+
+// rewriteToolNamesForProjection — port of tiamat rewriteToolNamesForClaudeProjection.
+// pi tool names in assistant tool_use blocks become mcp__<server>__<name> so a
+// resumed claude session sees the same names it originally emitted via the MCP
+// stub. Only rewrites names present in the allowed tool set and not already
+// mcp-prefixed. Pure; returns a new array.
+export function rewriteToolNamesForProjection(messages: Message[], toolNames: string[], server = "pi"): Message[] {
+  if (toolNames.length === 0) return messages;
+  const allowed = new Set(toolNames);
+  return messages.map((m) => {
+    if (m.role !== "assistant") return m;
+    let changed = false;
+    const content = m.content.map((c) => {
+      if (c.type === "tool_use" && c.toolName && !c.toolName.startsWith("mcp__") && allowed.has(c.toolName)) {
+        changed = true;
+        return { ...c, toolName: `mcp__${server}__${c.toolName}` };
+      }
+      return c;
+    });
+    return changed ? { ...m, content } : m;
+  });
+}
+
+// claudeProjectKey — port of tiamat claudeProjectKey: absolute, cleaned workDir
+// with '/' → '-'. This is the directory name under <configDir>/projects/ where
+// claude looks up <sessionId>.jsonl for --resume.
+export function claudeProjectKey(workDir: string): string {
+  let cleaned = workDir.replace(/\\/g, "/").replace(/\/+$/, "");
+  // collapse redundant separators / trailing slash; keep it simple (POSIX).
+  cleaned = cleaned.replace(/\/{2,}/g, "/");
+  if (cleaned === "." || cleaned === "") return "-";
+  return cleaned.replace(/\//g, "-");
+}
+
+// 1M-context families that take the [1m] window suffix (port of tiamat
+// oneMContextFamilies + claudeCodeModelArg).
+const ONE_M_FAMILIES = ["claude-sonnet-4", "claude-sonnet-4-5", "claude-opus-4", "claude-opus-4-1", "claude-opus-4-8"];
+
+export function claudeModelArg(model: string | undefined): string | undefined {
+  const m = (model ?? "").trim();
+  if (m === "" || m === "claude_code") return model;
+  if (m.length >= 4 && m.slice(-4).toLowerCase() === "[1m]") return model;
+  const lower = m.toLowerCase();
+  for (const fam of ONE_M_FAMILIES) {
+    if (lower === fam || lower.startsWith(fam + "-")) return m + "[1m]";
+  }
+  return model;
+}
+
 function isUUID(s: string | undefined): boolean {
   if (!s || s.length !== 36) return false;
   for (let i = 0; i < s.length; i++) {

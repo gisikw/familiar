@@ -25,7 +25,7 @@ function startGateway(configDir: string): Promise<{ port: number; close: () => v
         const parsed = parseAnthropicBody(body);
         const lastUser = [...parsed.messages].reverse().find((m) => m.role === "user");
         const prompt = lastUser?.content.map((c) => (c.type === "text" ? c.text ?? "" : "")).join("") ?? "";
-        const run = runClaude({ prompt, configDir, model: parsed.model });
+        const run = runClaude({ stdin: prompt, configDir, model: parsed.model });
         res.writeHead(200, { "content-type": "text/event-stream" });
         for await (const f of run.frames) {
           res.write(`event: ${f.event}\ndata: ${JSON.stringify(f.data)}\n\n`);
