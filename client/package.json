@@ -6,7 +6,15 @@
   "main": "src/main/main.js",
   "scripts": {
     "start": "electron .",
-    "selftest": "electron . --selftest"
+    "selftest": "electron . --selftest",
+    "make-icns": "bash scripts/make-icns.sh"
+  },
+  "build": {
+    "appId": "network.gisi.familiar",
+    "productName": "Familiar",
+    "mac": { "icon": "build/icon.icns" },
+    "win": { "icon": "../assets/icons/icon_256.png" },
+    "linux": { "icon": "../assets/icons" }
   },
   "devDependencies": {
     "electron": "^43.4.1"

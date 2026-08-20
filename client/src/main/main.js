@@ -1,5 +1,17 @@
-const { app, BrowserWindow, ipcMain, session, Menu } = require("electron");
+const { app, BrowserWindow, ipcMain, session, Menu, nativeImage } = require("electron");
 const path = require("path");
+const fs = require("fs");
+
+// App icon. The master lives at repo-root assets/; a rasterized PNG set is
+// checked in beside it. Since this app runs via `npm start` (not a packaged
+// build), we set the dock icon at runtime on macOS and pass a PNG to
+// BrowserWindow for Linux/Windows. Packaged builds instead use
+// build/icon.icns via electron-builder (see package.json build.mac.icon).
+const ICON_DIR = path.join(__dirname, "..", "..", "..", "assets", "icons");
+function iconPng(size) {
+  const p = path.join(ICON_DIR, `icon_${size}.png`);
+  return fs.existsSync(p) ? p : null;
+}
 
 // Self-test mode: hand off to the headless verification harness.
 if (process.argv.includes("--selftest")) {
@@ -93,6 +105,7 @@ function createWindow() {
     height: bounds.height || 680,
     x: Number.isInteger(bounds.x) ? bounds.x : undefined,
     y: Number.isInteger(bounds.y) ? bounds.y : undefined,
+    icon: iconPng(512) || undefined, // Linux/Windows window + taskbar icon
     backgroundColor: "#1e1e2e", // matches terminal bg so no light flash on load
     // Edgeless: no native titlebar. The served page (and our offline page) each
     // carry a slim -webkit-app-region:drag strip so the window stays draggable.
@@ -230,6 +243,19 @@ app.whenReady().then(() => {
   });
   // Expose the resolved base URL to the offline page if it asks.
   ipcMain.handle("app:baseUrl", () => baseUrl);
+
+  // macOS dock icon (runtime, since we launch unpackaged via `npm start`).
+  // Guarded: app.dock only exists on darwin.
+  if (process.platform === "darwin" && app.dock) {
+    const p = iconPng(1024) || iconPng(512);
+    if (p) {
+      try {
+        app.dock.setIcon(nativeImage.createFromPath(p));
+      } catch (_) {
+        /* best-effort: a missing/undecodable png must not block startup */
+      }
+    }
+  }
 
   // Ensure the partitioned session exists (persistent cookie store on disk).
   session.fromPartition(PARTITION);
