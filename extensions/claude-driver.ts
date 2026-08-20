@@ -26,6 +26,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseAnthropicBody, type AnthropicRequest } from "./lib/anthropic-body.ts";
 import { runClaude, synthesizeCleanSSE, type SSEFrame } from "./lib/claude-runner.ts";
+import { createClaudeFacingHandler } from "./lib/loopback-b.ts";
 import {
   projectClaudeCodeJSONL,
   appendToolResultResumeGuard,
@@ -43,6 +44,9 @@ const MCP_SERVER = "pi";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MCP_STUB_PATH = path.join(HERE, "lib", "mcp-stub.ts");
 
+// Upstream for loopback B. Overridable for tests (points at a fake api server).
+const UPSTREAM_BASE = (process.env.FAMILIAR_CLAUDE_UPSTREAM_BASE || "https://api.anthropic.com").replace(/\/$/, "");
+
 export default function (pi: ExtensionAPI) {
   // ---- ACTIVATION GATE -----------------------------------------------------
   const oauthRaw = process.env[GATE];
@@ -54,9 +58,16 @@ export default function (pi: ExtensionAPI) {
 
   let instanceRoot = "";
   let configDir = "";
-  let piServer: http.Server | null = null;
+  let piServer: http.Server | null = null; // loopback A (pi-facing)
+  let clServer: http.Server | null = null; // loopback B (claude-facing)
+  let clBasePrefix = ""; // http://127.0.0.1:<portB> (claude's ANTHROPIC_BASE_URL root)
   let registered = false;
   const inflight = new Set<{ abort: () => void }>();
+  // Per-turn upstream ratelimit headers, keyed by turnId. Loopback B fills this
+  // from the REAL api.anthropic.com response; loopback A re-emits them on its
+  // response so pi's after_provider_response → extensions/ratelimit.ts footer
+  // lights up. Per-turn association (turnId in the URL) avoids cross-turn races.
+  const ratelimitByTurn = new Map<string, Record<string, string>>();
 
   // ---- credential materialization (never logs token material) --------------
   function writeCredentials(dir: string): void {
@@ -116,9 +127,28 @@ export default function (pi: ExtensionAPI) {
       const ac = new AbortController();
       const handle = { abort: () => ac.abort() };
       inflight.add(handle);
+      // Per-turn id → loopback B tags this turn's upstream call so we can pair
+      // the ratelimit headers back to THIS pi response without cross-turn races.
+      const turnId = "t-" + process.pid + "-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+      const claudeBaseUrl = `${clBasePrefix}/turn/${turnId}`;
 
-      res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache", connection: "keep-alive" });
-      const send = (event: string, data: unknown) => { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
+      // Loopback A must NOT writeHead until we can attach ratelimit headers from
+      // loopback B's upstream response for THIS turn. We defer the header write
+      // to the first SSE frame (by then B has seen the upstream response headers,
+      // because claude cannot emit stream_events before its upstream call
+      // returns headers). If no frame ever comes, we writeHead in finally.
+      let headWritten = false;
+      const writeHeadOnce = () => {
+        if (headWritten) return;
+        headWritten = true;
+        const extra: Record<string, string> = {};
+        const rl = ratelimitByTurn.get(turnId);
+        if (rl) for (const [k, v] of Object.entries(rl)) extra[k] = v;
+        res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache", connection: "keep-alive", ...extra });
+      };
+      // NOTE: no eager writeHead here — see writeHeadOnce() (deferred so we can
+      // attach loopback B's per-turn upstream ratelimit headers to pi's response).
+      const send = (event: string, data: unknown) => { writeHeadOnce(); res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
       let sentAny = false;
 
       try {
@@ -202,6 +232,7 @@ export default function (pi: ExtensionAPI) {
             : stdinContent,
           streamJsonInput: continuation,
           configDir,
+          claudeBaseUrl,
           model,
           systemPromptFile,
           resume: useResume ? sessionId : undefined,
@@ -241,10 +272,13 @@ export default function (pi: ExtensionAPI) {
       } catch (e: any) {
         if (!sentAny) {
           const isUnsupported = e && e.code === "unsupported_content";
+          writeHeadOnce();
           send("error", { type: "error", error: { type: isUnsupported ? "invalid_request_error" : "api_error", message: String(e?.message ?? e) } });
         }
       } finally {
         inflight.delete(handle);
+        ratelimitByTurn.delete(turnId);
+        writeHeadOnce(); // ensure headers flush even on an empty turn
         for (const p of cleanupPaths) { try { fs.rmSync(p, { recursive: true, force: true }); } catch {} }
         res.end();
       }
@@ -274,25 +308,50 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
+  // ---- LOOPBACK B: claude-facing gateway -----------------------------------
+  // Handler factored into ./lib/loopback-b.ts (directly testable). It applies
+  // cache/continuation wire hygiene, forwards to UPSTREAM_BASE preserving
+  // claude's OWN auth/client headers, captures per-turn upstream ratelimit
+  // headers, and streams the response back verbatim.
+  const handleClaudeFacing = createClaudeFacingHandler({
+    upstreamBase: UPSTREAM_BASE,
+    onRatelimit: (turnId, headers) => { ratelimitByTurn.set(turnId, headers); },
+    log,
+  });
+
+  function startClaudeFacingServer(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const server = http.createServer((req, res) => handleClaudeFacing(req, res));
+      server.on("error", reject);
+      server.listen(0, "127.0.0.1", () => { clServer = server; resolve(); });
+    });
+  }
+
   const ready = (async () => {
     instanceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-driver-"));
     configDir = path.join(instanceRoot, "claude-config");
     fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
     writeCredentials(configDir);
     await startServer();
+    await startClaudeFacingServer();
+    const addrB = clServer!.address();
+    const portB = typeof addrB === "object" && addrB ? addrB.port : 0;
+    clBasePrefix = `http://127.0.0.1:${portB}`;
     const addr = piServer!.address();
     const port = typeof addr === "object" && addr ? addr.port : 0;
     const baseUrl = `http://127.0.0.1:${port}/anthropic`;
     pi.registerProvider("anthropic", { baseUrl });
     registered = true;
-    log("registered anthropic provider", { baseUrl, configDir });
+    log("registered anthropic provider", { baseUrl, loopbackB: clBasePrefix, configDir });
   })();
 
   pi.on("session_shutdown", async () => {
     for (const h of inflight) { try { h.abort(); } catch {} }
     inflight.clear();
+    ratelimitByTurn.clear();
     if (registered) { try { pi.unregisterProvider("anthropic"); } catch {} registered = false; }
     if (piServer) { try { piServer.close(); } catch {} piServer = null; }
+    if (clServer) { try { clServer.close(); } catch {} clServer = null; }
     if (instanceRoot) { try { fs.rmSync(instanceRoot, { recursive: true, force: true }); } catch {} instanceRoot = ""; }
     log("shutdown complete");
   });
