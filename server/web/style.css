@@ -114,6 +114,60 @@ body {
   display: flex;
 }
 
+/* Voice capture indicator: subtle pill, top-center, above the terminal. Only
+   visible mid-capture (recording / transcribing) or on error. Deliberately
+   understated so it reads as a state, not a modal. */
+#voice-indicator {
+  position: fixed;
+  top: calc(var(--pad) + var(--drag-h) + 6px);
+  left: 50%;
+  transform: translate(-50%, -6px);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--frame-fg);
+  background: rgba(24, 24, 37, 0.92);
+  border: 1px solid #313244;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 65;
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+#voice-indicator.show {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+/* Recording: accent-tinted with a soft breathing pulse so it is clearly live. */
+#voice-indicator.recording {
+  color: var(--accent);
+  border-color: var(--accent);
+  animation: voice-pulse 1.4s ease-in-out infinite;
+}
+
+#voice-indicator.finalizing {
+  color: #f9e2af; /* amber: work in flight */
+  border-color: #f9e2af;
+}
+
+#voice-indicator.error {
+  color: #f38ba8; /* red: permission/transcription failure */
+  border-color: #f38ba8;
+  animation: none;
+}
+
+@keyframes voice-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(46, 194, 160, 0.0), 0 4px 14px rgba(0, 0, 0, 0.35); }
+  50% { box-shadow: 0 0 0 4px rgba(46, 194, 160, 0.22), 0 4px 14px rgba(0, 0, 0, 0.35); }
+}
+
 /* Emoji completion picker: floating, dark, anchored near the cursor. */
 #emoji-picker {
   position: fixed;

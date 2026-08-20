@@ -1,6 +1,8 @@
 import { Restty, createWebSocketPtyTransport, getBuiltinTheme } from "/vendor/restty.esm.js";
 import { DecsetTracker, encodeMouse, domButtonToCode } from "/app/mouse.js";
 import { EmojiCompleter, loadEmoji } from "/app/emoji.js";
+import { VoiceCapture } from "/app/voice.js";
+import { STATES as VOICE_STATES } from "/app/voice-state.js";
 
 // Browser terminal for the familiar server. Unlike the Electron client (which
 // bridges restty to node-pty over IPC), here restty talks to the server's /pty
@@ -240,6 +242,7 @@ async function boot() {
   wireFontZoom();
   wireAppMouse();
   wireEmoji();
+  wireVoice();
 
   try { window.__familiarBackend = restty.getBackend(); } catch (_) { window.__familiarBackend = "unknown"; }
 
@@ -361,6 +364,73 @@ async function wireEmoji() {
 }
 
 boot();
+
+// ---------------------------------------------------------------------------
+// Tap-to-talk voice capture. Ctrl+Space starts recording; a second Ctrl+Space
+// stops, transcribes (server STT), and submits ONE subscriber message into the
+// live pi conversation via the existing /submit audio ingress. Escape cancels.
+//
+// The terminal deliberately CLAIMS Ctrl+Space: it is captured here (capture
+// phase, preventDefault) before restty forwards it to the pty, so the remote
+// TUI never sees a NUL byte. This is intentional and documented in DESIGN.md.
+// ---------------------------------------------------------------------------
+let voice = null;
+function wireVoice() {
+  const indicator = document.getElementById("voice-indicator");
+  const setIndicator = (state, detail) => {
+    if (!indicator) return;
+    indicator.classList.remove("recording", "finalizing", "error");
+    let label = "";
+    if (state === VOICE_STATES.REQUESTING) { label = "mic…"; indicator.classList.add("recording"); }
+    else if (state === VOICE_STATES.RECORDING) { label = "recording"; indicator.classList.add("recording"); }
+    else if (state === VOICE_STATES.FINALIZING) { label = "transcribing…"; indicator.classList.add("finalizing"); }
+    else if (state === VOICE_STATES.ERROR) { label = detail || "voice error"; indicator.classList.add("error"); }
+    indicator.textContent = label ? `● ${label}` : "";
+    indicator.classList.toggle("show", !!label);
+  };
+
+  voice = new VoiceCapture({
+    submitUrl: "/submit",
+    onState: (state, detail) => {
+      setIndicator(state, detail);
+      if (state === VOICE_STATES.ERROR) toast(detail || "voice error");
+      if (state === VOICE_STATES.RECORDING) toast("recording — Ctrl+Space to send, Esc to cancel");
+    },
+  });
+
+  // A browser text input / modal owning focus must keep its own keys. We only
+  // claim Ctrl+Space when focus is on the body / the terminal canvas.
+  const focusOwnedByInput = () => {
+    const el = document.activeElement;
+    if (!el || el === document.body) return false;
+    const tag = el.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+    if (el.isContentEditable) return true;
+    // The emoji picker is a floating div, not a focusable input; ignore it.
+    return false;
+  };
+
+  window.addEventListener("keydown", (e) => {
+    // Ctrl+Space (space reports as " " or "Spacebar" on old UAs; code is stable).
+    const isSpace = e.code === "Space" || e.key === " " || e.key === "Spacebar";
+    if (e.ctrlKey && !e.metaKey && !e.altKey && isSpace) {
+      if (focusOwnedByInput()) return; // let the input have its keystroke
+      e.preventDefault(); e.stopPropagation(); // never let a NUL reach the pty
+      voice.toggle();
+      return;
+    }
+    // Escape cancels an active capture (only when we own it — otherwise let the
+    // TUI receive Escape as normal).
+    if (e.key === "Escape" && voice.isActive()) {
+      e.preventDefault(); e.stopPropagation();
+      voice.cancel();
+    }
+  }, true);
+
+  // No recording may survive an unload or a lost connection.
+  window.addEventListener("beforeunload", () => { try { voice.cancel(); } catch (_) { /* ignore */ } });
+  window.addEventListener("pagehide", () => { try { voice.cancel(); } catch (_) { /* ignore */ } });
+}
 
 // ---------------------------------------------------------------------------
 // Drag-and-drop capture. THE point (mirrors the Electron renderer): prevent the
