@@ -89,17 +89,35 @@ Run a real e2e (needs host `~/.claude/.credentials.json`):
   Consequence: **tool-turn text does not stream token-by-token** (buffered into
   one block). Text turns still stream live.
 
+## Loopback B (claude-facing gateway) — BUILT & VERIFIED
+
+`extensions/lib/loopback-b.ts` (`createClaudeFacingHandler`) is claude's
+`ANTHROPIC_BASE_URL` = `http://127.0.0.1:<portB>/turn/<turnId>`. Per request it:
+1. recovers the per-turn id from the path,
+2. applies cache/continuation wire hygiene (`applyCacheHygiene`) to the
+   outbound `POST /v1/messages` body only (relocate CC onto the tool_result,
+   strip the artifact tail; no-op path returns ORIGINAL bytes),
+3. forwards to `api.anthropic.com` **preserving claude's own auth/client
+   headers** (only host/content-length/connection/accept-encoding recomputed);
+   no auth substitution, no capability spoof,
+4. captures the upstream `anthropic-ratelimit-*` / `retry-after` / `request-id`
+   headers for that turn (`selectRatelimitHeaders`) → `onRatelimit(turnId,…)`,
+5. streams the upstream status/headers/body back verbatim,
+6. 413 on oversized bodies (32 MiB default); 502 on unreachable upstream.
+
+**Ratelimit footer RECOVERED.** The driver stores per-turn headers in
+`ratelimitByTurn` (keyed by the turnId in the URL — no cross-turn race, entry
+deleted in `finally`) and re-emits them on loopback A's response, so pi's
+`after_provider_response` → `extensions/ratelimit.ts` footer lights up unchanged.
+
+**Cache economics VERIFIED.** Real e2e through both loopbacks shows
+`cache_read_input_tokens: 30823` (prompt-cache hit) — the hygiene keeps the
+anchor on the stable prefix. E2E: `extensions/lib/e2e-loopback-b.test-harness.ts`.
+Unit: `extensions/lib/loopback-b.test.ts` (9 tests) +
+`extensions/lib/ratelimit-headers.test.ts` (4).
+
 ## What is STUBBED / not yet wired
 
-- **Claude-facing gateway (loopback B)** + cache-breakpoint hygiene
-  (`relocateClaudeContinuationCacheControl`, `relocateBreakpointsBeforeCut`,
-  `stripClaudeContinuationArtifacts`): NOT built. claude talks to
-  `api.anthropic.com` directly via its host login in the ephemeral config dir —
-  billing classification is already correct (subscription, not metered API), but
-  **cross-turn prompt-cache hit rate is unverified** (no breakpoint hygiene on
-  the wire yet; fresh projections may under-cache and re-bill context). This is
-  the main remaining cost risk vs tiamat.
-- **Ratelimit footer** recovery: pending loopback B.
 - **Images**: parsed but NOT projected — the driver returns an explicit
   `invalid_request_error` ('refusing to silently drop pixels') rather than
   dropping them. Inline-base64 projection is a follow-up.
