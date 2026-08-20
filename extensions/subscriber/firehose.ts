@@ -4,11 +4,15 @@ import {
   TOOL_ARGS_MAX,
 } from "./protocol.ts";
 import { messageText, speakable } from "./text.ts";
-import type { StreamHub } from "./hub.ts";
-import type { AudioCache } from "./audio.ts";
+import type { RelayHub, NoopAudio } from "./relay.ts";
 import type { PendingEchoes } from "./echo.ts";
 
-/* --- Firehose: pi events → stream events ---------------------------------- */
+/* --- Firehose: pi events → stream events ----------------------------------
+ *
+ * Unchanged in behavior. `hub` is now a RelayHub (forwards to the server's
+ * /ingest instead of an in-process SSE hub) and `audio` is a NoopAudio (the
+ * server owns TTS). Both present the same interface the firehose always used,
+ * so this file is untouched apart from the type imports. */
 
 export class Firehose {
   private messageId = 0;
@@ -19,7 +23,7 @@ export class Firehose {
   private streamingAssistant = false;
   private startedAt = ""; // creation time of the in-flight assistant message, stable across revisions
 
-  constructor(private hub: StreamHub, private audio: AudioCache, private echoes: PendingEchoes) { }
+  constructor(private hub: RelayHub, private audio: NoopAudio, private echoes: PendingEchoes) { }
 
   onMessageStart(message: any) {
     const customType = message?.customType;

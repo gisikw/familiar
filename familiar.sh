@@ -324,6 +324,16 @@ run_in_herdr_pane() {
   local pane=$1 role=$2 command
   if [ "$role" = pi ]; then
     printf -v command 'printf "\\033[2J\\033[H"; %q %q' "$SELF" "$role"
+  elif [ "$role" = server ]; then
+    # The familiar server (web presence) is a plain Node service under ./server,
+    # launched DIRECTLY here — there is deliberately no `familiar.sh server`
+    # subcommand. Install deps on first run (node-pty native build + vendored
+    # web assets via postinstall), then supervise with a restart loop, matching
+    # llama/stt/tts. Its toolchain is the .#server devshell (nodejs_22 + a
+    # C/py toolchain for node-pty).
+    printf -v command \
+      'cd %q && { [ -d node_modules ] || nix develop %q#server -c npm install; }; while true; do nix develop %q#server -c npm start || true; sleep 1; done' \
+      "$REPO/server" "$REPO" "$REPO"
   else
     printf -v command '%q %q' "$SELF" "$role"
   fi
@@ -382,6 +392,10 @@ populate_familiar_workspace() {
   local service_response service_root pane direction role
   local -a services=()
 
+  # The web-presence server always runs — it is not gated behind a NEED_ flag
+  # like the optional local models. It is the first service so it takes the
+  # services-tab root pane; llama/stt/tts split off it when enabled.
+  services+=(server)
   [ -n "${NEED_LLAMA:-}" ] && services+=(llama)
   [ -n "${NEED_STT:-}" ] && services+=(stt)
   [ -n "${NEED_TTS:-}" ] && services+=(tts)

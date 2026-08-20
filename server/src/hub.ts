@@ -1,17 +1,24 @@
-import http from "http";
-import { debugLog } from "../lib/debug.ts";
+import type http from "http";
+import { randomUUID } from "crypto";
+import { debugLog } from "./debug.ts";
 import { HISTORY_MAX, type MessageEvent, type SessionEvent, type StreamEvent } from "./protocol.ts";
 
-/* --- SSE hub: client registry, history replay, broadcast ------------------ */
+/* --- SSE hub: client registry, history replay, broadcast ------------------
+ *
+ * Ported faithfully from extensions/subscriber/hub.ts. Now server-owned: the
+ * hub is fed by /ingest envelopes rather than an in-process firehose, and the
+ * session epoch is re-mintable (newSession) because the id-space lives in the
+ * extension firehose, which restarts with each pi session.
+ */
 
 export class StreamHub {
   private clients = new Set<{ res: http.ServerResponse; audio: boolean }>();
   private history: StreamEvent[] = [];
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   inflight: MessageEvent | null = null;
-  // Epoch identity: new per server process. Clients compare across attaches
-  // to detect a message-id-space reset (stale-cache poisoning, delta doc #3).
-  readonly session: string = crypto.randomUUID();
+  // Epoch identity. Re-minted on newSession(): clients compare across attaches
+  // to detect a message-id-space reset (stale-cache poisoning).
+  session: string = randomUUID();
 
   attach(req: http.IncomingMessage, res: http.ServerResponse, audio: boolean) {
     res.writeHead(200, {
@@ -42,6 +49,16 @@ export class StreamHub {
     this.heartbeat = null;
     for (const c of this.clients) c.res.end();
     this.clients.clear();
+  }
+
+  // New pi session: re-mint the epoch and drop history so a reconnecting
+  // client sees the new id (→ discard cached transcript) and clean replay.
+  newSession() {
+    this.session = randomUUID();
+    this.history = [];
+    this.inflight = null;
+    const evt: SessionEvent = { event: "session", id: this.session };
+    for (const c of this.clients) this.write(c.res, evt);
   }
 
   anyAudioListener(): boolean {

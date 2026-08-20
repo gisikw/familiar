@@ -1,16 +1,22 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { errorLog } from "../lib/debug.ts";
-import { SubscriberManager } from "./server.ts";
+import { RelayHub, NoopAudio, RelayClient } from "./relay.ts";
 import { Firehose } from "./firehose.ts";
+import { PendingEchoes } from "./echo.ts";
 
-// Subscriber: voice/text ingress + SSE egress for remote clients (Hearth).
-// Protocol documentation and event shapes live in ./protocol.ts;
-// modules: hub (SSE clients/history), audio (synthesis cache), firehose
-// (pi events → stream events), server (HTTP + ingress).
+// Subscriber: thin relay between pi and the standalone familiar server
+// (localhost:1692), which now owns all HTTP. The firehose still turns pi
+// events into stream events; RelayHub POSTs each to the server's /ingest, and
+// RelayClient subscribes to the server's /relay command bus to enact
+// submit/cancel against the pi API. Protocol + event shapes live in the server
+// (./protocol.ts re-exports them). Public behavior toward pi is unchanged.
 
 export default function(pi: ExtensionAPI) {
-  const manager = new SubscriberManager(pi);
-  const firehose = new Firehose(manager.hub, manager.audio, manager.echoes);
+  const hub = new RelayHub();
+  const audio = new NoopAudio();
+  const echoes = new PendingEchoes();
+  const firehose = new Firehose(hub, audio, echoes);
+  const client = new RelayClient(pi, echoes);
 
   // Handler bodies are wrapped: an egress bug must cost a log line, never pi.
   const guard = (fn: () => void) => {
@@ -18,15 +24,14 @@ export default function(pi: ExtensionAPI) {
   };
 
   pi.on("session_start", async (_event, ctx) => {
-    // Unlike the firehose handlers this one is on pi's startup path, so a
-    // throw here would abort session start outright.
-    guard(() => manager.start(
-      Number(process.env.FAMILIAR_SUBSCRIBER_PORT ?? 1692),
-      process.env.FAMILIAR_SUBSCRIBER_HOST ?? "127.0.0.1",
-    ));
-    manager.ctx = ctx;
+    // On pi's startup path: a throw here would abort session start outright.
+    guard(() => {
+      client.ctx = ctx;
+      hub.announceSession();
+      client.start();
+    });
   });
-  pi.on("session_shutdown", async () => { guard(() => manager.close()); });
+  pi.on("session_shutdown", async () => { guard(() => client.close()); });
 
   pi.on("message_start", async (event) => guard(() => firehose.onMessageStart(event.message)));
   pi.on("message_update", async (event) => guard(() => firehose.onMessageUpdate(event.message, event.assistantMessageEvent)));
