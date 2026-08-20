@@ -6,10 +6,19 @@ REPO="$(dirname "$SELF")"
 STATE_DIR="$REPO/state"
 HERDR_STATE_DIR="$STATE_DIR/herdr"
 HERDR_COLD_START=0
+
+# Local configuration must load before defaults and before dev-shell recursion:
+# file values beat defaults, while the ambient variables captured by the loader
+# beat file values. The exported provenance marker keeps that ordering stable
+# when nix develop or /refamiliarize re-enters this script.
+# shellcheck source=scripts/familiar-config.sh
+. "$REPO/scripts/familiar-config.sh"
+familiar_config_load "$REPO"
+
 export HERDR_SESSION="${HERDR_SESSION:-familiar}"
 export HERDR_CONFIG_PATH="${HERDR_CONFIG_PATH:-$HERDR_STATE_DIR/config.toml}"
 
-# Defaults
+# Defaults (lowest precedence)
 export FAMILIAR_IDENTITY_PATH="${FAMILIAR_IDENTITY_PATH:-$REPO/identity}"
 export FAMILIAR_AGE_KEY="${FAMILIAR_AGE_KEY:-$STATE_DIR/age.key}"
 export FAMILIAR_HANDOFF_PATH="${FAMILIAR_HANDOFF_PATH:-$STATE_DIR/handoffs}"
@@ -23,10 +32,6 @@ export FAMILIAR_SUBSCRIBER_PORT="${FAMILIAR_SUBSCRIBER_PORT:-1692}"
 # continuity line. Not a first-class verb on purpose — forking continuity
 # should have friction.
 export PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR:-$STATE_DIR/pi}"
-
-if [ -f "$REPO/.env" ]; then
-  set -a; . "$REPO/.env"; set +a
-fi
 
 MODEL_DIR="${FAMILIAR_MODEL_DIR:-$REPO/models}"
 

@@ -1,5 +1,8 @@
 models
 state
+# Local configuration may contain credentials. The legacy .env name remains
+# ignored defensively, but Familiar no longer reads it.
+familiar.toml
 .env
 
 # Transient research/design/settlement/verdict artifacts
