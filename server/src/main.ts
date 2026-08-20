@@ -10,6 +10,25 @@ import { Ingress } from "./ingress.ts";
 import { PtyBridge } from "./pty.ts";
 import { handleUpload } from "./upload.ts";
 import type { IngestEnvelope } from "./protocol.ts";
+import { resolveTheme, toCss, toResttyTheme, ThemeError } from "./theme/resolve.ts";
+
+/* --- theme: resolved once at boot from FAMILIAR_THEME_* env (defaults live in
+ * theme/defaults.json). A bad color fails the server loudly rather than
+ * silently serving a broken page. Cold restart re-reads env -> new theme, no
+ * asset rebuild. */
+let THEME_CSS: string;
+let THEME_JSON: string;
+try {
+  const theme = resolveTheme();
+  THEME_CSS = toCss(theme);
+  THEME_JSON = JSON.stringify(toResttyTheme(theme));
+} catch (err) {
+  if (err instanceof ThemeError) {
+    process.stderr.write(`familiar theme error: ${err.message}\n`);
+    process.exit(2);
+  }
+  throw err;
+}
 
 /* --- Familiar server: the web presence -------------------------------------
  *
@@ -105,6 +124,8 @@ function handle(req: http.IncomingMessage, res: http.ServerResponse) {
     const seg = pathname.match(/^\/segments\/(\d+)\/(\d+)\/audio$/);
 
     if (pathname === "/" || pathname === "/terminal") return serveFile(res, WEB, "terminal.html");
+    if (pathname === "/theme.css") { res.writeHead(200, { "Content-Type": "text/css; charset=utf-8", "Cache-Control": "no-cache" }); return res.end(THEME_CSS); }
+    if (pathname === "/theme.json") { res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-cache" }); return res.end(THEME_JSON); }
     if (pathname === "/health") { res.writeHead(200, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ ok: true, session: hub.session })); }
     if (pathname === "/stream") return hub.attach(req, res, searchParams.get("audio") === "1");
     if (pathname === "/relay") return relay.attach(req, res);

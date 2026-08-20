@@ -1,11 +1,14 @@
 :root {
+  /* Theme vars (--term-bg, --frame-fg, --accent, --fm-*) come from the
+     server-generated /theme.css, loaded before this file. These fallbacks keep
+     the page sane if that endpoint is ever unreachable — they mirror the
+     familiar-dark defaults. */
   --term-bg: #1e1e2e; /* matches restty default dark bg so no letterbox */
   --frame-fg: #cdd6f4;
+  --accent: #32b08d; /* Kevin's teal-green == oklch(0.68 0.12 170) */
   --toast-bg: #ffffff;
   --toast-border: #d4d4d8;
   --toast-shadow: rgba(0, 0, 0, 0.12);
-  /* Kevin's pick 2026-08-20 ("until I change my mind"): teal-green. */
-  --accent: oklch(0.68 0.12 170);
   --pad: 12px;
   --drag-h: 8px;
 }
@@ -102,9 +105,9 @@ body {
   justify-content: center;
   font-size: 18px;
   font-weight: 600;
-  color: var(--accent);
-  background: rgba(30, 30, 46, 0.72);
-  border: 3px dashed var(--accent);
+  color: var(--fm-accent, var(--accent));
+  background: rgba(30, 30, 46, 0.72); /* == --fm-background at 72% alpha */
+  border: 3px dashed var(--fm-accent, var(--accent));
   border-radius: 12px;
   z-index: 60;
   pointer-events: none;
@@ -115,8 +118,7 @@ body {
 }
 
 /* Voice capture indicator: subtle pill, top-center, above the terminal. Only
-   visible mid-capture (recording / transcribing) or on error. Deliberately
-   understated so it reads as a state, not a modal. */
+   visible mid-capture (recording / transcribing) or on error. */
 #voice-indicator {
   position: fixed;
   top: calc(var(--pad) + var(--drag-h) + 6px);
@@ -130,9 +132,9 @@ body {
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.02em;
-  color: var(--frame-fg);
-  background: rgba(24, 24, 37, 0.92);
-  border: 1px solid #313244;
+  color: var(--fm-text, var(--frame-fg));
+  background: var(--fm-surface, #181825);
+  border: 1px solid var(--fm-border, #313244);
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
   opacity: 0;
   pointer-events: none;
@@ -145,37 +147,37 @@ body {
   transform: translate(-50%, 0);
 }
 
-/* Recording: accent-tinted with a soft breathing pulse so it is clearly live. */
 #voice-indicator.recording {
-  color: var(--accent);
-  border-color: var(--accent);
+  color: var(--fm-accent, var(--accent));
+  border-color: var(--fm-accent, var(--accent));
   animation: voice-pulse 1.4s ease-in-out infinite;
 }
 
 #voice-indicator.finalizing {
-  color: #f9e2af; /* amber: work in flight */
-  border-color: #f9e2af;
+  color: var(--fm-warning, #f9e2af);
+  border-color: var(--fm-warning, #f9e2af);
 }
 
 #voice-indicator.error {
-  color: #f38ba8; /* red: permission/transcription failure */
-  border-color: #f38ba8;
+  color: var(--fm-error, #f38ba8);
+  border-color: var(--fm-error, #f38ba8);
   animation: none;
 }
 
 @keyframes voice-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(46, 194, 160, 0.0), 0 4px 14px rgba(0, 0, 0, 0.35); }
-  50% { box-shadow: 0 0 0 4px rgba(46, 194, 160, 0.22), 0 4px 14px rgba(0, 0, 0, 0.35); }
+  0%, 100% { box-shadow: 0 0 0 0 transparent, 0 4px 14px rgba(0, 0, 0, 0.35); }
+  50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--fm-accent, var(--accent)) 22%, transparent), 0 4px 14px rgba(0, 0, 0, 0.35); }
 }
 
-/* Emoji completion picker: floating, dark, anchored near the cursor. */
+/* Emoji completion picker: floating, anchored near the cursor. Uses themed
+   surfaces so it tracks the resolved theme. */
 #emoji-picker {
   position: fixed;
   z-index: 70;
   min-width: 200px;
   max-width: 320px;
-  background: #181825;
-  border: 1px solid #313244;
+  background: var(--fm-surface, #181825);
+  border: 1px solid var(--fm-border, #313244);
   border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
   padding: 4px;
@@ -190,12 +192,12 @@ body {
   gap: 8px;
   padding: 4px 8px;
   border-radius: 5px;
-  color: #cdd6f4;
+  color: var(--fm-text, #cdd6f4);
   white-space: nowrap;
 }
 
 .emoji-row.sel {
-  background: #45475a;
+  background: var(--fm-selection-bg, #45475a);
 }
 
 .emoji-glyph {
@@ -205,7 +207,7 @@ body {
 }
 
 .emoji-name {
-  color: #a6adc8;
+  color: var(--fm-muted, #a6adc8);
 }
 
 /* Fatal diagnostic panel (shown in place of the terminal when the shell fails

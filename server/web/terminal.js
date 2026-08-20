@@ -207,14 +207,21 @@ async function boot() {
   }
 
   // Themed canvas background. restty's default pane canvas is pure BLACK; the
-  // Electron client's window paints #1e1e2e behind it, so the served page (no
-  // such window bg) looked full-black instead of the intended slightly-lightened
-  // theme. Catppuccin Mocha's background is exactly #1e1e2e (== --term-bg) with
-  // a coherent fg (#cdd6f4 == --frame-fg) + palette — porting it matches the
-  // Electron look and upgrades the palette. Falls back to restty defaults if the
-  // builtin is ever unavailable.
+  // Electron client's window paints the theme bg behind it, so a served page
+  // (no such window bg) would look full-black. We fetch the server-resolved
+  // theme (/theme.json — a GhosttyTheme built from FAMILIAR_THEME_* at boot):
+  // background/foreground/cursor/selection + the ANSI-16 palette all track the
+  // unified Familiar theme, so browser panes match the herdr/pi/Electron look
+  // and change on cold restart with no asset rebuild. Falls back to the
+  // built-in Catppuccin Mocha (then restty default) if the endpoint is down.
   let theme;
-  try { theme = getBuiltinTheme("Catppuccin Mocha"); } catch (_) { /* restty default */ }
+  try {
+    const res = await fetch("/theme.json", { cache: "no-cache" });
+    if (res.ok) theme = await res.json();
+  } catch (_) { /* fall through */ }
+  if (!theme) {
+    try { theme = getBuiltinTheme("Catppuccin Mocha"); } catch (_) { /* restty default */ }
+  }
 
   restty = new Restty({
     root,
