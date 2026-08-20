@@ -8,6 +8,7 @@ import { AudioCache } from "./audio.ts";
 import { RelayBus } from "./relay.ts";
 import { Ingress } from "./ingress.ts";
 import { PtyBridge } from "./pty.ts";
+import { handleUpload } from "./upload.ts";
 import type { IngestEnvelope } from "./protocol.ts";
 
 /* --- Familiar server: the web presence -------------------------------------
@@ -111,6 +112,10 @@ function handle(req: http.IncomingMessage, res: http.ServerResponse) {
     });
     if (pathname === "/cancel") return ingress.handleCancel(req, res);
     if (pathname === "/ingest") return void handleIngest(req, res);
+    if (pathname === "/upload") return void handleUpload(req, res, searchParams).catch((err) => {
+      errorLog("subscriber", { uploadError: String(err) });
+      if (!res.headersSent) { res.statusCode = 500; res.end(); }
+    });
     if (seg) return audio.serve(Number(seg[1]), Number(seg[2]), res);
 
     // Static assets for the browser terminal.

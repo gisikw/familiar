@@ -1,4 +1,4 @@
-import { Restty, createWebSocketPtyTransport } from "/vendor/restty.esm.js";
+import { Restty, createWebSocketPtyTransport, getBuiltinTheme } from "/vendor/restty.esm.js";
 import { DecsetTracker, encodeMouse, domButtonToCode } from "/app/mouse.js";
 import { EmojiCompleter, loadEmoji } from "/app/emoji.js";
 
@@ -204,6 +204,16 @@ async function boot() {
     console.error("font load failed, using restty defaults", err);
   }
 
+  // Themed canvas background. restty's default pane canvas is pure BLACK; the
+  // Electron client's window paints #1e1e2e behind it, so the served page (no
+  // such window bg) looked full-black instead of the intended slightly-lightened
+  // theme. Catppuccin Mocha's background is exactly #1e1e2e (== --term-bg) with
+  // a coherent fg (#cdd6f4 == --frame-fg) + palette — porting it matches the
+  // Electron look and upgrades the palette. Falls back to restty defaults if the
+  // builtin is ever unavailable.
+  let theme;
+  try { theme = getBuiltinTheme("Catppuccin Mocha"); } catch (_) { /* restty default */ }
+
   restty = new Restty({
     root,
     services: {
@@ -214,6 +224,7 @@ async function boot() {
       renderer: "auto",
       fontSize: DEFAULT_FONT_SIZE,
       autoResize: true,
+      ...(theme ? { theme } : {}),
       ...(fonts ? { fonts } : {}),
     },
   });
@@ -350,3 +361,62 @@ async function wireEmoji() {
 }
 
 boot();
+
+// ---------------------------------------------------------------------------
+// Drag-and-drop capture. THE point (mirrors the Electron renderer): prevent the
+// default so the terminal never sees a file:// path paste; capture the bytes;
+// POST them to /upload (same origin) so they land on the server host and the
+// running agent is told. Attach on window with capture=true so nothing
+// downstream (the restty canvas) ever sees the drop.
+// ---------------------------------------------------------------------------
+function wireDrop() {
+  const dropHint = document.getElementById("drop-hint");
+  let dragDepth = 0;
+  const showHint = (on) => dropHint && dropHint.classList.toggle("active", on);
+
+  window.addEventListener("dragenter", (e) => {
+    e.preventDefault(); e.stopPropagation();
+    dragDepth++; showHint(true);
+  }, true);
+
+  window.addEventListener("dragover", (e) => {
+    e.preventDefault(); e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+  }, true);
+
+  window.addEventListener("dragleave", (e) => {
+    e.preventDefault(); e.stopPropagation();
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) showHint(false);
+  }, true);
+
+  window.addEventListener("drop", async (e) => {
+    // CRITICAL: stop the browser/terminal default so no path text is injected.
+    e.preventDefault(); e.stopPropagation();
+    dragDepth = 0; showHint(false);
+
+    const files = e.dataTransfer && e.dataTransfer.files;
+    if (!files || files.length === 0) return;
+
+    for (const file of files) {
+      try {
+        const form = new FormData();
+        form.append("file", file, file.name);
+        const res = await fetch("/upload", { method: "POST", body: form });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok || !json.ok) {
+          toast(`drop failed: ${escapeHtml(json.error || res.status)}`);
+          continue;
+        }
+        const short = String(json.path || file.name).split("/").pop();
+        toast(json.notified ? `captured ${short}` : `saved ${short} (agent not notified)`);
+      } catch (err) {
+        toast(`drop failed: ${file.name}`);
+        console.error("drop upload failed", err);
+      }
+    }
+    if (restty) restty.focus();
+  }, true);
+}
+
+wireDrop();
