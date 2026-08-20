@@ -1,9 +1,16 @@
-import http from "http";
-import { debugLog, errorLog } from "../lib/debug.ts";
+import type http from "http";
+import { debugLog, errorLog } from "./debug.ts";
 import { AUDIO_CACHE_MAX } from "./protocol.ts";
 import type { StreamHub } from "./hub.ts";
 
-/* --- Audio: segment cache + sequential synthesis queue -------------------- */
+/* --- Audio: segment cache + sequential synthesis queue --------------------
+ *
+ * Ported from extensions/subscriber/audio.ts. Now server-owned: the server
+ * calls FAMILIAR_TTS_URL directly. Segments are registered from /ingest
+ * SegmentEvents (the extension firehose still decides WHAT is a segment; the
+ * server decides whether to synthesize, since it owns the audio-listener
+ * registry via the hub).
+ */
 
 type AudioEntry = { text: string; status: "pending" | "ready" | "failed"; wav?: Buffer };
 

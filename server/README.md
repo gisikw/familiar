@@ -1,0 +1,61 @@
+# familiar server
+
+Standalone web presence for the familiar agent environment. Lifted out of the
+`subscriber` pi extension: the server now owns **all** HTTP; the extension is a
+thin relay that forwards events here.
+
+Binds `127.0.0.1:1692`. See `DESIGN.md` for the full protocol rationale.
+
+## What it does
+
+- **SSE firehose** (`GET /stream?audio=1`) — the assistant/user/tool/segment
+  event stream for remote clients (Hearth), with history replay, a per-session
+  epoch UUID, and 25s heartbeats. Ported faithfully from the old
+  `subscriber/hub.ts`.
+- **Egress ingest** (`POST /ingest`) — the pi extension POSTs one
+  `IngestEnvelope` per event (publish / revise / lock / session). Localhost
+  only; low-rate, so POST-per-event over a persistent socket (see DESIGN.md).
+- **Ingress** (`POST /submit`, `POST /cancel`) — text/voice in. The server owns
+  STT/TTS (`FAMILIAR_STT_URL` / `FAMILIAR_TTS_URL`); it transcribes takes and
+  pushes ready-to-dispatch commands down `GET /relay` (SSE), which the pi
+  extension subscribes to and enacts against the pi API.
+- **Segment audio** (`GET /segments/:mid/:idx/audio`) — synthesized wav.
+- **Browser terminal** (`GET /terminal`, `GET /`) — the restty WASM terminal
+  bridged over a `/pty` WebSocket to a `node-pty` child that ATTACHES to the
+  running herdr session (`FAMILIAR_ATTACH_CMD`, default
+  `herdr session attach familiar`). Replaces the Electron client's local-shell
+  dance. Fonts + mouse + emoji-completer ported from the client renderer.
+
+## Run
+
+    cd server
+    npm install          # builds node-pty (no Linux prebuild) + vendors assets
+    npm start            # node --experimental-transform-types src/main.ts  →  http://127.0.0.1:1692
+
+Node 22 runs the TypeScript directly. `--experimental-transform-types` (not
+plain strip-only mode) is required because the code uses TS parameter
+properties; no separate build step.
+
+### Environment
+
+| var | default | meaning |
+| --- | --- | --- |
+| `FAMILIAR_SERVER_PORT` / `FAMILIAR_SUBSCRIBER_PORT` | `1692` | listen port |
+| `FAMILIAR_SERVER_HOST` | `127.0.0.1` | listen host |
+| `FAMILIAR_ATTACH_CMD` | `herdr session attach <session>` | PTY command the browser terminal attaches to. Set to `bash -l` to smoke-test without herdr. |
+| `FAMILIAR_ATTACH_SESSION` / `HERDR_SESSION` | `familiar` | session name used by the default attach command |
+| `FAMILIAR_ATTACH_CWD` | server cwd | working dir for the attach child |
+| `FAMILIAR_STT_URL` / `FAMILIAR_TTS_URL` | — | dumb HTTP model endpoints |
+| `FAMILIAR_TTS_VOICE` | — | optional TTS voice selection |
+| `FAMILIAR_LOG_PATH` | stderr | JSONL sidecar log base (`${path}.${suffix}`) |
+| `FAMILIAR_DEBUG_LEVEL` | `debug` | `off` \| `error` \| `debug` |
+
+## Fronting (out of scope, noted for later)
+
+The server has **no auth** — it deliberately binds localhost only. In
+production it is intended to sit behind nginx at `familiar.gisi.network`, with
+Pocket ID (OIDC) enforcing authentication at the proxy and nginx forwarding
+authenticated requests to `127.0.0.1:1692` (including the `/pty` and `/stream`
+WebSocket/SSE upgrades — proxy config must pass `Upgrade`/`Connection` headers
+and disable buffering on the SSE routes). None of that lives here; this service
+assumes anything that reaches it is already authorized.
