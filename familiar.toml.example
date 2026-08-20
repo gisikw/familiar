@@ -1,0 +1,55 @@
+# familiar.toml — local Familiar configuration (example).
+#
+# Copy to `familiar.toml` at the repo root. The generic loader (a separate
+# agent) flattens nested keys into FAMILIAR_THEME_* env vars; this file's
+# [theme] block is the ONLY section this theming system owns. Other sections
+# (added by the loader agent and others) merge alongside it.
+#
+# Every [theme] key is OPTIONAL — omit to keep the built-in `familiar-dark`
+# default. Colors accept #rgb, #rrggbb, or #rrggbbaa; an invalid value fails the
+# boot loudly (server exit 2, generator exit 3) rather than shipping a broken UI.
+#
+# See docs/THEME.md for the full role × consumer matrix and how each role maps
+# onto the browser (restty/CSS), herdr config, pi theme, and the Electron shell.
+
+[theme]
+name = "familiar-dark"
+
+# --- Semantic roles --------------------------------------------------------
+background  = "#1e1e2e"  # app/terminal/pane backdrop
+surface     = "#181825"  # raised panels (sidebar, emoji picker, cards)
+surface_dim = "#11111b"  # deepest recess
+overlay     = "#313244"  # hairlines / raised-on-surface
+text        = "#cdd6f4"  # primary foreground
+muted       = "#a6adc8"  # secondary text
+accent      = "#32b08d"  # oklch(0.68 0.12 170) — Kevin's teal (the default)
+success     = "#a6e3a1"
+warning     = "#f9e2af"
+error       = "#f38ba8"
+border       = "#313244"
+border_muted = "#45475a"
+selection_bg = "#45475a"  # selected line / text selection
+cursor       = "#32b08d"
+cursor_text  = "#1e1e2e"  # glyph under the cursor
+
+# --- Terminal ANSI 16-color palette ---------------------------------------
+# Drives restty browser panes (colors.palette[0..15]) and is exported as
+# FAMILIAR_ANSI_0..15 for newly opened herdr panes (env handoff; herdr has no
+# native per-pane ANSI-16 key).
+[theme.ansi]
+black   = "#45475a"
+red     = "#f38ba8"
+green   = "#a6e3a1"
+yellow  = "#f9e2af"
+blue    = "#89b4fa"
+magenta = "#f5c2e7"
+cyan    = "#94e2d5"
+white   = "#bac2de"
+bright_black   = "#585b70"
+bright_red     = "#f38ba8"
+bright_green   = "#a6e3a1"
+bright_yellow  = "#f9e2af"
+bright_blue    = "#89b4fa"
+bright_magenta = "#f5c2e7"
+bright_cyan    = "#94e2d5"
+bright_white   = "#a6adc8"

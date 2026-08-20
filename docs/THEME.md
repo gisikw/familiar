@@ -1,0 +1,131 @@
+# Familiar unified theme
+
+One `[theme]` section in `familiar.toml` drives every configurable color across
+the four surfaces. The generic `familiar.toml` loader (a separate agent) flattens
+nested TOML keys into `FAMILIAR_THEME_*` env vars; this system **consumes** that
+env contract. It never parses TOML itself.
+
+## Single source of truth
+
+`server/src/theme/defaults.json` holds the canonical `familiar-dark` palette:
+semantic **roles** + a 16-entry **ANSI** palette. Two generators read that one
+file and overlay `FAMILIAR_THEME_*`:
+
+- `server/src/theme/resolve.ts` — runtime (Node): validates, builds the browser
+  CSS (`/theme.css`) and the restty `GhosttyTheme` (`/theme.json`).
+- `scripts/familiar-theme.sh` — boot (bash/jq): emits the herdr `[theme]` TOML
+  fragment, the pi theme JSON, the sidebar accent, and `FAMILIAR_ANSI_0..15`.
+
+No color literal is duplicated between consumers; the only static mirror is the
+Electron **offline** page (shown when the server is unreachable, so it cannot
+fetch `/theme.css`) — documented inline as hand-synced.
+
+## Env contract (camelCase role → env key)
+
+| Kind | Example role | Env var |
+|------|--------------|---------|
+| role | `background`   | `FAMILIAR_THEME_BACKGROUND` |
+| role | `selectionBg`  | `FAMILIAR_THEME_SELECTION_BG` |
+| ansi | `brightBlack`  | `FAMILIAR_THEME_ANSI_BRIGHT_BLACK` |
+| name | (theme name)   | `FAMILIAR_THEME_NAME` |
+
+Nested TOML `[theme.ansi].bright_black` already arrives as
+`FAMILIAR_THEME_ANSI_BRIGHT_BLACK`, so bash and Node agree on a straight
+camel→SNAKE mapping. Colors accept `#rgb`, `#rrggbb`, or `#rrggbbaa`; anything
+else fails loudly (server exit 2, generator exit 3).
+
+## Intersection matrix — theme roles × consumers
+
+Legend: ✅ generated/driven · 🟡 partial/derived · ❌ no knob exists (honest gap).
+
+| Role | Browser (restty/CSS) | herdr config | pi theme | Electron shell |
+|------|----------------------|--------------|----------|----------------|
+| background   | ✅ `--fm-background`, restty `colors.background` | ✅ `theme.custom.panel_bg` | ✅ `export.pageBg`, `toolPendingBg` | 🟡 offline `--bg` (static mirror) |
+| surface      | ✅ `--fm-surface` (emoji picker) | ✅ `sidebar_bg` | ✅ `userMessageBg`, `export.cardBg` | 🟡 offline `--panel` |
+| surfaceDim   | ✅ `--fm-surface-dim` | ✅ `surface_dim` | 🟡 via bg | ❌ |
+| overlay      | ✅ `--fm-overlay` | ✅ `surface0` | ✅ `customMessageBg`, `scrollbarThumb` | 🟡 offline `--border` |
+| text         | ✅ `--frame-fg`, restty `foreground` | ✅ `text` | ✅ `text` | 🟡 offline `--fg` |
+| muted        | ✅ `--fm-muted` | ✅ `subtext0` | ✅ `muted`, `toolOutput` | 🟡 offline `--muted` |
+| accent       | ✅ `--accent`, cursor, drop-hint | ✅ `accent`, `teal` | ✅ `accent`, `borderAccent` | 🟡 offline `--accent` + sidebar mark PNG |
+| success      | 🟡 via ansi green | ✅ `green` | ✅ `success`, `toolDiffAdded` | ❌ |
+| warning      | 🟡 via ansi yellow | ✅ `yellow`, `peach` | ✅ `warning`, `mdHeading` | ❌ |
+| error        | 🟡 via ansi red | ✅ `red` | ✅ `error`, `toolDiffRemoved` | ❌ |
+| border       | ✅ `--fm-border` | 🟡 `surface0/1` | ✅ `border` (=blue) | 🟡 offline `--border` |
+| borderMuted  | ✅ `--fm-border-muted` | ✅ `surface1` | ✅ `borderMuted` | ❌ |
+| selectionBg  | ✅ `--fm-selection-bg`, restty `selectionBackground` | ✅ `selection_bg`, `active_row_bg` | ✅ `selectedBg` | ❌ |
+| cursor       | ✅ restty `colors.cursor` | ❌ *(no herdr cursor knob)* | 🟡 pi cursor = accent | ❌ |
+| cursorText   | ✅ restty `colors.cursorText` | ❌ | ❌ | ❌ |
+| ANSI 0–15    | ✅ restty `palette[0..15]` + `--fm-ansi-*` | ❌ *(no herdr ANSI-16 config; env handoff `FAMILIAR_ANSI_*` only)* | 🟡 8 hues mapped to vars | ❌ |
+
+### Honest gaps (no invented knobs)
+- **herdr has no per-pane ANSI-16 palette key** in 0.8.x. `theme.custom` covers UI
+  chrome only. New panes inherit ANSI via `FAMILIAR_ANSI_0..15` env (a pane rc can
+  emit OSC 4); this is env handoff, not a native setting.
+- **herdr has no cursor color knob** — cursor is driven only where restty/pi own it.
+- **Electron offline page** can't be runtime-themed (server is down by definition);
+  its `<style>` is a hand-synced mirror of the defaults.
+- **`theme.name = "catppuccin"`** stays herdr's base so its built-in dark tokens
+  fill any custom token we don't override; our accent/surfaces sit on top.
+
+## Cold-restart behavior
+
+`familiar.sh` regenerates the herdr fragment (`write_herdr_config`) and pi theme
+(`run_pi`) on every boot; the server rebuilds `/theme.css` + `/theme.json` at
+startup from env. Changing `[theme]` in `familiar.toml` and cold-restarting
+re-themes all surfaces with **no asset rebuild**. pi additionally hot-reloads the
+active custom theme file on edit.
+
+## `[theme]` example for familiar.toml
+
+```toml
+# Familiar unified theme. Omit any key to keep the familiar-dark default.
+# Colors: #rgb, #rrggbb, or #rrggbbaa. Invalid values fail the boot loudly.
+[theme]
+name = "familiar-dark"
+
+# Semantic roles.
+background  = "#1e1e2e"
+surface     = "#181825"
+surface_dim = "#11111b"
+overlay     = "#313244"
+text        = "#cdd6f4"
+muted       = "#a6adc8"
+accent      = "#32b08d"   # oklch(0.68 0.12 170) — Kevin's teal, the default
+success     = "#a6e3a1"
+warning     = "#f9e2af"
+error       = "#f38ba8"
+border       = "#313244"
+border_muted = "#45475a"
+selection_bg = "#45475a"
+cursor       = "#32b08d"
+cursor_text  = "#1e1e2e"
+
+# Terminal ANSI 16-color palette (drives restty panes + FAMILIAR_ANSI_* handoff).
+[theme.ansi]
+black   = "#45475a"
+red     = "#f38ba8"
+green   = "#a6e3a1"
+yellow  = "#f9e2af"
+blue    = "#89b4fa"
+magenta = "#f5c2e7"
+cyan    = "#94e2d5"
+white   = "#bac2de"
+bright_black   = "#585b70"
+bright_red     = "#f38ba8"
+bright_green   = "#a6e3a1"
+bright_yellow  = "#f9e2af"
+bright_blue    = "#89b4fa"
+bright_magenta = "#f5c2e7"
+bright_cyan    = "#94e2d5"
+bright_white   = "#a6adc8"
+```
+
+## Tests
+
+- `server/src/theme/resolve.test.ts` — resolver, CSS snapshot, restty theme,
+  ANSI order, env overrides, `#rgb` expansion, validation, default parity.
+  `node --experimental-transform-types --test src/theme/resolve.test.ts`
+- `test/familiar-theme.test.sh` — herdr fragment, pi JSON (all 51 tokens),
+  ANSI env, parity, overrides, failure exit codes. `bash test/familiar-theme.test.sh`
+- Live: pi JSON validates against the installed pi `theme-schema.json`; the herdr
+  fragment passes `herdr config check`; `/theme.css` + `/theme.json` verified live.
