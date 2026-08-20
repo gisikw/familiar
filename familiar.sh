@@ -303,6 +303,13 @@ pane_outer_borders = false
 command = "$REPO/scripts/herdr-sidebar.sh"
 rows = 12
 cwd = "$REPO"
+
+# The sidebar mark is transmitted via kitty graphics (scripts/herdr-sidebar.sh).
+# Herdr's kitty-graphics rendering for attached clients is experimental and OFF
+# by default — without this the APC transmit is swallowed and the sidebar shows
+# only the wordmark text.
+[experimental]
+kitty_graphics = true
 EOF
 }
 
