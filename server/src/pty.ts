@@ -60,10 +60,45 @@ function startPty(cols: number, rows: number): IPty {
   // attachCommand() before this scrub, so it is unaffected.
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
-    if (v !== undefined && !k.startsWith("HERDR_")) env[k] = v;
+    if (v === undefined) continue;
+    if (k.startsWith("HERDR_")) continue;
+    // Also drop outer-context markers that herdr's client uses to DECIDE the
+    // outer terminal is a multiplexer/remote where it should NOT assume kitty
+    // graphics capability (herdr src/client/mod.rs reads SSH_CONNECTION /
+    // SSH_TTY / STY alongside the positive TERM_PROGRAM / KITTY_WINDOW_ID
+    // signals). The server itself is reached over SSH, so these are present in
+    // our own env and would otherwise leak into the attach child and defeat the
+    // KITTY_WINDOW_ID/TERM_PROGRAM signals we set below. The browser is a
+    // direct, local-feeling window onto the pty, so present it that way.
+    if (k === "SSH_CONNECTION" || k === "SSH_TTY" || k === "SSH_CLIENT" || k === "STY") continue;
+    env[k] = v;
   }
   env.TERM = "xterm-256color";
   env.COLORTERM = "truecolor";
+  // KITTY GRAPHICS ENABLEMENT (root cause of the web-path mark not rendering):
+  // herdr's attach *client* decides whether to forward a pane's kitty graphics
+  // APC (_G…) to the connected terminal by sniffing the OUTER terminal's env
+  // fingerprint — NOT by an APC a=q query round-trip. The detection site is
+  // herdr's `src/client/mod.rs` (it reads TERM_PROGRAM / KITTY_WINDOW_ID /
+  // SSH_CONNECTION / SSH_TTY / STY). When we attach from ghostty the client
+  // sees TERM_PROGRAM=ghostty and forwards the graphics; the sidebar mark
+  // renders. Our node-pty child, by contrast, presented as a bare
+  // xterm-256color with none of those markers, so herdr classified the outer
+  // terminal as non-graphics-capable and stripped the APC before it ever
+  // reached restty — even though restty's core DOES parse kitty graphics
+  // (dist/wasm kitty runtime; forwardTerminalReplies defaults true, and our
+  // tapped transport leaves restty's reply path intact).
+  //
+  // The fix is to make the attach child look like a kitty-graphics-capable
+  // outer terminal to herdr. restty implements the kitty graphics protocol, so
+  // this is truthful, not a lie: the surface on the other end of this pty CAN
+  // render _G images. We advertise via KITTY_WINDOW_ID (herdr's kitty-family
+  // signal) and TERM_PROGRAM. TERM stays xterm-256color for terminfo safety
+  // (xterm-kitty/xterm-ghostty terminfo entries are not installed here, and
+  // herdr keys off the env markers, not $TERM). Override with
+  // FAMILIAR_ATTACH_TERM* if a future herdr build changes its heuristic.
+  env.TERM_PROGRAM = process.env.FAMILIAR_ATTACH_TERM_PROGRAM || "ghostty";
+  env.KITTY_WINDOW_ID = process.env.FAMILIAR_ATTACH_KITTY_WINDOW_ID || "1";
   return ptySpawn(file, args, {
     name: "xterm-256color",
     cols: cols || 80,
