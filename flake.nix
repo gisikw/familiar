@@ -100,9 +100,12 @@
           # The Electron terminal app under client/. node-pty ships prebuilt
           # N-API binaries (ABI-stable), so only a matching Node is needed —
           # this is the single source of truth for that version.
+          # The bundled ProggyClean TTF (client/src/renderer/fonts) is missing
+          # some Nerd Font glyphs; the full upstream face is pulled in here so
+          # it's available system-side for the fallback path.
           client = pkgs.mkShell {
             FAMILIAR_SHELL = "client";
-            packages = with pkgs; [ nodejs_22 ];
+            packages = with pkgs; [ nodejs_22 nerd-fonts.proggy-clean-tt ];
           };
         };
       }
