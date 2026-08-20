@@ -14,6 +14,10 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 MASTER="$ROOT/assets/icon.svg"
+# The touch icon uses the full-bleed master (no Apple-grid margin): iOS applies
+TOUCH_MASTER="$ROOT/assets/icon-touch.svg"
+# its own corner mask, so a margined icon would look undersized on the home
+# screen. icon-touch.svg is the pre-margin snapshot of icon.svg.
 OUT="$ROOT/assets/icons"          # PNG set (gitignored build output)
 WEB="$ROOT/server/web"            # apple-touch-icon lands here
 ICNS="$ROOT/client/build/icon.icns"
@@ -38,7 +42,7 @@ done
 # apple-touch-icon: 180x180, non-transparent (iOS composites on black otherwise;
 # our squircle already fills the frame edge-to-edge so this is fine).
 echo "apple-touch-icon -> $WEB/apple-touch-icon.png"
-rsvg -w 180 -h 180 "$MASTER" -o "$WEB/apple-touch-icon.png"
+rsvg -w 180 -h 180 "${TOUCH_MASTER:-$MASTER}" -o "$WEB/apple-touch-icon.png"
 
 # --- assemble .icns --------------------------------------------------------
 if command -v png2icns >/dev/null 2>&1 || command -v nix >/dev/null 2>&1 \
