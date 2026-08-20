@@ -5,6 +5,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { prepareArtifactDir, getArtifactDir } from "./artifact-dir.ts";
 
 /* ============================================================================
  * Subagent extension — async work dispatch onto Herdr agents
@@ -114,6 +115,8 @@ export interface DispatchCommand {
   /** Wall-clock seconds before the job is killed and settled as timeout. */
   timeout: number;
   created_at: string;
+  /** Absolute path where the job should write substantial artifacts. */
+  artifact_dir: string;
   extra?: Record<string, unknown>;
 }
 
@@ -129,6 +132,8 @@ export interface Settlement {
   /** Where to look: worktree checkout + branch for isolated jobs. */
   workdir?: string;
   branch?: string;
+  /** Absolute path to the job's artifact directory. */
+  artifact_dir?: string;
   settled_at: string;
 }
 
@@ -148,6 +153,7 @@ const MAX_RESUMES = 2;
 const DEFAULT_TIMEOUT_S = Number(process.env.FAMILIAR_SUBAGENT_TIMEOUT) || 1800;
 const DEFAULT_MODEL = process.env.FAMILIAR_SUBAGENT_MODEL;
 const MODE = process.env.FAMILIAR_SUBAGENT_MODE;
+const ARTIFACT_ROOT = process.env.FAMILIAR_ARTIFACT_DIR || path.join(REPO, "state", "artifacts");
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const EXT_DIR = path.dirname(HERE);
@@ -158,14 +164,20 @@ const AGENT_DIR = process.env.PI_CODING_AGENT_DIR || path.join(process.env.HOME 
 const SESSION_DIR = process.env.FAMILIAR_SUBAGENT_SESSION_DIR || path.join(AGENT_DIR, "subagent-sessions");
 const WS_REGISTRY = path.join(SPOOL, ".workspaces.json");
 
+// Artifact root is created on first dispatch; subdirectories are per-job.
+let artifactRootVerified = false;
+
 /** Agent kind whose transcript we can read directly (and resume by session id). */
 const NATIVE_KIND = "pi";
 
-const verdictFooter = (kind: string, dir: string) =>
+const verdictFooter = (kind: string, dir: string, artifactDir: string) =>
   "\n\n---\nYou are a dispatched subagent. Your final message is the only thing " +
   `returned to the dispatcher — a verdict, not a transcript (≤${RESULT_MAX} chars): ` +
-  "what you did, what you concluded, what (if anything) failed. Write substantial " +
-  "output to files and list their paths in the verdict." +
+  "what you did, what you concluded, what (if anything) failed." +
+  "\n\n**Artifacts:** Write substantial non-code artifacts — research, design, " +
+  `evidence, specs — to this directory (not /tmp or repo root): ${artifactDir}` +
+  "\n**Code:** Changes belong in the worktree; they are the primary artifact." +
+  "\n**Verdict:** List any artifact file paths you created." +
   (kind === NATIVE_KIND ? "" : `\nWrite that verdict to ${path.join(dir, "verdict.md")} as your final act.`);
 
 const RESUME_PROMPT =
@@ -418,6 +430,7 @@ function settle(cmd: DispatchCommand, pass: number, partial: Pick<Settlement, "s
     usage,
     model,
     ...(cmd.isolated ? { workdir: cmd.cwd, branch: cmd.branch } : {}),
+    ...(cmd.artifact_dir ? { artifact_dir: cmd.artifact_dir } : {}),
     settled_at: new Date().toISOString(),
   };
   writeJSON(file, settlement);
@@ -468,6 +481,7 @@ export default function (pi: ExtensionAPI) {
       ...(s.reason ? [`reason: ${s.reason}`] : []),
       s.result || "(no output)",
       ...(s.workdir ? [`workdir: ${s.workdir}${s.branch ? ` (branch ${s.branch})` : ""}`] : []),
+      ...(s.artifact_dir ? [`artifacts: ${s.artifact_dir}`] : []),
       ...(s.usage
         ? [`usage: ${s.usage.input}in/${s.usage.output}out tokens, $${s.usage.cost.toFixed(4)}${s.model ? `, ${s.model}` : ""}`]
         : []),
@@ -631,11 +645,12 @@ export default function (pi: ExtensionAPI) {
     name: "dispatch",
     label: "Dispatch Subagent",
     description:
-      "Dispatch work to an async subagent running in its own Herdr pane. Returns { ok, id, pass } immediately; " +
-      "the settlement (verdict ≤2k chars, token/dollar usage) is relayed into the conversation when the work " +
+      "Dispatch work to an async subagent running in its own Herdr pane. Returns { ok, id, pass, artifact_dir } immediately; " +
+      "the settlement (verdict ≤2k chars, token/dollar usage, artifact paths) is relayed into the conversation when the work " +
       "lands. Use for anything expected to take >10 seconds. Do not poll or sleep waiting for it — go do other " +
       "work, and call subagent_await when you actually need the result. Git repos get an isolated worktree by " +
-      "default (its branch is the artifact). The child starts cold: include all needed context in the prompt.",
+      "default (its branch is the artifact). The child starts cold: include all needed context in the prompt. " +
+      "Substantial non-code artifacts go to a dedicated artifact directory.",
     promptSnippet: "Dispatch async work to a subagent; settlement relays back on completion",
     parameters: Type.Object({
       prompt: Type.String({ description: "Complete task description — the child has no other context" }),
@@ -666,6 +681,13 @@ export default function (pi: ExtensionAPI) {
       fs.mkdirSync(dirPath, { recursive: true });
       fs.mkdirSync(SESSION_DIR, { recursive: true });
 
+      // Prepare artifact directory before dispatch (durable, idempotent)
+      const artifactPrep = prepareArtifactDir(ARTIFACT_ROOT, id, true);
+      if (artifactPrep.error) {
+        console.warn(`artifact dir creation warning: ${artifactPrep.error}`);
+      }
+      artifactRootVerified = true;
+
       const branch = `sub/${shortLabel.replace(/[^a-zA-Z0-9._-]+/g, "-").slice(0, 40)}-${id.slice(-4)}`;
       const placed = isolated
         ? placeInWorktree(repo!, branch, shortLabel)
@@ -686,6 +708,7 @@ export default function (pi: ExtensionAPI) {
         ...(isolated ? { branch } : {}),
         model: childModel,
         session_id: sessionId,
+        artifact_dir: artifactPrep.dir,
         agent_args: agentKind === NATIVE_KIND
           ? [
               "--no-extensions",
@@ -704,7 +727,8 @@ export default function (pi: ExtensionAPI) {
       };
 
       // Durable before the slow side effects begin.
-      fs.writeFileSync(path.join(dirPath, "prompt.txt"), prompt + verdictFooter(agentKind, cwd));
+      const promptWithArtifact = prompt + verdictFooter(agentKind, cwd, artifactPrep.dir);
+      fs.writeFileSync(path.join(dirPath, "prompt.txt"), promptWithArtifact);
       fs.writeFileSync(path.join(dirPath, "pass"), String(pass));
       fs.writeFileSync(path.join(dirPath, `started-${pass}`), new Date().toISOString());
       writeJSON(path.join(dirPath, "command.json"), command);
@@ -716,6 +740,7 @@ export default function (pi: ExtensionAPI) {
         id,
         pass,
         label: shortLabel,
+        artifact_dir: artifactPrep.dir,
         workspace: placed.workspace,
         ...(isolated ? { workdir: cwd, branch } : { dir: cwd }),
       });
@@ -755,7 +780,7 @@ export default function (pi: ExtensionAPI) {
         // Nothing outstanding: if a specific id was named it has already
         // settled, so hand back the settlement rather than an error.
         const s = params.id ? settlementOf(params.id) : null;
-        if (s) return ok({ id: s.id, pass: s.pass, status: s.status, reason: s.reason, result: s.result, usage: s.usage });
+        if (s) return ok({ id: s.id, pass: s.pass, status: s.status, reason: s.reason, result: s.result, usage: s.usage, ...(s.artifact_dir ? { artifact_dir: s.artifact_dir } : {}) });
         return fail("no running subagents to await");
       }
 
@@ -771,6 +796,7 @@ export default function (pi: ExtensionAPI) {
               id: s.id, pass: s.pass, status: s.status, reason: s.reason,
               result: s.result, usage: s.usage,
               ...(s.workdir ? { workdir: s.workdir, branch: s.branch } : {}),
+              ...(s.artifact_dir ? { artifact_dir: s.artifact_dir } : {}),
             });
           }
           if (eventsFor(id, pass).at(-1)?.status === "blocked") {
@@ -813,6 +839,7 @@ export default function (pi: ExtensionAPI) {
           status: s?.status ?? (last?.status === "blocked" ? "blocked" : agentState(id)?.status ?? "starting"),
           created_at: cmd.created_at,
           ...(cmd.isolated ? { branch: cmd.branch, workdir: cmd.cwd } : {}),
+          ...(cmd.artifact_dir ? { artifact_dir: cmd.artifact_dir } : {}),
           ...(s ? { settled_at: s.settled_at, usage: s.usage } : {}),
           prompt: cmd.prompt.length > 120 ? cmd.prompt.slice(0, 120) + "…" : cmd.prompt,
         };
@@ -863,7 +890,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "subagent_cancel",
     label: "Cancel Subagent",
-    description: "Cancel a running subagent by id. Stops the agent and settles the job as cancelled with whatever verdict exists. An isolated job's worktree and branch survive.",
+    description: "Cancel a running subagent by id. Stops the agent and settles the job as cancelled with whatever verdict exists. An isolated job's worktree and branch survive; artifacts are preserved.",
     promptSnippet: "Cancel a running subagent",
     parameters: Type.Object({
       id: Type.String({ description: "Job id from dispatch" }),
@@ -874,7 +901,7 @@ export default function (pi: ExtensionAPI) {
       if (!cmd) return fail("unknown id");
       const pass = currentPass(params.id);
       const already = readJSON<Settlement>(path.join(dir, `settlement-${pass}.json`));
-      if (already) return ok({ id: params.id, pass, status: already.status, note: "already settled" });
+      if (already) return ok({ id: params.id, pass, status: already.status, note: "already settled", ...(already.artifact_dir ? { artifact_dir: already.artifact_dir } : {}) });
 
       // Interrupt first so the verdict harvest sees a quiescent agent, then
       // close only the surfaces we own: a shared-workspace job loses its tab;
@@ -885,7 +912,7 @@ export default function (pi: ExtensionAPI) {
       if (!cmd.isolated && tab) herdr(["tab", "close", tab]);
       stopPolling(params.id);
       claim(path.join(dir, `relayed-${pass}`)); // the tool result IS the relay
-      return ok({ id: s.id, pass: s.pass, status: s.status, result: s.result, ...(s.workdir ? { workdir: s.workdir, branch: s.branch } : {}) });
+      return ok({ id: s.id, pass: s.pass, status: s.status, result: s.result, ...(s.workdir ? { workdir: s.workdir, branch: s.branch } : {}), ...(s.artifact_dir ? { artifact_dir: s.artifact_dir } : {}) });
     },
   });
 
@@ -896,10 +923,33 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async () => {
     if (MODE !== "herdr" || !fs.existsSync(SPOOL)) return;
 
+    // Verify/create artifact root once per session
+    if (!artifactRootVerified) {
+      try {
+        if (!fs.existsSync(ARTIFACT_ROOT)) {
+          fs.mkdirSync(ARTIFACT_ROOT, { recursive: true, mode: 0o700 });
+        }
+        artifactRootVerified = true;
+      } catch (err) {
+        console.warn(`failed to verify artifact root ${ARTIFACT_ROOT}: ${err}`);
+      }
+    }
+
     for (const id of fs.readdirSync(SPOOL)) {
       const cmd = readJSON<DispatchCommand>(path.join(jobDir(id), "command.json"));
       if (!cmd) continue;
       const pass = currentPass(id);
+
+      // Ensure old jobs without artifact_dir have a deterministic fallback
+      if (!cmd.artifact_dir) {
+        cmd.artifact_dir = getArtifactDir(ARTIFACT_ROOT, id);
+        // Don't write back; it's computed on-demand. But do ensure the dir exists.
+        const prep = prepareArtifactDir(ARTIFACT_ROOT, id, false);
+        if (!prep.error) {
+          // Update the in-memory command for this session
+          cmd.artifact_dir = prep.dir;
+        }
+      }
 
       const settlement = readJSON<Settlement>(path.join(jobDir(id), `settlement-${pass}.json`));
       if (settlement) {
