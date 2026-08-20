@@ -20,6 +20,9 @@ service. Extension-owned, stateless, ephemeral. NOT in `./server`.
 | `extensions/lib/claude-projection.test.ts` | 9 tests ported from Go `claude_jsonl_test.go` — the projection spec. |
 | `extensions/lib/anthropic-body.test.ts` | 13 tests: body parse, env scrub, argv. |
 | `extensions/lib/e2e-gateway.test-harness.ts` | Standalone e2e: real claude through loopback A + port-isolation proof. |
+| `extensions/lib/image-policy.ts` | Real Anthropic image caps + strict base64/dimension validation; actionable errors. |
+| `extensions/lib/image-policy.test.ts` | 24 tests: valid PNG/JPEG, multiple, malformed/oversize, determinism, image tool_results. |
+| `extensions/lib/e2e-images.test-harness.ts` | REAL e2e: direct user image + image tool_result continuation through both loopbacks. |
 
 ## How to ENABLE it
 
@@ -70,7 +73,7 @@ All harnesses drive the REAL `claude` CLI (2.1.197) with host subscription creds
 - **ANTHROPIC_* + FAMILIAR_ANTHROPIC_OAUTH env scrub**: child env is clean even
   with pi's tiamat routing present; the OAuth secret never reaches the child.
 - **Activation gate / credential materialization / projection determinism**:
-  as v0, plus 6 new v1b helper tests. 27 unit tests, all pass.
+  as v0, plus 6 new v1b helper tests, plus 24 image tests. 75 unit tests, all pass.
 
 Run unit tests: `nix develop .#stt -c bun test extensions/lib/`
 Run a real e2e (needs host `~/.claude/.credentials.json`):
@@ -116,11 +119,55 @@ anchor on the stable prefix. E2E: `extensions/lib/e2e-loopback-b.test-harness.ts
 Unit: `extensions/lib/loopback-b.test.ts` (9 tests) +
 `extensions/lib/ratelimit-headers.test.ts` (4).
 
+## Images — LIVE (inline base64, VERIFIED end-to-end)
+
+Image blocks are supported end-to-end through fresh projected `claude -p` turns,
+preserving media type and bytes. Both DIRECT user image blocks and
+IMAGE-BEARING tool results (Familiar's read tool / uploaded screenshots) work.
+
+**Representation chosen: inline base64.** A real-CLI probe of 2.1.197 settled
+this empirically (`/tmp/imgprobe/probe-*.mjs` during development):
+- inline base64 works via stdin stream-json AND in projected JSONL (both a
+  prior-turn user image and an image-bearing `tool_result` with array content),
+- a **local-file source** `{type:"file",path:...}` is REJECTED upstream —
+  `"an image in the conversation could not be processed and was removed"`. So the
+  RESEARCH §3.8 v2 "colocation" idea is NOT viable on 2.1.197; faithful inline
+  base64 is the path.
+
+Because base64 lives inline in the projected JSONL there are **no image temp
+files** to leak and **no local paths** to perturb the deterministic cache
+prefix — the colocation win's cleanup/determinism concerns simply don't arise.
+
+**Caps (real Anthropic Messages API limits; `lib/image-policy.ts`), no tiamat
+retention-window gating** (that gating only existed to bound a re-projected wire
+payload — RESEARCH §3.8):
+- media type ∈ {png, jpeg, gif, webp} (else actionable `invalid_request_error`),
+- ≤ 5 MiB decoded per image, ≤ 100 images/request, ≤ 8000 px/side (dims parsed
+  cheaply for png/jpeg/gif),
+- strict base64 round-trip validation rejects truncated/garbage payloads.
+Every violation throws an explicit, located `invalid_request_error`
+(`messages[i].content[j] … / tool_result image[k]`) — **never silently drops
+pixels**.
+
+**Projection**: a `tool_result` carrying images projects to array content
+(`[{text?},{image base64}…]`) with `toolUseResult.isImage:true`; a direct user
+image projects to `{type:image,source:{type:base64,media_type,data}}`. A
+trailing user message with images rides as a stream-json content array on stdin
+(inline base64) rather than plain text.
+
+**VERIFIED E2E** (`lib/e2e-images.test-harness.ts`, real claude 2.1.197 through
+loopback A + `claude -p` + loopback B, tiny generated PNGs of known colors):
+1. direct user GREEN image → claude replies `"green"`;
+2. image-bearing tool_result continuation: turn 1 calls `screenshot`, we inject
+   a PURPLE image tool_result, turn 2 (fresh claude, `--resume` over the
+   projected transcript) reads it → `"vivid purple/violet"`;
+3. unsupported media type → actionable error surfaced (never dropped).
+Unit: `lib/image-policy.test.ts` (24 tests: valid PNG/JPEG, multiple images,
+malformed/oversize/oversize-dims, count cap, deterministic projection, image
+tool_results, body extraction). 75 unit tests pass total.
+
 ## What is STUBBED / not yet wired
 
-- **Images**: parsed but NOT projected — the driver returns an explicit
-  `invalid_request_error` ('refusing to silently drop pixels') rather than
-  dropping them. Inline-base64 projection is a follow-up.
 - **Session-seed stability**: the resume key is derived from the first user
   message's text (`conv:<first 200 chars>`), NOT a pi-supplied conversation id.
   Stable within a linear conversation; a compaction/edit that changes the first
