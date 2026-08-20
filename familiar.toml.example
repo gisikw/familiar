@@ -1,16 +1,49 @@
-# familiar.toml — local Familiar configuration (example).
+# familiar.toml — local/private Familiar configuration schema.
 #
-# Copy to `familiar.toml` at the repo root. The generic loader (a separate
-# agent) flattens nested keys into FAMILIAR_THEME_* env vars; this file's
-# [theme] block is the ONLY section this theming system owns. Other sections
-# (added by the loader agent and others) merge alongside it.
-#
-# Every [theme] key is OPTIONAL — omit to keep the built-in `familiar-dark`
-# default. Colors accept #rgb, #rrggbb, or #rrggbbaa; an invalid value fails the
-# boot loudly (server exit 2, generator exit 3) rather than shipping a broken UI.
-#
-# See docs/THEME.md for the full role × consumer matrix and how each role maps
-# onto the browser (restty/CSS), herdr config, pi theme, and the Electron shell.
+# Copy to `familiar.toml`, edit it, then `chmod 600 familiar.toml`. Every key is
+# optional. Keys are flattened, uppercased, and exported with one FAMILIAR_
+# prefix: `brave_api_key` -> FAMILIAR_BRAVE_API_KEY and `[theme] accent` ->
+# FAMILIAR_THEME_ACCENT. Ambient FAMILIAR_* variables override this file.
+# See docs/CONFIG.md for types, normalization, precedence, and restart behavior.
+
+# Runtime policy. Familiar bridges these generic names to the upstream PI_*
+# variables expected by pi.
+pi_telemetry = 0
+pi_offline = 1
+pi_skip_version_check = 1
+
+# Paths and model/service examples.
+# identity_path = "./identity"
+# age_key = "./state/age.key"
+# handoff_path = "./state/handoffs"
+# model_dir = "./models"
+# log_path = "./state/log.jsonl"
+# default_provider = "llama.cpp"
+# default_model = "provider/model-id"
+# stt_url = "https://stt.example.invalid"
+# tts_url = "https://tts.example.invalid"
+# tts_voice = "af_exo"
+
+# Provider configuration. These remain FAMILIAR_* in local configuration;
+# Familiar bridges them to ANTHROPIC_* only when launching upstream consumers.
+# Never put real credentials in this committed example.
+# anthropic_base_url = "https://gateway.example.invalid"
+# anthropic_api_key = "replace-locally"
+# anthropic_auth_token = "replace-locally"
+
+# Web tools and subagents.
+# searxng_url = "https://search.example.invalid"
+# brave_api_key = "replace-locally"
+# subagent_model = "anthropic/claude-haiku-4-5"
+# subagent_timeout = 1800
+# zip_model = "anthropic/claude-haiku-4-5"
+# tz = "America/Chicago"
+# debug_level = "debug"
+
+# The landed unified theme owns this section and is preserved alongside the
+# generic schema. Omit any key to keep the built-in `familiar-dark` default.
+# Colors accept #rgb, #rrggbb, or #rrggbbaa; invalid colors fail boot loudly.
+# See docs/THEME.md for the full role × consumer matrix.
 
 [theme]
 name = "familiar-dark"

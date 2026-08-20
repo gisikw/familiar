@@ -1,9 +1,9 @@
 # Familiar unified theme
 
 One `[theme]` section in `familiar.toml` drives every configurable color across
-the four surfaces. The generic `familiar.toml` loader (a separate agent) flattens
-nested TOML keys into `FAMILIAR_THEME_*` env vars; this system **consumes** that
-env contract. It never parses TOML itself.
+the four surfaces. Familiar's generic loader flattens nested TOML keys into
+`FAMILIAR_THEME_*` env vars; the unified theme consumers use that contract.
+Mapping, precedence, and restart operations are documented in `docs/CONFIG.md`.
 
 ## Single source of truth
 

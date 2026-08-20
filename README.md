@@ -29,7 +29,14 @@ A portable, personal, progressively-enhanced agent framework.
    nix shell nixpkgs#git -c git clone git@github.com:gisikw/familiar.git ~/Projects/familiar
    ```
 
-3. **Run Familiar**
+3. **Optionally create private local configuration**
+   ```bash
+   cp familiar.toml.example familiar.toml
+   chmod 600 familiar.toml
+   ```
+   See [docs/CONFIG.md](docs/CONFIG.md) for mapping and precedence.
+
+4. **Run Familiar**
    ```bash
    ./familiar.sh
    ```
