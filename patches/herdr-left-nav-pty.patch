@@ -1248,3 +1248,394 @@ index 9eede99c..98ba0af8 100644
          let indicator_row = workspace_drop_indicator_row(
              &app,
              &app.view.workspace_card_areas,
+diff --git a/src/app/actions.rs b/src/app/actions.rs
+index bca41c61..65b93fb2 100644
+--- a/src/app/actions.rs
++++ b/src/app/actions.rs
+@@ -1190,7 +1190,13 @@ impl AppState {
+             return;
+         }
+ 
+-        let entries = crate::ui::workspace_list_entries(self);
++        // Hidden internal workspaces have no sidebar card; the main pane still
++        // renders them normally, so there is nothing to scroll into view.
++        if crate::ui::workspace_hidden_from_sidebar(self, idx) {
++            return;
++        }
++
++        let entries = crate::ui::sidebar_workspace_list_entries(self);
+         let Some(target_entry_idx) = entries.iter().position(|entry| {
+             matches!(
+                 entry,
+diff --git a/src/app/input/sidebar.rs b/src/app/input/sidebar.rs
+index 68f28156..c27f4b89 100644
+--- a/src/app/input/sidebar.rs
++++ b/src/app/input/sidebar.rs
+@@ -323,8 +323,12 @@ impl AppState {
+             return None;
+         }
+ 
+-        let idx = (row - ws_area.y) as usize;
+-        (idx < self.workspaces.len()).then_some(idx)
++        let row_idx = (row - ws_area.y) as usize;
++        // The collapsed strip omits hidden internal workspaces, so map the
++        // clicked row through the same filtered order the renderer uses.
++        crate::ui::collapsed_sidebar_workspace_indices(self)
++            .get(row_idx)
++            .copied()
+     }
+ 
+     pub(super) fn collapsed_agent_detail_target_at(
+diff --git a/src/ui.rs b/src/ui.rs
+index 90c67e6f..8bb6dd52 100644
+--- a/src/ui.rs
++++ b/src/ui.rs
+@@ -80,11 +80,13 @@ pub(crate) use self::{
+         agent_entry_gap, agent_entry_height_in_body, agent_panel_body_rect, agent_panel_entries,
+         agent_panel_scroll_for_target, agent_panel_scroll_metrics, agent_panel_scrollbar_rect,
+         agent_panel_toggle_rect, all_agent_panel_entries, collapsed_sidebar_sections,
+-        collapsed_sidebar_toggle_rect, compute_workspace_card_areas, expanded_sidebar_sections,
++        collapsed_sidebar_toggle_rect, collapsed_sidebar_workspace_indices,
++        compute_workspace_card_areas, expanded_sidebar_sections,
+         expanded_sidebar_toggle_rect, normalized_workspace_scroll, sidebar_pty_grid_cols,
+         sidebar_pty_grid_rect, sidebar_pty_rows_for_width, sidebar_pty_section_height,
+         sidebar_section_divider_rect, workspace_drop_slots, workspace_group_chevron_rect,
+-        workspace_list_entries, workspace_list_entries_expanded, workspace_list_rect,
++        workspace_hidden_from_sidebar, workspace_list_entries, workspace_list_entries_expanded,
++        workspace_list_rect, sidebar_workspace_list_entries,
+         workspace_list_scroll_metrics, workspace_list_scrollbar_rect, workspace_parent_group_state,
+         AgentPanelEntry, WorkspaceListEntry,
+     },
+diff --git a/src/ui/sidebar.rs b/src/ui/sidebar.rs
+index 98ba0af8..d8d1ccc8 100644
+--- a/src/ui/sidebar.rs
++++ b/src/ui/sidebar.rs
+@@ -380,7 +380,7 @@ pub(crate) fn normalized_workspace_scroll(app: &AppState, area: Rect, requested:
+         return requested;
+     }
+ 
+-    if workspace_list_entries(app).is_empty() {
++    if sidebar_workspace_list_entries(app).is_empty() {
+         0
+     } else {
+         requested.min(workspace_list_bottom_start(app, ws_area))
+@@ -398,6 +398,66 @@ pub(crate) fn workspace_list_entries_expanded(app: &AppState) -> Vec<WorkspaceLi
+     workspace_list_entries_inner(app, true)
+ }
+ 
++/// Display labels of Familiar's internal workspaces that are hidden from the
++/// left sidebar's workspace list.
++///
++/// Hiding is intentionally scoped to sidebar *rendering and interaction* only.
++/// These workspaces stay fully alive in the session model, CLI/API, keyboard
++/// navigation, focus, persistence, and workspace numbering. Only the sidebar
++/// card and its derived geometry (scroll math, hit targets, drop slots,
++/// collapsed glance) omit them so there are no ghost rows or wrong click
++/// targets. Kevin explicitly permits hardcoding these labels; a config field
++/// was skipped because the plumbing (state field, defaults, init, hot reload)
++/// outweighs the value for two fixed internal workspaces.
++pub(crate) const HIDDEN_SIDEBAR_WORKSPACE_LABELS: &[&str] = &["Familiar", "services"];
++
++/// Whether `ws_idx` names one of [`HIDDEN_SIDEBAR_WORKSPACE_LABELS`] and should
++/// therefore be omitted from the left sidebar. Uses the terminal-aware display
++/// name so it matches what the sidebar would otherwise render, and is available
++/// to every geometry helper (which only have `&AppState`, no runtime registry).
++pub(crate) fn workspace_hidden_from_sidebar(app: &AppState, ws_idx: usize) -> bool {
++    app.workspaces.get(ws_idx).is_some_and(|ws| {
++        let label = ws.display_name_from_terminals(&app.terminals);
++        HIDDEN_SIDEBAR_WORKSPACE_LABELS
++            .iter()
++            .any(|hidden| label == *hidden)
++    })
++}
++
++/// Remove hidden workspaces from a workspace list. Shared by every sidebar
++/// geometry/render/hit/drop path so they all agree on the same visible rows.
++fn filter_hidden_sidebar_entries(
++    app: &AppState,
++    entries: Vec<WorkspaceListEntry>,
++) -> Vec<WorkspaceListEntry> {
++    entries
++        .into_iter()
++        .filter(|entry| match entry {
++            WorkspaceListEntry::Workspace { ws_idx, .. } => {
++                !workspace_hidden_from_sidebar(app, *ws_idx)
++            }
++        })
++        .collect()
++}
++
++/// [`workspace_list_entries`] with Familiar's internal workspaces removed. This
++/// is the single source of truth for the expanded left sidebar's rows; keyboard
++/// navigation, mobile, API, and the reorder model keep using the unfiltered
++/// list so hidden workspaces stay addressable and keep their numbering.
++pub(crate) fn sidebar_workspace_list_entries(app: &AppState) -> Vec<WorkspaceListEntry> {
++    filter_hidden_sidebar_entries(app, workspace_list_entries(app))
++}
++
++/// Raw workspace indices shown in the *collapsed* sidebar glance, with hidden
++/// internal workspaces removed. The collapsed strip renders workspaces by their
++/// stable index (not the grouped tree), so its hit-testing must map visible
++/// positions through the same filtered order.
++pub(crate) fn collapsed_sidebar_workspace_indices(app: &AppState) -> Vec<usize> {
++    (0..app.workspaces.len())
++        .filter(|ws_idx| !workspace_hidden_from_sidebar(app, *ws_idx))
++        .collect()
++}
++
+ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<WorkspaceListEntry> {
+     let mut members_by_key = std::collections::HashMap::<String, Vec<usize>>::new();
+     for (ws_idx, ws) in app.workspaces.iter().enumerate() {
+@@ -523,7 +583,7 @@ fn workspace_list_visible_count(app: &AppState, area: Rect, scroll: usize) -> us
+ 
+     let mut used_rows = 0u16;
+     let mut visible = 0usize;
+-    let entries = workspace_list_entries(app);
++    let entries = sidebar_workspace_list_entries(app);
+     for (entry_idx, entry) in entries.iter().enumerate().skip(scroll) {
+         let (row_height, gap) = match entry {
+             WorkspaceListEntry::Workspace { ws_idx, indented } => {
+@@ -548,7 +608,7 @@ fn workspace_list_visible_count(app: &AppState, area: Rect, scroll: usize) -> us
+ 
+ fn workspace_list_bottom_start(app: &AppState, area: Rect) -> usize {
+     let body = workspace_list_body_rect(area, false);
+-    let entries = workspace_list_entries(app);
++    let entries = sidebar_workspace_list_entries(app);
+     let mut used_rows = 0u16;
+     let mut start = entries.len();
+     for (entry_idx, entry) in entries.iter().enumerate().rev() {
+@@ -739,7 +799,7 @@ pub(crate) fn compute_workspace_list_areas(
+     let mut cards = Vec::new();
+     let headers = Vec::new();
+ 
+-    let entries = workspace_list_entries(app);
++    let entries = sidebar_workspace_list_entries(app);
+     for (entry_idx, entry) in entries.iter().enumerate().skip(scroll) {
+         match entry {
+             WorkspaceListEntry::Workspace { ws_idx, indented } => {
+@@ -841,15 +901,16 @@ pub(super) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area:
+         return;
+     }
+ 
+-    for (visible_idx, ws) in app.workspaces.iter().enumerate() {
+-        let y = ws_area.y + visible_idx as u16;
++    for (row_idx, ws_idx) in collapsed_sidebar_workspace_indices(app).into_iter().enumerate() {
++        let ws = &app.workspaces[ws_idx];
++        let y = ws_area.y + row_idx as u16;
+         if y >= ws_area.y + ws_area.height {
+             break;
+         }
+         let (agg_state, agg_seen) = ws.aggregate_state(&app.terminals);
+         let (icon, icon_style) = state_icon(agg_state, agg_seen, app.status_indicators, p);
+-        let is_selected = visible_idx == app.selected && is_navigating;
+-        let is_active = Some(visible_idx) == app.active;
++        let is_selected = ws_idx == app.selected && is_navigating;
++        let is_active = Some(ws_idx) == app.active;
+         let row_style = if is_selected {
+             Style::default().bg(p.selection_bg)
+         } else if is_active {
+@@ -874,7 +935,7 @@ pub(super) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area:
+ 
+         frame.render_widget(
+             Paragraph::new(Line::from(vec![
+-                Span::styled(format!("{:<2}", visible_idx + 1), num_style),
++                Span::styled(format!("{:<2}", ws_idx + 1), num_style),
+                 Span::styled(icon, icon_style),
+             ])),
+             Rect::new(ws_area.x, y, ws_area.width, 1),
+@@ -945,7 +1006,7 @@ pub(crate) fn workspace_drop_slots(
+         return Vec::new();
+     }
+     let list_bottom = area.y + area.height.saturating_sub(1);
+-    let entries = workspace_list_entries(app);
++    let entries = sidebar_workspace_list_entries(app);
+     let entry_position = |ws_idx| {
+         entries.iter().position(|entry| {
+             matches!(
+@@ -1345,7 +1406,7 @@ fn render_workspace_list(
+     let metrics = workspace_list_scroll_metrics(app, area);
+     let scrollbar_rect = workspace_list_scrollbar_rect(app, area);
+     let cards = &app.view.workspace_card_areas;
+-    let entries = workspace_list_entries(app);
++    let entries = sidebar_workspace_list_entries(app);
+ 
+     for card in cards {
+         let i = card.ws_idx;
+@@ -3314,4 +3375,177 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
+             ]
+         );
+     }
++
++    #[test]
++    fn hidden_internal_workspaces_are_omitted_from_expanded_sidebar_list() {
++        let mut app = AppState::test_new();
++        app.workspaces = vec![
++            Workspace::test_new("Familiar"),
++            Workspace::test_new("services"),
++            Workspace::test_new("project"),
++            Workspace::test_new("sub-abc"),
++        ];
++        app.active = Some(2);
++
++        // The raw list keeps every workspace so numbering/keyboard nav are
++        // unchanged; the sidebar-scoped list drops the two internal labels.
++        assert_eq!(workspace_list_entries(&app).len(), 4);
++        let sidebar = sidebar_workspace_list_entries(&app);
++        let visible: Vec<usize> = sidebar
++            .iter()
++            .map(|WorkspaceListEntry::Workspace { ws_idx, .. }| *ws_idx)
++            .collect();
++        assert_eq!(visible, vec![2, 3]);
++        assert!(workspace_hidden_from_sidebar(&app, 0));
++        assert!(workspace_hidden_from_sidebar(&app, 1));
++        assert!(!workspace_hidden_from_sidebar(&app, 2));
++        assert!(!workspace_hidden_from_sidebar(&app, 3));
++    }
++
++    #[test]
++    fn hidden_workspaces_removed_from_grouped_worktree_tree() {
++        let mut app = AppState::test_new();
++        app.workspaces = vec![
++            Workspace::test_new("Familiar"),
++            workspace_with_worktree_space("main", Some("repo-key"), "/repo/herdr"),
++            workspace_with_worktree_space("issue", Some("repo-key"), "/repo/herdr-issue"),
++            Workspace::test_new("services"),
++        ];
++        app.active = Some(1);
++
++        let sidebar = sidebar_workspace_list_entries(&app);
++        assert_eq!(
++            sidebar,
++            vec![
++                WorkspaceListEntry::Workspace {
++                    ws_idx: 1,
++                    indented: false,
++                },
++                WorkspaceListEntry::Workspace {
++                    ws_idx: 2,
++                    indented: true,
++                },
++            ]
++        );
++    }
++
++    #[test]
++    fn hidden_workspaces_do_not_produce_sidebar_cards_or_ghost_rows() {
++        let mut app = AppState::test_new();
++        app.workspaces = vec![
++            Workspace::test_new("Familiar"),
++            Workspace::test_new("services"),
++            Workspace::test_new("alpha"),
++            Workspace::test_new("beta"),
++        ];
++        app.active = Some(2);
++        app.sidebar_spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
++        app.sidebar_spaces.row_gap = 0;
++        let area = Rect::new(0, 0, 30, 20);
++
++        let cards = compute_workspace_card_areas(&app, area);
++        let card_idxs: Vec<usize> = cards.iter().map(|card| card.ws_idx).collect();
++        assert_eq!(card_idxs, vec![2, 3]);
++        // Rows are packed with no vertical gap left by the removed workspaces.
++        assert_eq!(cards[0].rect.y, area.y + WORKSPACE_SECTION_HEADER_ROWS);
++        assert_eq!(cards[1].rect.y, cards[0].rect.y + cards[0].rect.height);
++    }
++
++    #[test]
++    fn hidden_active_workspace_still_omits_its_card() {
++        let mut app = AppState::test_new();
++        app.workspaces = vec![
++            Workspace::test_new("Familiar"),
++            Workspace::test_new("alpha"),
++        ];
++        // The active workspace is the hidden one; the main pane renders it, but
++        // the sidebar simply omits the card.
++        app.active = Some(0);
++        app.selected = 0;
++        let area = Rect::new(0, 0, 30, 20);
++
++        let cards = compute_workspace_card_areas(&app, area);
++        let card_idxs: Vec<usize> = cards.iter().map(|card| card.ws_idx).collect();
++        assert_eq!(card_idxs, vec![1]);
++        assert!(workspace_hidden_from_sidebar(&app, 0));
++    }
++
++    #[test]
++    fn hidden_workspaces_do_not_inflate_scroll_metrics() {
++        let mut app = AppState::test_new();
++        app.workspaces = vec![
++            Workspace::test_new("Familiar"),
++            Workspace::test_new("services"),
++            Workspace::test_new("a"),
++            Workspace::test_new("b"),
++            Workspace::test_new("c"),
++        ];
++        app.active = None;
++        app.mode = Mode::Terminal;
++        app.sidebar_spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
++        app.sidebar_spaces.row_gap = 0;
++
++        // Body height fits exactly the three visible rows (header takes 1 row).
++        let ws_area = Rect::new(0, 0, 30, 1 + WORKSPACE_SECTION_HEADER_ROWS + 3);
++        let metrics = workspace_list_scroll_metrics(&app, ws_area);
++        assert_eq!(metrics.viewport_rows, 3);
++        assert_eq!(metrics.max_offset_from_bottom, 0);
++    }
++
++    #[test]
++    fn drop_slots_map_only_visible_workspaces() {
++        let mut app = AppState::test_new();
++        app.workspaces = vec![
++            Workspace::test_new("Familiar"),
++            Workspace::test_new("a"),
++            Workspace::test_new("b"),
++            Workspace::test_new("services"),
++        ];
++        app.active = None;
++        app.sidebar_spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
++        app.sidebar_spaces.row_gap = 0;
++        let area = Rect::new(0, 0, 30, 20);
++        let cards = compute_workspace_card_areas(&app, area);
++        let list_area = workspace_list_rect(&app, area);
++
++        let slots = workspace_drop_slots(&app, &cards, list_area);
++        // Drop targets only reference the two visible workspaces; the hidden
++        // ones never appear as before/after anchors.
++        for (target, _) in &slots {
++            match target {
++                crate::app::state::WorkspaceDropTarget::Before(ws_idx) => {
++                    assert!(*ws_idx == 1 || *ws_idx == 2, "unexpected anchor {ws_idx}");
++                }
++                crate::app::state::WorkspaceDropTarget::End => {}
++            }
++        }
++    }
++
++    #[test]
++    fn collapsed_sidebar_indices_skip_hidden_workspaces() {
++        let mut app = AppState::test_new();
++        app.workspaces = vec![
++            Workspace::test_new("Familiar"),
++            Workspace::test_new("alpha"),
++            Workspace::test_new("services"),
++            Workspace::test_new("beta"),
++        ];
++        assert_eq!(collapsed_sidebar_workspace_indices(&app), vec![1, 3]);
++    }
++
++    #[test]
++    fn visible_subagent_worktrees_are_not_hidden() {
++        let mut app = AppState::test_new();
++        app.workspaces = vec![
++            Workspace::test_new("Familiar"),
++            Workspace::test_new("sub-hide-internal-workspaces"),
++            Workspace::test_new("services-dashboard"),
++            Workspace::test_new("familiar-notes"),
++        ];
++        // Only exact-label internal workspaces are hidden; look-alikes stay.
++        assert!(workspace_hidden_from_sidebar(&app, 0));
++        assert!(!workspace_hidden_from_sidebar(&app, 1));
++        assert!(!workspace_hidden_from_sidebar(&app, 2));
++        assert!(!workspace_hidden_from_sidebar(&app, 3));
++    }
+ }
