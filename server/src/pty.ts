@@ -17,7 +17,26 @@ import { debugLog, errorLog } from "./debug.ts";
  *   server → client : binary frames (raw pty output) + JSON {type:"status"|"exit"|"error"}
  * Output is sent as BINARY frames so the byte path is 8-bit clean; restty's
  * transport decodes binary via a streaming TextDecoder.
+ *
+ * OUTPUT COALESCING: node-pty emits many small chunks during a redraw (a TUI
+ * repaint can be dozens of onData calls in one event-loop tick). Each WS frame
+ * has fixed per-message overhead (framing + a JS event + a TextDecoder call +
+ * a paint schedule on the client). We coalesce chunks that arrive in the SAME
+ * tick and flush once via setImmediate — this merges bursts/redraws into one
+ * larger binary frame while adding ~0ms latency to an isolated keystroke echo
+ * (a single chunk still goes out this same tick). Measured on loopback, a
+ * fixed flush *timer* instead adds its full interval to keystroke echo
+ * (~6ms at FLUSH_MS=6 vs ~0.9ms with setImmediate), so setImmediate is the
+ * default. Set FAMILIAR_PTY_FLUSH_MS>0 to force time-window batching (heavier
+ * coalescing, higher echo latency); =0/unset uses setImmediate coalescing.
+ * Because restty's decoder is a *streaming* TextDecoder, splitting/merging on
+ * arbitrary byte boundaries is safe (a multi-byte UTF-8 sequence spanning
+ * frames is still reassembled correctly).
  */
+
+// >0: time-window batching via setTimeout(ms). <=0/unset: same-tick coalescing
+// via setImmediate (near-zero added latency, still merges redraw bursts).
+const FLUSH_MS = Number(process.env.FAMILIAR_PTY_FLUSH_MS ?? 0);
 
 function attachCommand(): { file: string; args: string[] } {
   const raw = process.env.FAMILIAR_ATTACH_CMD;
@@ -88,12 +107,44 @@ export class PtyBridge {
       }
       const { file } = attachCommand();
       send({ type: "status", shell: file });
+
+      // Coalescing buffer: accumulate pty chunks, flush as one binary frame.
+      let pending: Buffer[] = [];
+      let flushTimer: NodeJS.Timeout | null = null;
+      let flushImmediate: NodeJS.Immediate | null = null;
+      const flush = () => {
+        flushTimer = null;
+        flushImmediate = null;
+        if (!pending.length) return;
+        const frame = pending.length === 1 ? pending[0] : Buffer.concat(pending);
+        pending = [];
+        if (ws.readyState === ws.OPEN) ws.send(frame);
+      };
+      const enqueue = (buf: Buffer) => {
+        if (ws.readyState !== ws.OPEN) return;
+        pending.push(buf);
+        if (FLUSH_MS > 0) {
+          // Time-window batching: wait up to FLUSH_MS to accumulate.
+          if (!flushTimer) flushTimer = setTimeout(flush, FLUSH_MS);
+        } else if (!flushImmediate) {
+          // Same-tick coalescing: merge everything emitted this tick, flush
+          // after the current I/O callbacks drain. Near-zero added latency.
+          flushImmediate = setImmediate(flush);
+        }
+      };
+      const cancelFlush = () => {
+        if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+        if (flushImmediate) { clearImmediate(flushImmediate); flushImmediate = null; }
+      };
+
       pty.onData((data) => {
-        // Binary frame: byte-clean output path.
-        if (ws.readyState === ws.OPEN) ws.send(Buffer.from(data, "utf8"));
+        // Binary frame: byte-clean output path (coalesced).
+        enqueue(Buffer.from(data, "utf8"));
       });
       pty.onExit(({ exitCode }) => {
         exited = true;
+        cancelFlush();
+        flush(); // drain any buffered output before the exit notice
         send({ type: "exit", code: exitCode });
         try { ws.close(); } catch { /* ignore */ }
       });
