@@ -53,7 +53,10 @@ export function buildArgs(o: RunnerOptions): string[] {
 export function buildEnv(o: RunnerOptions): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [k, v] of Object.entries(process.env)) {
-    if (k.startsWith("ANTHROPIC_")) continue; // scrub inherited tiamat routing
+    // Scrub inherited tiamat routing and the source OAuth secret. The latter
+    // has already been materialized into CLAUDE_CONFIG_DIR/.credentials.json;
+    // the child neither needs nor should inherit it.
+    if (k.startsWith("ANTHROPIC_") || k === "FAMILIAR_ANTHROPIC_OAUTH") continue;
     env[k] = v;
   }
   env.CLAUDE_CONFIG_DIR = o.configDir;
