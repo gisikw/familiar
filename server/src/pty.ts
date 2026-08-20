@@ -32,12 +32,25 @@ function attachCommand(): { file: string; args: string[] } {
 
 function startPty(cols: number, rows: number): IPty {
   const { file, args } = attachCommand();
+  // Scrub herdr's own env fingerprints before spawning the attach. The server
+  // runs inside a herdr pane (services tab), so a plain env inheritance makes
+  // `herdr session attach` believe it is being nested inside itself and refuse
+  // ("nested herdr is disabled by default"). The browser bridge is an outside
+  // window into the session, not a nesting — so the child must look like an
+  // external terminal. Session-name resolution (HERDR_SESSION) happens in
+  // attachCommand() before this scrub, so it is unaffected.
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v !== undefined && !k.startsWith("HERDR_")) env[k] = v;
+  }
+  env.TERM = "xterm-256color";
+  env.COLORTERM = "truecolor";
   return ptySpawn(file, args, {
     name: "xterm-256color",
     cols: cols || 80,
     rows: rows || 24,
     cwd: process.env.FAMILIAR_ATTACH_CWD || process.cwd(),
-    env: { ...process.env, TERM: "xterm-256color", COLORTERM: "truecolor" },
+    env,
   });
 }
 
