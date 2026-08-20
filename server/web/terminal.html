@@ -8,7 +8,11 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws: wss:"
     />
-    <title>Familiar Terminal</title>
+    <title>familiar</title>
+    <!-- SVG favicon: currentColor with no surrounding CSS resolves to black,
+         which is the deliberate choice — the mark stays legible on any tab
+         strip without committing to an accent that is still under debate. -->
+    <link rel="icon" type="image/svg+xml" href="/app/familiar-mark-16.svg" />
     <link rel="stylesheet" href="/app/style.css" />
   </head>
   <body>

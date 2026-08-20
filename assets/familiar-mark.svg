@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none">
+  <defs><clipPath id="hornclip"><rect x="0" y="0" width="100" height="25"></rect></clipPath></defs>
+  <g clip-path="url(#hornclip)">
+    <path d="M38 26 C34 21 34 14 38 10" stroke="currentColor" stroke-width="6" stroke-linecap="round"></path>
+    <path d="M62 26 C66 21 66 14 62 10" stroke="currentColor" stroke-width="6" stroke-linecap="round"></path>
+  </g>
+  <rect x="24" y="25" width="52" height="38" rx="10" stroke="currentColor" stroke-width="6"></rect>
+  <path d="M37 44 H51" stroke="currentColor" stroke-width="5" stroke-linecap="round"></path>
+  <circle cx="62" cy="44" r="3" fill="currentColor"></circle>
+  <path d="M34 60 L48 60 L32 74 Z" fill="currentColor"></path>
+</svg>

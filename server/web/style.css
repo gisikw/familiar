@@ -4,7 +4,8 @@
   --toast-bg: #ffffff;
   --toast-border: #d4d4d8;
   --toast-shadow: rgba(0, 0, 0, 0.12);
-  --accent: #2563eb;
+  /* Kevin's pick 2026-08-20 ("until I change my mind"): teal-green. */
+  --accent: oklch(0.68 0.12 170);
   --pad: 12px;
   --drag-h: 8px;
 }
