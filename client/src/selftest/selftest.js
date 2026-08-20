@@ -55,6 +55,7 @@ async function run() {
   for (const f of [
     "fonts/ProggyCleanNerdFontMono-Regular.ttf",
     "fonts/JetBrainsMono-Regular.ttf",
+    "fonts/OpenMoji-black-glyf.ttf",
     "vendor/emoji.json",
   ]) {
     if (!fs.existsSync(path.join(rroot, f))) return fail("missing asset: " + f);
@@ -64,7 +65,7 @@ async function run() {
   );
   if (!emojiMap.rocket || emojiMap.rocket !== "🚀")
     return fail("emoji map bad (rocket)");
-  log("assets OK: proggy font + jetbrains + emoji(" + Object.keys(emojiMap).length + ")");
+  log("assets OK: proggy font + jetbrains + openmoji cmap + emoji(" + Object.keys(emojiMap).length + ")");
   const sEnv = sanitizeEnv({
     ...process.env,
     NIX_STORE: "/nix/store",
