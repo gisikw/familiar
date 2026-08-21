@@ -13,7 +13,7 @@
           version = "0.1.0";
           src = ./.;
           inherit subPackages;
-          vendorHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+          vendorHash = "sha256-dsmRXd5moOA08U2Hbi9Z3Hy1inZFiDOD9AMS56uk+8g=";
           doCheck = true;
           nativeBuildInputs = [ pkgs.makeWrapper ];
           meta = with pkgs.lib; { license = licenses.mit; platforms = platforms.unix; };
