@@ -63,17 +63,22 @@ func main() {
 	s := &supervisor.Supervisor{Host: *host, Client: client.New(*endpoint), Registry: reg, Tmux: tm, OfflineWindow: *offline, Adapters: supervisor.DefaultAdapters(*pi, argvEnv("FAMILIAR_AGENTS_CLAUDE_ARGV", []string{"claude", "{prompt}"}), argvEnv("FAMILIAR_AGENTS_CODEX_ARGV", []string{"codex", "{prompt}"}))}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	s.Recover(ctx)
+	// Reconcile with global truth before any reboot recreation. Only when the
+	// service is unavailable may the bounded offline policy authorize recovery.
+	if err = s.Tick(ctx); err != nil {
+		slog.Warn("initial reconcile unavailable; applying offline policy", "error", err)
+		s.Recover(ctx)
+	}
 	ticker := time.NewTicker(*interval)
 	defer ticker.Stop()
 	for {
-		if err = s.Tick(ctx); err != nil && ctx.Err() == nil {
-			slog.Warn("reconcile failed; workers preserved", "error", err)
-		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		}
+		if err = s.Tick(ctx); err != nil && ctx.Err() == nil {
+			slog.Warn("reconcile failed; workers preserved", "error", err)
 		}
 	}
 }

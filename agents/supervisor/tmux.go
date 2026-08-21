@@ -38,6 +38,10 @@ func (t Tmux) Prepare() error {
 		return errors.New("tmux socket must be absolute")
 	}
 	dir := filepath.Dir(t.Socket)
+	cfg := t.config()
+	if !filepath.IsAbs(cfg) || filepath.Dir(cfg) != dir {
+		return errors.New("tmux config must be in private state directory")
+	}
 	if fi, err := os.Lstat(dir); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 		return errors.New("refusing symlink tmux state directory")
 	}
@@ -50,8 +54,11 @@ func (t Tmux) Prepare() error {
 	if fi, err := os.Lstat(t.Socket); err == nil && fi.Mode()&os.ModeSocket == 0 {
 		return errors.New("tmux socket path is not a socket")
 	}
-	cfg := "# Familiar Agent Supervisor complete private tmux policy.\nset-option -g status off\nset-option -g pane-border-status off\nset-option -g remain-on-exit on\nset-option -g exit-empty off\nset-option -g destroy-unattached off\nset-option -g allow-rename off\nset-option -g prefix C-b\nunbind-key C-b\nbind-key C-b send-prefix\nset-option -g allow-passthrough on\n"
-	return os.WriteFile(t.config(), []byte(cfg), 0o600)
+	if fi, err := os.Lstat(cfg); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return errors.New("refusing symlink tmux config")
+	}
+	policy := "# Familiar Agent Supervisor complete private tmux policy.\nset-option -g status off\nset-option -g pane-border-status off\nset-option -g remain-on-exit on\nset-option -g exit-empty off\nset-option -g destroy-unattached off\nset-option -g allow-rename off\nset-option -g prefix C-b\nunbind-key C-b\nbind-key C-b send-prefix\nset-option -g allow-passthrough on\n"
+	return os.WriteFile(cfg, []byte(policy), 0o600)
 }
 func (t Tmux) run(ctx context.Context, args ...string) (string, error) {
 	a := append([]string{"-S", t.Socket}, args...)

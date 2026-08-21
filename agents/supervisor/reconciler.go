@@ -84,32 +84,35 @@ func DefaultAdapters(piBinary string, claudeArgv, codexArgv []string) map[string
 // Recover adopts surviving sessions. Only pi (currently the only resumable
 // adapter) is recreated while disconnected, and never after RestartUntil.
 func (s *Supervisor) Recover(ctx context.Context) {
-	for id, w := range s.Registry.Snapshot() {
+	for _, w := range s.Registry.Snapshot() {
 		if s.Tmux.Has(ctx, w.Session) {
 			continue
 		}
 		if time.Now().After(w.RestartUntil) {
-			s.log().Warn("offline restart window expired", "job", id)
+			s.log().Warn("offline restart window expired", "job", w.Job.ID)
 			continue
 		}
-		a, err := s.adapter(w.Job.Harness)
-		if err != nil {
-			continue
-		}
-		launch, err := a.Resume(ctx, w.Job, w.Launch)
-		if err != nil {
-			s.log().Warn("worker cannot resume offline", "job", id, "error", err)
-			continue
-		}
-		session, target, err := s.Tmux.Start(ctx, id, launch)
-		if err != nil {
-			s.log().Error("offline recreate failed", "job", id, "error", err)
-			continue
-		}
-		w.Launch, w.Session, w.Target, w.StartedAt = launch, session, target, time.Now().UTC()
-		_ = s.Registry.Put(w)
-		s.log().Info("worker resumed offline", "job", id)
+		s.resumeWorker(ctx, w, "offline")
 	}
+}
+func (s *Supervisor) resumeWorker(ctx context.Context, w Worker, mode string) {
+	a, err := s.adapter(w.Job.Harness)
+	if err != nil {
+		return
+	}
+	launch, err := a.Resume(ctx, w.Job, w.Launch)
+	if err != nil {
+		s.log().Warn("worker cannot resume", "job", w.Job.ID, "mode", mode, "error", err)
+		return
+	}
+	session, target, err := s.Tmux.Start(ctx, w.Job.ID, launch)
+	if err != nil {
+		s.log().Error("worker resume failed", "job", w.Job.ID, "mode", mode, "error", err)
+		return
+	}
+	w.Launch, w.Session, w.Target, w.StartedAt = launch, session, target, time.Now().UTC()
+	_ = s.Registry.Put(w)
+	s.log().Info("worker resumed", "job", w.Job.ID, "mode", mode)
 }
 
 func (s *Supervisor) Tick(ctx context.Context) error {
@@ -121,6 +124,14 @@ func (s *Supervisor) Tick(ctx context.Context) error {
 	if err != nil {
 		return err
 	} // existing workers are untouched
+	// A current desired assignment authorizes recovery regardless of the
+	// disconnected deadline; the adapter must still provide honest resume.
+	local := s.Registry.Snapshot()
+	for _, d := range poll.Assignments {
+		if w, ok := local[d.Job.ID]; ok && !s.Tmux.Has(ctx, w.Session) && d.DesiredState != protocol.Cancelling {
+			s.resumeWorker(ctx, w, "confirmed")
+		}
+	}
 	for _, a := range Diff(poll.Assignments, s.Registry.Snapshot()) {
 		switch a.Kind {
 		case Start:
@@ -244,13 +255,18 @@ func (s *Supervisor) observe(ctx context.Context) error {
 			}
 			continue
 		}
-		if observeErr != nil && !s.Tmux.ServerAlive(ctx) {
+		if observeErr != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			one := 1
+			boundary := "worker tmux target unavailable"
+			if !s.Tmux.ServerAlive(ctx) {
+				boundary = "private tmux server unavailable"
+			}
 			obs = harnesses.Observation{State: protocol.Failed, ExitCode: &one}
-			detail, _ := json.Marshal(map[string]string{"failure_boundary": "private tmux server unavailable"})
+			detail, _ := json.Marshal(map[string]string{"failure_boundary": boundary})
 			obs.Detail = detail
-		} else if observeErr != nil {
-			return observeErr
 		}
 		settlement, err := a.CollectSettlement(ctx, w.Job, w.Launch, obs)
 		if err != nil {
