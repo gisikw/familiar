@@ -183,7 +183,11 @@ const NATIVE_KIND = "pi";
 // anthropic provider authority (claude-driver loopback over anthropic-gateway
 // fallback) — is a regression-testable value. See native-agent-args.ts for the
 // load-order / last-writer-wins rationale.
-export { nativeAgentArgs, type NativeAgentArgsOptions } from "./native-agent-args.ts";
+//
+// Import the LOCAL binding (a bare `export … from` re-export would NOT create a
+// local `nativeAgentArgs` to call below), then re-export it for consumers.
+import { nativeAgentArgs, type NativeAgentArgsOptions } from "./native-agent-args.ts";
+export { nativeAgentArgs, type NativeAgentArgsOptions };
 
 const verdictFooter = (kind: string, dir: string, artifactDir: string) =>
   "\n\n---\nYou are a dispatched subagent. Your final message is the only thing " +
