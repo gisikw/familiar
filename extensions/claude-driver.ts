@@ -12,10 +12,9 @@
 // trailing user text (or a continuation prompt after a tool result) is the
 // stdin line. Pi is the sole transcript authority — no held claude process.
 //
-// ACTIVATION GATE: COMPLETE NO-OP unless FAMILIAR_ANTHROPIC_OAUTH is present.
-// When present its value is the Anthropic subscription OAuth credential written
-// into <CLAUDE_CONFIG_DIR>/.credentials.json (host schema learned by STRUCTURE,
-// never value). The secret is never leaked into claude's child env.
+// ACTIVATION GATE: COMPLETE NO-OP unless an explicit Claude credential setting
+// is present. Renewable login JSON is materialized in CLAUDE_CONFIG_DIR; a
+// setup-token is passed under Claude Code's documented CLAUDE_CODE_OAUTH_TOKEN.
 //
 // Isolation: loopback binds 127.0.0.1:0 (ephemeral port); per-instance
 // CLAUDE_CONFIG_DIR + per-turn temp dirs; torn down on session_shutdown.
@@ -29,6 +28,7 @@ import { parseAnthropicBody, type AnthropicRequest } from "./lib/anthropic-body.
 import { enforceImagePolicy, ImagePolicyError } from "./lib/image-policy.ts";
 import { runClaude, synthesizeCleanSSE, type SSEFrame } from "./lib/claude-runner.ts";
 import { createClaudeFacingHandler } from "./lib/loopback-b.ts";
+import { materializeClaudeCredentials, resolveClaudeCredential } from "./lib/claude-credentials.ts";
 import {
   projectClaudeCodeJSONL,
   appendToolResultResumeGuard,
@@ -41,7 +41,6 @@ import {
   type Message,
 } from "./lib/claude-projection.ts";
 
-const GATE = "FAMILIAR_ANTHROPIC_OAUTH";
 const MCP_SERVER = "pi";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MCP_STUB_PATH = path.join(HERE, "lib", "mcp-stub.ts");
@@ -51,8 +50,8 @@ const UPSTREAM_BASE = (process.env.FAMILIAR_CLAUDE_UPSTREAM_BASE || "https://api
 
 export default function (pi: ExtensionAPI) {
   // ---- ACTIVATION GATE -----------------------------------------------------
-  const oauthRaw = process.env[GATE];
-  if (!oauthRaw || oauthRaw.trim() === "") return; // no-op; tiamat path stands
+  const credential = resolveClaudeCredential();
+  if (!credential) return; // no-op; tiamat path stands
 
   const debug = !!process.env.FAMILIAR_CLAUDE_DRIVER_DEBUG;
   const log = (...a: unknown[]) => { if (debug) console.error("[claude-driver]", ...a); };
@@ -70,32 +69,6 @@ export default function (pi: ExtensionAPI) {
   // response so pi's after_provider_response → extensions/ratelimit.ts footer
   // lights up. Per-turn association (turnId in the URL) avoids cross-turn races.
   const ratelimitByTurn = new Map<string, Record<string, string>>();
-
-  // ---- credential materialization (never logs token material) --------------
-  function writeCredentials(dir: string): void {
-    let cred: unknown;
-    const trimmed = oauthRaw!.trim();
-    try {
-      const parsed = JSON.parse(trimmed);
-      if (parsed && typeof parsed === "object" && "claudeAiOauth" in parsed) {
-        cred = parsed;
-      } else if (parsed && typeof parsed === "object" && ("accessToken" in parsed || "access_token" in parsed)) {
-        const p = parsed as Record<string, unknown>;
-        cred = { claudeAiOauth: {
-          accessToken: p.accessToken ?? p.access_token,
-          refreshToken: p.refreshToken ?? p.refresh_token ?? "",
-          expiresAt: p.expiresAt ?? p.expires_at ?? 0,
-          scopes: p.scopes ?? ["user:inference", "user:profile"],
-          subscriptionType: p.subscriptionType ?? p.subscription_type ?? "max",
-        } };
-      } else throw new Error("unrecognized JSON shape");
-    } catch {
-      cred = { claudeAiOauth: { accessToken: trimmed, refreshToken: "", expiresAt: 0, scopes: ["user:inference", "user:profile"], subscriptionType: "max" } };
-    }
-    const file = path.join(dir, ".credentials.json");
-    fs.writeFileSync(file, JSON.stringify(cred), { mode: 0o600 });
-    fs.chmodSync(file, 0o600);
-  }
 
   // Write <configDir>/projects/<key>/<sessionId>.jsonl atomically (mode 0600),
   // return the path so we can remove it after the turn.
@@ -267,6 +240,7 @@ export default function (pi: ExtensionAPI) {
           streamJsonInput,
           configDir,
           claudeBaseUrl,
+          oauthToken: credential.kind === "oauth-token" ? credential.token : undefined,
           model,
           systemPromptFile,
           resume: useResume ? sessionId : undefined,
@@ -365,7 +339,7 @@ export default function (pi: ExtensionAPI) {
     instanceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "claude-driver-"));
     configDir = path.join(instanceRoot, "claude-config");
     fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
-    writeCredentials(configDir);
+    materializeClaudeCredentials(credential, configDir);
     await startServer();
     await startClaudeFacingServer();
     const addrB = clServer!.address();

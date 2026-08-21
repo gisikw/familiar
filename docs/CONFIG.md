@@ -21,7 +21,7 @@ added unless the flattened name already starts with it. Examples:
 | TOML | Export |
 |---|---|
 | `accent = "x"` under `[theme]` | `FAMILIAR_THEME_ACCENT=x` |
-| `api-key = "x"` under `[web]` | `FAMILIAR_WEB_API_KEY=x` |
+| `api-key = "x"` under `[brave]` | `FAMILIAR_BRAVE_API_KEY=x` |
 | root `familiar_debug_level = "off"` | `FAMILIAR_DEBUG_LEVEL=off` |
 
 Normalization is deterministic but does not split camelCase. Prefer snake_case.
@@ -55,12 +55,62 @@ that sets the same name, while an explicit ambient override remains untouched.
 The provenance marker and all loaded values survive `nix develop` and
 `/refamiliarize` execs.
 
+## Canonical groups and migration
+
+Use tables whose names match the established environment prefix: `[pi]`,
+`[anthropic]`, `[openai]`, `[model]`, `[llama]`, `[stt]`, `[tts]`, `[herdr]`,
+`[searxng]`, `[brave]`, `[fetch]`, `[subagent]`, and `[theme]`. Cross-cutting
+paths and runtime policy live under `[familiar]`; the loader deliberately does
+not double that prefix. Thus these mechanical moves preserve effective names:
+
+| Previous root key | Canonical key | Effective export |
+|---|---|---|
+| `pi_offline` | `[pi] offline` | `FAMILIAR_PI_OFFLINE` |
+| `identity_path` | `[familiar] identity_path` | `FAMILIAR_IDENTITY_PATH` |
+| `anthropic_base_url` | `[anthropic] base_url` | `FAMILIAR_ANTHROPIC_BASE_URL` |
+| `stt_url` | `[stt] url` | `FAMILIAR_STT_URL` |
+| `tts_voice` | `[tts] voice` | `FAMILIAR_TTS_VOICE` |
+| `herdr_session` | `[herdr] session` | `FAMILIAR_HERDR_SESSION` |
+| `brave_api_key` | `[brave] api_key` | `FAMILIAR_BRAVE_API_KEY` |
+
+Move one key at a time; do not retain both spellings because they intentionally
+collide after flattening. `chmod 600 familiar.toml`, then run
+`bash test/familiar-config.test.sh` for the loader check or cold-start Familiar.
+Neither path displays values. Flat keys remain supported indefinitely by the
+generic flattener, so migration is organizational rather than a data rewrite.
+
+## Claude driver credentials
+
+The local Claude Code driver accepts exactly one explicit representation:
+
+- `[anthropic] claude_credentials_json` is a TOML string containing the
+  renewable `.credentials.json` envelope (or its inner OAuth object). It must
+  include string `accessToken`, string `refreshToken`, and numeric `expiresAt`.
+- `[anthropic] claude_oauth_token` is a non-empty TOML string containing the
+  long-lived token produced by `claude setup-token`. It maps to Claude Code's
+  documented `CLAUDE_CODE_OAUTH_TOKEN`; it is not rewritten as credentials
+  JSON and is never logged.
+
+`FAMILIAR_ANTHROPIC_OAUTH` remains a bounded legacy alias for credential JSON
+only. Raw strings are no longer guessed to be credentials. Ambiguous or invalid
+settings abort with the setting name and suppressed values.
+
+To cut over manually: run `claude setup-token` outside Familiar, replace the
+old JSON line with `claude_oauth_token = "..."` under `[anthropic]`, retain mode
+0600, remove any competing Claude credential variable from the ambient launch
+environment, and cold restart or `/refamiliarize`. Familiar never reads a host
+credential file or automatically rewrites the token. Confirm operation with a
+normal non-sensitive prompt, then separately delete the old JSON only from your
+private config/history as appropriate.
+
 A few upstream programs require established non-Familiar names. Familiar maps
 `FAMILIAR_PI_TELEMETRY`, `FAMILIAR_PI_OFFLINE`, and
 `FAMILIAR_PI_SKIP_VERSION_CHECK` and `FAMILIAR_PI_CODING_AGENT_DIR` to
 their `PI_*` counterparts, and maps `FAMILIAR_ANTHROPIC_BASE_URL`,
 `FAMILIAR_ANTHROPIC_API_KEY`, and `FAMILIAR_ANTHROPIC_AUTH_TOKEN` to
-`ANTHROPIC_*`. The same bridge covers `LLAMA_BASE_URL`, `HERDR_SESSION`, and
+`ANTHROPIC_*`. It also maps the explicit Claude token to
+`CLAUDE_CODE_OAUTH_TOKEN`, `[openai]` URL/key to `OPENAI_BASE_URL` and
+`OPENAI_API_KEY`, and covers `LLAMA_BASE_URL`, `HERDR_SESSION`, and
 `HERDR_CONFIG_PATH`. An upstream name that was explicitly ambient is preserved.
 Local configuration should always use the
 generic Familiar names shown in `familiar.toml.example`.

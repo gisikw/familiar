@@ -1,63 +1,86 @@
 # familiar.toml — local/private Familiar configuration schema.
 #
 # Copy to `familiar.toml`, edit it, then `chmod 600 familiar.toml`. Every key is
-# optional. Keys are flattened, uppercased, and exported with one FAMILIAR_
-# prefix: `brave_api_key` -> FAMILIAR_BRAVE_API_KEY and `[theme] accent` ->
-# FAMILIAR_THEME_ACCENT. Ambient FAMILIAR_* variables override this file.
+# optional. Canonical sections flatten naturally to existing environment names:
+# `[anthropic] base_url` -> FAMILIAR_ANTHROPIC_BASE_URL and `[theme] accent` ->
+# FAMILIAR_THEME_ACCENT. Ambient explicit variables override this file.
 # See docs/CONFIG.md for types, normalization, precedence, and restart behavior.
 
-# Runtime policy. Familiar bridges these generic names to the upstream PI_*
-# variables expected by pi.
-pi_telemetry = 0
-pi_offline = 1
-pi_skip_version_check = 1
+[pi]
+telemetry = 0
+offline = 1
+skip_version_check = 1
+# coding_agent_dir = "./state/pi"
 
-# Paths and model/service examples.
-# pi_coding_agent_dir = "./state/pi"
+# Cross-cutting Familiar paths/policy use [familiar]; its prefix is not doubled.
+[familiar]
 # identity_path = "./identity"
 # age_key = "./state/age.key"
 # handoff_path = "./state/handoffs"
 # handoff_prompt_path = "/private/path/prompt.md.age"
-# worklist_dir = "./state/worklist"   # canonical; inbox_dir still read for one release
-# model_dir = "./models"
+# worklist_dir = "./state/worklist" # canonical queue path
+# inbox_dir = "./state/worklist"    # bounded compatibility alias (one release)
 # log_path = "./state/log.jsonl"
-# herdr_session = "familiar"
-# herdr_config_path = "./state/herdr/config.toml"
-# model_file = "model.gguf"                 # set file + URL together
-# model_url = "https://models.example.invalid/model.gguf"
-# llama_base_url = "https://llama.example.invalid" # omit to spawn local
+# model_dir = "./models"
 # default_provider = "llama.cpp"
 # default_model = "provider/model-id"
-# stt_url = "https://stt.example.invalid"   # omit to spawn local
-# tts_url = "https://tts.example.invalid"   # omit to spawn local
-# tts_voice = "af_exo"
-# stt_model_file = "stt.gguf"
-# stt_model_url = "https://models.example.invalid/stt.gguf"
-# tts_model_file = "tts.gguf"
-# tts_model_url = "https://models.example.invalid/tts.gguf"
-
-# Provider configuration. These remain FAMILIAR_* in local configuration;
-# Familiar bridges them to ANTHROPIC_* only when launching upstream consumers.
-# Never put real credentials in this committed example.
-# anthropic_base_url = "https://gateway.example.invalid"
-# anthropic_api_key = "replace-locally"
-# anthropic_auth_token = "replace-locally"
-
-# Web tools and subagents.
-# searxng_url = "https://search.example.invalid"
-# brave_api_key = "replace-locally"
-# brave_url = "https://api.search.brave.com"
-# fetch_allow_private = false
-# subagent_mode = "herdr"
-# subagent_model = "anthropic/claude-haiku-4-5"
-# subagent_timeout = 1800
-# subagent_dir = "./state/subagents"
-# subagent_session_dir = "./state/pi/subagent-sessions"
 # artifact_dir = "./state/artifacts"
 # subscriber_port = 1692
-# zip_model = "anthropic/claude-haiku-4-5"
 # tz = "America/Chicago"
 # debug_level = "debug"
+
+[herdr]
+# session = "familiar"
+# config_path = "./state/herdr/config.toml"
+
+[model]
+# file = "model.gguf"                       # set file + URL together
+# url = "https://models.example.invalid/model.gguf"
+
+[llama]
+# base_url = "https://llama.example.invalid" # omit to spawn local
+
+[stt]
+# url = "https://stt.example.invalid"        # omit to spawn local
+# model_file = "stt.gguf"
+# model_url = "https://models.example.invalid/stt.gguf"
+
+[tts]
+# url = "https://tts.example.invalid"        # omit to spawn local
+# voice = "af_exo"
+# model_file = "tts.gguf"
+# model_url = "https://models.example.invalid/tts.gguf"
+
+# Provider credentials are placeholders only. Choose exactly ONE Claude driver
+# credential form: renewable credentials JSON OR `claude setup-token` output.
+[anthropic]
+# base_url = "https://gateway.example.invalid"
+# api_key = "replace-locally"
+# auth_token = "replace-locally"
+# claude_credentials_json = '''{"claudeAiOauth":{"accessToken":"placeholder","refreshToken":"placeholder","expiresAt":0}}'''
+# claude_oauth_token = "setup-token-placeholder"
+
+[openai]
+# base_url = "https://api.openai.example.invalid/v1"
+# api_key = "replace-locally"
+
+[searxng]
+# url = "https://search.example.invalid"
+[brave]
+# api_key = "replace-locally"
+# url = "https://api.search.brave.com"
+[fetch]
+# allow_private = false
+
+[subagent]
+# mode = "herdr"
+# model = "anthropic/claude-haiku-4-5"
+# timeout = 1800
+# dir = "./state/subagents"
+# session_dir = "./state/pi/subagent-sessions"
+
+[zip]
+# model = "anthropic/claude-haiku-4-5"
 
 # The landed unified theme owns this section and is preserved alongside the
 # generic schema. Omit any key to keep the built-in Spectrum default.

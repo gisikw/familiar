@@ -14,9 +14,8 @@
 //    one clean message. The real tool call is captured out-of-band by the MCP
 //    stub (CAPTURE file) — see mcp-stub.ts.
 //
-// Env hygiene: inherited ANTHROPIC_* (pi's tiamat routing) MUST be scrubbed or
-// claude 400s. We also NEVER leak FAMILIAR_ANTHROPIC_OAUTH into the child
-// (materialized only into CLAUDE_CONFIG_DIR/.credentials.json).
+// Env hygiene: inherited provider credentials/routing MUST be scrubbed. A
+// direct setup-token is added only as Claude Code's documented child variable.
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 export interface RunnerOptions {
@@ -24,6 +23,7 @@ export interface RunnerOptions {
   streamJsonInput?: boolean; // use --input-format stream-json (stdin is a JSON line)
   configDir: string; // CLAUDE_CONFIG_DIR (ephemeral, holds .credentials.json)
   claudeBaseUrl?: string; // claude's ANTHROPIC_BASE_URL → loopback B (optional)
+  oauthToken?: string; // explicit setup-token; becomes CLAUDE_CODE_OAUTH_TOKEN
   model?: string;
   systemPromptFile?: string;
   sessionId?: string; // --session-id (fresh)
@@ -76,11 +76,12 @@ export function buildEnv(o: RunnerOptions): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (k.startsWith("ANTHROPIC_")) continue; // scrub inherited tiamat routing
-    if (k === "FAMILIAR_ANTHROPIC_OAUTH") continue; // never leak the secret source
+    if (k === "CLAUDE_CODE_OAUTH_TOKEN" || k.startsWith("FAMILIAR_ANTHROPIC_CLAUDE_") || k === "FAMILIAR_ANTHROPIC_OAUTH") continue;
     env[k] = v;
   }
   env.CLAUDE_CONFIG_DIR = o.configDir;
   if (o.claudeBaseUrl) env.ANTHROPIC_BASE_URL = o.claudeBaseUrl;
+  if (o.oauthToken) env.CLAUDE_CODE_OAUTH_TOKEN = o.oauthToken;
   return env;
 }
 

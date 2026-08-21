@@ -74,12 +74,16 @@ describe("runner buildEnv — ANTHROPIC_* scrub (critical: tiamat env must not l
     process.env.ANTHROPIC_BASE_URL = "https://tiamat.example/anthropic/managed";
     process.env.ANTHROPIC_AUTH_TOKEN = "leak2";
     process.env.FAMILIAR_ANTHROPIC_OAUTH = "oauth-must-not-reach-child";
+    process.env.FAMILIAR_ANTHROPIC_CLAUDE_OAUTH_TOKEN = "source-must-not-reach-child";
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "ambient-must-not-reach-child";
     try {
-      const env = buildEnv({ stdin: "", configDir: "/tmp/cfg" });
+      const env = buildEnv({ stdin: "", configDir: "/tmp/cfg", oauthToken: "explicit-child-token" });
       expect(Object.keys(env).some((k) => k.startsWith("ANTHROPIC_") && k !== "ANTHROPIC_BASE_URL")).toBe(false);
       expect(env.ANTHROPIC_API_KEY).toBeUndefined();
       expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
       expect(env.FAMILIAR_ANTHROPIC_OAUTH).toBeUndefined();
+      expect(env.FAMILIAR_ANTHROPIC_CLAUDE_OAUTH_TOKEN).toBeUndefined();
+      expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe("explicit-child-token");
       expect(env.CLAUDE_CONFIG_DIR).toBe("/tmp/cfg");
     } finally {
       process.env = saved;

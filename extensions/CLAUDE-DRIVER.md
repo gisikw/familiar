@@ -26,24 +26,24 @@ service. Extension-owned, stateless, ephemeral. NOT in `./server`.
 
 ## How to ENABLE it
 
-The extension is a **complete no-op** unless `FAMILIAR_ANTHROPIC_OAUTH` is set.
-When absent, pi's existing tiamat path (`extensions/anthropic-gateway.ts`) is
-entirely untouched.
+The extension is a **complete no-op** unless one explicit credential form is
+set. When absent, pi's existing tiamat path (`extensions/anthropic-gateway.ts`)
+is entirely untouched.
 
-1. Set the gate env var to your Anthropic subscription OAuth credential. Three
-   accepted forms (auto-normalized to the CLI's `.credentials.json` schema):
-   - Full envelope: `{"claudeAiOauth":{"accessToken":...,"refreshToken":...,"expiresAt":...,"scopes":[...],"subscriptionType":"max"}}`
-   - Bare inner object: `{"accessToken":...,"refreshToken":...,...}`
-   - Raw access token string (refresh/expiry defaulted).
+1. Prefer private `familiar.toml` configuration (mode 0600). Choose exactly one:
+   - `[anthropic] claude_credentials_json` containing the full renewable
+     `.credentials.json` envelope (or its inner OAuth object); or
+   - `[anthropic] claude_oauth_token` containing `claude setup-token` output.
 
-   ```bash
-   export FAMILIAR_ANTHROPIC_OAUTH="$(cat ~/.claude/.credentials.json)"
-   ```
+   The old `FAMILIAR_ANTHROPIC_OAUTH` env setting remains JSON-only compatibility.
+   There is deliberately no raw-secret shape guessing. See `docs/CONFIG.md` for
+   validation and manual cutover steps.
 
 2. The extension is already listed in `familiar.sh`'s settings (`extensions: [ $REPO/extensions ]`),
    so it auto-loads. On boot (awaited factory) it:
    - creates an ephemeral temp root + `claude-config/` (mode 0700),
-   - writes `<config>/.credentials.json` (mode 0600) from the gate value,
+   - either writes renewable JSON to `<config>/.credentials.json` (mode 0600)
+     or supplies the direct token as `CLAUDE_CODE_OAUTH_TOKEN` to Claude Code,
    - binds a loopback HTTP server on `127.0.0.1:0` (ephemeral port),
    - `pi.registerProvider("anthropic", { baseUrl: http://127.0.0.1:<port>/anthropic })`.
 
@@ -70,8 +70,9 @@ All harnesses drive the REAL `claude` CLI (2.1.197) with host subscription creds
   `tool_result` marker; turn 2 → fresh claude consumes the projected result and
   returns final text containing the marker. **No claude process survives between
   turns** (asserted via pgrep). PASS.
-- **ANTHROPIC_* + FAMILIAR_ANTHROPIC_OAUTH env scrub**: child env is clean even
-  with pi's tiamat routing present; the OAuth secret never reaches the child.
+- **Credential env scrub**: inherited provider and Familiar source variables
+  are removed. Only the explicitly selected direct token is supplied to Claude
+  Code as its documented `CLAUDE_CODE_OAUTH_TOKEN`; JSON remains file-only.
 - **Activation gate / credential materialization / projection determinism**:
   as v0, plus 6 new v1b helper tests, plus 24 image tests. 75 unit tests, all pass.
 

@@ -70,6 +70,33 @@ out=$(env -i PATH="$PATH" HOME="${HOME:-/tmp}" FAMILIAR_CONFIG_PATH="$CONFIG" ba
 ' bash "$REPO")
 assert_eq "$out" '1/https://example.invalid/v1/http://localhost:9999/config-test' "upstream compatibility exports"
 
+cat >"$CONFIG" <<'TOML'
+[familiar]
+identity_path = "./identity-grouped"
+[pi]
+offline = 0
+[anthropic]
+base_url = "https://grouped.example.invalid"
+claude_oauth_token = "token-placeholder"
+[openai]
+base_url = "https://openai.example.invalid"
+api_key = "openai-placeholder"
+[stt]
+url = "http://localhost:19932"
+[tts]
+voice = "af_test"
+[herdr]
+session = "grouped-session"
+TOML
+chmod 600 "$CONFIG"
+out=$(env -i PATH="$PATH" HOME="${HOME:-/tmp}" FAMILIAR_CONFIG_PATH="$CONFIG" ANTHROPIC_BASE_URL=ambient bash -c '
+  set -eu; source "$1/scripts/familiar-config.sh"; familiar_config_load "$1"
+  printf "%s|%s|%s|%s|%s|%s|%s|%s|%s" "$FAMILIAR_IDENTITY_PATH" "$PI_OFFLINE" \
+    "$ANTHROPIC_BASE_URL" "$CLAUDE_CODE_OAUTH_TOKEN" "$OPENAI_BASE_URL" "$OPENAI_API_KEY" \
+    "$FAMILIAR_STT_URL" "$FAMILIAR_TTS_VOICE" "$HERDR_SESSION"
+' bash "$REPO")
+assert_eq "$out" './identity-grouped|0|ambient|token-placeholder|https://openai.example.invalid|openai-placeholder|http://localhost:19932|af_test|grouped-session' "grouped mapping, aliases, and precedence"
+
 secret='DO_NOT_PRINT_CONFIG_SECRET_7e21'
 printf 'token = "unterminated %s\n' "$secret" >"$CONFIG"
 chmod 600 "$CONFIG"
@@ -81,6 +108,19 @@ set -e
 [ "$status" -ne 0 ] || fail "malformed TOML succeeded"
 [[ $err != *"$secret"* ]] || fail "parse error logged secret content"
 [[ $err == *'contents suppressed'* ]] || fail "parse error was not generic"
+
+cat >"$CONFIG" <<'TOML'
+[anthropic]
+claude_oauth_token = 123
+TOML
+chmod 600 "$CONFIG"
+set +e
+err=$(env -i PATH="$PATH" HOME="${HOME:-/tmp}" FAMILIAR_CONFIG_PATH="$CONFIG" bash -c \
+  'source "$1/scripts/familiar-config.sh"; familiar_config_load "$1"' bash "$REPO" 2>&1)
+status=$?
+set -e
+[ "$status" -ne 0 ] || fail "non-string Claude token succeeded"
+[[ $err == *'contents suppressed'* ]] || fail "secret type error was not suppressed"
 
 printf 'x = "private"\n' >"$CONFIG"
 chmod 644 "$CONFIG"

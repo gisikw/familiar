@@ -16,8 +16,14 @@ let
     let flat = normalize (builtins.concatStringsSep "_" path);
     in if hasPrefix "FAMILIAR_" flat then flat else "FAMILIAR_${flat}";
   scalar = path: value:
-    let kind = builtins.typeOf value;
-    in if kind == "string" then value
+    let
+      kind = builtins.typeOf value;
+      joined = builtins.concatStringsSep "." path;
+      secretString = joined == "anthropic.claude_credentials_json"
+        || joined == "anthropic.claude_oauth_token";
+    in if secretString && kind != "string" then
+         throw "${joined} must be a TOML string"
+       else if kind == "string" then value
        else if kind == "bool" then (if value then "true" else "false")
        else if kind == "int" || kind == "float" then builtins.toJSON value
        else if kind == "list" then builtins.toJSON value
