@@ -100,22 +100,30 @@ type ArtifactMetadata struct {
 
 // Job identity and request fields are immutable after creation. Host, State,
 // Question, Settlement, and timestamps are registry-owned reconciliation data.
+type TerminalEndpoint struct {
+	Host   string `json:"host"`
+	Socket string `json:"socket"`
+	Target string `json:"target"`
+}
+
 type Job struct {
-	ID              string           `json:"id"`
-	IdempotencyKey  string           `json:"idempotency_key"`
-	Harness         HarnessKind      `json:"harness"`
-	Model           string           `json:"model,omitempty"`
-	CWD             string           `json:"cwd"`
-	Isolation       IsolationPolicy  `json:"isolation"`
-	Prompt          string           `json:"prompt"`
-	Artifacts       ArtifactMetadata `json:"artifacts"`
-	Host            string           `json:"host"`
-	State           State            `json:"state"`
-	CancelRequested bool             `json:"cancel_requested,omitempty"`
-	Question        *BlockedQuestion `json:"question,omitempty"`
-	Settlement      *Settlement      `json:"settlement,omitempty"`
-	CreatedAt       time.Time        `json:"created_at"`
-	UpdatedAt       time.Time        `json:"updated_at"`
+	ID              string            `json:"id"`
+	IdempotencyKey  string            `json:"idempotency_key"`
+	Harness         HarnessKind       `json:"harness"`
+	Model           string            `json:"model,omitempty"`
+	CWD             string            `json:"cwd"`
+	Isolation       IsolationPolicy   `json:"isolation"`
+	Prompt          string            `json:"prompt"`
+	Artifacts       ArtifactMetadata  `json:"artifacts"`
+	Host            string            `json:"host"`
+	State           State             `json:"state"`
+	CancelRequested bool              `json:"cancel_requested,omitempty"`
+	Question        *BlockedQuestion  `json:"question,omitempty"`
+	LastProgress    *Progress         `json:"last_progress,omitempty"`
+	Settlement      *Settlement       `json:"settlement,omitempty"`
+	Terminal        *TerminalEndpoint `json:"terminal,omitempty"`
+	CreatedAt       time.Time         `json:"created_at"`
+	UpdatedAt       time.Time         `json:"updated_at"`
 }
 
 type CreateJob struct {
@@ -185,13 +193,14 @@ type Settlement struct {
 }
 
 type ObservedEvent struct {
-	ID         string           `json:"id"` // delivery idempotency key
-	JobID      string           `json:"job_id"`
-	State      State            `json:"state,omitempty"`
-	Progress   *Progress        `json:"progress,omitempty"`
-	Question   *BlockedQuestion `json:"question,omitempty"`
-	Settlement *Settlement      `json:"settlement,omitempty"`
-	ObservedAt time.Time        `json:"observed_at,omitempty"`
+	ID         string            `json:"id"` // delivery idempotency key
+	JobID      string            `json:"job_id"`
+	State      State             `json:"state,omitempty"`
+	Progress   *Progress         `json:"progress,omitempty"`
+	Question   *BlockedQuestion  `json:"question,omitempty"`
+	Settlement *Settlement       `json:"settlement,omitempty"`
+	Terminal   *TerminalEndpoint `json:"terminal,omitempty"`
+	ObservedAt time.Time         `json:"observed_at,omitempty"`
 }
 
 type EventBatch struct {
