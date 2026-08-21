@@ -274,9 +274,23 @@ func (c *child) waitForRestart() bool {
 	}
 }
 func mergedEnv(extra map[string]string) []string {
-	env := os.Environ()
+	values := make(map[string]string, len(os.Environ())+len(extra))
+	for _, entry := range os.Environ() {
+		if i := strings.IndexByte(entry, '='); i >= 0 {
+			values[entry[:i]] = entry[i+1:]
+		}
+	}
 	for k, v := range extra {
-		env = append(env, k+"="+v)
+		values[k] = v
+	}
+	keys := make([]string, 0, len(values))
+	for k := range values {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	env := make([]string, 0, len(keys))
+	for _, k := range keys {
+		env = append(env, k+"="+values[k])
 	}
 	return env
 }
@@ -309,10 +323,17 @@ func (c *child) afterExit(desc string, failed bool, attempt *int) bool {
 	c.state = "backoff"
 	c.ready = false
 	c.mu.Unlock()
-	*attempt++
-	d := c.cfg.Restart.InitialBackoff.Value() << min(*attempt-1, 20)
-	if d > c.cfg.Restart.MaxBackoff.Value() {
-		d = c.cfg.Restart.MaxBackoff.Value()
+	*attempt = *attempt + 1
+	d, maximum := c.cfg.Restart.InitialBackoff.Value(), c.cfg.Restart.MaxBackoff.Value()
+	for i := 1; i < *attempt && d < maximum; i++ {
+		if d > maximum/2 {
+			d = maximum
+		} else {
+			d *= 2
+		}
+	}
+	if d > maximum {
+		d = maximum
 	}
 	if j := c.cfg.Restart.Jitter; j > 0 {
 		d = time.Duration(float64(d) * (1 - j + rand.Float64()*2*j))
@@ -329,13 +350,6 @@ func (c *child) afterExit(desc string, failed bool, attempt *int) bool {
 		return true
 	}
 }
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 func (c *child) probeLoop() {
 	tick := time.NewTicker(c.cfg.Probe.Interval.Value())
 	defer tick.Stop()
