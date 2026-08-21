@@ -1,5 +1,5 @@
 // e2e-gateway.ts — standalone end-to-end proof of the pi-facing gateway against
-// the REAL claude CLI, without booting pi. Mirrors claude-driver.ts's server
+// the REAL claude CLI, without booting pi. Mirrors claude-driver/index.ts's server
 // wiring. Run:
 //   nix develop .#stt -c bun run extensions/lib/e2e-gateway.test-harness.ts
 // Requires: a real ~/.claude/.credentials.json on the host (copied into an

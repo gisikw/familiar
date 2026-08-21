@@ -1,4 +1,4 @@
-// claude-driver.ts — tiamat-retirement claude driver as a pi extension.
+// extensions/claude-driver/index.ts — tiamat-retirement claude driver as a pi extension.
 //
 // A double-loopback gateway OWNED BY THE PI EXTENSION, in-process with pi, that
 // lets pi talk to Anthropic by driving the real `claude` CLI headlessly instead
@@ -24,13 +24,13 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseAnthropicBody, type AnthropicRequest } from "./lib/anthropic-body.ts";
-import { enforceAggregateImageSourceBytes, enforceImageCount, enforceImagePolicy, ImagePolicyError } from "./lib/image-policy.ts";
-import { preprocessProjectionImages, clearClaudeImageCache, ClaudeImagePreprocessError, CLAUDE_INGEST_MAX_SOURCE_BYTES } from "./lib/claude-image-preprocess.ts";
-import { runClaude, synthesizeCleanSSE, type SSEFrame } from "./lib/claude-runner.ts";
-import { createClaudeFacingHandler } from "./lib/loopback-b.ts";
-import { materializeClaudeCredentials, resolveClaudeCredential } from "./lib/claude-credentials.ts";
-import { BoundedBody } from "./lib/bounded-body.ts";
+import { parseAnthropicBody, type AnthropicRequest } from "../lib/anthropic-body.ts";
+import { enforceAggregateImageSourceBytes, enforceImageCount, enforceImagePolicy, ImagePolicyError } from "../lib/image-policy.ts";
+import { preprocessProjectionImages, clearClaudeImageCache, ClaudeImagePreprocessError, CLAUDE_INGEST_MAX_SOURCE_BYTES } from "../lib/claude-image-preprocess.ts";
+import { runClaude, synthesizeCleanSSE, type SSEFrame } from "../lib/claude-runner.ts";
+import { createClaudeFacingHandler } from "../lib/loopback-b.ts";
+import { materializeClaudeCredentials, resolveClaudeCredential } from "../lib/claude-credentials.ts";
+import { BoundedBody } from "../lib/bounded-body.ts";
 import {
   projectClaudeCodeJSONL,
   appendToolResultResumeGuard,
@@ -41,11 +41,11 @@ import {
   claudeModelArg,
   CONTINUATION_PROMPT,
   type Message,
-} from "./lib/claude-projection.ts";
+} from "../lib/claude-projection.ts";
 
 const MCP_SERVER = "pi";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const MCP_STUB_PATH = path.join(HERE, "lib", "mcp-stub.ts");
+const MCP_STUB_PATH = path.join(HERE, "..", "lib", "mcp-stub.ts");
 // Encoded JSON cap. A 32 MiB aggregate decoded-image budget needs at most
 // ~42.7 MiB base64; 48 MiB leaves bounded room for text/tools/system fields.
 export const CLAUDE_LOOPBACK_A_MAX_BODY_BYTES = 48 * 1024 * 1024;
@@ -71,7 +71,7 @@ export default function (pi: ExtensionAPI) {
   const inflight = new Set<{ abort: () => void }>();
   // Per-turn upstream ratelimit headers, keyed by turnId. Loopback B fills this
   // from the REAL api.anthropic.com response; loopback A re-emits them on its
-  // response so pi's after_provider_response → extensions/ratelimit.ts footer
+  // response so pi's after_provider_response → extensions/ratelimit/index.ts footer
   // lights up. Per-turn association (turnId in the URL) avoids cross-turn races.
   const ratelimitByTurn = new Map<string, Record<string, string>>();
 

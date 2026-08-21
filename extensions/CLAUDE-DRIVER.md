@@ -13,7 +13,7 @@ service. Extension-owned, stateless, ephemeral. NOT in `./server`.
 
 | File | Role |
 |------|------|
-| `extensions/claude-driver.ts` | Extension entry. Activation gate, ephemeral pi-facing gateway, credential materialization, lifecycle. |
+| `extensions/claude-driver/index.ts` | Extension entry. Activation gate, ephemeral pi-facing gateway, credential materialization, lifecycle. |
 | `extensions/lib/anthropic-body.ts` | Anthropic Messages body → native `Message[]` (port of tiamat `anthropicTurnRequest`). |
 | `extensions/lib/claude-runner.ts` | Spawn `claude -p`, translate stream-json → Anthropic SSE. ANTHROPIC_* env scrub. |
 | `extensions/lib/claude-projection.ts` | **Byte-deterministic** TS port of tiamat `ProjectClaudeCodeJSONL` (v1a). Pure. |
@@ -27,7 +27,7 @@ service. Extension-owned, stateless, ephemeral. NOT in `./server`.
 ## How to ENABLE it
 
 The extension is a **complete no-op** unless one explicit credential form is
-set. When absent, pi's existing tiamat path (`extensions/anthropic-gateway.ts`)
+set. When absent, pi's existing tiamat path (`extensions/anthropic-gateway/index.ts`)
 is entirely untouched.
 
 1. Prefer private `familiar.toml` configuration (mode 0600). Choose exactly one:
@@ -112,7 +112,7 @@ Run a real e2e (needs host `~/.claude/.credentials.json`):
 **Ratelimit footer RECOVERED.** The driver stores per-turn headers in
 `ratelimitByTurn` (keyed by the turnId in the URL — no cross-turn race, entry
 deleted in `finally`) and re-emits them on loopback A's response, so pi's
-`after_provider_response` → `extensions/ratelimit.ts` footer lights up unchanged.
+`after_provider_response` → `extensions/ratelimit/index.ts` footer lights up unchanged.
 
 **Cache economics VERIFIED.** Real e2e through both loopbacks shows
 `cache_read_input_tokens: 30823` (prompt-cache hit) — the hygiene keeps the

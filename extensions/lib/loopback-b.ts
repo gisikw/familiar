@@ -1,5 +1,5 @@
 // loopback-b.ts — the claude-facing gateway (LOOPBACK B) request handler,
-// factored out of claude-driver.ts so it is directly testable against a fake
+// factored out of claude-driver/index.ts so it is directly testable against a fake
 // upstream (no real secrets, no api.anthropic.com). Behavior is IDENTICAL to
 // the inlined version it replaces.
 //

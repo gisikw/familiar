@@ -5,7 +5,7 @@ import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { extname, join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { errorLog } from "./lib/debug.ts";
+import { errorLog } from "../lib/debug.ts";
 import { Type } from "typebox";
 
 const execFileP = promisify(execFile);

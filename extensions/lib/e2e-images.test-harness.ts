@@ -40,7 +40,7 @@ const fakePi: any = {
   unregisterProvider() {},
 };
 
-const driver = (await import(path.join(path.dirname(new URL(import.meta.url).pathname), "..", "claude-driver.ts"))).default;
+const driver = (await import(path.join(path.dirname(new URL(import.meta.url).pathname), "..", "claude-driver", "index.ts"))).default;
 await driver(fakePi);
 
 async function postMessages(body: unknown): Promise<{ event: string; data: any }[]> {

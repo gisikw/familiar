@@ -19,7 +19,7 @@ const fakePi: any = {
   registerProvider(_n: string, cfg: any) { baseUrl = cfg.baseUrl; },
   unregisterProvider() {},
 };
-const driver = (await import("/home/dev/.herdr/worktrees/familiar/sub-retire-tiamat-driver-jmrp/extensions/claude-driver.ts")).default;
+const driver = (await import("../claude-driver/index.ts")).default;
 await driver(fakePi);
 
 async function post(body: unknown): Promise<{ event: string; data: any }[]> {

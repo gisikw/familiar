@@ -20,7 +20,7 @@ test("driver session shutdown wipes retained transformed image material", async(
   try {
     let shutdown:(()=>Promise<void>)|undefined;
     const pi:any={on:(e:string,cb:any)=>{if(e==="session_shutdown")shutdown=cb;},registerProvider(){},unregisterProvider(){}};
-    const driver=(await import("../claude-driver.ts?cache-lifecycle-test")).default;
+    const driver=(await import("../claude-driver/index.ts?cache-lifecycle-test")).default;
     await driver(pi);
     const source=png(2001,1), output=png(1,1);
     preprocessProjectionImages([{id:"u",role:"user",content:[{type:"image",imageData:source.toString("base64"),imageMediaType:"image/png"}]}],{run:(_b,args)=>args.includes("image2pipe")?output:Buffer.alloc(0)});

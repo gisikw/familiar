@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { debugLog, errorLog } from "./lib/debug.ts";
+import { debugLog, errorLog } from "../lib/debug.ts";
 import {
   CodexUsagePoller,
   fetchCodexUsage,
@@ -11,13 +11,13 @@ import {
   parseCodexHeaders,
   readCodexCredential,
   type CodexUsage,
-} from "./lib/openai-codex-usage.ts";
+} from "../lib/openai-codex-usage.ts";
 
 /* Subscription quota only: Claude's rolling utilization headers and Codex's
  * account windows. This intentionally does not show request tokens, OpenAI API
  * RPM/TPM, generic ChatGPT allowances, credits, or code-review limits. */
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const REPO = path.dirname(HERE);
+const REPO = path.dirname(path.dirname(HERE));
 const STATE_FILE = process.env.FAMILIAR_RATELIMIT_PATH ||
   (process.env.FAMILIAR_LOG_PATH
     ? path.join(path.dirname(process.env.FAMILIAR_LOG_PATH), "ratelimit.json")

@@ -32,7 +32,7 @@ const fakePi: any = {
   unregisterProvider() {},
 };
 
-const driver = (await import("/home/dev/.herdr/worktrees/familiar/sub-retire-tiamat-driver-jmrp/extensions/claude-driver.ts")).default;
+const driver = (await import("../claude-driver/index.ts")).default;
 await driver(fakePi); // awaits factory → server bound, provider registered
 
 function claudeProcCount(): number {

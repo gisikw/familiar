@@ -825,8 +825,8 @@ export default function (pi: ExtensionAPI) {
         agent_args: agentKind === NATIVE_KIND
           ? [
               "--no-extensions",
-              "-e", path.join(EXT_DIR, "anthropic-gateway.ts"),
-              "-e", path.join(EXT_DIR, "web.ts"),
+              "-e", path.join(EXT_DIR, "anthropic-gateway", "index.ts"),
+              "-e", path.join(EXT_DIR, "web", "index.ts"),
               "--no-skills",
               "--no-context-files",
               "--session-dir", SESSION_DIR,

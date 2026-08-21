@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { anthropicBody, codexBody, extractAnthropic } from "./ratelimit.ts";
+import { anthropicBody, codexBody, extractAnthropic } from "./index.ts";
 
 describe("rate-limit provider coexistence", () => {
   test("labels Claude separately from Codex subscription quota", () => {

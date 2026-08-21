@@ -4,7 +4,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { join, extname } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { errorLog } from "./lib/debug.ts";
+import { errorLog } from "../lib/debug.ts";
 const execFileP = promisify(execFile);
 
 export default function(pi: ExtensionAPI) {

@@ -2,7 +2,7 @@
 // api.anthropic.com response (port of tiamat turn/claude_gateway_ratelimit.go
 // rateLimitHeaders). Loopback B captures these off Claude's REAL upstream call
 // and the driver re-emits them on loopback A's response so pi's existing
-// after_provider_response → extensions/ratelimit.ts footer lights up unchanged.
+// after_provider_response → extensions/ratelimit/index.ts footer lights up unchanged.
 //
 // Verified against a live upstream capture (2.1.197): the full
 // anthropic-ratelimit-unified-* set + request-id are present on 200s;

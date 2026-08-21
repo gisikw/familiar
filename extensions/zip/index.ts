@@ -11,7 +11,7 @@ import {
 import { uuidv7 } from "@earendil-works/pi-ai";
 import { Loader, Text, type AutocompleteItem } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { errorLog } from "./lib/debug.ts";
+import { errorLog } from "../lib/debug.ts";
 
 /*
  * Zip — editorial branch compression.

@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { formatLocalTime, humanizeDuration } from "./lib/time.ts";
+import { formatLocalTime, humanizeDuration } from "../lib/time.ts";
 
 // Time awareness: reorient the model to the clock when it has gone stale.
 //
