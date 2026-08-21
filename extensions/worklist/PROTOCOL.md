@@ -279,7 +279,7 @@ a `protected` override it shows the held count + countdown so suppression is
 legible: `📋 3 held (P0) · protected 24m`.
 
 Attention rides the footer via `ctx.ui.setStatus("attention", …)` — the intended
-multi-extension footer-status mechanism (shared with `ratelimit.ts`) — with a
+multi-extension footer-status mechanism (shared with `ratelimit/index.ts`) — with a
 live countdown recomputed each repaint while an override holds.
 
 ---

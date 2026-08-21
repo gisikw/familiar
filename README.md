@@ -59,8 +59,9 @@ $FAMILIAR_AGE_KEY, which defaults to ./state/age.key.
 Familiar follows pi's directory-entry convention: every extension entrypoint is
 `extensions/<extension-name>/index.ts`. Shared implementation remains under
 `extensions/lib`, while tests and helpers are colocated beneath extension
-subdirectories. Do not add root `extensions/*.ts` files: pi 0.84.1 treats every
-root `.ts`/`.js` file as an extension, whereas it loads only `index.ts`/`index.js`
+subdirectories. Do not add root `extensions/*.ts` or `extensions/*.js` files:
+pi 0.84.1 treats every root `.ts`/`.js` file as an extension, whereas it loads
+only `index.ts`/`index.js`
 (or a declared package entry) from each immediate subdirectory. This keeps Bun-only
 tests and support modules outside runtime auto-discovery without a second manifest.
 

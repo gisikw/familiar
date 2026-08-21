@@ -189,7 +189,7 @@ run_pi() {
     # persisted choice exists. Pi itself falls back to the first available
     # model if the saved default can't be resolved (findInitialModel).
     prev=$(jq -ce . "$PI_CODING_AGENT_DIR/settings.json" 2>/dev/null || echo '{}')
-    # handoff.ts triggers at 90% of the active model's real window. Pi's fixed
+    # handoff/index.ts triggers at 90% of the active model's real window. Pi's fixed
     # reserve is the emergency floor for small-window models and overflows.
     jq -n --argjson prev "$prev" \
       --arg provider "${FAMILIAR_DEFAULT_PROVIDER:-llama.cpp}" \

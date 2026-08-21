@@ -51,8 +51,9 @@ describe("pi 0.84.1 extension discovery contract", () => {
       "refamiliarize", "subagent", "subscriber", "telemetry", "timegap", "web",
       "worklist", "zip",
     ];
-    const rootTs = readdirSync(extensionRoot).filter((name: string) => name.endsWith(".ts"));
-    expect(rootTs).toEqual([]);
+    const rootScripts = readdirSync(extensionRoot)
+      .filter((name: string) => name.endsWith(".ts") || name.endsWith(".js"));
+    expect(rootScripts).toEqual([]);
     const entrypoints = readdirSync(extensionRoot)
       .filter((name: string) => statSync(join(extensionRoot, name)).isDirectory())
       .filter((name: string) => {
