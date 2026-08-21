@@ -35,8 +35,8 @@ is entirely untouched.
      `.credentials.json` envelope (or its inner OAuth object); or
    - `[anthropic] claude_oauth_token` containing `claude setup-token` output.
 
-   The old `FAMILIAR_ANTHROPIC_OAUTH` env setting remains JSON-only compatibility.
-   There is deliberately no raw-secret shape guessing. See `docs/CONFIG.md` for
+   There is deliberately no raw-secret shape guessing and no legacy
+   `FAMILIAR_ANTHROPIC_OAUTH` fallback. See `docs/CONFIG.md` for
    validation and manual cutover steps.
 
 2. The extension is already listed in `familiar.sh`'s settings (`extensions: [ $REPO/extensions ]`),

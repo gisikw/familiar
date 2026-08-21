@@ -63,8 +63,17 @@ describe("Claude credentials", () => {
     expect(resolveClaudeCredential({})).toBeNull();
   });
 
-  test("legacy setting remains JSON-only and cannot misclassify a raw secret", () => {
-    expect(() => resolveClaudeCredential({ FAMILIAR_ANTHROPIC_OAUTH: "not-json-placeholder" })).toThrow("FAMILIAR_ANTHROPIC_OAUTH (legacy)");
+  test("retired FAMILIAR_ANTHROPIC_OAUTH is ignored, not treated as a credential", () => {
+    expect(resolveClaudeCredential({ FAMILIAR_ANTHROPIC_OAUTH: "not-json-placeholder" })).toBeNull();
+  });
+
+  test("canonical token resolves even when the retired variable lingers in the environment and provenance", () => {
+    const cred = resolveClaudeCredential({
+      _FAMILIAR_CONFIG_EXPLICIT_ENV: "FAMILIAR_ANTHROPIC_OAUTH:FAMILIAR_ANTHROPIC_CLAUDE_OAUTH_TOKEN",
+      FAMILIAR_ANTHROPIC_OAUTH: "retired-json-must-be-ignored",
+      FAMILIAR_ANTHROPIC_CLAUDE_OAUTH_TOKEN: "canonical-token-placeholder",
+    });
+    expect(cred).toMatchObject({ kind: "oauth-token", token: "canonical-token-placeholder" });
   });
 
   test("rejects ambiguity and malformed shapes without including contents", () => {

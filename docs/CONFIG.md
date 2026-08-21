@@ -22,7 +22,13 @@ added unless the flattened name already starts with it. Examples:
 |---|---|
 | `accent = "x"` under `[theme]` | `FAMILIAR_THEME_ACCENT=x` |
 | `api-key = "x"` under `[brave]` | `FAMILIAR_BRAVE_API_KEY=x` |
-| root `familiar_debug_level = "off"` | `FAMILIAR_DEBUG_LEVEL=off` |
+| `debug_level = "off"` under `[familiar]` | `FAMILIAR_DEBUG_LEVEL=off` |
+
+Every key must live under a canonical table (`[pi]`, `[anthropic]`, `[familiar]`,
+etc.). Bare top-level keys are rejected: flat spellings such as `pi_offline`,
+`anthropic_base_url`, or `tts_url` are no longer accepted because they collide
+with their grouped canonical forms after flattening. Use the tables shown in
+`familiar.toml.example`.
 
 Normalization is deterministic but does not split camelCase. Prefer snake_case.
 If two TOML paths normalize to the same name, loading fails rather than choosing
@@ -65,9 +71,10 @@ Use tables whose names match the established environment prefix: `[pi]`,
 `[anthropic]`, `[openai]`, `[model]`, `[llama]`, `[stt]`, `[tts]`, `[herdr]`,
 `[searxng]`, `[brave]`, `[fetch]`, `[subagent]`, `[zip]`, and `[theme]`. Cross-cutting
 paths and runtime policy live under `[familiar]`; the loader deliberately does
-not double that prefix. Thus these mechanical moves preserve effective names:
+not double that prefix. These are the mechanical moves from the retired flat
+spellings to the canonical tables (the effective export name is unchanged):
 
-| Previous root key | Canonical key | Effective export |
+| Retired flat key | Canonical key | Effective export |
 |---|---|---|
 | `pi_offline` | `[pi] offline` | `FAMILIAR_PI_OFFLINE` |
 | `identity_path` | `[familiar] identity_path` | `FAMILIAR_IDENTITY_PATH` |
@@ -77,11 +84,11 @@ not double that prefix. Thus these mechanical moves preserve effective names:
 | `herdr_session` | `[herdr] session` | `FAMILIAR_HERDR_SESSION` |
 | `brave_api_key` | `[brave] api_key` | `FAMILIAR_BRAVE_API_KEY` |
 
-Move one key at a time; do not retain both spellings because they intentionally
-collide after flattening. `chmod 600 familiar.toml`, then run
-`bash test/familiar-config.test.sh` for the loader check or cold-start Familiar.
-Neither path displays values. Flat keys remain supported indefinitely by the
-generic flattener, so migration is organizational rather than a data rewrite.
+Flat top-level keys are no longer supported: the loader rejects any key that is
+not under a table, so the old and new spellings cannot both exist. `chmod 600
+familiar.toml`, then run `bash test/familiar-config.test.sh` for the loader
+check or cold-start Familiar. Neither path displays values. Migration is a
+one-time move of each key under its canonical table.
 
 ## Claude driver credentials
 
@@ -95,9 +102,10 @@ The local Claude Code driver accepts exactly one explicit representation:
   documented `CLAUDE_CODE_OAUTH_TOKEN`; it is not rewritten as credentials
   JSON and is never logged.
 
-`FAMILIAR_ANTHROPIC_OAUTH` remains a bounded legacy alias for credential JSON
-only. Raw strings are no longer guessed to be credentials. Ambiguous or invalid
-settings abort with the setting name and suppressed values.
+There is no legacy credential alias: `FAMILIAR_ANTHROPIC_OAUTH` is ignored and
+no longer treated as credential JSON. Raw strings are never guessed to be
+credentials. Ambiguous or invalid settings abort with the setting name and
+suppressed values.
 
 To cut over manually: run `claude setup-token` outside Familiar, replace the
 old JSON line with `claude_oauth_token = "..."` under `[anthropic]`, retain mode

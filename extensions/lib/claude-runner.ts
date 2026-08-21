@@ -76,6 +76,9 @@ export function buildEnv(o: RunnerOptions): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (k.startsWith("ANTHROPIC_")) continue; // scrub inherited tiamat routing
+    // Scrub the retired FAMILIAR_ANTHROPIC_OAUTH too: resolution ignores it, but
+    // an inherited environment may still carry retired credential JSON in it and
+    // it must never reach the Claude child.
     if (k === "CLAUDE_CODE_OAUTH_TOKEN" || k.startsWith("FAMILIAR_ANTHROPIC_CLAUDE_") || k === "FAMILIAR_ANTHROPIC_OAUTH") continue;
     env[k] = v;
   }

@@ -18,7 +18,7 @@ import * as http from "node:http";
 import { execSync } from "node:child_process";
 
 // Boot the driver with a fake pi and the activation gate set to host creds.
-process.env.FAMILIAR_ANTHROPIC_OAUTH = fs.readFileSync(path.join(os.homedir(), ".claude", ".credentials.json"), "utf8");
+process.env.FAMILIAR_ANTHROPIC_CLAUDE_CREDENTIALS_JSON = fs.readFileSync(path.join(os.homedir(), ".claude", ".credentials.json"), "utf8");
 // Scrub tiamat routing so the driver's child spawn is clean (buildEnv also does this).
 delete process.env.ANTHROPIC_API_KEY;
 delete process.env.ANTHROPIC_BASE_URL;

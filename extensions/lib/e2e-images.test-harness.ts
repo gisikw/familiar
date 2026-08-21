@@ -19,7 +19,7 @@ import * as path from "node:path";
 import * as http from "node:http";
 import * as zlib from "node:zlib";
 
-process.env.FAMILIAR_ANTHROPIC_OAUTH = fs.readFileSync(path.join(os.homedir(), ".claude", ".credentials.json"), "utf8");
+process.env.FAMILIAR_ANTHROPIC_CLAUDE_CREDENTIALS_JSON = fs.readFileSync(path.join(os.homedir(), ".claude", ".credentials.json"), "utf8");
 delete process.env.ANTHROPIC_API_KEY;
 delete process.env.ANTHROPIC_BASE_URL;
 delete process.env.ANTHROPIC_AUTH_TOKEN;

@@ -32,11 +32,19 @@ let
        else if kind == "list" then builtins.toJSON value
        else throw "unsupported value at ${builtins.concatStringsSep "." path}: ${kind}";
   flatten = path: value:
-    if builtins.isAttrs value && isCredentialPath path then
-      throw "credential setting must be a TOML string"
+    if isCredentialPath path then
+      # A credential leaf must be a properly-nested TOML string. Flat top-level
+      # spellings and non-string/table values are all rejected with the same
+      # contents-suppressed diagnostic, so no credential material can leak and
+      # legacy flat credential keys are refused like any other flat key.
+      (if builtins.length path < 2 || builtins.typeOf value != "string" then
+         throw "credential setting must be a TOML string"
+       else [ { name = envName path; value = value; } ])
     else if builtins.isAttrs value then
       builtins.concatLists (map (key: flatten (path ++ [ key ]) value.${key})
         (builtins.attrNames value))
+    else if builtins.length path < 2 then
+      throw "top-level key must live under a canonical table; see familiar.toml.example"
     else [ { name = envName path; value = scalar path value; } ];
   entries = flatten [ ] config;
   names = map (entry: entry.name) entries;

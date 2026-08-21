@@ -86,6 +86,8 @@ familiar_config_load() {
       "$repo/scripts/familiar-config.nix" >"$stream" 2>"$errors"; then
     if grep -q 'credential setting must be a TOML string' "$errors"; then
       echo 'familiar: Claude credential settings must be TOML strings (contents suppressed)' >&2
+    elif grep -q 'top-level key must live under a canonical table' "$errors"; then
+      echo 'familiar: every key must live under a canonical table (e.g. [pi], [anthropic]); flat top-level keys are no longer supported. See familiar.toml.example.' >&2
     else
       echo 'familiar: could not parse familiar.toml (contents suppressed)' >&2
     fi

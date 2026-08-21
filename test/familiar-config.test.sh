@@ -20,13 +20,14 @@ load() {
 }
 
 cat >"$CONFIG" <<'TOML'
+[familiar]
 plain = "a path with spaces"
 enabled = true
 count = 12
 ratio = 1.5
 items = ["x", 2, false]
 "hyphen-key" = "normalized"
-"familiar-already" = "once"
+already = "once"
 [theme]
 accent = "#abc"
 [many-levels]
@@ -57,18 +58,23 @@ out=$(env -i PATH="$PATH" HOME="${HOME:-/tmp}" FAMILIAR_CONFIG_PATH="$CONFIG" FA
 ' bash "$REPO")
 assert_eq "$out" 'a path with spaces/devshell' "recursive precedence"
 
-cat >"$CONFIG" <<'TOML'
-pi_offline = 1
-anthropic_base_url = "https://example.invalid/v1"
-llama_base_url = "http://localhost:9999"
-herdr_session = "config-test"
-TOML
-chmod 600 "$CONFIG"
-out=$(env -i PATH="$PATH" HOME="${HOME:-/tmp}" FAMILIAR_CONFIG_PATH="$CONFIG" bash -c '
-  set -eu; source "$1/scripts/familiar-config.sh"; familiar_config_load "$1"
-  printf "%s/%s/%s/%s" "$PI_OFFLINE" "$ANTHROPIC_BASE_URL" "$LLAMA_BASE_URL" "$HERDR_SESSION"
-' bash "$REPO")
-assert_eq "$out" '1/https://example.invalid/v1/http://localhost:9999/config-test' "upstream compatibility exports"
+# Flat top-level keys are no longer supported: they collide with the grouped
+# canonical forms after flattening, so the loader rejects them with a generic
+# (secret-suppressed) diagnostic rather than exporting anything.
+for flat in 'pi_offline = 1' \
+            'anthropic_base_url = "https://example.invalid/v1"' \
+            'tts_url = "DO_NOT_PRINT_FLAT_SECRET_a91"' \
+            'herdr_session = "config-test"'; do
+  printf '%s\n' "$flat" >"$CONFIG"; chmod 600 "$CONFIG"
+  set +e
+  err=$(env -i PATH="$PATH" HOME="${HOME:-/tmp}" FAMILIAR_CONFIG_PATH="$CONFIG" bash -c \
+    'source "$1/scripts/familiar-config.sh"; familiar_config_load "$1"' bash "$REPO" 2>&1)
+  status=$?
+  set -e
+  [ "$status" -ne 0 ] || fail "flat top-level key accepted: $flat"
+  [[ $err == *'canonical table'* ]] || fail "flat key diagnostic not actionable: $flat"
+  [[ $err != *DO_NOT_PRINT_FLAT_SECRET* ]] || fail "flat key diagnostic exposed contents"
+done
 
 cat >"$CONFIG" <<'TOML'
 [familiar]
@@ -133,7 +139,7 @@ set -e
 [[ $err != *private* ]] || fail "mode error logged content"
 
 chmod 600 "$CONFIG"
-printf '"a-b" = 1\na_b = 2\n' >"$CONFIG"
+printf '[theme]\n"a-b" = 1\na_b = 2\n' >"$CONFIG"
 set +e
 err=$(env -i PATH="$PATH" HOME="${HOME:-/tmp}" FAMILIAR_CONFIG_PATH="$CONFIG" bash -c \
   'source "$1/scripts/familiar-config.sh"; familiar_config_load "$1"' bash "$REPO" 2>&1)
@@ -182,8 +188,10 @@ out=$(env -i PATH="$PATH" HOME="${HOME:-/tmp}" FAMILIAR_CONFIG_PATH="$OLD" bash 
 ' bash "$REPO" "$NEXT")
 assert_eq "$out" cutover "exec re-entry credential cutover"
 
-# Credential leaves are string-only based on their final normalized export,
-# including flat and punctuation-compatible spellings and table/object values.
+# Credential leaves are string-only based on their final normalized export.
+# Because credential names are checked before the top-level-table rule, both
+# flat and grouped credential spellings (and table/object values) are rejected
+# with the credential diagnostic; contents are always suppressed.
 for key in anthropic_claude_oauth_token anthropic_claude_credentials_json \
            '"anthropic-claude-oauth-token"' '"anthropic-claude-credentials-json"' \
            grouped_oauth grouped_json; do
@@ -200,9 +208,24 @@ for key in anthropic_claude_oauth_token anthropic_claude_credentials_json \
     status=$?
     set -e
     [ "$status" -ne 0 ] || fail "non-string credential succeeded: $key/$value"
-    [[ $err == *'credential settings must be TOML strings'* ]] || fail "credential type diagnostic not actionable"
+    [[ $err == *'credential settings must be TOML strings'* ]] || fail "credential type diagnostic not actionable: $key/$value"
     [[ $err != *hidden* ]] || fail "credential type diagnostic exposed contents"
   done
+done
+
+# A flat top-level credential key is refused even with a valid string value:
+# the legacy flat spelling must never be a working credential path, and the
+# diagnostic must not echo the secret.
+for key in anthropic_claude_oauth_token '"anthropic-claude-credentials-json"'; do
+  printf '%s = "DO_NOT_PRINT_FLAT_CRED_SECRET_c73"\n' "$key" >"$CONFIG"; chmod 600 "$CONFIG"
+  set +e
+  err=$(env -i PATH="$PATH" HOME="${HOME:-/tmp}" FAMILIAR_CONFIG_PATH="$CONFIG" bash -c \
+    'source "$1/scripts/familiar-config.sh"; familiar_config_load "$1"' bash "$REPO" 2>&1)
+  status=$?
+  set -e
+  [ "$status" -ne 0 ] || fail "flat credential string accepted: $key"
+  [[ $err == *'credential settings must be TOML strings'* ]] || fail "flat credential diagnostic not actionable: $key"
+  [[ $err != *DO_NOT_PRINT_FLAT_CRED_SECRET* ]] || fail "flat credential diagnostic exposed contents"
 done
 
 # Malformed optional config fails ordinary launch and validation, while the

@@ -15,7 +15,7 @@ import { runClaude } from "./claude-runner.ts";
 import { createClaudeFacingHandler } from "./loopback-b.ts";
 
 async function main() {
-  // Ephemeral config dir with host creds (stands in for FAMILIAR_ANTHROPIC_OAUTH).
+  // Ephemeral config dir with host creds (stands in for FAMILIAR_ANTHROPIC_CLAUDE_CREDENTIALS_JSON).
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-lbB-"));
   const cfg = path.join(root, "claude-config");
   fs.mkdirSync(cfg, { recursive: true });

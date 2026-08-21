@@ -7,7 +7,6 @@ export type ClaudeCredential =
 
 const JSON_SETTING = "anthropic.claude_credentials_json";
 const TOKEN_SETTING = "anthropic.claude_oauth_token";
-const LEGACY_SETTING = "FAMILIAR_ANTHROPIC_OAUTH (legacy)";
 
 function parseCredentialsJson(raw: string, setting: string): Record<string, unknown> {
   let parsed: unknown;
@@ -34,7 +33,6 @@ export function resolveClaudeCredential(env: NodeJS.ProcessEnv = process.env): C
   const upstreamToken = env.CLAUDE_CODE_OAUTH_TOKEN;
   const familiarToken = env.FAMILIAR_ANTHROPIC_CLAUDE_OAUTH_TOKEN;
   let token = upstreamToken ?? familiarToken;
-  let legacy = env.FAMILIAR_ANTHROPIC_OAUTH;
   // The loader records ambient provenance. If an ambient credential form exists,
   // it wins over a different form loaded from TOML, just like every other key.
   const hasProvenance = env._FAMILIAR_CONFIG_EXPLICIT_ENV !== undefined;
@@ -47,22 +45,19 @@ export function resolveClaudeCredential(env: NodeJS.ProcessEnv = process.env): C
   }
   const explicitJson = explicit.has("FAMILIAR_ANTHROPIC_CLAUDE_CREDENTIALS_JSON");
   const explicitToken = explicit.has("CLAUDE_CODE_OAUTH_TOKEN") || explicit.has("FAMILIAR_ANTHROPIC_CLAUDE_OAUTH_TOKEN");
-  const explicitLegacy = explicit.has("FAMILIAR_ANTHROPIC_OAUTH");
-  if (explicitJson || explicitToken || explicitLegacy) {
+  if (explicitJson || explicitToken) {
     if (!explicitJson) json = undefined;
     if (!explicitToken) token = undefined;
-    if (!explicitLegacy) legacy = undefined;
   }
-  const present = [json, token, legacy].filter((v) => v !== undefined).length;
+  const present = [json, token].filter((v) => v !== undefined).length;
   if (present > 1) {
-    throw new Error(`familiar: configure exactly one of ${JSON_SETTING}, ${TOKEN_SETTING}, or ${LEGACY_SETTING}`);
+    throw new Error(`familiar: configure exactly one of ${JSON_SETTING} or ${TOKEN_SETTING}`);
   }
   if (token !== undefined) {
     if (token.trim() === "") throw new Error(`familiar: ${TOKEN_SETTING} must be a non-empty string (value suppressed)`);
     return { kind: "oauth-token", token, setting: TOKEN_SETTING };
   }
   if (json !== undefined) return { kind: "credentials-json", document: parseCredentialsJson(json, JSON_SETTING), setting: JSON_SETTING };
-  if (legacy !== undefined) return { kind: "credentials-json", document: parseCredentialsJson(legacy, LEGACY_SETTING), setting: LEGACY_SETTING };
   return null;
 }
 

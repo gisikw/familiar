@@ -4,7 +4,7 @@
 //   nix develop .#stt -c bun run extensions/lib/e2e-gateway.test-harness.ts
 // Requires: a real ~/.claude/.credentials.json on the host (copied into an
 // ephemeral CLAUDE_CONFIG_DIR, exactly as the extension does via
-// FAMILIAR_ANTHROPIC_OAUTH).
+// FAMILIAR_ANTHROPIC_CLAUDE_CREDENTIALS_JSON).
 import * as http from "node:http";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -42,7 +42,7 @@ function startGateway(configDir: string): Promise<{ port: number; close: () => v
 
 async function main() {
   // Set up an ephemeral config dir with the host credentials (stands in for
-  // FAMILIAR_ANTHROPIC_OAUTH materialization).
+  // FAMILIAR_ANTHROPIC_CLAUDE_CREDENTIALS_JSON materialization).
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-claude-"));
   const cfg = path.join(root, "claude-config");
   fs.mkdirSync(cfg, { recursive: true });

@@ -8,7 +8,6 @@ function png(w:number,h:number){const ih=Buffer.alloc(13);ih.writeUInt32BE(w);ih
 
 test("driver session shutdown wipes retained transformed image material", async()=>{
   const credentialKeys = [
-    "FAMILIAR_ANTHROPIC_OAUTH",
     "FAMILIAR_ANTHROPIC_CLAUDE_CREDENTIALS_JSON",
     "FAMILIAR_ANTHROPIC_CLAUDE_OAUTH_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
