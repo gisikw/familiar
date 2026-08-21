@@ -70,10 +70,6 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	case "/ready", "/readyz":
 		reply(w, 200, map[string]string{"status": "ready"})
 		return
-	case "/":
-		// Legacy ingress posts to the configured base URL. Canonicalize before
-		// proxying so an upstream still receives the OpenAI-compatible path.
-		r.URL.Path = "/v1/audio/transcriptions"
 	case "/v1/audio/transcriptions":
 	default:
 		http.NotFound(w, r)

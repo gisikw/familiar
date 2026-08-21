@@ -41,10 +41,7 @@ func script(t *testing.T, d, n, s string) string {
 	return p
 }
 func request(h http.Handler, ct string, b []byte) *httptest.ResponseRecorder {
-	return requestPath(h, "/v1/audio/transcriptions", ct, b)
-}
-func requestPath(h http.Handler, path, ct string, b []byte) *httptest.ResponseRecorder {
-	r := httptest.NewRequest("POST", path, bytes.NewReader(b))
+	r := httptest.NewRequest("POST", "/v1/audio/transcriptions", bytes.NewReader(b))
 	if ct != "" {
 		r.Header.Set("Content-Type", ct)
 	}
@@ -96,27 +93,6 @@ func TestLocalRawAndMultipart(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-// Regression for server/src/ingress.ts, which posts raw bytes to the configured
-// base URL rather than appending the OpenAI path.
-func TestLegacyRootAliasRaw(t *testing.T) {
-	c := config(t)
-	s, _ := New(c)
-	httpServer := httptest.NewServer(s.Handler())
-	defer httpServer.Close()
-	res, err := http.Post(httpServer.URL+"/", "audio/webm", strings.NewReader("sound"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer res.Body.Close()
-	var body map[string]string
-	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
-		t.Fatal(err)
-	}
-	if res.StatusCode != http.StatusOK || body["text"] != "hello world" {
-		t.Fatalf("POST /: %d %#v", res.StatusCode, body)
 	}
 }
 
@@ -199,12 +175,12 @@ func TestSingleFlightInitialization(t *testing.T) {
 	}
 }
 
-func TestUpstreamPassthroughAndRootCanonicalization(t *testing.T) {
+func TestUpstreamPassthrough(t *testing.T) {
 	var calls atomic.Int32
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		if r.URL.Path != "/base/v1/audio/transcriptions" {
-			t.Errorf("legacy alias routed upstream as %s", r.URL.Path)
+			t.Errorf("path %s", r.URL.Path)
 		}
 		b, _ := io.ReadAll(r.Body)
 		if string(b) != "payload" {
@@ -223,7 +199,7 @@ func TestUpstreamPassthroughAndRootCanonicalization(t *testing.T) {
 	c := config(t)
 	c.Upstream = u
 	s, _ := New(c)
-	r := httptest.NewRequest("POST", "/", strings.NewReader("payload"))
+	r := httptest.NewRequest("POST", "/v1/audio/transcriptions", strings.NewReader("payload"))
 	r.Header.Set("Connection", "keep-alive")
 	r.Header.Set("X-Test", "yes")
 	w := httptest.NewRecorder()
