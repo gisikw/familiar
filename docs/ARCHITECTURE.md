@@ -1,13 +1,12 @@
 # Familiar Architecture
 
-> **Status:** proposed target architecture. This document captures the current
-> design direction and names the boundaries that are already load-bearing. Open
-> decisions are listed explicitly rather than hidden inside the diagram.
+> **Status:** proposed target architecture. This document describes Familiar
+> itself. The separately deployable agent-dispatch system is deliberately
+> excluded; see [Familiar Agents Architecture](AGENTS-ARCHITECTURE.md).
 
-Familiar is moving from a terminal application that owns its agents toward a
-runtime whose agents survive every individual interface. The runtime owns
-continuity, work, and process supervision; desktop, mobile, terminal, and web
-surfaces are disposable clients.
+Familiar is a persistent presence with disposable interfaces. The runtime owns
+identity, continuity, sessions, and service supervision. Desktop, mobile,
+terminal, and web surfaces may come and go without ending the primary session.
 
 ## Topology
 
@@ -18,110 +17,105 @@ flowchart TB
 
     subgraph console["Familiar Console Host"]
         direction LR
-        tmuxClient["tmux client + layout"]
-        piClient["pi remote clients<br/>one attachment per agent/session"]
+        layout["tmux UI / layout<br/>optional local console"]
+        piClient["pi remote client<br/>primary session attachment"]
         web["Web and terminal gateway<br/>client ingress / egress"]
     end
 
-    subgraph control["Familiar Server / Control Plane"]
+    subgraph server["Familiar Server"]
         direction TB
         gateway["Socket / Web / API gateway<br/>and runtime supervisor"]
-        jobs["Global job registry + spool<br/>assignments, semantic state, settlements"]
 
         subgraph services["Supervised services — one-for-one restart boundaries"]
             direction LR
-            core["Familiar Core<br/>pi session server<br/>AgentSession + pi-agent-core"]
+            presence["Familiar Presence Runtime<br/>primary pi session server<br/>identity + continuity + extensions"]
             llm["Familiar LLM proxy<br/>lazy local llama.cpp backend"]
             stt["Familiar STT proxy<br/>lazy local backend"]
             tts["Familiar TTS proxy<br/>lazy local backend"]
         end
     end
 
-    subgraph node["Familiar Node Supervisor — one per worker host"]
-        direction LR
-        reconciler["Worker reconciler<br/>start, stop, health, restart"]
-        localRegistry["Local worker registry<br/>harness, tmux target, health,<br/>restart and reboot state"]
-        tmuxServer["tmux server<br/>PTY and process continuity"]
-        agents["Managed agent harnesses<br/>pi, Claude Code, Codex, others<br/>interactive and attachable"]
-    end
-
     desktop <--> console
     mobile <--> console
 
-    piClient <-->|"pi-protocol<br/>direct or proxied transport"| core
+    piClient <-->|"pi-protocol<br/>direct or proxied transport"| presence
     web <--> gateway
-    gateway <--> jobs
-    gateway <--> core
-    core --> llm
+    gateway <--> presence
+    presence --> llm
     gateway --> stt
     gateway --> tts
-
-    jobs <-->|"desired assignment +<br/>semantic job events"| reconciler
-    reconciler <--> localRegistry
-    reconciler --> tmuxServer
-    tmuxServer --> agents
-    tmuxClient -. "attach / detach" .-> tmuxServer
-    agents -->|"progress + settlement"| reconciler
 ```
 
-The diagram shows one node supervisor, but a deployment may have one on a
-personal machine, one on a work machine, and more on dedicated worker hosts.
+## Identity boundary
+
+Familiar is not a dispatched agent. The primary presence has identity,
+continuity, relationship history, and a long-lived session. Pi's internal
+“agent” terminology describes an implementation layer; it does not define the
+entity Familiar presents.
+
+Dispatched workers are separate delegated processes. Familiar may call an agent
+system through tools, but that system is no more constitutive of Familiar than a
+calendar, task service, or search provider. Its architecture lives in
+[AGENTS-ARCHITECTURE.md](AGENTS-ARCHITECTURE.md).
 
 ## Components
 
 ### Familiar clients
 
 The Electron desktop client and native mobile client present Familiar. They do
-not own sessions, workers, or transcripts. Closing a client must not stop an
-agent.
+not own the primary session or transcript. Closing a client must not stop the
+presence runtime.
 
 ### Familiar Console Host
 
-The Console Host is the local presentation bridge. It may be embedded into the
+The Console Host is the local presentation bridge. It may be embedded in the
 desktop application or run as a companion service.
 
-It hosts:
+It may host:
 
-- **tmux clients and layout**, not the authoritative tmux server;
-- **pi remote clients** attached to one or more pi sessions;
-- **web and terminal ingress/egress** for interfaces that cannot connect to a
-  Unix socket or PTY directly.
+- an optional tmux-based local console and layout;
+- a pi remote client attached to the primary session;
+- web and terminal ingress/egress for interfaces that cannot connect to a Unix
+  socket or terminal directly.
 
-The Console Host is deliberately disposable. It can disappear and reconnect
-without becoming a process or session authority.
+The Console Host is disposable. It can disappear and reconnect without becoming
+the session authority.
 
-### Familiar Server / Control Plane
+### Familiar Server
 
-The control plane owns global semantic truth:
+The Familiar Server supervises the persistent runtime and exposes it to clients.
+It owns:
 
-- jobs and immutable job identity;
-- assignment to a worker host;
-- durable spool state, events, and settlements;
-- the primary Familiar session runtime;
-- client-facing routing and authentication;
-- supervision of LLM, STT, and TTS service proxies.
+- the primary Familiar presence runtime;
+- client-facing socket, web, and API routing;
+- configuration, readiness, and process lifecycle;
+- stable LLM, STT, and TTS service endpoints.
 
-It does **not** own the operating-system reality of every remote worker process.
-That belongs to the node on which the process runs.
+The server supervisor should coordinate processes and signals, not reimplement
+pi's transcript or model semantics.
 
-### Familiar Core and pi's client/server split
+### Familiar Presence Runtime
 
-Familiar should use pi's existing client/server layering rather than fork pi.
+The Presence Runtime is the long-lived primary session and continuity boundary.
+It uses pi's session machinery internally while preserving a distinction between
+Familiar's identity and pi's implementation vocabulary.
+
 The runtime side is more than the raw `pi-agent-core` package:
 
 ```text
-pi session server
-├── pi-coding-agent AgentSession/runtime
-├── pi-agent-core
-├── tools and extensions
-├── transcript and session persistence
-└── pi-protocol server
+Familiar Presence Runtime
+└── pi session server
+    ├── pi-coding-agent AgentSession/runtime
+    ├── pi-agent-core
+    ├── Familiar tools and extensions
+    ├── transcript and session persistence
+    └── pi-protocol server
 ```
 
 The client side is:
 
 ```text
-pi remote TUI/client
+pi remote client
 ├── pi-coding-agent client UI
 ├── pi-client / RemoteSession
 └── pi-tui
@@ -129,113 +123,71 @@ pi remote TUI/client
 
 `pi-protocol` is the boundary between them: length-framed CBOR over an ordered
 transport, initially a Unix-domain socket and optionally proxied for remote
-clients. The pi TUI is therefore a reconnectable viewer, not the owner of the
-agent session.
+clients. The pi TUI is a reconnectable viewer, not the owner of the primary
+session.
 
-### Familiar Node Supervisor
+Familiar should use this existing pi layering rather than fork pi.
 
-There is one node supervisor per worker host. It owns local process reality and
-continues operating when no UI is attached.
+### Model and voice services
 
-Its responsibilities are:
-
-- reconcile assigned work with local workers;
-- create and recover workers after supervisor or host restart;
-- maintain the local worker registry;
-- create tmux sessions/panes with the correct harness environment;
-- monitor health and publish progress or terminal settlement;
-- preserve existing workers across temporary control-plane disconnection.
-
-The children are **managed agent harnesses**, not Familiar clients. A child may
-be pi, Claude Code, Codex, or another harness. It may retain its full interactive
-TUI; observability is the reason its PTY lives in tmux.
-
-### tmux
-
-The node's private tmux server is the authority for PTY and process continuity.
-A console-side tmux client is only a disposable attachment.
+Familiar LLM, STT, and TTS are stable service proxies supervised beside the
+Presence Runtime. Local backends may be started lazily and replaced without
+changing the endpoint consumed by Familiar.
 
 ```text
-node tmux server            authoritative PTY + worker process
-console tmux client         layout, input, and observation
+Familiar LLM proxy
+└── lazy local llama.cpp backend, when needed
+
+Familiar STT proxy
+└── lazy local transcription backend, when needed
+
+Familiar TTS proxy
+└── lazy local synthesis backend, when needed
 ```
 
-Killing or replacing the Console Host must kill only its attach client, never
-the worker.
+Remote providers and local backends are routing choices behind these service
+boundaries, not separate client architectures.
 
 ## Authority model
 
-Each layer owns a different kind of truth. This is intentional rather than a
-partially replicated registry.
-
 | Layer | Authoritative for | Not authoritative for |
 |---|---|---|
-| Familiar control plane | Job identity, assignment, semantic state, settlements | PIDs and immediate host process reality |
-| Node supervisor | Workers present on that host, restart policy, health, tmux targets | Global job history or assignments to other hosts |
-| tmux server | PTY and attached process continuity | Job meaning or terminal status |
-| pi session server | Agent/session state and transcript | Host-wide scheduling |
-| Console Host and clients | Presentation, input, layout | Worker or session lifetime |
-
-The node registry is not a dumb cache. It must be durable enough to recover
-workers after a reboot. The global registry is not a process table. The two
-reconcile across a narrow desired-state/event boundary:
-
-```text
-control plane → desired assignment
-node          → observed worker state, progress, settlement
-```
+| Familiar Presence Runtime | Primary session, transcript, identity and continuity state | Client lifetime or rendering |
+| Familiar Server | Process supervision, configuration, readiness, service routing | Pi transcript/model semantics |
+| LLM/STT/TTS proxies | Stable service endpoints and backend lifecycle | Primary-session ownership |
+| Console Host | Local presentation bridge and attachment | Session lifetime |
+| Desktop/mobile clients | Presentation and input | Runtime or transcript authority |
 
 ## Supervision and failure boundaries
 
-The control plane is a supervision tree, but containment does not imply that all
-children restart together. The default strategy is equivalent to Erlang
+The Familiar Server is a supervision tree, but containment does not imply that
+all children restart together. The default strategy is equivalent to Erlang
 `one_for_one`:
 
-- a local llama.cpp backend may restart without killing Familiar Core;
-- Familiar Core may remain alive while inference is temporarily unavailable;
+- a local llama.cpp backend may restart without killing the Presence Runtime;
+- the Presence Runtime may remain alive while inference is temporarily
+  unavailable;
 - STT or TTS failure degrades voice without ending text sessions;
-- a Console Host or client may restart without touching sessions or workers;
-- a node supervisor keeps existing workers alive during a control-plane outage;
-- after node reboot, its durable local registry drives recovery, followed by
-  reconciliation with global desired state.
+- a Console Host or client may restart without touching the primary session;
+- a broken presentation surface cannot become a runtime failure.
 
-The Familiar LLM/STT/TTS services are stable proxies. Lazy local backends are
-replaceable children behind those endpoints. A dependency or readiness edge is
-not automatically a shared crash boundary.
-
-## Agent status
-
-Status must come from explicit worker lifecycle events and the node registry,
-not from guessing which foreground process a viewer happens to see. This is
-necessary because an attached tmux client is not the parent of the agent process;
-the tmux server is.
-
-The preferred order of authority is:
-
-1. harness lifecycle hook or explicit worker event;
-2. node supervisor process/PTY observation;
-3. terminal-screen inference as a degraded fallback.
-
-Viewer focus may determine whether an idle completion is displayed as “done,”
-but it must not determine worker lifecycle truth.
+A dependency or readiness edge is not automatically a shared crash boundary.
 
 ## Open decisions
 
 1. **Console deployment:** embedded in Electron, companion daemon, or both.
 2. **Remote transport:** where Unix-socket pi protocol becomes authenticated
    WebSocket or another network-safe transport for mobile and remote clients.
-3. **Primary-session placement:** always central, or represented as another
-   node-managed worker with stronger continuity policy.
-4. **Offline reconciliation:** how long a node may recreate assigned workers
-   while disconnected, and how revoked assignments resolve after reconnection.
-5. **Terminal projection:** direct tmux attachment versus a Familiar terminal
+3. **Terminal projection:** direct terminal attachment versus a Familiar terminal
    protocol for browser/mobile clients.
-6. **Status protocol:** exact lifecycle event schema shared by pi and other
-   harnesses.
+4. **Persistence boundary:** which continuity metadata belongs directly beside
+   pi's session store versus in a small Familiar-owned store.
+5. **Service placement:** whether LLM/STT/TTS proxies always run with the Familiar
+   Server or may be discovered remotely.
 
 ## Architectural rule
 
-> Control plane owns work. Node supervisors own workers. tmux owns PTYs. pi
-> session servers own transcripts. Clients own presentation.
+> The Presence Runtime owns continuity. The Familiar Server owns supervision.
+> Service proxies own backend lifecycle. Clients own presentation.
 
-No viewer is required for the system to remain alive.
+No viewer is required for Familiar to remain alive.
