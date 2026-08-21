@@ -33,6 +33,14 @@ skip_version_check = 1
 # session = "familiar"
 # config_path = "./state/herdr/config.toml"
 
+[server]
+# config = "./services/server/familiar-server.toml.example"
+# listen = "127.0.0.1:9940"
+
+[agents]
+# endpoint = "unix:///absolute/path/to/state/agents/service.sock"
+# host = "laptop"
+
 [model]
 # file = "model.gguf"                       # set file + URL together
 # url = "https://models.example.invalid/model.gguf"

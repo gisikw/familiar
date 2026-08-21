@@ -1,0 +1,77 @@
+# Canonical source-tree deployment for all five Familiar Server children.
+# Relative working/state directories resolve from this file's directory.
+listen = "127.0.0.1:9940"
+state_dir = "../../state/server"
+shutdown_grace = "10s"
+read_header_timeout = "5s"
+log_max_bytes = 8388608
+# Preserve the Presence Runtime when the supervisor stops. Use presence.sh stop
+# (or set this true deliberately) only for a full continuity teardown.
+teardown_presence = false
+
+[[children]]
+name = "llm"
+argv = ["nix", "run", ".#familiar-llm"]
+working_dir = "../.."
+required = true
+[children.probe]
+type = "http"
+url = "http://127.0.0.1:9931/ready"
+[children.restart]
+policy = "on-failure"
+initial_backoff = "500ms"
+max_backoff = "30s"
+jitter = 0.2
+max_restarts = 5
+window = "1m"
+
+[[children]]
+name = "stt"
+argv = ["nix", "run", ".#familiar-stt"]
+working_dir = "../.."
+required = false
+[children.probe]
+type = "http"
+url = "http://127.0.0.1:9932/ready"
+
+[[children]]
+name = "tts"
+argv = ["nix", "run", ".#familiar-tts"]
+working_dir = "../.."
+required = false
+[children.probe]
+type = "http"
+# TTS uses the z-suffixed endpoint; unlike LLM/STT it has no /ready alias.
+url = "http://127.0.0.1:9933/readyz"
+
+[[children]]
+name = "presence"
+argv = ["./services/presence/presence.sh", "ensure"]
+stop_argv = ["./services/presence/presence.sh", "stop"]
+working_dir = "../.."
+presence = true
+detached = true
+required = true
+depends_on = ["llm"]
+dependency_timeout = "45s"
+[children.probe]
+type = "exec"
+argv = ["./services/presence/presence.sh", "status", "--quiet"]
+interval = "1s"
+timeout = "3s"
+
+[[children]]
+name = "gateway"
+argv = ["nix", "run", ".#familiar-gateway"]
+working_dir = "../.."
+required = true
+depends_on = ["presence", "stt", "tts"]
+dependency_timeout = "30s"
+[children.env]
+FAMILIAR_PRESENCE_CTL = "./services/presence/presence.sh"
+FAMILIAR_STT_URL = "http://127.0.0.1:9932"
+FAMILIAR_TTS_URL = "http://127.0.0.1:9933"
+[children.probe]
+type = "http"
+# The gateway's real readiness/liveness endpoint is /health, not /ready.
+url = "http://127.0.0.1:1692/health"

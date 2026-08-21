@@ -921,6 +921,17 @@ client() {
   npm start
 }
 
+server() {
+  shift || true
+  local config="${FAMILIAR_SERVER_CONFIG:-$REPO/services/server/familiar-server.toml.example}"
+  exec nix run "$REPO#familiar-server" -- --config "$config" "$@"
+}
+
+agents() {
+  shift || true
+  exec nix run "$REPO#familiar-agents" -- "$@"
+}
+
 start() {
   local client_status
   ensure_devshell pi "$@"
@@ -1030,6 +1041,8 @@ case ${1:-} in
   kill)          stop "$@" ;;
   worklist-add)  inbox_enqueue "$@" ;;
   inbox-enqueue) inbox_enqueue "$@" ;;  # bounded compat alias (one release)
+  server)     server "$@" ;;
+  agents)     agents "$@" ;;
   client)     client "$@" ;;
   age)        handle_age "$@" ;;
   connect)    connect "$@" ;;

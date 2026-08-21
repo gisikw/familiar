@@ -9,6 +9,9 @@ boundary.
 
 ```sh
 go run ./cmd/familiar-server --config ./server.toml
+# From the repository root, the canonical five-child source deployment is:
+./familiar.sh server
+# (services/server/familiar-server.toml.example)
 # FAMILIAR_SERVER_CONFIG and FAMILIAR_SERVER_LISTEN are equivalent env inputs.
 ```
 
@@ -72,7 +75,7 @@ always means an explicit stop, including for Presence.
 
 ## Five-child example
 
-Paths are examples, not compiled defaults; replace them with deployment paths.
+The runnable source-tree example is [`familiar-server.toml.example`](familiar-server.toml.example). The deployment-path version below documents the equivalent installed layout. Paths are examples, not compiled defaults; replace them with deployment paths.
 Gateway currently exposes `/health`, while the Go proxies expose `/ready`.
 
 ```toml
@@ -114,7 +117,7 @@ working_dir = "/var/lib/familiar"
 required = false
 [children.probe]
 type = "http"
-url = "http://127.0.0.1:9933/ready"
+url = "http://127.0.0.1:9933/readyz"
 
 [[children]]
 name = "presence"
