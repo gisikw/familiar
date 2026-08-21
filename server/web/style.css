@@ -2,13 +2,11 @@
   /* Theme vars (--term-bg, --frame-fg, --accent, --fm-*) come from the
      server-generated /theme.css, loaded before this file. These fallbacks keep
      the page sane if that endpoint is ever unreachable — they mirror the
-     familiar-dark defaults. */
-  --term-bg: #1e1e2e; /* matches restty default dark bg so no letterbox */
-  --frame-fg: #cdd6f4;
-  --accent: #32b08d; /* Kevin's teal-green == oklch(0.68 0.12 170) */
-  --toast-bg: #ffffff;
-  --toast-border: #d4d4d8;
-  --toast-shadow: rgba(0, 0, 0, 0.12);
+     Monokai Pro Spectrum defaults. */
+  --term-bg: #222222; /* matches restty default dark bg so no letterbox */
+  --frame-fg: #f7f1ff;
+  --accent: #5ad4e6;
+  --toast-shadow: rgba(0, 0, 0, 0.35);
   --pad: 12px;
   --drag-h: 8px;
 }
@@ -59,7 +57,7 @@ body {
   background: var(--term-bg);
 }
 
-/* Toasts: unobtrusive, bottom-right, light-mode. */
+/* Toasts: unobtrusive, bottom-right, and readable on the dark shell. */
 #toast-stack {
   position: fixed;
   right: 16px;
@@ -72,8 +70,8 @@ body {
 }
 
 .toast {
-  background: var(--toast-bg);
-  border: 1px solid var(--toast-border);
+  background: var(--fm-surface, #191919);
+  border: 1px solid var(--fm-border-muted, #525053);
   color: var(--frame-fg);
   border-radius: 8px;
   padding: 8px 12px;
@@ -106,7 +104,7 @@ body {
   font-size: 18px;
   font-weight: 600;
   color: var(--fm-accent, var(--accent));
-  background: rgba(30, 30, 46, 0.72); /* == --fm-background at 72% alpha */
+  background: color-mix(in srgb, var(--fm-background, #222222) 72%, transparent);
   border: 3px dashed var(--fm-accent, var(--accent));
   border-radius: 12px;
   z-index: 60;
@@ -133,8 +131,8 @@ body {
   font-weight: 600;
   letter-spacing: 0.02em;
   color: var(--fm-text, var(--frame-fg));
-  background: var(--fm-surface, #181825);
-  border: 1px solid var(--fm-border, #313244);
+  background: var(--fm-surface, #191919);
+  border: 1px solid var(--fm-border, #363537);
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
   opacity: 0;
   pointer-events: none;
@@ -154,13 +152,13 @@ body {
 }
 
 #voice-indicator.finalizing {
-  color: var(--fm-warning, #f9e2af);
-  border-color: var(--fm-warning, #f9e2af);
+  color: var(--fm-warning, #fce566);
+  border-color: var(--fm-warning, #fce566);
 }
 
 #voice-indicator.error {
-  color: var(--fm-error, #f38ba8);
-  border-color: var(--fm-error, #f38ba8);
+  color: var(--fm-error, #fc618d);
+  border-color: var(--fm-error, #fc618d);
   animation: none;
 }
 
@@ -176,8 +174,8 @@ body {
   z-index: 70;
   min-width: 200px;
   max-width: 320px;
-  background: var(--fm-surface, #181825);
-  border: 1px solid var(--fm-border, #313244);
+  background: var(--fm-surface, #191919);
+  border: 1px solid var(--fm-border, #363537);
   border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
   padding: 4px;
@@ -192,12 +190,12 @@ body {
   gap: 8px;
   padding: 4px 8px;
   border-radius: 5px;
-  color: var(--fm-text, #cdd6f4);
+  color: var(--fm-text, #f7f1ff);
   white-space: nowrap;
 }
 
 .emoji-row.sel {
-  background: var(--fm-selection-bg, #45475a);
+  background: var(--fm-selection-bg, #525053);
 }
 
 .emoji-glyph {
@@ -207,7 +205,7 @@ body {
 }
 
 .emoji-name {
-  color: var(--fm-muted, #a6adc8);
+  color: var(--fm-muted, #bab6c0);
 }
 
 /* Fatal diagnostic panel (shown in place of the terminal when the shell fails
@@ -220,8 +218,8 @@ body {
   width: 100%;
   box-sizing: border-box;
   overflow: auto;
-  background: #1b1b1f;
-  color: #f4f4f5;
+  background: var(--fm-surface-dim, #131313);
+  color: var(--fm-text, #f7f1ff);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12.5px;
   line-height: 1.5;

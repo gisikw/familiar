@@ -7,8 +7,11 @@ Mapping, precedence, and restart operations are documented in `docs/CONFIG.md`.
 
 ## Single source of truth
 
-`server/src/theme/defaults.json` holds the canonical `familiar-dark` palette:
-semantic **roles** + a 16-entry **ANSI** palette. Two generators read that one
+`server/src/theme/defaults.json` holds the canonical
+`familiar-monokai-pro-spectrum` palette: semantic **roles** + a 16-entry
+**ANSI** palette. The primary reference is Kevin's locally installed Ghostty
+`Monokai Pro Spectrum` theme; local `monokai-pro.nvim` Spectrum UI levels supply
+only the extra surface depths Ghostty does not define. Two generators read that one
 file and overlay `FAMILIAR_THEME_*`:
 
 - `server/src/theme/resolve.ts` — runtime (Node): validates, builds the browser
@@ -78,46 +81,46 @@ active custom theme file on edit.
 ## `[theme]` example for familiar.toml
 
 ```toml
-# Familiar unified theme. Omit any key to keep the familiar-dark default.
+# Familiar unified theme. Omit any key to keep the Spectrum default.
 # Colors: #rgb, #rrggbb, or #rrggbbaa. Invalid values fail the boot loudly.
 [theme]
-name = "familiar-dark"
+name = "familiar-monokai-pro-spectrum"
 
 # Semantic roles.
-background  = "#1e1e2e"
-surface     = "#181825"
-surface_dim = "#11111b"
-overlay     = "#313244"
-text        = "#cdd6f4"
-muted       = "#a6adc8"
-accent      = "#32b08d"   # oklch(0.68 0.12 170) — Kevin's teal, the default
-success     = "#a6e3a1"
-warning     = "#f9e2af"
-error       = "#f38ba8"
-border       = "#313244"
-border_muted = "#45475a"
-selection_bg = "#45475a"
-cursor       = "#32b08d"
-cursor_text  = "#1e1e2e"
+background  = "#222222"
+surface     = "#191919"
+surface_dim = "#131313"
+overlay     = "#363537"
+text        = "#f7f1ff"
+muted       = "#bab6c0"
+accent      = "#5ad4e6"   # cyan keeps the Familiar mark distinct and legible
+success     = "#7bd88f"
+warning     = "#fce566"
+error       = "#fc618d"
+border       = "#363537"
+border_muted = "#525053"
+selection_bg = "#525053"
+cursor       = "#bab6c0"
+cursor_text  = "#222222"  # readable adaptation; Ghostty source uses pale text
 
 # Terminal ANSI 16-color palette (drives restty panes + FAMILIAR_ANSI_* handoff).
 [theme.ansi]
-black   = "#45475a"
-red     = "#f38ba8"
-green   = "#a6e3a1"
-yellow  = "#f9e2af"
-blue    = "#89b4fa"
-magenta = "#f5c2e7"
-cyan    = "#94e2d5"
-white   = "#bac2de"
-bright_black   = "#585b70"
-bright_red     = "#f38ba8"
-bright_green   = "#a6e3a1"
-bright_yellow  = "#f9e2af"
-bright_blue    = "#89b4fa"
-bright_magenta = "#f5c2e7"
-bright_cyan    = "#94e2d5"
-bright_white   = "#a6adc8"
+black   = "#222222"
+red     = "#fc618d"
+green   = "#7bd88f"
+yellow  = "#fce566"
+blue    = "#fd9353"
+magenta = "#948ae3"
+cyan    = "#5ad4e6"
+white   = "#f7f1ff"
+bright_black   = "#69676c"
+bright_red     = "#fc618d"
+bright_green   = "#7bd88f"
+bright_yellow  = "#fce566"
+bright_blue    = "#fd9353"
+bright_magenta = "#948ae3"
+bright_cyan    = "#5ad4e6"
+bright_white   = "#f7f1ff"
 ```
 
 ## Tests

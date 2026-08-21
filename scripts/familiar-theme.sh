@@ -141,7 +141,7 @@ theme_pi_json() {
     selectedBg: "sel", scrollbarThumb: "overlay",
     userMessageBg: "surface", userMessageText: "text",
     customMessageBg: "overlay", customMessageText: "text", customMessageLabel: "magenta",
-    toolPendingBg: $surface, toolSuccessBg: "#283228", toolErrorBg: "#3c2828",
+    toolPendingBg: $surface, toolSuccessBg: "overlay", toolErrorBg: "overlay",
     toolTitle: "text", toolOutput: "muted",
     mdHeading: "yellow", mdLink: "blue", mdLinkUrl: "dim", mdCode: "accent",
     mdCodeBlock: "green", mdCodeBlockBorder: "muted", mdQuote: "muted",

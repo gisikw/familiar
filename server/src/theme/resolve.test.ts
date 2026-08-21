@@ -21,22 +21,24 @@ function cleanEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
   return { ...env, ...overrides };
 }
 
-test("default theme preserves the current dark visual + Kevin's accent", () => {
+test("default theme is the adapted Monokai Pro Spectrum palette", () => {
   const t = resolveTheme(cleanEnv());
-  assert.equal(t.name, "familiar-dark");
-  assert.equal(t.roles.background, "#1e1e2e");
-  assert.equal(t.roles.text, "#cdd6f4");
-  assert.equal(t.roles.accent, "#32b08d"); // oklch(0.68 0.12 170)
-  assert.equal(t.roles.cursor, "#32b08d");
+  assert.equal(t.name, "familiar-monokai-pro-spectrum");
+  assert.equal(t.roles.background, "#222222");
+  assert.equal(t.roles.text, "#f7f1ff");
+  assert.equal(t.roles.accent, "#5ad4e6");
+  assert.equal(t.roles.cursor, "#bab6c0");
+  assert.equal(t.roles.cursorText, "#222222");
 });
 
 test("ansiList returns 16 entries in SGR order", () => {
   const t = resolveTheme(cleanEnv());
   const list = ansiList(t);
   assert.equal(list.length, 16);
-  assert.equal(list[0], "#45475a"); // black
-  assert.equal(list[1], "#f38ba8"); // red
-  assert.equal(list[15], "#a6adc8"); // brightWhite
+  assert.equal(list[0], "#222222"); // black
+  assert.equal(list[1], "#fc618d"); // red
+  assert.equal(list[4], "#fd9353"); // Ghostty Spectrum intentionally maps ANSI blue to orange
+  assert.equal(list[15], "#f7f1ff"); // brightWhite
   for (const c of list) assert.match(c, /^#[0-9a-f]{6}$/);
 });
 
@@ -71,14 +73,14 @@ test("generated CSS snapshot (default theme)", () => {
   const css = toCss(resolveTheme(cleanEnv()));
   // Stable, load-bearing lines. Full-string compare would be brittle; assert
   // the contract instead: back-compat aliases + fm-* roles + ansi indices.
-  assert.match(css, /--term-bg: #1e1e2e;/);
-  assert.match(css, /--frame-fg: #cdd6f4;/);
-  assert.match(css, /--accent: #32b08d;/);
-  assert.match(css, /--fm-background: #1e1e2e;/);
-  assert.match(css, /--fm-accent: #32b08d;/);
-  assert.match(css, /--fm-selection-bg: #45475a;/);
-  assert.match(css, /--fm-ansi-0: #45475a;/);
-  assert.match(css, /--fm-ansi-15: #a6adc8;/);
+  assert.match(css, /--term-bg: #222222;/);
+  assert.match(css, /--frame-fg: #f7f1ff;/);
+  assert.match(css, /--accent: #5ad4e6;/);
+  assert.match(css, /--fm-background: #222222;/);
+  assert.match(css, /--fm-accent: #5ad4e6;/);
+  assert.match(css, /--fm-selection-bg: #525053;/);
+  assert.match(css, /--fm-ansi-0: #222222;/);
+  assert.match(css, /--fm-ansi-15: #f7f1ff;/);
   // exactly 16 ansi vars
   assert.equal((css.match(/--fm-ansi-\d+:/g) || []).length, 16);
 });
@@ -93,14 +95,32 @@ test("restty GhosttyTheme has rgb semantic colors + 256 palette with 0..15 fille
       palette: ({ r: number; g: number; b: number } | undefined)[];
     };
   };
-  assert.equal(rt.name, "familiar-dark");
-  // #1e1e2e -> 30,30,46
-  assert.deepEqual(rt.colors.background, { r: 30, g: 30, b: 46 });
-  // #32b08d -> 50,176,141
-  assert.deepEqual(rt.colors.cursor, { r: 50, g: 176, b: 141 });
+  assert.equal(rt.name, "familiar-monokai-pro-spectrum");
+  assert.deepEqual(rt.colors.background, { r: 34, g: 34, b: 34 });
+  assert.deepEqual(rt.colors.cursor, { r: 186, g: 182, b: 192 });
   assert.equal(rt.colors.palette.length, 256);
-  assert.deepEqual(rt.colors.palette[0], { r: 69, g: 71, b: 90 }); // #45475a
+  assert.deepEqual(rt.colors.palette[0], { r: 34, g: 34, b: 34 });
   assert.equal(rt.colors.palette[16], undefined); // only 0..15 filled
+});
+
+test("default semantic pairs meet readable contrast thresholds", () => {
+  const t = resolveTheme(cleanEnv());
+  const luminance = (hex: string): number => {
+    const channels = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+      .map((v) => v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+  };
+  const contrast = (a: string, b: string): number => {
+    const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+  assert.ok(contrast(t.roles.text, t.roles.background) >= 7, "primary text/background");
+  assert.ok(contrast(t.roles.muted, t.roles.background) >= 4.5, "muted text/background");
+  assert.ok(contrast(t.roles.text, t.roles.selectionBg) >= 4.5, "selected text");
+  assert.ok(contrast(t.roles.cursorText, t.roles.cursor) >= 4.5, "glyph under cursor");
+  for (const role of ["accent", "success", "warning", "error"] as const) {
+    assert.ok(contrast(t.roles[role], t.roles.background) >= 4.5, `${role}/background`);
+  }
 });
 
 test("default parity: every role and ansi entry is a valid 6-digit hex", () => {

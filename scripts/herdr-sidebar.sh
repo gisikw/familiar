@@ -7,7 +7,7 @@ set -euo pipefail
 # PRIMARY path: kitty graphics. Kevin validated kitty-protocol passthrough
 # through the terminal stack (restty / libghostty-vt) before adopting it, so we
 # assume the APC image transmit reaches a real terminal. We rasterize the
-# familiar mark (assets/familiar-mark.svg) to a teal PNG on transparent and
+# familiar mark (assets/familiar-mark.svg) to an accent PNG on transparent and
 # transmit it inline, sized in cells for the ~30-col sidebar.
 #
 # FALLBACK path: the original ASCII pseudodragon, with its rare blink and even
@@ -18,9 +18,9 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MARK_SVG="$REPO/assets/familiar-mark.svg"
 # Accent for the rasterized mark: resolved from the unified Familiar theme
-# (canonical palette + FAMILIAR_THEME_* env). Falls back to the default teal
-# (oklch(0.68 0.12 170) -> precise sRGB) if the generator can't run.
-ACCENT="$(bash "$REPO/scripts/familiar-theme.sh" accent 2>/dev/null || echo '#32b08d')"
+# (canonical palette + FAMILIAR_THEME_* env). The literal is only an emergency
+# mirror for environments where the generator itself cannot run.
+ACCENT="$(bash "$REPO/scripts/familiar-theme.sh" accent 2>/dev/null || echo '#5ad4e6')"
 
 printf '\033[?25l'
 trap 'printf "\033[?25h"' EXIT
@@ -73,7 +73,7 @@ can_image() {
   return 0
 }
 
-# Render the mark to a teal PNG on transparent. Sidebar is ~30 cols x 12 rows;
+# Render the mark to an accent PNG on transparent. Sidebar is ~30 cols x 12 rows;
 # a terminal cell is roughly 1:2 (w:h), so COLS=2*ROWS keeps the square mark
 # square. 16x8 cells, centered (left pad ~7). Rasterize at generous px so it
 # stays crisp on hi-dpi.

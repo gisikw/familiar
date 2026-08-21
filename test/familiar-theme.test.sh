@@ -13,16 +13,16 @@ pass=0; fail=0
 ok()  { echo "PASS: $1"; pass=$((pass+1)); }
 bad() { echo "FAIL: $1"; fail=$((fail+1)); }
 
-# 1. accent default matches Kevin's teal.
+# 1. accent default is Spectrum cyan (legible Familiar mark).
 got="$(bash "$GEN" accent)"
-[ "$got" = "#32b08d" ] && ok "accent default #32b08d" || bad "accent default (got $got)"
+[ "$got" = "#5ad4e6" ] && ok "accent default #5ad4e6" || bad "accent default (got $got)"
 
 # 2. herdr fragment: has [theme.custom] with accent + panel_bg from defaults.
 frag="$(bash "$GEN" herdr)"
 echo "$frag" | grep -q '^\[theme.custom\]' && ok "herdr fragment has [theme.custom]" || bad "herdr fragment missing [theme.custom]"
-echo "$frag" | grep -q 'accent = "#32b08d"' && ok "herdr accent" || bad "herdr accent"
-echo "$frag" | grep -q 'panel_bg = "#1e1e2e"' && ok "herdr panel_bg == background" || bad "herdr panel_bg"
-echo "$frag" | grep -q 'text = "#cdd6f4"' && ok "herdr text" || bad "herdr text"
+echo "$frag" | grep -q 'accent = "#5ad4e6"' && ok "herdr accent" || bad "herdr accent"
+echo "$frag" | grep -q 'panel_bg = "#222222"' && ok "herdr panel_bg == background" || bad "herdr panel_bg"
+echo "$frag" | grep -q 'text = "#f7f1ff"' && ok "herdr text" || bad "herdr text"
 
 # 3. every value in the herdr fragment is a valid #hex (no unresolved literals).
 bad_hex="$(echo "$frag" | grep -oE '= "[^"]*"' | grep -vE '= "(catppuccin|#[0-9a-f]{6})"' || true)"
@@ -40,7 +40,7 @@ for tok in $required; do
 done
 [ -z "$missing" ] && ok "pi has all 51 required tokens" || bad "pi missing tokens:$missing"
 # pi accent var must resolve to the theme accent.
-[ "$(echo "$pi" | jq -r .vars.accent)" = "#32b08d" ] && ok "pi accent var" || bad "pi accent var"
+[ "$(echo "$pi" | jq -r .vars.accent)" = "#5ad4e6" ] && ok "pi accent var" || bad "pi accent var"
 
 # 5. ANSI env: 16 exports, index 0 == ansi.black default, all hex.
 ansi="$(bash "$GEN" ansi)"
