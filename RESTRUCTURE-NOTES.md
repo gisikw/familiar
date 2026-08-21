@@ -8,7 +8,7 @@
 - `patches/` → `integrations/pi/patches/`
 - `identity/`, `skills/`, `assets/`, `scripts/`, and shared `test/` remain at repository root as directed.
 
-No empty `services/server/`, `packages/`, mobile, or agent boundaries were created.
+The initially empty boundaries were subsequently implemented: `services/server/`, the three shared `packages/`, and `agents/` now contain independently buildable modules. A mobile application remains deferred.
 
 ## References updated
 
@@ -31,9 +31,27 @@ No empty `services/server/`, `packages/`, mobile, or agent boundaries were creat
 - Presence tmux adapter suite passed all 8 checks, including detach/reattach, recovery, isolation, and gateway attachment wiring.
 - `bash -n` and `git diff --check` passed. There are no TypeScript typecheck/build scripts in the moved modules.
 
+## Integration
+
+- The root flake now follows each deployable module flake and exposes `familiar-server`, `familiar-llm`, `familiar-stt`, `familiar-tts`, `familiar-gateway`, `familiar-desktop`, `familiar-agents`, `familiar-agents-service`, and `familiar-agents-supervisor`. `nix build .#` builds the server supervisor default.
+- `services/server/familiar-server.toml.example` is the canonical source-tree five-child deployment. It starts the four packaged services through the root flake, controls Presence through `services/presence/presence.sh`, probes LLM/STT at `/ready`, TTS at `/readyz`, and the gateway at its actual `/health` endpoint. Supervisor shutdown preserves Presence by default.
+- `./familiar.sh server` runs that canonical supervisor configuration (override with `FAMILIAR_SERVER_CONFIG` or `[server] config`). `./familiar.sh agents <args...>` passes through to the packaged `familiar-agents` CLI; `[agents] endpoint` and `[agents] host` become the CLI/extension environment.
+- `integrations/pi/extensions/agents/index.ts` stages the five CLI-backed tools `agents_dispatch`, `agents_status`, `agents_await`, `agents_respond`, and `agents_cancel`. The CLI gained the blocking `await` primitive used by the bridge.
+- Enabling that agents extension is deliberately deferred. The live extension list in `familiar.sh` is now explicit and preserves the previous set while excluding `agents`; the CLI is already in the pi environment for a later controlled enablement.
+
+Commands now available:
+
+```sh
+nix build .#                              # default: familiar-server
+nix build .#familiar-server
+nix build .#familiar-agents-service .#familiar-agents-supervisor .#familiar-agents
+./familiar.sh server
+./familiar.sh agents --json list
+```
+
 ## Ambiguities and risks
 
-- `services/server/` was intentionally not created: the old `server/` is overwhelmingly gateway-shaped and contains no supervisor/bootstrap implementation.
+- The original `server/` correctly moved to `services/gateway/`; the new supervisor is a separate implementation in `services/server/`.
 - Shared integration tests remain in `test/`; module-specific tests stayed with the moved gateway and pi extensions.
 - Desktop Electron selftest was not run because it requires Electron and, for its live-page path, a display/running gateway. No desktop build/typecheck script exists.
 - Gateway `npm install` succeeded and `node-pty` built, but its existing vendor script reported that the already-absent `apps/desktop/src/renderer/{fonts,vendor}` sources could not be copied. The tracked gateway web assets and restty bundle behavior were otherwise exercised; restoring those optional font/emoji source assets is outside this path-only restructure.

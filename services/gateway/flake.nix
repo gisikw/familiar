@@ -13,6 +13,7 @@
           version = "0.1.0";
           src = ./.;
           npmDepsHash = "sha256-h1Ztyscvv/O8bzeBY1lPjhXd2esELhlmWQ4tUEMpc+o=";
+          nodejs = pkgs.nodejs_22;
           dontNpmBuild = true;
           nativeBuildInputs = with pkgs; [ makeWrapper python3 gnumake gcc ];
           installPhase = ''

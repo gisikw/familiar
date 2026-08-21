@@ -16,7 +16,7 @@
   };
 
   outputs = { self, nixpkgs, flake-utils, herdr, server, llm, stt, tts, gateway-module, desktop, agents }:
-    flake-utils.lib.eachDefaultSystem (system:
+    flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ] (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
         modelEnv = {
