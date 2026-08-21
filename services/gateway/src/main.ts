@@ -11,6 +11,7 @@ import { PtyBridge } from "./pty.ts";
 import { handleUpload } from "./upload.ts";
 import type { IngestEnvelope } from "./protocol.ts";
 import { resolveTheme, toCss, toResttyTheme, ThemeError } from "./theme/resolve.ts";
+import { isLoopbackHost, requireSafeGatewayHost } from "./network.ts";
 
 /* --- theme: resolved once at boot from FAMILIAR_THEME_* env (defaults live in
  * theme/defaults.json). A bad color fails the server loudly rather than
@@ -180,6 +181,16 @@ server.on("error", (err) => errorLog("subscriber", { serverError: String(err) })
 
 const PORT = Number(process.env.FAMILIAR_SERVER_PORT ?? process.env.FAMILIAR_SUBSCRIBER_PORT ?? 1692);
 const HOST = process.env.FAMILIAR_SERVER_HOST ?? "127.0.0.1";
+const ALLOW_NONLOOPBACK = process.env.FAMILIAR_GATEWAY_ALLOW_NONLOOPBACK === "1";
+try {
+  requireSafeGatewayHost(HOST, ALLOW_NONLOOPBACK);
+} catch (error) {
+  process.stderr.write(`familiar gateway security error: ${error instanceof Error ? error.message : String(error)}\n`);
+  process.exit(2);
+}
+if (!isLoopbackHost(HOST)) {
+  process.stderr.write(`*** FAMILIAR GATEWAY SECURITY WARNING: unauthenticated routes are exposed on non-loopback host ${HOST} ***\n`);
+}
 server.listen(PORT, HOST, () => {
   debugLog("subscriber", { serverUp: `${HOST}:${PORT}` });
   process.stderr.write(`familiar server listening on http://${HOST}:${PORT}\n`);

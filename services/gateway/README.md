@@ -41,7 +41,9 @@ properties; no separate build step.
 | var | default | meaning |
 | --- | --- | --- |
 | `FAMILIAR_SERVER_PORT` / `FAMILIAR_SUBSCRIBER_PORT` | `1692` | listen port |
-| `FAMILIAR_SERVER_HOST` | `127.0.0.1` | listen host |
+| `FAMILIAR_SERVER_HOST` | `127.0.0.1` | listen host; non-loopback values are rejected by default |
+| `FAMILIAR_GATEWAY_ALLOW_NONLOOPBACK` | — | Set exactly `1` to permit an unauthenticated non-loopback bind; startup emits a security warning. |
+| `FAMILIAR_DROPS_DIR` | `${dirname(FAMILIAR_LOG_PATH)}/uploads`, otherwise a per-user temporary directory | Private upload storage. The gateway requires user ownership, refuses a symlink, and enforces directory/file modes `0700`/`0600`. |
 | `FAMILIAR_ATTACH_CMD` | Presence controller `attach` | Test override for the browser PTY child. Set to `bash -l` to smoke-test without tmux. |
 | `FAMILIAR_PRESENCE_CTL` | repository `services/presence/presence.sh` | Presence lifecycle controller path. |
 | `FAMILIAR_ATTACH_CWD` | gateway cwd | working dir for the attach child |
@@ -52,7 +54,7 @@ properties; no separate build step.
 
 ## Fronting (out of scope, noted for later)
 
-The gateway has **no auth** — it deliberately binds localhost only. In
+The gateway has **no auth** — it binds localhost unless the operator explicitly sets both a non-loopback `FAMILIAR_SERVER_HOST` and `FAMILIAR_GATEWAY_ALLOW_NONLOOPBACK=1`. In
 production it is intended to sit behind nginx at `familiar.gisi.network`, with
 Pocket ID (OIDC) enforcing authentication at the proxy and nginx forwarding
 authenticated requests to `127.0.0.1:1692` (including the `/pty` and `/stream`
