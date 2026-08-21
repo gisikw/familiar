@@ -53,6 +53,30 @@ Teardown is automatic on `session_shutdown` (kills in-flight claude,
 unregisters the provider — restoring tiamat behavior — closes the server, rms
 the temp root).
 
+## Native (pi) subagents route through this too
+
+Native subagents dispatched by `extensions/subagent` boot a child `pi` with
+`--no-extensions` and an EXPLICIT `-e` set built by
+`extensions/subagent/native-agent-args.ts`. That set is, in order:
+
+1. `anthropic-gateway` — tiamat's route (`ANTHROPIC_BASE_URL`); the FALLBACK.
+2. `claude-driver` — THIS extension; loaded AFTER the gateway so, when a
+   canonical Claude credential is present, its in-process loopback
+   re-registration of `anthropic` takes PROVIDER AUTHORITY (pi applies same-id
+   provider registrations last-writer-wins with a defined-value merge, in load
+   order — verified against pi 0.84.x `core/model-runtime.ts` +
+   `extensions/loader.ts`). When no credential is resolvable it is a hard
+   no-op and the gateway's tiamat route stands unchanged.
+3. `web` — registers tools, not a provider; route-neutral, kept last.
+
+So a child inherits the same double-loopback authority the parent enjoys, with
+the same graceful fallback. The order is load-bearing and regression-pinned by
+`extensions/subagent/native-agent-args.test.ts` (exact set/order),
+`extensions/subagent/route-authority.test.ts` (real factory lifecycle: loopback
+authority vs. tiamat fallback vs. teardown), and
+`extensions/lib/extension-layout.test.ts` (child `-e` paths are valid, ordered
+entrypoints).
+
 ## What works end-to-end (VERIFIED — v1b)
 
 All harnesses drive the REAL `claude` CLI (2.1.197) with host subscription creds.

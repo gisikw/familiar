@@ -62,10 +62,20 @@ describe("pi 0.84.1 extension discovery contract", () => {
       .sort();
     expect(entrypoints).toEqual(expected.sort());
 
-    const subagent = readFileSync(join(extensionRoot, "subagent", "index.ts"), "utf8");
-    for (const name of ["anthropic-gateway", "web"]) {
-      expect(subagent).toContain(`path.join(EXT_DIR, "${name}", "index.ts")`);
+    // The child (pi) subagent's explicit `-e` set now lives in its own
+    // dependency-free module (native-agent-args.ts). It must name valid child
+    // entrypoints, in the authority-bearing order: anthropic-gateway (fallback)
+    // before claude-driver (loopback authority), then web (route-neutral).
+    const childArgs = readFileSync(join(extensionRoot, "subagent", "native-agent-args.ts"), "utf8");
+    const positions = ["anthropic-gateway", "claude-driver", "web"].map((name) => {
+      const marker = `ext("${name}")`;
+      expect(childArgs).toContain(marker);
       expect(statSync(join(extensionRoot, name, "index.ts")).isFile()).toBe(true);
-    }
+      return childArgs.indexOf(marker);
+    });
+    // Order is load-bearing: claude-driver must be loaded AFTER anthropic-gateway
+    // (last same-id provider registration wins), and web stays last.
+    expect(positions[0]).toBeLessThan(positions[1]);
+    expect(positions[1]).toBeLessThan(positions[2]);
   });
 });

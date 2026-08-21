@@ -178,6 +178,13 @@ let artifactRootVerified = false;
 /** Agent kind whose transcript we can read directly (and resume by session id). */
 const NATIVE_KIND = "pi";
 
+// The child (pi) subagent's explicit extension set + argv lives in its own
+// dependency-free module so the exact SET and ORDER — which decides the child's
+// anthropic provider authority (claude-driver loopback over anthropic-gateway
+// fallback) — is a regression-testable value. See native-agent-args.ts for the
+// load-order / last-writer-wins rationale.
+export { nativeAgentArgs, type NativeAgentArgsOptions } from "./native-agent-args.ts";
+
 const verdictFooter = (kind: string, dir: string, artifactDir: string) =>
   "\n\n---\nYou are a dispatched subagent. Your final message is the only thing " +
   `returned to the dispatcher — a verdict, not a transcript (≤${RESULT_MAX} chars): ` +
@@ -823,16 +830,7 @@ export default function (pi: ExtensionAPI) {
         session_id: sessionId,
         artifact_dir: artifactPrep.dir,
         agent_args: agentKind === NATIVE_KIND
-          ? [
-              "--no-extensions",
-              "-e", path.join(EXT_DIR, "anthropic-gateway", "index.ts"),
-              "-e", path.join(EXT_DIR, "web", "index.ts"),
-              "--no-skills",
-              "--no-context-files",
-              "--session-dir", SESSION_DIR,
-              "--session-id", sessionId,
-              ...(childModel ? ["--model", childModel] : []),
-            ]
+          ? nativeAgentArgs({ extDir: EXT_DIR, sessionDir: SESSION_DIR, sessionId, model: childModel })
           : [],
         timeout: timeout || DEFAULT_TIMEOUT_S,
         created_at: new Date().toISOString(),
