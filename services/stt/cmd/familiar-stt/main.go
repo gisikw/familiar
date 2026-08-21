@@ -32,7 +32,10 @@ func main() {
 		os.Exit(2)
 	}
 	addr := env("STT_LISTEN", "127.0.0.1:9932")
-	h := &http.Server{Addr: addr, Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 1 << 20}
+	// ReadTimeout is slightly longer than the end-to-end transcription deadline:
+	// legitimate requests get their full configured budget, while slow readers
+	// cannot retain a connection indefinitely.
+	h := &http.Server{Addr: addr, Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: cfg.Deadline + 10*time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 1 << 20}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	go func() {

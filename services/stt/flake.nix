@@ -19,7 +19,17 @@
           };
           nativeBuildInputs = with pkgs; [ cmake pkg-config ];
           buildInputs = with pkgs; [ openblas ];
-          installPhase = ''mkdir -p $out/bin; cp bin/transcribe-cli $out/bin/'';
+          installPhase = ''
+            mkdir -p $out/bin $out/share/licenses/transcribe-cpp
+            cp bin/transcribe-cli $out/bin/
+            cp $src/LICENSE $out/share/licenses/transcribe-cpp/
+          '';
+          meta = {
+            description = "Local speech-to-text inference CLI";
+            homepage = "https://github.com/handy-computer/transcribe.cpp";
+            license = pkgs.lib.licenses.mit;
+            mainProgram = "transcribe-cli";
+          };
         };
         familiar-stt-unwrapped = pkgs.buildGoModule {
           pname = "familiar-stt";
@@ -28,7 +38,13 @@
           vendorHash = null;
           subPackages = [ "cmd/familiar-stt" ];
           doCheck = true;
-          preCheck = "go test ./...";
+          # buildGoModule otherwise checks only subPackages (and a preCheck
+          # would make it run that package twice). Run the module once.
+          checkPhase = ''
+            runHook preCheck
+            go test ./...
+            runHook postCheck
+          '';
         };
         familiar-stt = pkgs.symlinkJoin {
           name = "familiar-stt-0.1.0";

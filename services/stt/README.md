@@ -1,13 +1,14 @@
 # Familiar STT
 
 A loopback-only, stable OpenAI-compatible speech-to-text boundary. It exposes
-`POST /v1/audio/transcriptions`, accepting either a raw audio body or a
-`multipart/form-data` body whose `file` part contains audio, and returns
-`{"text":"..."}`.
+`POST /v1/audio/transcriptions` and the legacy drop-in alias `POST /`, accepting
+either a raw audio body or a `multipart/form-data` body whose `file` part
+contains audio, and returns `{"text":"..."}`.
 
 With `STT_UPSTREAM_URL`, the request body and end-to-end headers are streamed
-once to `<upstream>/v1/audio/transcriptions` (no transcription retries). Without
-it, the first request single-flight initializes the local toolchain. Each local
+once to `<upstream>/v1/audio/transcriptions` (no transcription retries). The
+legacy `/` alias is canonicalized to that path rather than forwarded as `/`.
+Without it, the first request single-flight initializes the local toolchain. Each local
 request is written to a private temporary directory, normalized by ffmpeg to
 16 kHz mono WAV, and passed to `transcribe-cli`; all files are removed afterward.
 
