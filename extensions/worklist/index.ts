@@ -24,7 +24,8 @@ import {
   archiveItem,
   drainIncoming,
   ensureDirs,
-  envelopeToItem,
+  enqueueEnvelopeIdempotent,
+  getArchivedItem,
   getItem,
   worklistPaths,
   listItems,
@@ -299,9 +300,8 @@ export default function (pi: ExtensionAPI) {
   /* --- exported in-process enqueue API ----------------------------------- */
   const enqueue = (env: EnqueueEnvelope): QueueItem => {
     ensureDirs(P, LEGACY_ROOT);
-    const item = envelopeToItem(env);
-    putItem(P, item);
-    refreshSurfaces();
+    const { item, created } = enqueueEnvelopeIdempotent(P, env);
+    if (created) refreshSurfaces();
     return item;
   };
 
@@ -325,25 +325,18 @@ export default function (pi: ExtensionAPI) {
       }
       // Idempotent on id: if already known (live/archived), report accepted
       // without duplicating — the caller's earlier enqueue owns it.
-      if (id) {
-        const existing = getItem(P, id);
-        if (existing) return { accepted: true, id };
-      }
-      const item = envelopeToItem(
-        {
-          id,
-          priority: env.priority,
-          type: (env.type as QueueItem["type"]) ?? "notify",
-          summary: env.summary,
-          body: env.body,
-          source: env.source ?? "subagent",
-          ...(typeof env.suggested_deadline === "number"
-            ? { suggested_deadline: env.suggested_deadline }
-            : {}),
-        },
-      );
-      putItem(P, item);
-      refreshSurfaces();
+      const { item, created } = enqueueEnvelopeIdempotent(P, {
+        id,
+        priority: env.priority,
+        type: (env.type as QueueItem["type"]) ?? "notify",
+        summary: env.summary,
+        body: env.body,
+        source: env.source ?? "subagent",
+        ...(typeof env.suggested_deadline === "number"
+          ? { suggested_deadline: env.suggested_deadline }
+          : {}),
+      });
+      if (created) refreshSurfaces();
       return { accepted: true, id: item.id };
     },
     async withdraw(id: string): Promise<boolean> {
@@ -352,10 +345,14 @@ export default function (pi: ExtensionAPI) {
       // await-claims-a-queued-settlement race safe in both orderings.
       tombstones.add(id);
       const item = getItem(P, id);
-      if (!item) return true; // not present (yet): tombstone will catch a late enqueue
+      if (!item) {
+        const archived = getArchivedItem(P, id);
+        if (!archived) return true; // tombstone catches a genuinely late enqueue
+        // Terminal history decides ownership after restart: delivered/acked was
+        // already surfaced; withdrawn was explicitly claimed by await.
+        return archived.withdrawn === true ? true : !(archived.delivered || archived.acked);
+      }
       if (item.delivered || item.acked) return false; // too late — already surfaced
-      // Mark withdrawn (terminal, never delivered) and archive it so it can
-      // never surface, but audit survives.
       item.withdrawn = true;
       putItem(P, item);
       archiveItem(P, id);
@@ -363,6 +360,16 @@ export default function (pi: ExtensionAPI) {
       return true;
     },
   };
+
+  // Publish during factory initialization, not session_start, so extension
+  // loader order cannot make subagent startup reconciliation bypass attention.
+  // Only advertise after durable storage has been verified.
+  try {
+    ensureDirs(P, LEGACY_ROOT);
+    sinkDisposer = registry.register<DurableSink>(WORKLIST_SINK, WORKLIST_SINK_VERSION, sink);
+  } catch (err) {
+    errorLog("worklist", { storageDisabled: String(err) });
+  }
 
   // Publish on the shared bus too, so fire-and-forget senders (cron, subscriber)
   // can enqueue without an import cycle. NOTE: this is fire-and-forget only —
@@ -654,27 +661,29 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(_id, params: { level: string; duration_minutes?: number }) {
       const level = params.level;
+      // One widened details shape across all branches so the tool's TDetails
+      // unifies (pinned pi 0.84.1 requires a non-optional `details`).
+      const result = (details: Record<string, unknown>, isError = false) => ({
+        content: [{ type: "text" as const, text: JSON.stringify(details) }],
+        details,
+        ...(isError ? { isError: true } : {}),
+      });
       if (level === "auto") {
         clearOverride();
-        return { content: [{ type: "text" as const, text: JSON.stringify({ ok: true, level: currentAttention(), mode: "auto" }) }] };
+        return result({ ok: true, level: currentAttention(), mode: "auto" });
       }
       if (level !== "available" && level !== "focused" && level !== "protected") {
-        return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: `unknown level "${level}"` }) }], isError: true };
+        return result({ ok: false, error: `unknown level "${level}"` }, true);
       }
       const mins = params.duration_minutes;
       if (typeof mins !== "number" || !(mins > 0)) {
-        return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: "duration_minutes is required and must be > 0 for a non-auto level" }) }], isError: true };
+        return result({ ok: false, error: "duration_minutes is required and must be > 0 for a non-auto level" }, true);
       }
       const ov = setOverride(level as AttentionOverride["level"], mins * 60_000);
       if (!ov) {
-        return { content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: "invalid duration" }) }], isError: true };
+        return result({ ok: false, error: "invalid duration" }, true);
       }
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({ ok: true, level, expires_at: new Date(ov.expiresAt).toISOString(), minutes: Math.round((ov.expiresAt - Date.now()) / 60000) }),
-        }],
-      };
+      return result({ ok: true, level, expires_at: new Date(ov.expiresAt).toISOString(), minutes: Math.round((ov.expiresAt - Date.now()) / 60000) });
     },
   });
 
@@ -728,24 +737,32 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     ctxRef = ctx;
-    guard(() => ensureDirs(P, LEGACY_ROOT));
-    const st = readAttention(P);
-    mode = st.mode;
-    override = st.override;
-    // Discard an already-expired override on load (wall-clock, not
-    // session-relative): a /protect set before a crash still expires on time.
-    expireIfElapsed(Date.now());
-    // A fresh/reloaded session starts "focused" until it settles: safer to hold
-    // a low-priority item than to dump the queue into a just-resumed agent.
-    lastActivity = Date.now();
-    idleSince = Date.now();
-    agentBusy = false;
-    refreshSurfaces();
+    // One degradation boundary around ALL of startup: an unwritable state tree
+    // (plus, say, an expired override that expireIfElapsed tries to persist)
+    // must cleanly disable worklist, never throw out of session_start and brick
+    // Familiar. Everything that touches disk or UI lives inside the guard.
+    guard(() => {
+      ensureDirs(P, LEGACY_ROOT);
+      const st = readAttention(P);
+      mode = st.mode;
+      override = st.override;
+      // Discard an already-expired override on load (wall-clock, not
+      // session-relative): a /protect set before a crash still expires on time.
+      expireIfElapsed(Date.now());
+      // A fresh/reloaded session starts "focused" until it settles: safer to
+      // hold a low-priority item than to dump the queue into a resumed agent.
+      lastActivity = Date.now();
+      idleSince = Date.now();
+      agentBusy = false;
+      refreshSurfaces();
 
-    // Register the durable sink on the neutral capability registry. Restart-safe:
-    // dispose any prior registration first (a /reload re-runs session_start).
-    if (sinkDisposer) sinkDisposer();
-    sinkDisposer = registry.register<DurableSink>(WORKLIST_SINK, WORKLIST_SINK_VERSION, sink);
+      // Factory initialization normally registered the sink before lifecycle
+      // handlers run. Retry here only if storage was unavailable during load,
+      // and only AFTER ensureDirs above verified durable storage this session.
+      if (!sinkDisposer) {
+        sinkDisposer = registry.register<DurableSink>(WORKLIST_SINK, WORKLIST_SINK_VERSION, sink);
+      }
+    });
 
     if (timer) clearInterval(timer);
     timer = setInterval(tickGuarded, TICK_MS);

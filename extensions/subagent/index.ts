@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { prepareArtifactDir, getArtifactDir } from "./artifact-dir.ts";
+import { commitRelay, reconcileRelayClaim, releaseRelayClaim, takeRelayClaim } from "./relay-state.ts";
 import {
   registry as capabilities,
   WORKLIST_SINK,
@@ -497,20 +498,21 @@ export default function (pi: ExtensionAPI) {
 
   const send = (marker: string, lines: string[]): boolean => {
     if (fs.existsSync(marker)) return true;
-    // Claim the marker *before* sending: relay() and subagent_await can race
-    // for the same settlement, and a lost race means the verdict arrives
-    // twice. Roll back if the send fails so the poller can retry.
-    if (!claim(marker)) return true;
+    if (!takeRelayClaim(marker)) return false;
     try {
+      if (fs.existsSync(marker)) return true;
       pi.sendMessage(
         { customType: "subagent-settlement", content: lines.join("\n"), display: true },
         { deliverAs: "steer", triggerTurn: true },
       );
+      // Transport has accepted the send. Never pre-commit ownership.
+      commitRelay(marker);
+      return true;
     } catch {
-      try { fs.unlinkSync(marker); } catch { /* nothing to roll back */ }
       return false;
+    } finally {
+      releaseRelayClaim(marker);
     }
-    return true;
   };
 
   const settlementLines = (s: Settlement): string[] => [
@@ -536,41 +538,51 @@ export default function (pi: ExtensionAPI) {
   const relay = async (s: Settlement): Promise<boolean> => {
     const marker = path.join(jobDir(s.id), `relayed-${s.pass}`);
     if (fs.existsSync(marker)) return true;
-
-    const sink = resolveSink();
-    if (sink) {
-      // Claim delivery ownership BEFORE enqueuing so a direct relay or an await
-      // cannot also fire. Roll back on any failure and fall through to direct.
-      if (!claim(marker)) return true;
-      try {
-        const acc = await sink.enqueue({
-          id: worklistId(s),
-          priority: settlementPriority(s),
-          type: "notify",
-          summary: settlementSummary(s),
-          body: settlementLines(s).join("\n"),
-          source: "subagent",
-        });
-        if (acc && acc.accepted) {
-          // Worklist now owns visible delivery. Mark it so await can withdraw.
-          try { fs.writeFileSync(worklistedMarker(s.id, s.pass), ""); } catch { /* best effort */ }
-          return true;
-        }
-        if (acc && acc.superseded) {
-          // Delivery already claimed elsewhere (an await withdrew this id while
-          // our enqueue was in-flight). Do NOT fall back to a direct relay;
-          // keep the relayed marker so nothing surfaces twice. Delivery owned.
-          return true;
-        }
-        // Rejected: relinquish the claim and fall back to a direct relay.
-        try { fs.unlinkSync(marker); } catch { /* nothing to roll back */ }
-      } catch {
-        try { fs.unlinkSync(marker); } catch { /* nothing to roll back */ }
+    if (!takeRelayClaim(marker)) return false; // another owner is in progress; retry
+    let direct = false;
+    try {
+      if (fs.existsSync(marker)) return true;
+      const sink = resolveSink();
+      if (sink) {
+        try {
+          const acc = await sink.enqueue({
+            id: worklistId(s),
+            priority: settlementPriority(s),
+            type: "notify",
+            summary: settlementSummary(s),
+            body: settlementLines(s).join("\n"),
+            source: "subagent",
+          });
+          if (acc?.accepted) {
+            // Acceptance is durable and stable-id retryable; metadata and the
+            // terminal ownership marker may now safely be committed.
+            try { fs.writeFileSync(worklistedMarker(s.id, s.pass), "", { flag: "wx" }); } catch { /* exists */ }
+            commitRelay(marker);
+            return true;
+          }
+          if (acc?.superseded) {
+            commitRelay(marker);
+            return true;
+          }
+          direct = true;
+        } catch { direct = true; }
+      } else {
+        direct = true;
       }
+      if (direct) {
+        pi.sendMessage(
+          { customType: "subagent-settlement", content: settlementLines(s).join("\n"), display: true },
+          { deliverAs: "steer", triggerTurn: true },
+        );
+        commitRelay(marker); // only after sendMessage accepted the delivery
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    } finally {
+      releaseRelayClaim(marker);
     }
-
-    // Fallback: direct steer relay (worklist absent/rejected/errored).
-    return send(marker, settlementLines(s));
   };
 
   // Fire relay without blocking the caller; stop the poller once delivery is
@@ -725,14 +737,22 @@ export default function (pi: ExtensionAPI) {
     return null;
   };
 
-  const fail = (error: string, extra: Record<string, unknown> = {}) => ({
-    content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error, ...extra }) }],
-    isError: true,
-  });
+  const fail = (error: string, extra: Record<string, unknown> = {}) => {
+    const details = { ok: false, error, ...extra };
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(details) }],
+      details,
+      isError: true,
+    };
+  };
 
-  const ok = (obj: Record<string, unknown>) => ({
-    content: [{ type: "text" as const, text: JSON.stringify({ ok: true, ...obj }) }],
-  });
+  const ok = (obj: Record<string, unknown>) => {
+    const details = { ok: true, ...obj };
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(details) }],
+      details,
+    };
+  };
 
   pi.registerTool({
     name: "dispatch",
@@ -891,35 +911,44 @@ export default function (pi: ExtensionAPI) {
             //                      now own the single surface (this tool result)
             //   withdraw() false → worklist ALREADY delivered it: do not repeat
             //                      the body; point at the prior delivery instead
-            let alreadySurfaced = false;
-            const sink = resolveSink();
-            if (sink) {
-              // Always attempt withdraw when a sink is present, even if the
-              // `worklisted` marker is not yet on disk: relay's enqueue may be
-              // in-flight. withdraw sets a tombstone that also refuses a late
-              // enqueue, closing the race in both orderings.
-              try {
-                const removed = await sink.withdraw(worklistId(s));
-                alreadySurfaced = removed === false;
-              } catch {
-                /* sink error: fall through; marker+relayed guard below */
+            const marker = path.join(jobDir(id), `relayed-${pass}`);
+            // Serialize with an in-flight relay. A transient claim left by a
+            // dead process is removed during session reconciliation.
+            if (!takeRelayClaim(marker)) continue;
+            try {
+              let alreadySurfaced = fs.existsSync(marker) && !fs.existsSync(worklistedMarker(id, pass));
+              const sink = resolveSink();
+              if (!sink && fs.existsSync(marker)) alreadySurfaced = true;
+              if (sink) {
+                try {
+                  const removed = await sink.withdraw(worklistId(s));
+                  // Archive-aware withdraw is false after ordinary delivery.
+                  alreadySurfaced = removed === false || alreadySurfaced;
+                } catch {
+                  // If a committed worklist delivery cannot be inspected, do
+                  // not risk repeating it. Explicit await still bypasses
+                  // attention when the queued item can be withdrawn.
+                  if (fs.existsSync(marker)) alreadySurfaced = true;
+                }
               }
-            }
-            claim(path.join(jobDir(id), `relayed-${pass}`)); // this result IS the relay
-            stopPolling(id);
-            if (alreadySurfaced) {
+              commitRelay(marker); // this tool result owns delivery if not prior
+              stopPolling(id);
+              if (alreadySurfaced) {
+                return ok({
+                  id: s.id, pass: s.pass, status: s.status, reason: s.reason,
+                  note: "verdict already delivered to the conversation via the worklist; not repeated here",
+                  ...(s.artifact_dir ? { artifact_dir: s.artifact_dir } : {}),
+                });
+              }
               return ok({
                 id: s.id, pass: s.pass, status: s.status, reason: s.reason,
-                note: "verdict already delivered to the conversation via the worklist; not repeated here",
+                result: s.result, usage: s.usage,
+                ...(s.workdir ? { workdir: s.workdir, branch: s.branch } : {}),
                 ...(s.artifact_dir ? { artifact_dir: s.artifact_dir } : {}),
               });
+            } finally {
+              releaseRelayClaim(marker);
             }
-            return ok({
-              id: s.id, pass: s.pass, status: s.status, reason: s.reason,
-              result: s.result, usage: s.usage,
-              ...(s.workdir ? { workdir: s.workdir, branch: s.branch } : {}),
-              ...(s.artifact_dir ? { artifact_dir: s.artifact_dir } : {}),
-            });
           }
           if (eventsFor(id, pass).at(-1)?.status === "blocked") {
             claim(path.join(jobDir(id), `blocked-${pass}`));
@@ -966,7 +995,7 @@ export default function (pi: ExtensionAPI) {
           prompt: cmd.prompt.length > 120 ? cmd.prompt.slice(0, 120) + "…" : cmd.prompt,
         };
       });
-      return { content: [{ type: "text", text: JSON.stringify(jobs, null, 2) }] };
+      return { content: [{ type: "text", text: JSON.stringify(jobs, null, 2) }], details: { jobs } };
     },
   });
 
@@ -1061,6 +1090,9 @@ export default function (pi: ExtensionAPI) {
       const cmd = readJSON<DispatchCommand>(path.join(jobDir(id), "command.json"));
       if (!cmd) continue;
       const pass = currentPass(id);
+      // A .claim is only an in-progress lock, never proof of delivery. At
+      // startup no operation from the dead extension instance can own it.
+      reconcileRelayClaim(path.join(jobDir(id), `relayed-${pass}`));
 
       // Ensure old jobs without artifact_dir have a deterministic fallback
       if (!cmd.artifact_dir) {

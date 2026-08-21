@@ -242,13 +242,28 @@ describe("store: persistence + atomic + drain + migration", () => {
     expect(itemExists(P, "sub-x-1")).toBe(true);
   });
 
-  test("malformed / torn files are skipped, not fatal", () => {
+  test("malformed / torn claims are retained, not fatal or silently lost", () => {
     fs.writeFileSync(path.join(P.incoming, "bad.json"), "{not json");
     writeJSONAtomic(path.join(P.incoming, "ok.json"), { summary: "good" });
     expect(drainIncoming(P).length).toBe(1);
+    expect(fs.existsSync(path.join(P.incoming, "bad.json.claimed"))).toBe(true);
     fs.writeFileSync(path.join(P.items, "torn.json"), "{half");
     putItem(P, envelopeToItem({ summary: "intact" }));
     expect(listItems(P).filter((i) => i.summary === "intact").length).toBe(1);
+  });
+
+  test("restart recovers claims at every promotion boundary", () => {
+    // Death immediately after claim rename.
+    writeJSONAtomic(path.join(P.incoming, "claimed.json.claimed"), { summary: "recover claim", id: "claim-1" });
+    expect(drainIncoming(P).map((i) => i.id)).toEqual(["claim-1"]);
+    expect(fs.existsSync(path.join(P.incoming, "claimed.json.claimed"))).toBe(false);
+
+    // Death after durable put but before claim cleanup: restart dedupes then cleans.
+    putItem(P, envelopeToItem({ summary: "already promoted", id: "claim-2" }));
+    writeJSONAtomic(path.join(P.incoming, "put.json.claimed"), { summary: "already promoted", id: "claim-2" });
+    expect(drainIncoming(P).length).toBe(0);
+    expect(fs.existsSync(path.join(P.incoming, "put.json.claimed"))).toBe(false);
+    expect(listItems(P).filter((i) => i.id === "claim-2").length).toBe(1);
   });
 
   test("attention persistence: wall-clock override survives restart; expired discarded on read", () => {
@@ -264,6 +279,30 @@ describe("store: persistence + atomic + drain + migration", () => {
     expect(overrideExpired(stale.override, Date.now())).toBe(true);
   });
 
+  test("persisted override is validated + clamped on load (never unbounded across restart)", () => {
+    const now = Date.now();
+    // Far-future expiry (clock rollback / corrupt / older writer): clamp to the
+    // 8h ceiling, and persist the normalized state.
+    const farFuture = now + 30 * 24 * 60 * 60 * 1000; // 30 days
+    writeAttention(P, { mode: "protected", override: { level: "protected", expiresAt: farFuture } });
+    const clamped = readAttention(P, now);
+    expect(clamped.override).not.toBeNull();
+    const ceiling = now + 8 * 60 * 60 * 1000;
+    expect(clamped.override!.expiresAt).toBeLessThanOrEqual(ceiling);
+    expect(clamped.override!.expiresAt).toBeGreaterThan(now);
+    // Normalized state was persisted atomically: a second read is already capped.
+    const persisted = readJSON<{ override?: { expiresAt?: number } }>(P.attention);
+    expect(persisted?.override?.expiresAt).toBeLessThanOrEqual(ceiling);
+
+    // Corrupt level → dropped to auto inference (no override).
+    writeAttention(P, { mode: "protected", override: { level: "bogus" as never, expiresAt: now + 1000 } });
+    expect(readAttention(P, now).override).toBeNull();
+
+    // Non-finite expiry → dropped.
+    writeJSONAtomic(P.attention, { mode: "protected", override: { level: "protected", expiresAt: "soon" } });
+    expect(readAttention(P, now).override).toBeNull();
+  });
+
   test("legacy inbox migration: items + posture adopted, no unbounded busy carried", () => {
     const fresh = fs.mkdtempSync(path.join(os.tmpdir(), "wl-mig-"));
     const legacy = path.join(fresh, "inbox");
@@ -274,12 +313,40 @@ describe("store: persistence + atomic + drain + migration", () => {
     fs.writeFileSync(path.join(legacy, "items", "legacy-1.json"), JSON.stringify(legacyItem));
     fs.writeFileSync(path.join(legacy, "posture.json"), JSON.stringify({ mode: "busy" }));
     const WP = worklistPaths(wl);
-    ensureDirs(WP, legacy); // triggers one-shot migration
+    // A pre-existing partial destination must not suppress reconciliation.
+    ensureDirs(WP);
+    ensureDirs(WP, legacy);
     expect(getItem(WP, "legacy-1")?.summary).toBe("legacy queued");
     // legacy permanent "busy" must NOT persist as an unbounded override
     const att = readAttention(WP);
     expect(att.override).toBeNull();
     expect(att.mode).toBe("auto"); // busy→focused pin dropped to auto (no expiry)
+
+    // An old writer appearing after migration is continuously reconciled.
+    fs.mkdirSync(path.join(legacy, "incoming"), { recursive: true });
+    writeJSONAtomic(path.join(legacy, "incoming", "late.json"), { summary: "late old writer", id: "legacy-late" });
+    ensureDirs(WP, legacy);
+    expect(getItem(WP, "legacy-late")?.summary).toBe("late old writer");
+    expect(fs.existsSync(path.join(legacy, "incoming", "late.json.claimed"))).toBe(false);
+  });
+
+  test("partial migration is idempotent, archive-aware, and preserves conflicts", () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "wl-partial-"));
+    const legacy = path.join(base, "inbox");
+    const WP = worklistPaths(path.join(base, "worklist"));
+    fs.mkdirSync(path.join(legacy, "items"), { recursive: true });
+    ensureDirs(WP);
+    const terminal = envelopeToItem({ id: "same", summary: "new terminal" });
+    terminal.acked = terminal.delivered = true;
+    putItem(WP, terminal);
+    archiveItem(WP, "same");
+    const old = envelopeToItem({ id: "same", summary: "old conflicting copy" });
+    writeJSONAtomic(path.join(legacy, "items", "same.json"), old);
+    ensureDirs(WP, legacy);
+    ensureDirs(WP, legacy); // restart/retry
+    expect(getItem(WP, "same")).toBeNull();
+    expect(readJSON<QueueItem>(path.join(WP.archive, "same.json"))?.summary).toBe("new terminal");
+    expect(readJSON<QueueItem>(path.join(WP.root, "migration-conflicts", "live-same.json"))?.summary).toBe("old conflicting copy");
   });
 });
 

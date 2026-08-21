@@ -280,6 +280,29 @@ export function overrideExpired(ov: AttentionOverride | null | undefined, now: n
 }
 
 /**
+ * Validate + clamp an override loaded from disk. Persisted state is untrusted:
+ * a corrupt file, a manual edit, a clock rollback, or an older writer could
+ * carry an arbitrary level or a far-future `expiresAt`. This enforces, at load
+ * time, the same invariant `makeOverride` enforces at set time — no manual
+ * state is ever unbounded. Returns null (→ auto inference) for anything that is
+ * not a recognized level with a finite timestamp; clamps remaining lifetime to
+ * `maxOverrideMs` measured from `now`.
+ */
+export function sanitizeOverride(
+  raw: unknown,
+  now: number,
+  cfg: AttentionConfig = DEFAULT_CONFIG,
+): AttentionOverride | null {
+  if (!raw || typeof raw !== "object") return null;
+  const ov = raw as { level?: unknown; expiresAt?: unknown };
+  if (ov.level !== "available" && ov.level !== "focused" && ov.level !== "protected") return null;
+  if (typeof ov.expiresAt !== "number" || !Number.isFinite(ov.expiresAt)) return null;
+  const ceiling = now + cfg.maxOverrideMs;
+  const expiresAt = Math.min(ov.expiresAt, ceiling);
+  return { level: ov.level, expiresAt };
+}
+
+/**
  * Decide the concrete action for a live item on a scheduler tick. Pure so the
  * whole delivery ladder is testable; the extension performs the returned verb.
  *

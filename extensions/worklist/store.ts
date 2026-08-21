@@ -25,6 +25,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { QueueItem, Priority, ItemType, AttentionMode, AttentionOverride } from "./policy.ts";
+import { sanitizeOverride } from "./policy.ts";
 
 export interface WorklistPaths {
   root: string;
@@ -44,54 +45,56 @@ export function worklistPaths(root: string): WorklistPaths {
   };
 }
 
-/** Create the state tree if missing. Graceful on a cold repo. Runs a one-shot
- *  legacy migration from an adjacent state/inbox/ tree so queued items and the
- *  persisted posture are never lost across the rename. */
+/** Create the state tree and reconcile the compatibility tree. Reconciliation
+ * runs on every call: a crash or pre-created/partial destination must not make
+ * migration a one-shot event. Legacy sources are removed only after the
+ * destination is durable (or already known), so old writers remain supported. */
 export function ensureDirs(p: WorklistPaths, legacyRoot?: string): void {
-  const fresh = !fs.existsSync(p.root);
   for (const d of [p.root, p.items, p.archive, p.incoming]) {
-    fs.mkdirSync(d, { recursive: true });
+    fs.mkdirSync(d, { recursive: true, mode: 0o700 });
   }
-  if (fresh && legacyRoot && fs.existsSync(legacyRoot)) {
-    try {
-      migrateLegacy(legacyRoot, p);
-    } catch {
-      /* migration is best-effort; a partial copy still loses nothing on disk */
-    }
+  if (legacyRoot && fs.existsSync(legacyRoot) && path.resolve(legacyRoot) !== path.resolve(p.root)) {
+    migrateLegacy(legacyRoot, p);
   }
 }
 
-/** Copy any legacy inbox items/incoming and translate posture.json → attention.
- *  Idempotent enough: only runs when the worklist root was just created. */
 function migrateLegacy(legacyRoot: string, p: WorklistPaths): void {
-  const legacyItems = path.join(legacyRoot, "items");
-  const legacyIncoming = path.join(legacyRoot, "incoming");
-  const legacyPosture = path.join(legacyRoot, "posture.json");
-  const copyDir = (src: string, dst: string) => {
-    if (!fs.existsSync(src)) return;
-    fs.mkdirSync(dst, { recursive: true });
-    for (const n of fs.readdirSync(src)) {
-      const s = path.join(src, n);
-      if (!fs.statSync(s).isFile()) continue; // skip archive/ subdir here
-      try {
-        fs.copyFileSync(s, path.join(dst, n));
-      } catch {
-        /* skip */
+  const conflicts = path.join(p.root, "migration-conflicts");
+  const reconcileItems = (srcDir: string, archived: boolean) => {
+    let names: string[];
+    try { names = fs.readdirSync(srcDir); } catch { return; }
+    for (const n of names) {
+      if (!n.endsWith(".json")) continue;
+      const src = path.join(srcDir, n);
+      const item = readJSON<QueueItem>(src);
+      if (!item?.id) continue; // malformed remains available for repair/retry
+      const known = getKnownItem(p, item.id);
+      if (known) {
+        if (JSON.stringify(known) !== JSON.stringify(item)) {
+          fs.mkdirSync(conflicts, { recursive: true, mode: 0o700 });
+          const conflict = path.join(conflicts, `${archived ? "archive-" : "live-"}${n}`);
+          if (!fs.existsSync(conflict)) writeJSONAtomic(conflict, item);
+        }
+      } else {
+        writeJSONAtomic(path.join(archived ? p.archive : p.items, `${item.id}.json`), item);
       }
+      // The durable destination/conflict now owns this exact source.
+      try { fs.unlinkSync(src); } catch { /* retry next reconciliation */ }
     }
   };
-  copyDir(legacyItems, p.items);
-  copyDir(path.join(legacyItems, "archive"), p.archive);
-  copyDir(legacyIncoming, p.incoming);
-  // posture.json { mode } → attention.json { mode } (override starts clear; a
-  // legacy permanent "busy" becomes a fresh auto inference, which is correct —
-  // nothing should carry an unbounded suppression across the rename).
-  const legacy = readJSON<{ mode?: string }>(legacyPosture);
-  if (legacy && legacy.mode && !fs.existsSync(p.attention)) {
-    const mode: AttentionMode =
-      legacy.mode === "busy" ? "focused" : legacy.mode === "available" ? "available" : "auto";
-    // A legacy manual pin had no expiry; drop it to auto so nothing is unbounded.
-    writeAttention(p, { mode: mode === "focused" ? "auto" : mode, override: null });
+  const legacyItems = path.join(legacyRoot, "items");
+  reconcileItems(path.join(legacyItems, "archive"), true);
+  reconcileItems(legacyItems, false);
+
+  // Promote legacy drop-box files with the same recoverable claim protocol as
+  // the canonical incoming directory. This is deliberately continuous for the
+  // compatibility release: an old process may write after initial migration.
+  drainIncomingDirectory(p, path.join(legacyRoot, "incoming"));
+
+  const legacy = readJSON<{ mode?: string }>(path.join(legacyRoot, "posture.json"));
+  if (legacy?.mode && !fs.existsSync(p.attention)) {
+    const mode: AttentionMode = legacy.mode === "available" ? "available" : "auto";
+    writeAttention(p, { mode, override: null });
   }
 }
 
@@ -99,7 +102,7 @@ function migrateLegacy(legacyRoot: string, p: WorklistPaths): void {
 export function writeJSONAtomic(file: string, obj: unknown): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2));
+  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2), { mode: 0o600 });
   fs.renameSync(tmp, file);
 }
 
@@ -119,6 +122,15 @@ export function putItem(p: WorklistPaths, item: QueueItem): void {
 
 export function getItem(p: WorklistPaths, id: string): QueueItem | null {
   return readJSON<QueueItem>(itemFile(p, id));
+}
+
+export function getArchivedItem(p: WorklistPaths, id: string): QueueItem | null {
+  return readJSON<QueueItem>(path.join(p.archive, `${id}.json`));
+}
+
+/** Read terminal history as well as the live queue. */
+export function getKnownItem(p: WorklistPaths, id: string): QueueItem | null {
+  return getItem(p, id) ?? getArchivedItem(p, id);
 }
 
 /** All live (non-archived) items, oldest first. Skips torn/partial files. */
@@ -199,42 +211,60 @@ export function mintId(): string {
  * makes an out-of-process re-enqueue with a stable id safe.
  */
 export function drainIncoming(p: WorklistPaths, now = Date.now()): QueueItem[] {
+  return drainIncomingDirectory(p, p.incoming, now);
+}
+
+/** Recover both fresh drops and claims left by a dead process. The claim is
+ * retained until putItem is durably renamed; malformed claims are retained for
+ * diagnosis/retry instead of silently discarded. */
+function drainIncomingDirectory(p: WorklistPaths, dir: string, now = Date.now()): QueueItem[] {
   let names: string[];
-  try {
-    names = fs.readdirSync(p.incoming);
-  } catch {
-    return [];
-  }
+  try { names = fs.readdirSync(dir); } catch { return []; }
   const created: QueueItem[] = [];
+  // Claims first makes restart recovery deterministic.
+  names.sort((a, b) => Number(!a.endsWith(".claimed")) - Number(!b.endsWith(".claimed")));
   for (const n of names) {
-    if (!n.endsWith(".json")) continue;
-    const src = path.join(p.incoming, n);
-    // Claim by renaming out of the drop-box; loser of a race gets ENOENT.
-    const claimed = `${src}.claimed`;
-    try {
-      fs.renameSync(src, claimed);
-    } catch {
-      continue;
+    if (!n.endsWith(".json") && !n.endsWith(".json.claimed")) continue;
+    const src = path.join(dir, n);
+    const claimed = n.endsWith(".claimed") ? src : `${src}.claimed`;
+    if (claimed !== src) {
+      try { fs.renameSync(src, claimed); } catch { continue; }
     }
-    const env = readJSON<EnqueueEnvelope>(claimed);
-    try {
-      fs.unlinkSync(claimed);
-    } catch {
-      /* nothing */
+    let env = readJSON<EnqueueEnvelope>(claimed);
+    if (!env?.summary) continue;
+    // Persist a minted id into the claim before promotion. Without this, death
+    // after putItem but before unlink would replay an id-less envelope as a
+    // second item on restart.
+    if (!env.id) {
+      env = { ...env, id: mintId() };
+      writeJSONAtomic(claimed, env);
     }
-    if (!env || !env.summary) continue; // skip malformed
-    // Dedup on stable id: don't resurrect an already-known (or withdrawn) item.
-    if (env.id && itemExists(p, env.id)) continue;
-    const item = envelopeToItem(env, now);
-    putItem(p, item);
-    created.push(item);
+    const result = enqueueEnvelopeIdempotent(p, env, now);
+    if (result.created) created.push(result.item);
+    // Whether newly written or deduped, a durable live/archive copy owns it.
+    try { fs.unlinkSync(claimed); } catch { /* harmless; restart dedupes it */ }
   }
   return created;
 }
 
+/** Single conflict-safe enqueue primitive for every ingress path. */
+export function enqueueEnvelopeIdempotent(
+  p: WorklistPaths,
+  env: EnqueueEnvelope,
+  now = Date.now(),
+): { item: QueueItem; created: boolean } {
+  if (env.id) {
+    const known = getKnownItem(p, env.id);
+    if (known) return { item: known, created: false };
+  }
+  const item = envelopeToItem(env, now);
+  putItem(p, item);
+  return { item, created: true };
+}
+
 /** True iff an item with this id is live or archived. */
 export function itemExists(p: WorklistPaths, id: string): boolean {
-  return fs.existsSync(itemFile(p, id)) || fs.existsSync(path.join(p.archive, `${id}.json`));
+  return getKnownItem(p, id) !== null;
 }
 
 /* --- attention persistence -------------------------------------------------
@@ -249,10 +279,27 @@ export interface AttentionState {
   override: AttentionOverride | null;
 }
 
-export function readAttention(p: WorklistPaths): AttentionState {
-  const raw = readJSON<AttentionState>(p.attention);
+export function readAttention(p: WorklistPaths, now = Date.now()): AttentionState {
+  const raw = readJSON<{ mode?: unknown; override?: unknown }>(p.attention);
   if (!raw) return { mode: "auto", override: null };
-  return { mode: raw.mode ?? "auto", override: raw.override ?? null };
+  // Persisted state is untrusted: validate the enum and clamp any far-future
+  // remaining lifetime to the ceiling so a corrupt file, clock rollback, or
+  // older writer can never hold `protected` longer than the hard cap.
+  const override = sanitizeOverride(raw.override, now);
+  const mode: AttentionMode =
+    raw.mode === "available" || raw.mode === "focused" || raw.mode === "protected"
+      ? raw.mode
+      : "auto";
+  // If the persisted override was clamped/dropped, persist the normalized state
+  // atomically so disk stays honest.
+  const rawOv = (raw as { override?: unknown }).override ?? null;
+  const normalizedChanged =
+    JSON.stringify(rawOv) !== JSON.stringify(override) ||
+    (raw.mode ?? "auto") !== mode;
+  if (normalizedChanged) {
+    try { writeAttention(p, { mode, override }); } catch { /* read stays valid even if we can't rewrite */ }
+  }
+  return { mode, override };
 }
 
 export function writeAttention(p: WorklistPaths, s: AttentionState): void {

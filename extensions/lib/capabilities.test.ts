@@ -27,9 +27,11 @@ import {
 import {
   worklistPaths,
   ensureDirs,
+  archiveItem,
+  enqueueEnvelopeIdempotent,
+  getArchivedItem,
   getItem,
   putItem,
-  envelopeToItem,
   listItems,
 } from "../worklist/store.ts";
 import { isPending } from "../worklist/policy.ts";
@@ -95,27 +97,27 @@ function makeSink(root: string): DurableSink & { _tombstones: Set<string> } {
     async enqueue(env: DurableEnqueueEnvelope): Promise<DurableAcceptance> {
       const id = env.id;
       if (id && tombstones.has(id)) return { accepted: false, superseded: true, id };
-      if (id) {
-        const existing = getItem(P, id);
-        if (existing) return { accepted: true, id };
-      }
-      const item = envelopeToItem({
+      const { item } = enqueueEnvelopeIdempotent(P, {
         id,
         priority: env.priority,
         summary: env.summary,
         body: env.body,
         source: env.source ?? "subagent",
       });
-      putItem(P, item);
       return { accepted: true, id: item.id };
     },
     async withdraw(id: string): Promise<boolean> {
       tombstones.add(id);
       const item = getItem(P, id);
-      if (!item) return true;
+      if (!item) {
+        const archived = getArchivedItem(P, id);
+        if (!archived) return true;
+        return archived.withdrawn === true ? true : !(archived.delivered || archived.acked);
+      }
       if (item.delivered || item.acked) return false;
       item.withdrawn = true;
       putItem(P, item);
+      archiveItem(P, id);
       return true;
     },
   };
@@ -220,7 +222,7 @@ describe("seam: duplicate prevention (await vs queued settlement)", () => {
     // 2. subagent_await claims it: must withdraw so the queued item is dead
     const removed = await sink.withdraw(id);
     expect(removed).toBe(true); // undelivered → we own the single surface now
-    const item = getItem(P, id);
+    const item = getArchivedItem(P, id);
     expect(item?.withdrawn).toBe(true);
     expect(listItems(P).filter(isPending).length).toBe(0); // never surfaces
   });
@@ -237,8 +239,24 @@ describe("seam: duplicate prevention (await vs queued settlement)", () => {
     item.delivered = true;
     item.acked = true;
     putItem(P, item);
+    archiveItem(P, id); // production deliverBody terminal transition
+    expect(getItem(P, id)).toBeNull();
     const removed = await sink.withdraw(id);
     expect(removed).toBe(false); // too late; await must NOT repeat the body
+  });
+
+  test("retry after archived terminal item does not resurrect it", async () => {
+    const sink = makeSink(root);
+    const id = "sub-archive-1";
+    await sink.enqueue({ id, summary: "first", body: "verdict", priority: 1 });
+    const P = worklistPaths(root);
+    const item = getItem(P, id)!;
+    item.delivered = item.acked = true;
+    putItem(P, item);
+    archiveItem(P, id);
+    await sink.enqueue({ id, summary: "retry", body: "duplicate", priority: 1 });
+    expect(getItem(P, id)).toBeNull();
+    expect(getArchivedItem(P, id)?.body).toBe("verdict");
   });
 
   test("in-flight race: withdraw BEFORE enqueue resolves → enqueue is superseded", async () => {
