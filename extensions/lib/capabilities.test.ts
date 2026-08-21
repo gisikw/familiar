@@ -245,6 +245,14 @@ describe("seam: duplicate prevention (await vs queued settlement)", () => {
     expect(removed).toBe(false); // too late; await must NOT repeat the body
   });
 
+  test("untrusted sink ids cannot traverse enqueue or withdraw paths", async () => {
+    const sink = makeSink(root);
+    const escaped = path.join(path.dirname(root), "escaped.json");
+    await expect(sink.enqueue({ id: "../../escaped", summary: "attack", priority: 1 })).rejects.toThrow();
+    expect(await sink.withdraw("../../escaped")).toBe(true);
+    expect(fs.existsSync(escaped)).toBe(false);
+  });
+
   test("retry after archived terminal item does not resurrect it", async () => {
     const sink = makeSink(root);
     const id = "sub-archive-1";

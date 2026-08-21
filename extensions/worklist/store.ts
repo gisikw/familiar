@@ -23,7 +23,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { QueueItem, Priority, ItemType, AttentionMode, AttentionOverride } from "./policy.ts";
 import { sanitizeOverride } from "./policy.ts";
 
@@ -60,6 +60,30 @@ export function ensureDirs(p: WorklistPaths, legacyRoot?: string): void {
 
 function migrateLegacy(legacyRoot: string, p: WorklistPaths): void {
   const conflicts = path.join(p.root, "migration-conflicts");
+  const preserveConflict = (prefix: string, originalName: string, item: QueueItem) => {
+    fs.mkdirSync(conflicts, { recursive: true, mode: 0o700 });
+    const safeName = originalName.replace(/[^A-Za-z0-9._-]/g, "_");
+    const base = path.join(conflicts, `${prefix}-${safeName}`);
+    const content = JSON.stringify(item);
+    const existing = readJSON<QueueItem>(base);
+    if (!fs.existsSync(base)) {
+      writeJSONAtomic(base, item);
+      return;
+    }
+    if (existing && JSON.stringify(existing) === content) return;
+    const hash = createHash("sha256").update(content).digest("hex").slice(0, 16);
+    const ext = base.endsWith(".json") ? ".json" : "";
+    const stem = ext ? base.slice(0, -ext.length) : base;
+    for (let i = 0; ; i++) {
+      const candidate = `${stem}-${hash}${i ? `-${i}` : ""}${ext}`;
+      const prior = readJSON<QueueItem>(candidate);
+      if (prior && JSON.stringify(prior) === content) return;
+      if (!fs.existsSync(candidate)) {
+        writeJSONAtomic(candidate, item);
+        return;
+      }
+    }
+  };
   const reconcileItems = (srcDir: string, archived: boolean) => {
     let names: string[];
     try { names = fs.readdirSync(srcDir); } catch { return; }
@@ -68,15 +92,18 @@ function migrateLegacy(legacyRoot: string, p: WorklistPaths): void {
       const src = path.join(srcDir, n);
       const item = readJSON<QueueItem>(src);
       if (!item?.id) continue; // malformed remains available for repair/retry
-      const known = getKnownItem(p, item.id);
-      if (known) {
-        if (JSON.stringify(known) !== JSON.stringify(item)) {
-          fs.mkdirSync(conflicts, { recursive: true, mode: 0o700 });
-          const conflict = path.join(conflicts, `${archived ? "archive-" : "live-"}${n}`);
-          if (!fs.existsSync(conflict)) writeJSONAtomic(conflict, item);
-        }
+      if (!isValidItemId(item.id)) {
+        // Invalid legacy ids are quarantined without ever becoming path input.
+        preserveConflict(archived ? "invalid-archive" : "invalid-live", n, item);
       } else {
-        writeJSONAtomic(path.join(archived ? p.archive : p.items, `${item.id}.json`), item);
+        const known = getKnownItem(p, item.id);
+        if (known) {
+          if (JSON.stringify(known) !== JSON.stringify(item)) {
+            preserveConflict(archived ? "archive" : "live", n, item);
+          }
+        } else {
+          putItemAt(p, item, archived);
+        }
       }
       // The durable destination/conflict now owns this exact source.
       try { fs.unlinkSync(src); } catch { /* retry next reconciliation */ }
@@ -114,18 +141,33 @@ export function readJSON<T>(file: string): T | null {
   }
 }
 
-const itemFile = (p: WorklistPaths, id: string) => path.join(p.items, `${id}.json`);
+const MAX_ITEM_ID_LENGTH = 160;
+const ITEM_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/** Logical ids are also filenames, so reject all separators, dot segments,
+ * control characters, and unbounded names at every ingress/path boundary. */
+export function isValidItemId(id: unknown): id is string {
+  return typeof id === "string" && id.length <= MAX_ITEM_ID_LENGTH && ITEM_ID_RE.test(id) && id !== "." && id !== "..";
+}
+
+const itemFile = (p: WorklistPaths, id: string, archived = false) =>
+  path.join(archived ? p.archive : p.items, `${id}.json`);
+
+function putItemAt(p: WorklistPaths, item: QueueItem, archived: boolean): void {
+  if (!isValidItemId(item.id)) throw new Error(`invalid worklist item id: ${JSON.stringify(item.id)}`);
+  writeJSONAtomic(itemFile(p, item.id, archived), item);
+}
 
 export function putItem(p: WorklistPaths, item: QueueItem): void {
-  writeJSONAtomic(itemFile(p, item.id), item);
+  putItemAt(p, item, false);
 }
 
 export function getItem(p: WorklistPaths, id: string): QueueItem | null {
-  return readJSON<QueueItem>(itemFile(p, id));
+  return isValidItemId(id) ? readJSON<QueueItem>(itemFile(p, id)) : null;
 }
 
 export function getArchivedItem(p: WorklistPaths, id: string): QueueItem | null {
-  return readJSON<QueueItem>(path.join(p.archive, `${id}.json`));
+  return isValidItemId(id) ? readJSON<QueueItem>(itemFile(p, id, true)) : null;
 }
 
 /** Read terminal history as well as the live queue. */
@@ -145,17 +187,18 @@ export function listItems(p: WorklistPaths): QueueItem[] {
   for (const n of names) {
     if (!n.endsWith(".json")) continue;
     const it = readJSON<QueueItem>(path.join(p.items, n));
-    if (it && it.id) items.push(it);
+    if (it && isValidItemId(it.id)) items.push(it);
   }
   return items.sort((a, b) => a.ts - b.ts);
 }
 
 /** Move an item to the archive (acked/resolved/withdrawn). Idempotent. */
 export function archiveItem(p: WorklistPaths, id: string): void {
+  if (!isValidItemId(id)) return;
   const src = itemFile(p, id);
   const item = readJSON<QueueItem>(src);
   if (!item) return;
-  writeJSONAtomic(path.join(p.archive, `${id}.json`), item);
+  putItemAt(p, item, true);
   try {
     fs.unlinkSync(src);
   } catch {
@@ -239,6 +282,9 @@ function drainIncomingDirectory(p: WorklistPaths, dir: string, now = Date.now())
       env = { ...env, id: mintId() };
       writeJSONAtomic(claimed, env);
     }
+    // Untrusted invalid ids remain quarantined as claims for diagnosis; most
+    // importantly they are never interpolated into a filesystem path.
+    if (!isValidItemId(env.id)) continue;
     const result = enqueueEnvelopeIdempotent(p, env, now);
     if (result.created) created.push(result.item);
     // Whether newly written or deduped, a durable live/archive copy owns it.
@@ -254,6 +300,7 @@ export function enqueueEnvelopeIdempotent(
   now = Date.now(),
 ): { item: QueueItem; created: boolean } {
   if (env.id) {
+    if (!isValidItemId(env.id)) throw new Error(`invalid worklist item id: ${JSON.stringify(env.id)}`);
     const known = getKnownItem(p, env.id);
     if (known) return { item: known, created: false };
   }

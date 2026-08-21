@@ -191,7 +191,7 @@ timer. `familiar.sh inbox-enqueue` remains as a bounded alias for one release.
 Drain is **idempotent on stable id**: a drop whose id already exists (live or
 archived) is discarded, never duplicated.
 
-### (c) The subagent durable-sink capability — the exactly-once seam
+### (c) The subagent durable-sink capability — the ownership/dedup seam
 
 The **subagent extension is the first real client**, and it does NOT use (a) or
 (b): it needs a *durable acceptance handshake* so it knows whether to suppress
@@ -205,8 +205,10 @@ Neither extension imports the other. Both depend only on a tiny neutral,
 versioned, process-local registry: `extensions/lib/capabilities.ts`.
 
 - **Worklist registers** a versioned async durable-enqueue **sink**
-  (`worklist.durable-sink@1`) in `session_start` (disposed + re-registered
-  across `/reload`, so it is restart-safe).
+  (`worklist.durable-sink@1`) during extension factory initialization, after
+  verifying durable storage. This makes subagent-first lifecycle ordering safe.
+  The token-guarded registration is disposed on shutdown; a replacement loaded
+  during `/reload` cannot be removed by the stale disposer.
 - **Subagent resolves** the sink at courtesy-delivery time (never at load). If
   present, it `await`s `sink.enqueue(envelope)` and only suppresses its own
   direct relay when the sink returns `{ accepted: true }`. If the sink is
@@ -216,14 +218,20 @@ versioned, process-local registry: `extensions/lib/capabilities.ts`.
 - Settlement urgency: `crashed`/`timeout` → P1, `cancelled`/`done` → P2. Blocked
   questions remain a direct interrupt (they are not settlements).
 
-### Exactly-once delivery + the await/queued dedup invariant
+### Single channel ownership + the await/queued dedup invariant
 
 Three delivery channels exist for a settlement: the background **relay** (via
 sink or direct), an explicit **`subagent_await`** join, and **`subagent_cancel`**.
-Exactly one may ever surface a given `(id, pass)`.
+The implementation deduplicates channel ownership for a given `(id, pass)`; it
+does **not** claim transactional end-to-end exactly-once message transport.
 
-- The `relayed-<pass>` marker file arbitrates ownership: whoever claims it owns
-  delivery; the losing channel does nothing.
+- A transient `<relayed|blocked>-<pass>.claim` serializes an in-progress owner.
+  It is never proof of delivery. Startup removes stale claims for both terminal
+  settlements and blocked questions, allowing retry after process death.
+- `relayed-<pass>` is the committed ownership marker. Relay writes it only
+  after durable worklist acceptance (stable-id retryable) or after direct
+  `pi.sendMessage` returns successfully. `worklisted-<pass>` records which
+  committed channel owns a settlement so await can withdraw it.
 - **The race the brief calls out:** a settlement is already queued in the
   worklist (relay routed it through the sink) and then `subagent_await` claims
   it. Without care it could surface twice — once from the worklist timer, once
@@ -246,11 +254,20 @@ Exactly one may ever surface a given `(id, pass)`.
   3. **In-flight race** (await withdraws while relay's `enqueue` is still
      pending): `withdraw` sets an in-memory **tombstone** for the id *first*, so
      the late `enqueue` resolves `{ accepted: false, superseded: true }`. On
-     `superseded`, relay keeps the `relayed` marker and does **not** fall back to
-     a direct relay — delivery is already owned. This closes the race in both
+     `superseded`, relay commits ownership and does **not** fall back to a direct
+     relay — delivery is already owned. This closes the channel race in both
      orderings.
 
-Tested in `extensions/lib/capabilities.test.ts` (duplicate-prevention suite) and
+**Transport ceiling:** `pi.sendMessage` has neither a transaction nor an
+idempotency key. Process death after a successful send but before the committed
+marker can therefore retry and duplicate the final message (at-least-once
+behavior). Committing the marker before send would be worse: death in between
+would permanently lose delivery. The same final-transport boundary exists when
+the worklist surfaces an accepted item. Stable ids make queue acceptance and
+ownership retry-safe, not the final push transactional.
+
+Tested in `extensions/lib/capabilities.test.ts` (duplicate-prevention suite),
+`extensions/subagent/relay-state.test.ts` (claim recovery), and
 `extensions/worklist/worklist.test.ts` (store withdraw/dedup).
 
 ---

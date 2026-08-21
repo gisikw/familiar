@@ -6,7 +6,7 @@ import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { prepareArtifactDir, getArtifactDir } from "./artifact-dir.ts";
-import { commitRelay, reconcileRelayClaim, releaseRelayClaim, takeRelayClaim } from "./relay-state.ts";
+import { commitRelay, reconcilePassClaims, releaseRelayClaim, takeRelayClaim } from "./relay-state.ts";
 import {
   registry as capabilities,
   WORKLIST_SINK,
@@ -1092,7 +1092,7 @@ export default function (pi: ExtensionAPI) {
       const pass = currentPass(id);
       // A .claim is only an in-progress lock, never proof of delivery. At
       // startup no operation from the dead extension instance can own it.
-      reconcileRelayClaim(path.join(jobDir(id), `relayed-${pass}`));
+      reconcilePassClaims(jobDir(id), pass);
 
       // Ensure old jobs without artifact_dir have a deterministic fallback
       if (!cmd.artifact_dir) {

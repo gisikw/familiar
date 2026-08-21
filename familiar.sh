@@ -905,11 +905,15 @@ inbox_enqueue() {
   fi
   [ -z "$body" ] && body="$summary"
   local incoming="$FAMILIAR_WORKLIST_DIR/incoming"
-  mkdir -p "$incoming"
+  # Settlement/reminder bodies may be sensitive. Tighten existing owned paths
+  # as well as creating new ones; do not rely on the caller's umask.
+  install -d -m 700 "$FAMILIAR_WORKLIST_DIR" "$incoming"
+  chmod 700 "$FAMILIAR_WORKLIST_DIR" "$incoming"
   local id file tmp
   id="cli-$(date +%Y%m%d-%H%M%S)-$RANDOM"
-  file="$incoming/$id.json"; tmp="$file.tmp"
-  jq -n \
+  file="$incoming/$id.json"
+  tmp="$(umask 077; mktemp "$incoming/.${id}.XXXXXX.tmp")" || return 1
+  if ! (umask 077; jq -n \
     --argjson priority "$priority" \
     --arg type "$type" \
     --arg summary "$summary" \
@@ -918,8 +922,13 @@ inbox_enqueue() {
     --arg deadline "$deadline" \
     '{priority: $priority, type: $type, summary: $summary, body: $body, source: $source}
      + (if $deadline == "" then {} else {suggested_deadline: ($deadline|tonumber)} end)' \
-    > "$tmp"
+    > "$tmp"); then
+    rm -f "$tmp"
+    return 1
+  fi
+  chmod 600 "$tmp"
   mv -f "$tmp" "$file"   # atomic: the extension only ever sees a whole file
+  chmod 600 "$file"
   echo "$id"
 }
 

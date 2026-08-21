@@ -32,6 +32,7 @@ import {
   worklistPaths,
   listItems,
   putItem,
+  getArchivedItem,
   getItem,
   archiveItem,
   writeJSONAtomic,
@@ -39,6 +40,8 @@ import {
   readAttention,
   writeAttention,
   itemExists,
+  enqueueEnvelopeIdempotent,
+  isValidItemId,
 } from "./store.ts";
 
 const mkItem = (p: Priority, over: Partial<QueueItem> = {}): QueueItem => ({
@@ -330,6 +333,32 @@ describe("store: persistence + atomic + drain + migration", () => {
     expect(fs.existsSync(path.join(legacy, "incoming", "late.json.claimed"))).toBe(false);
   });
 
+  test("untrusted ids cannot escape live/archive/incoming/migration paths", () => {
+    const escaped = path.join(path.dirname(P.root), "escaped.json");
+    const bad = "../../escaped";
+    expect(isValidItemId(bad)).toBe(false);
+    expect(() => enqueueEnvelopeIdempotent(P, { id: bad, summary: "attack" })).toThrow();
+    expect(getItem(P, bad)).toBeNull();
+    expect(getArchivedItem(P, bad)).toBeNull();
+    archiveItem(P, bad); // withdraw/archive-style lookup is a no-op, never traversal
+    expect(fs.existsSync(escaped)).toBe(false);
+
+    writeJSONAtomic(path.join(P.incoming, "attack.json"), { id: bad, summary: "incoming attack" });
+    expect(drainIncoming(P)).toEqual([]);
+    expect(fs.existsSync(path.join(P.incoming, "attack.json.claimed"))).toBe(true);
+    expect(fs.existsSync(escaped)).toBe(false);
+
+    const legacy = path.join(path.dirname(P.root), "legacy-traversal");
+    fs.mkdirSync(path.join(legacy, "items", "archive"), { recursive: true });
+    writeJSONAtomic(path.join(legacy, "items", "attack.json"), mkItem(1, { id: bad, summary: "legacy attack" }));
+    writeJSONAtomic(path.join(legacy, "items", "archive", "attack-archive.json"), mkItem(1, { id: bad, summary: "legacy archive attack" }));
+    ensureDirs(P, legacy);
+    expect(fs.existsSync(escaped)).toBe(false);
+    const quarantined = fs.readdirSync(path.join(P.root, "migration-conflicts"));
+    expect(quarantined.some((n) => n.startsWith("invalid-live-attack"))).toBe(true);
+    expect(quarantined.some((n) => n.startsWith("invalid-archive-attack-archive"))).toBe(true);
+  });
+
   test("partial migration is idempotent, archive-aware, and preserves conflicts", () => {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), "wl-partial-"));
     const legacy = path.join(base, "inbox");
@@ -347,6 +376,17 @@ describe("store: persistence + atomic + drain + migration", () => {
     expect(getItem(WP, "same")).toBeNull();
     expect(readJSON<QueueItem>(path.join(WP.archive, "same.json"))?.summary).toBe("new terminal");
     expect(readJSON<QueueItem>(path.join(WP.root, "migration-conflicts", "live-same.json"))?.summary).toBe("old conflicting copy");
+
+    // A later, different conflict with the same source name must get its own
+    // collision-safe file; neither source may overwrite/delete the other.
+    const second = envelopeToItem({ id: "same", summary: "second conflicting copy" });
+    writeJSONAtomic(path.join(legacy, "items", "same.json"), second);
+    ensureDirs(WP, legacy);
+    const conflictFiles = fs.readdirSync(path.join(WP.root, "migration-conflicts")).filter((n) => n.startsWith("live-same"));
+    expect(conflictFiles.length).toBe(2);
+    const summaries = conflictFiles.map((n) => readJSON<QueueItem>(path.join(WP.root, "migration-conflicts", n))?.summary).sort();
+    expect(summaries).toEqual(["old conflicting copy", "second conflicting copy"]);
+    expect(fs.existsSync(path.join(legacy, "items", "same.json"))).toBe(false);
   });
 });
 

@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
   commitRelay,
+  reconcilePassClaims,
   reconcileRelayClaim,
   relayClaimPath,
   releaseRelayClaim,
@@ -22,6 +23,19 @@ describe("recoverable relay ownership", () => {
     expect(fs.existsSync(relayClaimPath(m))).toBe(false);
     expect(takeRelayClaim(m)).toBe(true);
     releaseRelayClaim(m);
+  });
+
+  test("restart reconciles both settlement and blocked-interrupt claims", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "relay-pass-"));
+    const relayed = path.join(dir, "relayed-7");
+    const blocked = path.join(dir, "blocked-7");
+    expect(takeRelayClaim(relayed)).toBe(true);
+    expect(takeRelayClaim(blocked)).toBe(true);
+    reconcilePassClaims(dir, 7);
+    expect(fs.existsSync(relayClaimPath(relayed))).toBe(false);
+    expect(fs.existsSync(relayClaimPath(blocked))).toBe(false);
+    expect(takeRelayClaim(blocked)).toBe(true); // blocked question can retry
+    releaseRelayClaim(blocked);
   });
 
   test("only explicit post-acceptance commit creates terminal ownership", () => {
