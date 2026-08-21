@@ -26,6 +26,17 @@ func openRollingLog(dir, name string, max int64) (*rollingLog, error) {
 		return nil, err
 	}
 	st, _ := f.Stat()
+	if st.Size() > max {
+		if err := f.Truncate(max); err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+		if _, err := f.Seek(0, 2); err != nil {
+			_ = f.Close()
+			return nil, err
+		}
+		st, _ = f.Stat()
+	}
 	return &rollingLog{path: p, max: max, file: f, size: st.Size()}, nil
 }
 func (l *rollingLog) Write(p []byte) (int, error) {
