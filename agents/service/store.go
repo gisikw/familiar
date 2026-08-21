@@ -274,6 +274,9 @@ func (s *Store) Record(ctx context.Context, batch protocol.EventBatch) error {
 			j.LastProgress = ev.Progress
 		}
 		if ev.Terminal != nil {
+			if ev.Terminal.Host != batch.Host || !filepath.IsAbs(ev.Terminal.Socket) || ev.Terminal.Target == "" {
+				return errors.New("invalid terminal endpoint")
+			}
 			j.Terminal = ev.Terminal
 		}
 		if ev.Question != nil {
