@@ -24,15 +24,18 @@ import (
 )
 
 type Config struct {
-	Upstream, Backend                                                string
-	BackendCommand                                                   string
-	BackendArgs                                                      []string
-	Model, ModelURL, Voice, VoicesSource, StateDir, AgeKey, Baker    string
-	UpstreamAuthorization                                            string
-	UpstreamHeaders                                                  http.Header
-	MaxBody, ModelMinSize, ModelSize                                 int64
-	MaxInput, Concurrency                                            int
-	StartupTimeout, DownloadTimeout, RequestTimeout, ShutdownTimeout time.Duration
+	Upstream, Backend                                                          string
+	LocalBackend, BackendCommand                                               string
+	BackendArgs                                                                []string
+	Model, ModelURL, ModelSHA256, Voice, VoicesSource, StateDir, AgeKey, Baker string
+	KokoroConfig, KokoroConfigURL, KokoroConfigSHA256                          string
+	KokoroVoice, KokoroVoiceURL, KokoroVoiceSHA256                             string
+	KokoroConfigSize, KokoroVoiceSize                                          int64
+	UpstreamAuthorization                                                      string
+	UpstreamHeaders                                                            http.Header
+	MaxBody, ModelMinSize, ModelSize                                           int64
+	MaxInput, Concurrency                                                      int
+	StartupTimeout, DownloadTimeout, RequestTimeout, ShutdownTimeout           time.Duration
 }
 
 type Manager struct {
@@ -112,14 +115,27 @@ func (m *Manager) runStart(ch chan struct{}) {
 	m.mu.Unlock()
 }
 func (m *Manager) start(ctx context.Context) error {
-	model, err := m.prepareVoices(ctx)
-	if err != nil {
-		return err
-	}
 	args := append([]string{}, m.cfg.BackendArgs...)
-	args = append(args, "--model-path", model)
-	if m.cfg.Voice != "" {
-		args = append(args, "--voice", m.cfg.Voice)
+	if m.cfg.LocalBackend == "kokoro" {
+		voice := m.cfg.Voice
+		if voice == "" {
+			voice = "af_heart"
+		}
+		voicesDir := m.cfg.VoicesSource
+		if voicesDir == "" {
+			voicesDir = filepath.Dir(m.cfg.KokoroVoice)
+		}
+		args = append(args, "--model", m.cfg.Model, "--config", m.cfg.KokoroConfig,
+			"--voices-dir", voicesDir, "--default-voice", voice)
+	} else {
+		model, err := m.prepareVoices(ctx)
+		if err != nil {
+			return err
+		}
+		args = append(args, "--model-path", model)
+		if m.cfg.Voice != "" {
+			args = append(args, "--voice", m.cfg.Voice)
+		}
 	}
 	u, _ := url.Parse(m.cfg.Backend)
 	host, port, _ := net.SplitHostPort(u.Host)
@@ -128,7 +144,7 @@ func (m *Manager) start(ctx context.Context) error {
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err = cmd.Start(); err != nil {
+	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start backend: %w", err)
 	}
 	m.mu.Lock()
@@ -220,6 +236,33 @@ func atomicCommand(ctx context.Context, dest string, mode os.FileMode, name stri
 	return os.Rename(path, dest)
 }
 func (m *Manager) ensureModel(ctx context.Context) error {
+	if m.cfg.LocalBackend == "kokoro" {
+		artifacts := []struct {
+			path, source, hash string
+			size               int64
+		}{
+			{m.cfg.Model, m.cfg.ModelURL, m.cfg.ModelSHA256, m.cfg.ModelSize},
+			{m.cfg.KokoroConfig, m.cfg.KokoroConfigURL, m.cfg.KokoroConfigSHA256, m.cfg.KokoroConfigSize},
+		}
+		if m.cfg.VoicesSource == "" {
+			artifacts = append(artifacts, struct {
+				path, source, hash string
+				size               int64
+			}{m.cfg.KokoroVoice, m.cfg.KokoroVoiceURL, m.cfg.KokoroVoiceSHA256, m.cfg.KokoroVoiceSize})
+		}
+		for _, a := range artifacts {
+			if validateSHA256(a.path, a.hash, a.size) == nil {
+				continue
+			}
+			if a.source == "" || a.hash == "" || a.size <= 0 {
+				return fmt.Errorf("Kokoro artifact %q unavailable or invalid: URL, SHA-256, and exact size are required", a.path)
+			}
+			if err := m.downloadChecked(ctx, a.path, a.source, a.hash, a.size); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	if err := validateGGUF(m.cfg.Model, m.cfg.ModelMinSize, m.cfg.ModelSize); err == nil {
 		return nil
 	}
@@ -317,6 +360,29 @@ func validateGGUF(path string, minimum, exact int64) error {
 	}
 	return nil
 }
+func validateSHA256(path, expected string, exact int64) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if exact > 0 && st.Size() != exact {
+		return fmt.Errorf("size %d, expected %d", st.Size(), exact)
+	}
+	h := sha256.New()
+	if _, err = io.Copy(h, f); err != nil {
+		return err
+	}
+	if !strings.EqualFold(hex.EncodeToString(h.Sum(nil)), expected) {
+		return errors.New("SHA-256 mismatch")
+	}
+	return nil
+}
+
 func atomicWrite(dest string, data []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(dest), 0700); err != nil {
 		return err
@@ -357,6 +423,65 @@ func bakerIdentity(command string) (string, error) {
 	}
 	return "sha256:" + hex.EncodeToString(h.Sum(nil)) + "\n", nil
 }
+func (m *Manager) downloadChecked(ctx context.Context, dest, source, hash string, exact int64) error {
+	if err := os.MkdirAll(filepath.Dir(dest), 0700); err != nil {
+		return err
+	}
+	part := dest + ".part"
+	if validateSHA256(part, hash, exact) == nil {
+		return os.Rename(part, dest)
+	}
+	offset := int64(0)
+	if st, err := os.Stat(part); err == nil {
+		offset = st.Size()
+		if offset >= exact {
+			if err = os.Remove(part); err != nil {
+				return err
+			}
+			offset = 0
+		}
+	}
+	req, _ := http.NewRequestWithContext(ctx, "GET", source, nil)
+	if offset > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
+	}
+	r, err := m.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("artifact download: %w", err)
+	}
+	defer r.Body.Close()
+	appendMode := offset > 0 && r.StatusCode == http.StatusPartialContent
+	if r.StatusCode != http.StatusOK && r.StatusCode != http.StatusPartialContent {
+		return fmt.Errorf("artifact download: %s", r.Status)
+	}
+	flags := os.O_CREATE | os.O_WRONLY
+	if appendMode {
+		flags |= os.O_APPEND
+	} else {
+		flags |= os.O_TRUNC
+		offset = 0
+	}
+	f, err := os.OpenFile(part, flags, 0600)
+	if err != nil {
+		return err
+	}
+	limited := io.LimitReader(r.Body, exact-offset+1)
+	_, err = io.Copy(f, limited)
+	if err == nil {
+		err = f.Sync()
+	}
+	if x := f.Close(); err == nil {
+		err = x
+	}
+	if err != nil {
+		return err
+	}
+	if err = validateSHA256(part, hash, exact); err != nil {
+		return fmt.Errorf("downloaded artifact rejected: %w", err)
+	}
+	return os.Rename(part, dest)
+}
+
 func (m *Manager) download(ctx context.Context, dest string) error {
 	if err := os.MkdirAll(filepath.Dir(dest), 0700); err != nil {
 		return err
@@ -466,6 +591,12 @@ type Server struct {
 }
 
 func New(c Config, l *slog.Logger) (*Server, error) {
+	if c.LocalBackend == "" {
+		c.LocalBackend = "ttscpp"
+	}
+	if c.LocalBackend != "ttscpp" && c.LocalBackend != "kokoro" {
+		return nil, fmt.Errorf("unknown local backend %q (want ttscpp or kokoro)", c.LocalBackend)
+	}
 	target := c.Upstream
 	if target == "" {
 		target = c.Backend

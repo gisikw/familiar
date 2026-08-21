@@ -1,13 +1,14 @@
 {
-  description = "Standalone Familiar TTS proxy and local Kokoro backend";
+  description = "Standalone Familiar TTS proxy and local Kokoro backends";
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   outputs = { self, nixpkgs }:
     let
-      systems = [ "x86_64-linux" "aarch64-linux" ];
+      systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
       each = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
     in {
       packages = each (pkgs:
         let
+          linux = pkgs.stdenv.hostPlatform.isLinux;
           tts-cpp = pkgs.stdenv.mkDerivation {
             pname = "tts-cpp"; version = "unstable-2026-08-16";
             src = pkgs.fetchFromGitHub {
@@ -29,24 +30,49 @@
             text = ''exec ${bakePython}/bin/python ${./runtime/bake-kokoro-voices.py} "$@"'';
             meta = { description = "Optional Kokoro custom voice GGUF baker"; license = pkgs.lib.licenses.mit; platforms = pkgs.lib.platforms.linux; };
           };
-          mkProxy = { name, withBaker ? false }: pkgs.buildGoModule {
-            pname = name; version = "0.2.0"; src = ./.;
+          kokoroPython = pkgs.python3.withPackages (p: [ p.kokoro p.soundfile ]);
+          kokoroBackend = pkgs.writeShellApplication {
+            name = "familiar-kokoro-server";
+            text = ''exec ${kokoroPython}/bin/python ${./runtime/kokoro-server.py} "$@"'';
+            meta = { description = "OpenAI-compatible adapter for hexgrad Kokoro"; license = pkgs.lib.licenses.mit; platforms = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ]; };
+          };
+          mkProxy = { name, path, platforms, defaults ? "", withBaker ? false }: pkgs.buildGoModule {
+            pname = name; version = "0.3.0"; src = ./.;
             vendorHash = null; subPackages = [ "cmd/familiar-tts" ];
             nativeBuildInputs = [ pkgs.makeWrapper ];
             postInstall = ''
               wrapProgram $out/bin/familiar-tts \
-                --prefix PATH : ${pkgs.lib.makeBinPath ([ tts-cpp pkgs.age pkgs.coreutils ] ++ pkgs.lib.optional withBaker baker)} \
+                --prefix PATH : ${pkgs.lib.makeBinPath (path ++ [ pkgs.age pkgs.coreutils ] ++ pkgs.lib.optional withBaker baker)} \
+                ${defaults} \
                 ${pkgs.lib.optionalString withBaker "--set-default FAMILIAR_TTS_BAKER familiar-bake-kokoro"}
             '';
-            meta = { description = "Local stable Familiar TTS HTTP proxy"; homepage = "https://github.com/familiar/familiar"; license = pkgs.lib.licenses.mit; mainProgram = "familiar-tts"; platforms = pkgs.lib.platforms.linux; };
+            meta = { description = "Local stable Familiar TTS HTTP proxy"; homepage = "https://github.com/familiar/familiar"; license = pkgs.lib.licenses.mit; mainProgram = "familiar-tts"; inherit platforms; };
           };
-          proxy = mkProxy { name = "familiar-tts"; };
-          withBaker = mkProxy { name = "familiar-tts-with-voice-baker"; withBaker = true; };
-        in { default = proxy; familiar-tts = proxy; familiar-tts-with-voice-baker = withBaker; inherit tts-cpp baker; });
+          proxy = mkProxy { name = "familiar-tts"; path = [ tts-cpp ]; platforms = pkgs.lib.platforms.linux; };
+          withBaker = mkProxy { name = "familiar-tts-with-voice-baker"; path = [ tts-cpp ]; platforms = pkgs.lib.platforms.linux; withBaker = true; };
+          kokoroProxy = mkProxy {
+            name = "familiar-tts-kokoro"; path = [ kokoroBackend ];
+            platforms = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
+            defaults = "--set-default FAMILIAR_TTS_LOCAL_BACKEND kokoro --set-default FAMILIAR_TTS_BACKEND_COMMAND familiar-kokoro-server";
+          };
+        in {
+          familiar-tts-kokoro = kokoroProxy;
+          kokoro-backend = kokoroBackend;
+        } // pkgs.lib.optionalAttrs linux {
+          default = proxy; familiar-tts = proxy;
+          familiar-tts-with-voice-baker = withBaker;
+          inherit tts-cpp baker;
+        });
       checks = each (pkgs: {
+        familiar-tts-kokoro = self.packages.${pkgs.system}.familiar-tts-kokoro;
+      } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
         familiar-tts = self.packages.${pkgs.system}.familiar-tts;
         familiar-tts-with-voice-baker = self.packages.${pkgs.system}.familiar-tts-with-voice-baker;
       });
-      devShells = each (pkgs: { default = pkgs.mkShell { packages = [ pkgs.go self.packages.${pkgs.system}.tts-cpp pkgs.age ]; }; voices = pkgs.mkShell { packages = [ pkgs.go self.packages.${pkgs.system}.baker ]; }; });
+      devShells = each (pkgs: {
+        default = pkgs.mkShell { packages = [ pkgs.go self.packages.${pkgs.system}.kokoro-backend pkgs.age ]; };
+      } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+        voices = pkgs.mkShell { packages = [ pkgs.go self.packages.${pkgs.system}.baker ]; };
+      });
     };
 }

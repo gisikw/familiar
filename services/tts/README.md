@@ -1,7 +1,9 @@
 # Familiar TTS
 
 A stable loopback-only HTTP speech proxy. It forwards to a configured upstream,
-or starts a local TTS.cpp Kokoro server only when synthesis is first requested.
+or starts a selected local Kokoro backend only when synthesis is first requested.
+TTS.cpp remains the Linux default; the optional nixpkgs-native PyTorch backend is
+available on Linux and Apple Silicon Darwin.
 
 ## HTTP contract
 
@@ -32,7 +34,8 @@ name. CLI takes precedence. Sizes are bytes and durations use Go syntax.
 | `--upstream-authorization` | `FAMILIAR_TTS_UPSTREAM_AUTHORIZATION` | unset |
 | `--upstream-header 'Name: value'` (repeatable) | `FAMILIAR_TTS_UPSTREAM_HEADERS` (JSON string map) | unset |
 | `--backend` | `FAMILIAR_TTS_BACKEND` | `http://127.0.0.1:19933` |
-| `--backend-command` | `FAMILIAR_TTS_BACKEND_COMMAND` | `tts-server` |
+| `--local-backend` | `FAMILIAR_TTS_LOCAL_BACKEND` | `ttscpp` |
+| `--backend-command` | `FAMILIAR_TTS_BACKEND_COMMAND` | `tts-server` (`familiar-kokoro-server` for `kokoro`) |
 | `--model` | `FAMILIAR_TTS_MODEL` | `$STATE/models/Kokoro_espeak_Q8.gguf` |
 | `--model-url` | `FAMILIAR_TTS_MODEL_URL` | immutable Hugging Face revision |
 | `--voice` | `FAMILIAR_TTS_VOICE` | unset |
@@ -40,6 +43,11 @@ name. CLI takes precedence. Sizes are bytes and durations use Go syntax.
 | `--state-dir` | `FAMILIAR_TTS_STATE_DIR` | `./state` |
 | `--age-key` | `FAMILIAR_TTS_AGE_KEY` | unset |
 | `--baker` | `FAMILIAR_TTS_BAKER` | `familiar-bake-kokoro` |
+
+The `kokoro` backend also has `--model-sha256`, `--kokoro-config[-url|-sha256]`,
+and `--kokoro-voice-file[-url|-sha256]`. Its pinned defaults download the
+upstream `.pth`, `config.json`, and `af_heart.pt` into state. Exact sizes are
+controlled by `MODEL_SIZE`, `KOKORO_CONFIG_SIZE`, and `KOKORO_VOICE_SIZE`.
 
 Environment-only controls (all prefixed `FAMILIAR_TTS_`): `BACKEND_ARGS`,
 `MAX_BODY` (1048576), `MAX_INPUT` (65536), `CONCURRENCY` (4), `STARTUP_TIMEOUT`
@@ -55,9 +63,17 @@ Download timeout is independent from backend startup. Startup/baking is a
 service-owned single flight bounded by `STARTUP_TIMEOUT`: cancellation of one
 waiting request does not cancel shared work, while service shutdown does.
 
-## Optional custom voices
+## Backends and custom voices
 
-The default `.#familiar-tts` closure deliberately excludes Python/Torch. Install
+The default `.#familiar-tts` closure and behavior are unchanged and deliberately
+exclude Python/Torch. `.#familiar-tts-kokoro` selects the native hexgrad Kokoro
+package and accepts `wav`, `flac`, and signed 16-bit `pcm` response formats. It
+loads `.pt` tensors directly: set `--voices-source /private/voices` and request
+`af_exo` to load `/private/voices/af_exo.pt`. Files are not copied, decrypted,
+or converted; protect them appropriately. GGUF baked voices are not compatible
+with this backend.
+
+For the TTS.cpp path, install
 `.#familiar-tts-with-voice-baker`, or install `.#baker` separately and set
 `FAMILIAR_TTS_BAKER`, only when custom packs are needed. `--voices-source` may
 contain `.pt` or `.pt.age`; packs are staged mode 0600 outside the Nix store and
@@ -74,7 +90,10 @@ go test -race ./...
 nix flake check
 nix build .#familiar-tts
 nix build .#familiar-tts-with-voice-baker
+nix build .#familiar-tts-kokoro
 ```
 
 The service and bundled baker are MIT licensed (`LICENSE`). Pinned TTS.cpp is
-also MIT; Python/Torch/GGUF retain their upstream licenses in Nixpkgs.
+also MIT; hexgrad Kokoro and its weights are Apache-2.0; Python/Torch/GGUF
+retain their upstream licenses in Nixpkgs. See `KOKORO-NOTES.md` for research,
+platform evidence, limitations, and the real-Mac verification checklist.

@@ -3,6 +3,8 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -133,6 +135,49 @@ func freePort(t *testing.T) string {
 	defer l.Close()
 	return strconv.Itoa(l.Addr().(*net.TCPAddr).Port)
 }
+func TestBackendSelectionAndKokoroStartup(t *testing.T) {
+	c := baseConfig()
+	c.LocalBackend = "bogus"
+	if _, err := New(c, logger()); err == nil {
+		t.Fatal("unknown backend accepted")
+	}
+
+	dir := t.TempDir()
+	model := []byte("pytorch-model")
+	config := []byte(`{"vocab":{}}`)
+	write := func(name string, data []byte) string {
+		p := dir + "/" + name
+		if err := os.WriteFile(p, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		h := sha256.Sum256(data)
+		return hex.EncodeToString(h[:])
+	}
+	c = baseConfig()
+	c.LocalBackend = "kokoro"
+	c.Model = dir + "/model.pth"
+	c.ModelSHA256 = write("model.pth", model)
+	c.ModelSize = int64(len(model))
+	c.KokoroConfig = dir + "/config.json"
+	c.KokoroConfigSHA256 = write("config.json", config)
+	c.KokoroConfigSize = int64(len(config))
+	c.VoicesSource = dir // custom .pt provisioning means no default voice download
+	c.Voice = "af_custom"
+	count := dir + "/count"
+	port := freePort(t)
+	c.Backend = "http://127.0.0.1:" + port
+	c.BackendCommand = os.Args[0]
+	c.BackendArgs = []string{"-test.run=TestHelperProcess", "--", "--fake-backend", "--count-path", count}
+	m := NewManager(c, logger())
+	defer m.Close()
+	if err := m.Ensure(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(count); strings.Count(string(b), "start") != 1 {
+		t.Fatalf("starts=%q", b)
+	}
+}
+
 func TestLazySingleFlightCrashRestartAndShutdown(t *testing.T) {
 	dir := t.TempDir()
 	model := dir + "/model.gguf"
@@ -305,6 +350,49 @@ func TestDownloadResumeValidationAndAtomicity(t *testing.T) {
 	got, _ = os.ReadFile(dest)
 	if !bytes.Equal(got, old) {
 		t.Fatal("invalid download replaced destination")
+	}
+}
+
+func TestCheckedArtifactDownloadResumeAndIntegrity(t *testing.T) {
+	data := []byte("pytorch-artifact")
+	h := sha256.Sum256(data)
+	hash := hex.EncodeToString(h[:])
+	var gotRange string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotRange = r.Header.Get("Range")
+		if gotRange != "" {
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(data[7:])
+			return
+		}
+		_, _ = w.Write(data)
+	}))
+	defer up.Close()
+	dest := t.TempDir() + "/model.pth"
+	if err := os.WriteFile(dest+".part", data[:7], 0600); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(baseConfig(), logger())
+	if err := m.downloadChecked(context.Background(), dest, up.URL, hash, int64(len(data))); err != nil {
+		t.Fatal(err)
+	}
+	if gotRange != "bytes=7-" {
+		t.Fatalf("range=%q", gotRange)
+	}
+	got, _ := os.ReadFile(dest)
+	if !bytes.Equal(got, data) {
+		t.Fatalf("got %q", got)
+	}
+
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("same-size-corrupt")) }))
+	defer bad.Close()
+	os.Remove(dest)
+	os.Remove(dest + ".part")
+	if err := m.downloadChecked(context.Background(), dest, bad.URL, hash, int64(len(data))); err == nil {
+		t.Fatal("accepted corrupt artifact")
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatal("corrupt artifact installed")
 	}
 }
 
