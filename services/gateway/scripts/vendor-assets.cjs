@@ -5,14 +5,14 @@
 //   2. fonts (ProggyClean NF, JetBrains Mono, OpenMoji cmap) -> fonts/
 //   3. emoji.json (Slack-style :name: completer data)        -> vendor/emoji.json
 //
-// Fonts + emoji.json are copied from ../client/src/renderer (the Electron
+// Fonts + emoji.json are copied from ../../client/src/renderer (the Electron
 // renderer already carries the tracked upstream copies) so there is a single
 // source of truth. restty comes from this package's own node_modules.
 const fs = require("fs");
 const path = require("path");
 
 const root = path.resolve(__dirname, "..");
-const repo = path.resolve(root, "..");
+const repo = path.resolve(root, "..", "..");
 const clientRenderer = path.join(repo, "client", "src", "renderer");
 
 function copy(src, dst, label) {

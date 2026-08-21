@@ -19,7 +19,7 @@ TOUCH_MASTER="$ROOT/assets/icon-touch.svg"
 # its own corner mask, so a margined icon would look undersized on the home
 # screen. icon-touch.svg is the pre-margin snapshot of icon.svg.
 OUT="$ROOT/assets/icons"          # PNG set (gitignored build output)
-WEB="$ROOT/server/web"            # apple-touch-icon lands here
+WEB="$ROOT/services/gateway/web"            # apple-touch-icon lands here
 ICNS="$ROOT/client/build/icon.icns"
 
 [ -f "$MASTER" ] || { echo "missing master: $MASTER" >&2; exit 1; }

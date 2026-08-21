@@ -1,6 +1,6 @@
 /* ============================================================================
  * Voice endpoint / protocol integration test.
- * Run with:  nix develop .#stt -c bun test server/test/voice-ingress.test.ts
+ * Run with:  nix develop .#stt -c bun test services/gateway/test/voice-ingress.test.ts
  * ============================================================================
  *
  * Proves the SERVER half of the tap-to-talk path end to end, without a
@@ -13,7 +13,7 @@
  *       ONE submit command carrying the transcript, marked 🗣 and echoing the
  *       client-chosen take id as correlationId.
  *
- * The real Ingress + RelayBus are wired exactly as server/src/main.ts wires
+ * The real Ingress + RelayBus are wired exactly as services/gateway/src/main.ts wires
  * them for the /submit and /relay routes (main.ts also imports node-pty, which
  * is not present in the .#stt shell, so we mount only the two relevant routes
  * on our own http.Server rather than importing main). STT is an HTTP stub; the

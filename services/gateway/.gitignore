@@ -1,0 +1,5 @@
+node_modules
+# Vendored at postinstall from node_modules + ../../client (see scripts/vendor-assets.cjs)
+vendor/restty.esm.js
+vendor/emoji.json
+fonts/

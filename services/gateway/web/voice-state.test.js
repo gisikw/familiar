@@ -1,6 +1,6 @@
 /* ============================================================================
  * Voice tap-to-talk state machine — unit tests. No microphone, no DOM.
- * Run with:  nix develop .#stt -c bun test server/web/voice-state.test.js
+ * Run with:  nix develop .#stt -c bun test services/gateway/web/voice-state.test.js
  * ============================================================================
  *
  * Exercises every legal transition, the double-tap / race guards, cancel from

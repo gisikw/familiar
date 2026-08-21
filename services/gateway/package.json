@@ -1,8 +1,8 @@
 {
-  "name": "familiar-server",
+  "name": "familiar-gateway",
   "version": "0.1.0",
   "private": true,
-  "description": "Familiar server — SSE/relay gateway and browser terminal attached to the Presence Runtime.",
+  "description": "Familiar Interface Gateway — interaction ingress, relay, and browser terminal.",
   "type": "module",
   "scripts": {
     "start": "node --experimental-transform-types src/main.ts",

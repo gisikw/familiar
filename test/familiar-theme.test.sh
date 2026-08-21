@@ -7,7 +7,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
 GEN="$REPO/scripts/familiar-theme.sh"
-DEFAULTS="$REPO/server/src/theme/defaults.json"
+DEFAULTS="$REPO/services/gateway/src/theme/defaults.json"
 
 pass=0; fail=0
 ok()  { echo "PASS: $1"; pass=$((pass+1)); }

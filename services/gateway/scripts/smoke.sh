@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Headless smoke test for the familiar server. Uses a plain shell for the PTY
 # attach (FAMILIAR_ATTACH_CMD) so it runs without herdr. Requires: node 22,
-# curl. Run from server/ inside a shell that has node on PATH.
+# curl. Run from services/gateway/ inside a shell that has node on PATH.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 

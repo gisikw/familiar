@@ -107,15 +107,12 @@
             FAMILIAR_SHELL = "tts";
             packages = with pkgs; [ tts-cpp curl age bakePython ];
           });
-          # The standalone familiar server (./server): a plain Node service —
-          # SSE hub, ingress/egress relay, and the restty browser terminal
-          # bridged to a disposable Presence Runtime tmux attach. node-pty
-          # ships no Linux prebuild, so a
-          # C/C++ + Python toolchain is present for its first-install native
-          # build (npm bundles node-gyp). No FAMILIAR_SHELL re-exec: the
-          # services pane invokes `npm start` in this shell directly.
-          server = pkgs.mkShell {
-            FAMILIAR_SHELL = "server";
+          # The Familiar Interface Gateway (./services/gateway): a plain Node
+          # service owning ingress/egress and the browser terminal. node-pty
+          # ships no Linux prebuild, so its first install needs a native build
+          # toolchain. The services pane invokes `npm start` here directly.
+          gateway = pkgs.mkShell {
+            FAMILIAR_SHELL = "gateway";
             packages = with pkgs; [ nodejs_22 python3 gnumake gcc curl ];
           };
           # The Electron chrome shell under client/. It is a DUMB CLIENT: a

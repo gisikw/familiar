@@ -92,8 +92,8 @@ ok "symlink state is rejected"
 # Server source contract: default browser PTY uses the Presence controller and
 # keeps FAMILIAR_ATTACH_CMD only as an override.
 if [ -z "${SKIP_BROWSER_CONTRACT:-}" ]; then
-  grep -q 'args: \["attach"\]' "$HERE/../../server/src/pty.ts" || fail "browser default is not Presence attach"
-  grep -q 'FAMILIAR_ATTACH_CMD' "$HERE/../../server/src/pty.ts" || fail "browser test override missing"
+  grep -q 'args: \["attach"\]' "$HERE/../gateway/src/pty.ts" || fail "browser default is not Presence attach"
+  grep -q 'FAMILIAR_ATTACH_CMD' "$HERE/../gateway/src/pty.ts" || fail "browser test override missing"
   ok "browser attach command points at Presence"
 fi
 

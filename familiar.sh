@@ -379,16 +379,16 @@ run_in_herdr_pane() {
     # Herdr owns only this disposable viewer. The full interactive pi process
     # lives in the private Presence Runtime tmux server.
     printf -v command 'printf "\\033[2J\\033[H"; exec %q attach' "$FAMILIAR_PRESENCE_CTL"
-  elif [ "$role" = server ]; then
-    # The familiar server (web presence) is a plain Node service under ./server,
-    # launched DIRECTLY here — there is deliberately no `familiar.sh server`
-    # subcommand. Install deps on first run (node-pty native build + vendored
-    # web assets via postinstall), then supervise with a restart loop, matching
-    # llama/stt/tts. Its toolchain is the .#server devshell (nodejs_22 + a
-    # C/py toolchain for node-pty).
+  elif [ "$role" = gateway ]; then
+    # The Familiar gateway (web presence) is a plain Node service under
+    # ./services/gateway, launched DIRECTLY here — there is deliberately no
+    # `familiar.sh gateway` subcommand. Install deps on first run (node-pty
+    # native build + vendored web assets via postinstall), then supervise with
+    # a restart loop, matching llama/stt/tts. Its toolchain is the .#gateway
+    # devshell (nodejs_22 + a C/py toolchain for node-pty).
     printf -v command \
-      'cd %q && { [ -d node_modules ] || nix develop %q#server -c npm install; }; while true; do nix develop %q#server -c npm start || true; sleep 1; done' \
-      "$REPO/server" "$REPO" "$REPO"
+      'cd %q && { [ -d node_modules ] || nix develop %q#gateway -c npm install; }; while true; do nix develop %q#gateway -c npm start || true; sleep 1; done' \
+      "$REPO/services/gateway" "$REPO" "$REPO"
   else
     printf -v command '%q %q' "$SELF" "$role"
   fi
@@ -450,10 +450,10 @@ populate_familiar_workspace() {
   local service_response service_root pane direction role
   local -a services=()
 
-  # The web-presence server always runs — it is not gated behind a NEED_ flag
+  # The Interface Gateway always runs — it is not gated behind a NEED_ flag
   # like the optional local models. It is the first service so it takes the
   # services-tab root pane; llama/stt/tts split off it when enabled.
-  services+=(server)
+  services+=(gateway)
   [ -n "${NEED_LLAMA:-}" ] && services+=(llama)
   [ -n "${NEED_STT:-}" ] && services+=(stt)
   [ -n "${NEED_TTS:-}" ] && services+=(tts)

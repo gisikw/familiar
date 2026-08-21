@@ -1,8 +1,8 @@
-# familiar server
+# Familiar Interface Gateway
 
-Standalone web presence for the familiar agent environment. Lifted out of the
-`subscriber` pi extension: the server now owns **all** HTTP; the extension is a
-thin relay that forwards events here.
+Interaction ingress, delivery, and browser-terminal projection for Familiar.
+Lifted out of the `subscriber` pi extension: the gateway owns **all** public
+HTTP; the extension is a thin relay that forwards events here.
 
 Binds `127.0.0.1:1692`. See `DESIGN.md` for the full protocol rationale.
 
@@ -15,7 +15,7 @@ Binds `127.0.0.1:1692`. See `DESIGN.md` for the full protocol rationale.
 - **Egress ingest** (`POST /ingest`) — the pi extension POSTs one
   `IngestEnvelope` per event (publish / revise / lock / session). Localhost
   only; low-rate, so POST-per-event over a persistent socket (see DESIGN.md).
-- **Ingress** (`POST /submit`, `POST /cancel`) — text/voice in. The server owns
+- **Ingress** (`POST /submit`, `POST /cancel`) — text/voice in. The gateway owns
   STT/TTS (`FAMILIAR_STT_URL` / `FAMILIAR_TTS_URL`); it transcribes takes and
   pushes ready-to-dispatch commands down `GET /relay` (SSE), which the pi
   extension subscribes to and enacts against the pi API.
@@ -28,7 +28,7 @@ Binds `127.0.0.1:1692`. See `DESIGN.md` for the full protocol rationale.
 
 ## Run
 
-    cd server
+    cd services/gateway
     npm install          # builds node-pty (no Linux prebuild) + vendors assets
     npm start            # node --experimental-transform-types src/main.ts  →  http://127.0.0.1:1692
 
@@ -44,7 +44,7 @@ properties; no separate build step.
 | `FAMILIAR_SERVER_HOST` | `127.0.0.1` | listen host |
 | `FAMILIAR_ATTACH_CMD` | Presence controller `attach` | Test override for the browser PTY child. Set to `bash -l` to smoke-test without tmux. |
 | `FAMILIAR_PRESENCE_CTL` | repository `services/presence/presence.sh` | Presence lifecycle controller path. |
-| `FAMILIAR_ATTACH_CWD` | server cwd | working dir for the attach child |
+| `FAMILIAR_ATTACH_CWD` | gateway cwd | working dir for the attach child |
 | `FAMILIAR_STT_URL` / `FAMILIAR_TTS_URL` | — | dumb HTTP model endpoints |
 | `FAMILIAR_TTS_VOICE` | — | optional TTS voice selection |
 | `FAMILIAR_LOG_PATH` | stderr | JSONL sidecar log base (`${path}.${suffix}`) |
@@ -52,7 +52,7 @@ properties; no separate build step.
 
 ## Fronting (out of scope, noted for later)
 
-The server has **no auth** — it deliberately binds localhost only. In
+The gateway has **no auth** — it deliberately binds localhost only. In
 production it is intended to sit behind nginx at `familiar.gisi.network`, with
 Pocket ID (OIDC) enforcing authentication at the proxy and nginx forwarding
 authenticated requests to `127.0.0.1:1692` (including the `/pty` and `/stream`

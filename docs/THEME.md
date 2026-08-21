@@ -7,14 +7,14 @@ Mapping, precedence, and restart operations are documented in `docs/CONFIG.md`.
 
 ## Single source of truth
 
-`server/src/theme/defaults.json` holds the canonical
+`services/gateway/src/theme/defaults.json` holds the canonical
 `familiar-monokai-pro-spectrum` palette: semantic **roles** + a 16-entry
 **ANSI** palette. The primary reference is Kevin's locally installed Ghostty
 `Monokai Pro Spectrum` theme; local `monokai-pro.nvim` Spectrum UI levels supply
 only the extra surface depths Ghostty does not define. Two generators read that one
 file and overlay `FAMILIAR_THEME_*`:
 
-- `server/src/theme/resolve.ts` — runtime (Node): validates, builds the browser
+- `services/gateway/src/theme/resolve.ts` — runtime (Node): validates, builds the browser
   CSS (`/theme.css`) and the restty `GhosttyTheme` (`/theme.json`).
 - `scripts/familiar-theme.sh` — boot (bash/jq): emits the herdr `[theme]` TOML
   fragment, the pi theme JSON, the sidebar accent, and `FAMILIAR_ANSI_0..15`.
@@ -125,7 +125,7 @@ bright_white   = "#f7f1ff"
 
 ## Tests
 
-- `server/src/theme/resolve.test.ts` — resolver, CSS snapshot, restty theme,
+- `services/gateway/src/theme/resolve.test.ts` — resolver, CSS snapshot, restty theme,
   ANSI order, env overrides, `#rgb` expansion, validation, default parity.
   `node --experimental-transform-types --test src/theme/resolve.test.ts`
 - `test/familiar-theme.test.sh` — herdr fragment, pi JSON (all 51 tokens),

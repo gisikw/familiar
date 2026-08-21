@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Familiar unified theme — boot-time generator (bash/jq side).
 #
-# Reads the CANONICAL default palette (server/src/theme/defaults.json) and
+# Reads the CANONICAL default palette (services/gateway/src/theme/defaults.json) and
 # overlays FAMILIAR_THEME_* env (the flattened [theme] TOML section; the generic
 # familiar.toml loader is a SEPARATE agent — we only consume the env contract).
 # Emits consumer-specific artifacts so no color literal is duplicated:
@@ -11,7 +11,7 @@
 #   theme_sidebar_accent   -> the sidebar mark accent hex (for herdr-sidebar.sh)
 #   theme_ansi_env         -> FAMILIAR_ANSI_0..15 exports (pane palette handoff)
 #
-# Env contract (matches server/src/theme/resolve.ts exactly):
+# Env contract (matches services/gateway/src/theme/resolve.ts exactly):
 #   role  background   -> FAMILIAR_THEME_BACKGROUND
 #   role  selectionBg  -> FAMILIAR_THEME_SELECTION_BG
 #   ansi  brightBlack  -> FAMILIAR_THEME_ANSI_BRIGHT_BLACK
@@ -22,7 +22,7 @@ set -euo pipefail
 
 _theme_defaults_path() {
   local here; here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  echo "$here/../server/src/theme/defaults.json"
+  echo "$here/../services/gateway/src/theme/defaults.json"
 }
 
 # camelCase -> SNAKE_UPPER (background->BACKGROUND, selectionBg->SELECTION_BG).
