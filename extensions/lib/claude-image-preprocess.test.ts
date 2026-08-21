@@ -22,6 +22,8 @@ function crc32(buf: Buffer): number { let c=~0; for(const x of buf){c^=x;for(let
 function chunk(type:string,data:Buffer):Buffer { const t=Buffer.from(type),n=Buffer.alloc(4),crc=Buffer.alloc(4);n.writeUInt32BE(data.length);crc.writeUInt32BE(crc32(Buffer.concat([t,data])));return Buffer.concat([n,t,data,crc]); }
 function png(w:number,h:number,entropy=false):Buffer { const sig=Buffer.from([137,80,78,71,13,10,26,10]),ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(w,0);ihdr.writeUInt32BE(h,4);ihdr[8]=8;ihdr[9]=2;let x=0x12345678;const rows=[];for(let y=0;y<h;y++){const r=Buffer.allocUnsafe(1+w*3);r[0]=0;for(let i=1;i<r.length;i++){if(entropy){x^=x<<13;x^=x>>>17;x^=x<<5;r[i]=x&255;}else r[i]=(i+y)%16<8?40:180;}rows.push(r);}return Buffer.concat([sig,chunk("IHDR",ihdr),chunk("IDAT",zlib.deflateSync(Buffer.concat(rows),{level:6})),chunk("IEND",Buffer.alloc(0))]); }
 function alphaPng(w:number,h:number):Buffer { const sig=Buffer.from([137,80,78,71,13,10,26,10]),ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(w,0);ihdr.writeUInt32BE(h,4);ihdr[8]=8;ihdr[9]=6;let x=0x87654321;const raw=Buffer.alloc((1+w*4)*h);for(let y=0;y<h;y++){const o=y*(1+w*4);for(let i=1;i<=w*4;i++){x^=x<<13;x^=x>>>17;x^=x<<5;raw[o+i]=x&255;}}return Buffer.concat([sig,chunk("IHDR",ihdr),chunk("IDAT",zlib.deflateSync(raw)),chunk("IEND",Buffer.alloc(0))]); }
+function trnsPng(w:number,h:number,colorType:0|2|3,transparent:boolean):Buffer { const sig=Buffer.from([137,80,78,71,13,10,26,10]),ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(w);ihdr.writeUInt32BE(h,4);ihdr[8]=8;ihdr[9]=colorType;const bpp=colorType===2?3:1,raw=Buffer.alloc((1+w*bpp)*h);let x=0x13579bdf;for(let y=0;y<h;y++){const o=y*(1+w*bpp);for(let i=1;i<=w*bpp;i++){x^=x<<13;x^=x>>>17;x^=x<<5;raw[o+i]=x&255;}}const extra:Buffer[]=[];if(colorType===3){const pal=Buffer.alloc(768);for(let i=0;i<pal.length;i++)pal[i]=i&255;extra.push(chunk("PLTE",pal),chunk("tRNS",Buffer.from([transparent?0:255])));}else if(transparent)extra.push(chunk("tRNS",Buffer.alloc(colorType===0?2:6)));return Buffer.concat([sig,chunk("IHDR",ihdr),...extra,chunk("IDAT",zlib.deflateSync(raw)),chunk("IEND",Buffer.alloc(0))]); }
+function losslessWebp(input:Buffer):Buffer { const p=spawnSync("ffmpeg",["-hide_banner","-loglevel","error","-i","pipe:0","-frames:v","1","-c:v","libwebp","-lossless","1","-compression_level","6","-f","webp","pipe:1"],{input,maxBuffer:20*1024*1024});if(p.status!==0)throw Error(String(p.stderr));return p.stdout; }
 const direct=(buf:Buffer):Message=>({id:"u",role:"user",content:[{type:"image",imageData:buf.toString("base64"),imageMediaType:"image/png"}]});
 
 function ffmpegConvert(input:Buffer,codec:string):Buffer { const p=spawnSync("ffmpeg",["-hide_banner","-loglevel","error","-i","pipe:0","-frames:v","1","-c:v",codec,"-f","image2pipe","pipe:1"],{input,maxBuffer:10*1024*1024});if(p.status!==0)throw Error(String(p.stderr));return p.stdout; }
@@ -145,6 +147,48 @@ describe("Claude synthetic-history image preprocessing",()=>{
   test("alpha that cannot fit losslessly is rejected instead of JPEG-flattened",()=>{
     const b=alphaPng(500,500); expect(b.length).toBeGreaterThan(CLAUDE_INGEST_FINAL_BYTES);
     expect(()=>preprocessProjectionImages([direct(b)])).toThrow(/refusing silent JPEG alpha loss/);
+  });
+
+  test("over-budget PNG tRNS transparency never falls through to JPEG",()=>{
+    for(const colorType of [3,0,2] as const){
+      clearClaudeImageCache(); const b=trnsPng(900,700,colorType,true);
+      expect(b.length).toBeGreaterThan(CLAUDE_INGEST_FINAL_BYTES);
+      expect(()=>preprocessProjectionImages([direct(b)])).toThrow(/refusing silent JPEG alpha loss/);
+    }
+  });
+
+  test("opaque indexed/grayscale/RGB PNG controls are not over-rejected",()=>{
+    for(const colorType of [3,0,2] as const){
+      clearClaudeImageCache(); const b=trnsPng(900,700,colorType,false);
+      expect(b.length).toBeGreaterThan(CLAUDE_INGEST_FINAL_BYTES);
+      const out=projectedImage(preprocessProjectionImages([direct(b)])[0]);
+      expect(out.data.length).toBeLessThanOrEqual(CLAUDE_INGEST_FINAL_BYTES);
+      expect(out.mediaType).toBe("image/jpeg");
+    }
+  });
+
+  test("over-budget intrinsic-alpha VP8L rejects before JPEG; opaque VP8L may fall back",()=>{
+    clearClaudeImageCache(); const alpha=losslessWebp(alphaPng(900,700));
+    expect(alpha.toString("ascii",12,16)).toBe("VP8L");
+    expect(alpha.includes(Buffer.from("ALPH"))).toBe(false);
+    expect(alpha.includes(Buffer.from("VP8X"))).toBe(false);
+    expect(alpha.length).toBeGreaterThan(CLAUDE_INGEST_FINAL_BYTES);
+    const am=direct(alpha);am.content[0].imageMediaType="image/webp";
+    expect(()=>preprocessProjectionImages([am])).toThrow(/refusing silent JPEG alpha loss/);
+
+    clearClaudeImageCache(); const opaque=losslessWebp(png(900,700,true));
+    expect(opaque.toString("ascii",12,16)).toBe("VP8L");
+    expect(opaque.includes(Buffer.from("ALPH"))).toBe(false);
+    expect(opaque.includes(Buffer.from("VP8X"))).toBe(false);
+    expect(opaque.length).toBeGreaterThan(CLAUDE_INGEST_FINAL_BYTES);
+    const om=direct(opaque);om.content[0].imageMediaType="image/webp";
+    const out=projectedImage(preprocessProjectionImages([om])[0]);
+    expect(out.data.length).toBeLessThanOrEqual(CLAUDE_INGEST_FINAL_BYTES);
+  });
+
+  test("malformed PNG transparency chunk bounds fail explicitly",()=>{
+    const b=trnsPng(10,10,0,true); b.writeUInt32BE(0xffffffff,33);
+    expect(()=>preprocessProjectionImages([direct(b)],{run:()=>Buffer.alloc(0)})).toThrow(/truncated or oversized chunk/);
   });
 
   test("animated GIF/WebP are rejected instead of silently losing frames",()=>{

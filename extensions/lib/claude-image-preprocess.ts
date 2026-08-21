@@ -55,16 +55,82 @@ function detectedMediaType(buf: Buffer): string {
   throw new ClaudeImagePreprocessError("image bytes have an unsupported or corrupt signature");
 }
 
-function hasAlpha(buf: Buffer, mt: string): boolean {
-  if (mt === "image/png") return buf.length > 25 && (buf[25] === 4 || buf[25] === 6);
-  if (mt === "image/webp") {
-    for (let p = 12; p + 8 <= buf.length;) {
-      const kind = buf.toString("ascii", p, p + 4), n = buf.readUInt32LE(p + 4);
-      if (kind === "VP8X" && p + 9 <= buf.length) return !!(buf[p + 8] & 0x10);
-      if (kind === "ALPH") return true;
-      p += 8 + n + (n & 1);
+function pngHasAlpha(buf: Buffer): boolean {
+  let p = 8, colorType: number | undefined, bitDepth = 0, paletteEntries = 0;
+  let sawIHDR = false, sawIDAT = false, sawTRNS = false, alpha = false, sawIEND = false;
+  while (p + 12 <= buf.length) {
+    const n = buf.readUInt32BE(p), end = p + 12 + n;
+    if (end > buf.length) throw new ClaudeImagePreprocessError("PNG has a truncated or oversized chunk");
+    const kind = buf.toString("ascii", p + 4, p + 8), data = p + 8;
+    if (!sawIHDR && (kind !== "IHDR" || n !== 13)) throw new ClaudeImagePreprocessError("PNG must begin with a 13-byte IHDR chunk");
+    if (kind === "IHDR") {
+      if (sawIHDR || n !== 13) throw new ClaudeImagePreprocessError("PNG has a malformed or duplicate IHDR chunk");
+      sawIHDR = true; bitDepth = buf[data + 8]; colorType = buf[data + 9];
+      const depths: Record<number, number[]> = { 0: [1,2,4,8,16], 2: [8,16], 3: [1,2,4,8], 4: [8,16], 6: [8,16] };
+      if (!depths[colorType]?.includes(bitDepth)) throw new ClaudeImagePreprocessError("PNG has an invalid color type/bit depth combination");
+      alpha = colorType === 4 || colorType === 6;
+    } else if (kind === "PLTE") {
+      if (!sawIHDR || sawIDAT || n < 3 || n > 768 || n % 3) throw new ClaudeImagePreprocessError("PNG has a malformed PLTE chunk");
+      paletteEntries = n / 3;
+      if (colorType === 3 && paletteEntries > (1 << bitDepth)) throw new ClaudeImagePreprocessError("indexed PNG palette exceeds its bit depth");
+    } else if (kind === "tRNS") {
+      if (!sawIHDR || sawIDAT || sawTRNS) throw new ClaudeImagePreprocessError("PNG has a misplaced or duplicate tRNS chunk");
+      sawTRNS = true;
+      if (colorType === 0) {
+        if (n !== 2 || (bitDepth < 16 && buf.readUInt16BE(data) >= (1 << bitDepth))) throw new ClaudeImagePreprocessError("grayscale PNG has a malformed tRNS sample");
+        alpha = true;
+      } else if (colorType === 2) {
+        if (n !== 6) throw new ClaudeImagePreprocessError("RGB PNG tRNS must be 6 bytes");
+        if (bitDepth < 16 && [0,2,4].some((o) => buf.readUInt16BE(data + o) >= (1 << bitDepth))) throw new ClaudeImagePreprocessError("RGB PNG has a malformed tRNS sample");
+        alpha = true;
+      }
+      else if (colorType === 3) {
+        if (!paletteEntries || n < 1 || n > paletteEntries) throw new ClaudeImagePreprocessError("indexed PNG has a malformed tRNS chunk");
+        for (let i = 0; i < n; i++) if (buf[data + i] !== 255) alpha = true;
+      } else throw new ClaudeImagePreprocessError("PNG tRNS is invalid for an intrinsic-alpha color type");
+    } else if (kind === "IDAT") sawIDAT = true;
+    else if (kind === "IEND") {
+      if (n !== 0) throw new ClaudeImagePreprocessError("PNG has a malformed IEND chunk");
+      sawIEND = true; break;
     }
+    p = end;
   }
+  if (!sawIHDR || !sawIDAT || !sawIEND) throw new ClaudeImagePreprocessError("PNG has an incomplete chunk structure");
+  return alpha;
+}
+
+function webpHasAlpha(buf: Buffer): boolean {
+  const declaredEnd = 8 + buf.readUInt32LE(4);
+  if (declaredEnd > buf.length || declaredEnd < 20) throw new ClaudeImagePreprocessError("WebP has a truncated or invalid RIFF size");
+  let p = 12, sawImage = false, alpha = false;
+  while (p < declaredEnd) {
+    if (p + 8 > declaredEnd) throw new ClaudeImagePreprocessError("WebP has a truncated chunk header");
+    const kind = buf.toString("ascii", p, p + 4), n = buf.readUInt32LE(p + 4);
+    const data = p + 8, end = data + n;
+    if (end > declaredEnd) throw new ClaudeImagePreprocessError("WebP has a truncated or oversized chunk");
+    if (kind === "VP8X") {
+      if (n !== 10) throw new ClaudeImagePreprocessError("WebP has a malformed VP8X chunk");
+      alpha ||= !!(buf[data] & 0x10);
+    } else if (kind === "ALPH") {
+      if (n < 1) throw new ClaudeImagePreprocessError("WebP has an empty ALPH chunk");
+      alpha = true;
+    } else if (kind === "VP8L") {
+      if (n < 5 || buf[data] !== 0x2f) throw new ClaudeImagePreprocessError("WebP has a malformed VP8L header");
+      const bits = buf.readUInt32LE(data + 1);
+      if (bits >>> 29) throw new ClaudeImagePreprocessError("WebP VP8L header has an unsupported version");
+      alpha ||= !!(bits & 0x10000000); // VP8L alpha_is_used bit after 14-bit W/H fields
+      sawImage = true;
+    } else if (kind === "VP8 ") sawImage = true;
+    p = end + (n & 1);
+    if (p > declaredEnd) throw new ClaudeImagePreprocessError("WebP chunk padding exceeds RIFF bounds");
+  }
+  if (!sawImage) throw new ClaudeImagePreprocessError("WebP contains no decodable image chunk");
+  return alpha;
+}
+
+function hasAlpha(buf: Buffer, mt: string): boolean {
+  if (mt === "image/png") return pngHasAlpha(buf);
+  if (mt === "image/webp") return webpHasAlpha(buf);
   return false;
 }
 function isAnimated(buf: Buffer, mt: string): boolean {
@@ -131,6 +197,9 @@ function transform(buf: Buffer, declared: string, opts: PreprocessOptions): Resu
   };
   // A full decoder pass is mandatory even for byte-preserving fast paths.
   run(buf, ["-map", "0:v:0", "-frames:v", "1", "-f", "null", "-"]);
+  // Parse transparency before any fast return or lossy fallback. This includes
+  // PNG tRNS and VP8L's intrinsic alpha bit, not only explicit alpha channels.
+  const alpha = hasAlpha(buf, mediaType);
 
   const overDimension = dims.w > CLAUDE_INGEST_MAX_DIMENSION || dims.h > CLAUDE_INGEST_MAX_DIMENSION;
   if (buf.length <= CLAUDE_INGEST_FINAL_BYTES && !overDimension) return { data: buf.toString("base64"), mediaType };
@@ -150,7 +219,7 @@ function transform(buf: Buffer, declared: string, opts: PreprocessOptions): Resu
   if (mediaType === "image/png") attempt([...common, "-c:v", "png", "-compression_level", "9", ...finish]);
   else if (mediaType === "image/webp") attempt([...common, "-c:v", "libwebp", "-quality", "80", ...finish]);
   else attempt([...common, "-c:v", "mjpeg", "-q:v", "3", ...finish]);
-  if (!out && hasAlpha(buf, mediaType)) throw new ClaudeImagePreprocessError("alpha image cannot fit the 512000-byte lossless bound; refusing silent JPEG alpha loss");
+  if (!out && alpha) throw new ClaudeImagePreprocessError("alpha image cannot fit the 512000-byte lossless bound; refusing silent JPEG alpha loss");
   for (const q of [3, 5, 8, 12, 18, 25, 31]) if (!out) attempt([...common, "-c:v", "mjpeg", "-q:v", String(q), ...finish]);
   if (!out) attempt(["-vf", "scale=w='min(1000,iw)':h='min(1000,ih)':force_original_aspect_ratio=decrease", "-map_metadata", "-1", "-fflags", "+bitexact", "-flags:v", "+bitexact", "-threads", "1", "-c:v", "mjpeg", "-q:v", "31", ...finish]);
   if (!out || out.length > CLAUDE_INGEST_FINAL_BYTES) throw new ClaudeImagePreprocessError(`could not compress image below ${CLAUDE_INGEST_FINAL_BYTES} bytes`);
