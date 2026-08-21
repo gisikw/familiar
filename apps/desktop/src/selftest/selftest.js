@@ -44,8 +44,8 @@ function pass() {
 function checkConfig() {
   // normalizeBaseUrl
   const cases = [
-    ["https://familiar.gisi.network/", "https://familiar.gisi.network"],
-    ["https://familiar.gisi.network", "https://familiar.gisi.network"],
+    ["https://familiar.example.com/", "https://familiar.example.com"],
+    ["https://familiar.example.com", "https://familiar.example.com"],
     ["http://localhost:1692/", "http://localhost:1692"],
     ["  https://x.example/sub/  ", "https://x.example/sub"],
     ["ftp://nope", null],
@@ -126,7 +126,7 @@ async function checkOfflinePage() {
   });
 
   await win.loadFile(OFFLINE, {
-    search: "url=https://familiar.gisi.network&err=selftest",
+    search: "url=https://familiar.example.com&err=selftest",
   });
   await new Promise((r) => setTimeout(r, 400));
 
@@ -134,7 +134,7 @@ async function checkOfflinePage() {
   const urlText = await win.webContents.executeJavaScript(
     "document.getElementById('url').textContent"
   );
-  if (!/familiar\.gisi\.network/.test(urlText)) {
+  if (!/familiar\.example\.com/.test(urlText)) {
     throw new Error("offline page did not render base URL, got: " + urlText);
   }
 

@@ -54,10 +54,12 @@ properties; no separate build step.
 
 ## Fronting (out of scope, noted for later)
 
-The gateway has **no auth** — it binds localhost unless the operator explicitly sets both a non-loopback `FAMILIAR_SERVER_HOST` and `FAMILIAR_GATEWAY_ALLOW_NONLOOPBACK=1`. In
-production it is intended to sit behind nginx at `familiar.gisi.network`, with
-Pocket ID (OIDC) enforcing authentication at the proxy and nginx forwarding
-authenticated requests to `127.0.0.1:1692` (including the `/pty` and `/stream`
-WebSocket/SSE upgrades — proxy config must pass `Upgrade`/`Connection` headers
-and disable buffering on the SSE routes). None of that lives here; this service
-assumes anything that reaches it is already authorized.
+The gateway has **no auth** — it binds localhost unless the operator explicitly
+sets both a non-loopback `FAMILIAR_SERVER_HOST` and
+`FAMILIAR_GATEWAY_ALLOW_NONLOOPBACK=1`. A remote deployment should put it behind
+an authenticating reverse proxy at a configured hostname (for example,
+`familiar.example.com`) and forward authenticated requests to
+`127.0.0.1:1692`. The `/pty` and `/stream` WebSocket/SSE routes require the proxy
+to pass `Upgrade`/`Connection` headers and disable buffering on SSE routes. None
+of that lives here; this service assumes anything that reaches it is already
+authorized.

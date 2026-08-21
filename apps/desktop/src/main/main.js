@@ -23,17 +23,15 @@ const { resolveBaseUrl, readConfigFile, writeConfigFile } = require("./config");
 
 // ---------------------------------------------------------------------------
 // Familiar is a DUMB CLIENT: a thin, near-chromeless Electron window that loads
-// the terminal PAGE served by the familiar server (default
-// https://familiar.gisi.network, root "/"). The served page owns EVERYTHING —
-// restty, the pty WebSocket, mouse/emoji handling, and drag-and-drop upload.
-// Electron contributes only native chrome: an edgeless window, zoom chords, a
-// persistent login session (so the Pocket ID cookie survives restarts), and an
-// offline retry courtesy page.
+// the terminal PAGE served by the configured familiar server (localhost by
+// default, root "/"). The served page owns EVERYTHING — restty, the pty
+// WebSocket, mouse/emoji handling, and drag-and-drop upload. Electron contributes
+// only native chrome: an edgeless window, zoom chords, a persistent login session
+// (so an authentication cookie survives restarts), and an offline retry page.
 //
-// A persistent session partition means auth "just works": the window is a real
-// browser context, so oauth2-proxy / Pocket ID redirects complete inline and
-// the cookie is stored on disk under the partition. On the tailnet, identity
-// auth passes and no redirect happens at all.
+// A persistent session partition means browser-based authentication "just
+// works": redirects complete inline and the resulting cookie is stored on disk
+// under the partition.
 // ---------------------------------------------------------------------------
 
 // Persistent partition -> cookies (incl. the auth session) survive restarts.

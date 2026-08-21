@@ -5,8 +5,8 @@
  * The web server owns all HTTP. Remote clients (Hearth, browser terminal,
  * future surfaces) attach to the session for voice/text ingress and egress.
  * Models are dumb HTTP endpoints (FAMILIAR_STT_URL, FAMILIAR_TTS_URL) the
- * SERVER calls. No auth — the server binds localhost only (fronted by
- * nginx/Pocket ID at familiar.gisi.network later).
+ * SERVER calls. No auth — the server binds localhost only (put an
+ * authenticating reverse proxy in front for remote deployments).
  *
  * The pi `subscriber` extension is now a thin relay: its firehose still turns
  * pi events into StreamEvents, but forwards them to the server's /ingest

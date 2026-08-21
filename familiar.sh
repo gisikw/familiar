@@ -333,7 +333,7 @@ sidebar_min_width = 24
 sidebar_max_width = 36
 prompt_new_workspace_name = false
 # The Familiar workspace holds only the pi tab (services live in their own
-# workspace), so this hides the tab row exactly when Kevin is looking at pi.
+# workspace), so this hides the tab row when the user is working in pi.
 hide_tab_bar_when_single_tab = true
 # Reclaim the scrollbar column — the thin line on the right edge of an
 # otherwise unsplit pane.

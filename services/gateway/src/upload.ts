@@ -8,7 +8,7 @@ import { debugLog, errorLog } from "./debug.ts";
 
 /* --- POST /upload: drag-and-drop file capture ------------------------------
  *
- * Kevin drags a file (a screenshot, usually) onto the browser terminal or the
+ * A user drags a file (a screenshot, usually) onto the browser terminal or the
  * Electron client; the bytes land here, get written to a drops directory on
  * the server host, and the path is sent through the existing pi relay ingress.
  * Two intake shapes are accepted:

@@ -9,8 +9,8 @@ Mapping, precedence, and restart operations are documented in `docs/CONFIG.md`.
 
 `services/gateway/src/theme/defaults.json` holds the canonical
 `familiar-monokai-pro-spectrum` palette: semantic **roles** + a 16-entry
-**ANSI** palette. The primary reference is Kevin's locally installed Ghostty
-`Monokai Pro Spectrum` theme; local `monokai-pro.nvim` Spectrum UI levels supply
+**ANSI** palette. The primary reference is Ghostty's `Monokai Pro Spectrum`
+theme; `monokai-pro.nvim` Spectrum UI levels supply
 only the extra surface depths Ghostty does not define. Two generators read that one
 file and overlay `FAMILIAR_THEME_*`:
 

@@ -6,7 +6,7 @@
 # .icns. Two assembly backends:
 #   * png2icns (libicns)  — works headlessly on Linux/CI. Preferred here.
 #   * iconutil (macOS)    — used automatically when png2icns is unavailable
-#                           (e.g. running this on Kevin's Mac).
+#                           (e.g. running this on a developer's Mac).
 #
 # Requires rsvg-convert (librsvg). Under nix:  nix shell nixpkgs#librsvg
 # nixpkgs#libicns -c ./apps/desktop/scripts/make-icns.sh

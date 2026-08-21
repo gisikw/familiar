@@ -1,5 +1,5 @@
 {
-  "$comment": "CANONICAL Familiar theme — single source of truth. Both generators read this file and overlay FAMILIAR_THEME_<ROLE> / FAMILIAR_THEME_ANSI_<NAME>. Palette provenance: Kevin's installed Ghostty `Monokai Pro Spectrum` theme (Ghostty theme cache), supplemented only for UI surface levels by the local monokai-pro.nvim Spectrum palette. Semantic adaptations preserve readable cursor text and the Familiar mark.",
+  "$comment": "CANONICAL Familiar theme — single source of truth. Both generators read this file and overlay FAMILIAR_THEME_<ROLE> / FAMILIAR_THEME_ANSI_<NAME>. Palette provenance: Ghostty's `Monokai Pro Spectrum` theme, supplemented only for UI surface levels by the monokai-pro.nvim Spectrum palette. Semantic adaptations preserve readable cursor text and the Familiar mark.",
   "name": "familiar-monokai-pro-spectrum",
   "roles": {
     "background": "#222222",
