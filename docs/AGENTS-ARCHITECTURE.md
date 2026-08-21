@@ -199,6 +199,31 @@ Harness-specific transcripts remain harness data unless projected into the
 common progress/settlement model. The agent system should not pretend every
 harness has identical semantics.
 
+## Proposed monorepo boundary
+
+If the agent system initially remains in the Familiar repository, keep it in one
+self-contained top-level tree:
+
+```text
+agents/
+  service/                 # global API, registry, durable spool
+  supervisor/              # one process per worker host
+  protocol/                # service/supervisor/client contract
+  client/                  # typed API used by the pi extension or UI
+  harnesses/
+    pi/
+    claude/
+    codex/
+```
+
+The tree is deliberately independent of `services/presence`: Familiar reaches it
+through the client/API contract and pi-extension tools. This directory can later
+move into its own repository without changing Familiar's primary architecture.
+
+As with Familiar's main layout, this is naming and dependency guidance rather
+than a requirement to create empty directories. Add a boundary when it gains
+owned code, tests, or a build artifact.
+
 ## Failure and recovery
 
 - Agent-service failure does not immediately kill running workers.

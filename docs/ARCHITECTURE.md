@@ -227,6 +227,53 @@ all children restart together. The default strategy is equivalent to Erlang
 
 A dependency or readiness edge is not automatically a shared crash boundary.
 
+## Proposed monorepo boundaries
+
+Organize code by deployable role rather than implementation language:
+
+```text
+apps/
+  desktop/                 # Electron client
+  mobile/                  # native iOS client
+
+services/
+  gateway/                 # Familiar Interface Gateway
+  server/                  # supervisor, bootstrap, readiness
+  presence/                # primary pi session + continuity
+  llm/                     # stable LLM proxy + lazy backend
+  stt/                     # stable STT proxy + lazy backend
+  tts/                     # stable TTS proxy + lazy backend
+
+packages/
+  client-protocol/         # client ↔ Interface Gateway schema
+  config/                  # shared configuration model
+  continuity/              # Familiar-owned canon/handoff persistence
+  ui/                      # shared web/UI assets, when useful
+
+integrations/
+  pi/                      # pi-specific adapters and extensions
+```
+
+The architecture names map directly to directories:
+
+| Architecture component | Directory |
+|---|---|
+| Familiar Desktop Client | `apps/desktop` |
+| Familiar Mobile Client | `apps/mobile` |
+| Familiar Interface Gateway | `services/gateway` |
+| Familiar Server | `services/server` |
+| Familiar Presence Runtime | `services/presence` |
+| Familiar LLM | `services/llm` |
+| Familiar STT | `services/stt` |
+| Familiar TTS | `services/tts` |
+
+Use `presence`, not `core`: “core” becomes ambiguous as the system grows, while
+“presence” preserves the identity and lifecycle boundary this component owns.
+
+This is a boundary and naming plan, not a requirement to create empty
+scaffolding. Create each directory when it receives owned code, tests, a build
+artifact, or an independently enforced dependency boundary.
+
 ## Settled deployment decisions
 
 1. **Client/runtime separation:** Electron remains separate from the runtime. It
