@@ -3,6 +3,8 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -21,13 +24,15 @@ import (
 )
 
 type Config struct {
-	Upstream, Backend                                             string
-	BackendCommand                                                string
-	BackendArgs                                                   []string
-	Model, ModelURL, Voice, VoicesSource, StateDir, AgeKey, Baker string
-	MaxBody                                                       int64
-	MaxInput, Concurrency                                         int
-	StartupTimeout, RequestTimeout, ShutdownTimeout               time.Duration
+	Upstream, Backend                                                string
+	BackendCommand                                                   string
+	BackendArgs                                                      []string
+	Model, ModelURL, Voice, VoicesSource, StateDir, AgeKey, Baker    string
+	UpstreamAuthorization                                            string
+	UpstreamHeaders                                                  http.Header
+	MaxBody, ModelMinSize, ModelSize                                 int64
+	MaxInput, Concurrency                                            int
+	StartupTimeout, DownloadTimeout, RequestTimeout, ShutdownTimeout time.Duration
 }
 
 type Manager struct {
@@ -36,60 +41,78 @@ type Manager struct {
 	mu       sync.Mutex
 	child    *exec.Cmd
 	starting chan struct{}
+	startErr error
+	serving  bool
 	closed   bool
+	lifeCtx  context.Context
+	cancel   context.CancelFunc
 	client   *http.Client
 }
 
 func NewManager(c Config, l *slog.Logger) *Manager {
-	return &Manager{cfg: c, log: l, client: &http.Client{Timeout: c.StartupTimeout}}
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Manager{cfg: c, log: l, lifeCtx: ctx, cancel: cancel, client: &http.Client{}}
 }
 func (m *Manager) ready() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.child != nil
+	return m.serving
 }
-func (m *Manager) Ensure(ctx context.Context) error {
+func (m *Manager) Ensure(caller context.Context) error {
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
 		return errors.New("shutting down")
 	}
-	if m.child != nil {
+	if m.serving {
 		m.mu.Unlock()
 		return nil
 	}
-	if ch := m.starting; ch != nil {
-		m.mu.Unlock()
-		select {
-		case <-ch:
-			return m.startResult()
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+	ch := m.starting
+	if ch == nil {
+		ch = make(chan struct{})
+		m.starting = ch
+		m.startErr = nil
+		go m.runStart(ch)
 	}
-	ch := make(chan struct{})
-	m.starting = ch
 	m.mu.Unlock()
-	err := m.start(ctx)
+	select {
+	case <-ch:
+		m.mu.Lock()
+		err := m.startErr
+		serving := m.serving
+		m.mu.Unlock()
+		if err != nil {
+			return err
+		}
+		if !serving {
+			return errors.New("backend failed to start")
+		}
+		return nil
+	case <-caller.Done():
+		return caller.Err()
+	}
+}
+func (m *Manager) runStart(ch chan struct{}) {
+	downloadCtx, cancelDownload := context.WithTimeout(m.lifeCtx, m.cfg.DownloadTimeout)
+	err := m.ensureModel(downloadCtx)
+	cancelDownload()
+	if err == nil {
+		startupCtx, cancelStartup := context.WithTimeout(m.lifeCtx, m.cfg.StartupTimeout)
+		err = m.start(startupCtx)
+		cancelStartup()
+	}
 	m.mu.Lock()
+	m.startErr = err
 	if err != nil {
-		m.child = nil
+		m.serving = false
 	}
 	close(ch)
 	m.starting = nil
 	m.mu.Unlock()
-	return err
-}
-func (m *Manager) startResult() error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.child == nil {
-		return errors.New("backend failed to start")
-	}
-	return nil
 }
 func (m *Manager) start(ctx context.Context) error {
-	model, err := m.prepare(ctx)
+	model, err := m.prepareVoices(ctx)
 	if err != nil {
 		return err
 	}
@@ -101,7 +124,7 @@ func (m *Manager) start(ctx context.Context) error {
 	u, _ := url.Parse(m.cfg.Backend)
 	host, port, _ := net.SplitHostPort(u.Host)
 	args = append(args, "--host", host, "--port", port)
-	cmd := exec.Command(m.cfg.BackendCommand, args...)
+	cmd := exec.CommandContext(m.lifeCtx, m.cfg.BackendCommand, args...)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -110,6 +133,7 @@ func (m *Manager) start(ctx context.Context) error {
 	}
 	m.mu.Lock()
 	m.child = cmd
+	m.serving = false
 	m.mu.Unlock()
 	go func() {
 		err := cmd.Wait()
@@ -117,26 +141,30 @@ func (m *Manager) start(ctx context.Context) error {
 		m.mu.Lock()
 		if m.child == cmd {
 			m.child = nil
+			m.serving = false
 		}
 		m.mu.Unlock()
 	}()
-	deadline := time.NewTimer(m.cfg.StartupTimeout)
-	defer deadline.Stop()
 	tick := time.NewTicker(25 * time.Millisecond)
 	defer tick.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			m.stopCommand(cmd)
-			return ctx.Err()
-		case <-deadline.C:
-			m.stopCommand(cmd)
-			return errors.New("backend startup deadline exceeded")
+			return fmt.Errorf("backend startup: %w", ctx.Err())
 		case <-tick.C:
 			conn, e := net.DialTimeout("tcp", u.Host, 100*time.Millisecond)
 			if e == nil {
 				conn.Close()
-				return nil
+				m.mu.Lock()
+				if m.child == cmd {
+					m.serving = true
+				}
+				ok := m.serving
+				m.mu.Unlock()
+				if ok {
+					return nil
+				}
 			}
 			m.mu.Lock()
 			dead := m.child != cmd
@@ -191,16 +219,17 @@ func atomicCommand(ctx context.Context, dest string, mode os.FileMode, name stri
 	}
 	return os.Rename(path, dest)
 }
-func (m *Manager) prepare(ctx context.Context) (string, error) {
+func (m *Manager) ensureModel(ctx context.Context) error {
+	if err := validateGGUF(m.cfg.Model, m.cfg.ModelMinSize, m.cfg.ModelSize); err == nil {
+		return nil
+	}
+	if m.cfg.ModelURL == "" {
+		return fmt.Errorf("model unavailable or invalid: external provisioning required")
+	}
+	return m.download(ctx, m.cfg.Model)
+}
+func (m *Manager) prepareVoices(ctx context.Context) (string, error) {
 	model := m.cfg.Model
-	if _, err := os.Stat(model); err != nil && m.cfg.ModelURL != "" {
-		if err = m.download(ctx, model); err != nil {
-			return "", err
-		}
-	}
-	if _, err := os.Stat(model); err != nil {
-		return "", fmt.Errorf("model unavailable: %w", err)
-	}
 	if m.cfg.VoicesSource == "" {
 		return model, nil
 	}
@@ -242,44 +271,157 @@ func (m *Manager) prepare(ctx context.Context) (string, error) {
 		return model, nil
 	}
 	baked := filepath.Join(m.cfg.StateDir, "models", "baked-"+filepath.Base(model))
-	if changed || newer(model, baked) {
+	identity, err := bakerIdentity(m.cfg.Baker)
+	if err != nil {
+		return "", err
+	}
+	stamp := baked + ".baker-id"
+	oldIdentity, _ := os.ReadFile(stamp)
+	if changed || newer(model, baked) || string(oldIdentity) != identity {
 		args := append([]string{model, "{output}"}, packs...)
 		if err = atomicCommand(ctx, baked, 0600, m.cfg.Baker, args...); err != nil {
 			return "", err
 		}
+		if err = atomicWrite(stamp, []byte(identity), 0600); err != nil {
+			_ = os.Remove(baked)
+			return "", err
+		}
+	}
+	if err = validateGGUF(baked, m.cfg.ModelMinSize, 0); err != nil {
+		return "", fmt.Errorf("invalid baked model: %w", err)
 	}
 	return baked, nil
 }
-func (m *Manager) download(ctx context.Context, dest string) error {
-	req, _ := http.NewRequestWithContext(ctx, "GET", m.cfg.ModelURL, nil)
-	r, e := m.client.Do(req)
-	if e != nil {
-		return e
+func validateGGUF(path string, minimum, exact int64) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
 	}
-	defer r.Body.Close()
-	if r.StatusCode/100 != 2 {
-		return fmt.Errorf("model download: %s", r.Status)
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return err
 	}
-	if e = os.MkdirAll(filepath.Dir(dest), 0700); e != nil {
-		return e
+	if exact > 0 && st.Size() != exact {
+		return fmt.Errorf("size %d, expected %d", st.Size(), exact)
 	}
-	f, e := os.CreateTemp(filepath.Dir(dest), ".download-*")
-	if e != nil {
-		return e
+	if st.Size() < minimum {
+		return fmt.Errorf("size %d below minimum %d", st.Size(), minimum)
+	}
+	magic := make([]byte, 4)
+	if _, err = io.ReadFull(f, magic); err != nil {
+		return err
+	}
+	if string(magic) != "GGUF" {
+		return errors.New("missing GGUF magic (HTML, LFS pointer, or corrupt model)")
+	}
+	return nil
+}
+func atomicWrite(dest string, data []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(dest), 0700); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(filepath.Dir(dest), ".staging-*")
+	if err != nil {
+		return err
 	}
 	p := f.Name()
 	defer os.Remove(p)
-	_, e = io.Copy(f, r.Body)
-	if e == nil {
-		e = f.Sync()
+	if err = f.Chmod(mode); err == nil {
+		_, err = f.Write(data)
 	}
-	if x := f.Close(); e == nil {
-		e = x
+	if err == nil {
+		err = f.Sync()
 	}
-	if e != nil {
-		return e
+	if x := f.Close(); err == nil {
+		err = x
+	}
+	if err != nil {
+		return err
 	}
 	return os.Rename(p, dest)
+}
+func bakerIdentity(command string) (string, error) {
+	path, err := exec.LookPath(command)
+	if err != nil {
+		return "", fmt.Errorf("voice baker unavailable: %w", err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err = io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil)) + "\n", nil
+}
+func (m *Manager) download(ctx context.Context, dest string) error {
+	if err := os.MkdirAll(filepath.Dir(dest), 0700); err != nil {
+		return err
+	}
+	part := dest + ".part"
+	if validateGGUF(part, m.cfg.ModelMinSize, m.cfg.ModelSize) == nil {
+		return os.Rename(part, dest)
+	}
+	offset := int64(0)
+	if st, err := os.Stat(part); err == nil {
+		offset = st.Size()
+		// An overlong or declared-complete invalid partial cannot be resumed safely.
+		if m.cfg.ModelSize > 0 && offset >= m.cfg.ModelSize {
+			if err = os.Remove(part); err != nil {
+				return err
+			}
+			offset = 0
+		}
+	}
+	req, _ := http.NewRequestWithContext(ctx, "GET", m.cfg.ModelURL, nil)
+	if offset > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
+	}
+	r, err := m.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("model download: %w", err)
+	}
+	defer r.Body.Close()
+	appendMode := offset > 0 && r.StatusCode == http.StatusPartialContent
+	if r.StatusCode != http.StatusOK && r.StatusCode != http.StatusPartialContent {
+		return fmt.Errorf("model download: %s", r.Status)
+	}
+	flags := os.O_CREATE | os.O_WRONLY
+	if appendMode {
+		flags |= os.O_APPEND
+	} else {
+		flags |= os.O_TRUNC
+		offset = 0
+	}
+	f, err := os.OpenFile(part, flags, 0600)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(f, r.Body)
+	if err == nil {
+		err = f.Sync()
+	}
+	if x := f.Close(); err == nil {
+		err = x
+	}
+	if err != nil {
+		return err
+	}
+	if length := r.Header.Get("Content-Length"); length != "" {
+		if n, e := strconv.ParseInt(length, 10, 64); e == nil && n >= 0 {
+			st, _ := os.Stat(part)
+			if st.Size() != offset+n {
+				return errors.New("truncated model download")
+			}
+		}
+	}
+	if err = validateGGUF(part, m.cfg.ModelMinSize, m.cfg.ModelSize); err != nil {
+		return fmt.Errorf("downloaded model rejected: %w", err)
+	}
+	return os.Rename(part, dest)
 }
 func (m *Manager) stopCommand(c *exec.Cmd) {
 	if c == nil || c.Process == nil {
@@ -302,6 +444,7 @@ func (m *Manager) Close() {
 	m.mu.Lock()
 	m.closed = true
 	starting := m.starting
+	m.cancel()
 	m.mu.Unlock()
 	// If shutdown races the single-flight start, do not let it orphan a child.
 	if starting != nil {
@@ -401,6 +544,17 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	out, _ := http.NewRequestWithContext(ctx, "POST", s.target.ResolveReference(&url.URL{Path: "/v1/audio/speech"}).String(), bytes.NewReader(body))
 	copyHeaders(out.Header, r.Header)
+	out.Header.Del("Authorization")
+	out.Header.Del("Cookie")
+	if s.cfg.UpstreamAuthorization != "" {
+		out.Header.Set("Authorization", s.cfg.UpstreamAuthorization)
+	}
+	for k, values := range s.cfg.UpstreamHeaders {
+		out.Header.Del(k)
+		for _, value := range values {
+			out.Header.Add(k, value)
+		}
+	}
 	out.Host = s.target.Host
 	resp, e := s.transport.RoundTrip(out)
 	if e != nil {

@@ -20,24 +20,33 @@
             buildInputs = [ pkgs.espeak-ng ];
             cmakeFlags = [ "-DTTS_CLI_SDL=OFF" ];
             installPhase = ''mkdir -p $out/bin; cp bin/tts-server $out/bin/'';
+            meta = { description = "TTS.cpp server"; homepage = "https://github.com/mmwillet/TTS.cpp"; license = pkgs.lib.licenses.mit; platforms = pkgs.lib.platforms.linux; };
           };
           bakePython = pkgs.python3.withPackages (p: [ p.gguf p.torch ]);
-          baker = pkgs.writeShellScriptBin "familiar-bake-kokoro" ''
-            exec ${bakePython}/bin/python ${./runtime/bake-kokoro-voices.py} "$@"
-          '';
-          proxy = pkgs.buildGoModule {
-            pname = "familiar-tts"; version = "0.1.0"; src = ./.;
-            vendorHash = null;
-            subPackages = [ "cmd/familiar-tts" ];
+          baker = pkgs.writeShellApplication {
+            name = "familiar-bake-kokoro";
+            runtimeInputs = [ bakePython ];
+            text = ''exec ${bakePython}/bin/python ${./runtime/bake-kokoro-voices.py} "$@"'';
+            meta = { description = "Optional Kokoro custom voice GGUF baker"; license = pkgs.lib.licenses.mit; platforms = pkgs.lib.platforms.linux; };
+          };
+          mkProxy = { name, withBaker ? false }: pkgs.buildGoModule {
+            pname = name; version = "0.2.0"; src = ./.;
+            vendorHash = null; subPackages = [ "cmd/familiar-tts" ];
             nativeBuildInputs = [ pkgs.makeWrapper ];
             postInstall = ''
               wrapProgram $out/bin/familiar-tts \
-                --prefix PATH : ${pkgs.lib.makeBinPath [ tts-cpp pkgs.age pkgs.coreutils baker ]} \
-                --set-default FAMILIAR_TTS_BAKER familiar-bake-kokoro
+                --prefix PATH : ${pkgs.lib.makeBinPath ([ tts-cpp pkgs.age pkgs.coreutils ] ++ pkgs.lib.optional withBaker baker)} \
+                ${pkgs.lib.optionalString withBaker "--set-default FAMILIAR_TTS_BAKER familiar-bake-kokoro"}
             '';
+            meta = { description = "Local stable Familiar TTS HTTP proxy"; homepage = "https://github.com/familiar/familiar"; license = pkgs.lib.licenses.mit; mainProgram = "familiar-tts"; platforms = pkgs.lib.platforms.linux; };
           };
-        in { default = proxy; familiar-tts = proxy; inherit tts-cpp baker; });
-      checks = each (pkgs: { familiar-tts = self.packages.${pkgs.system}.familiar-tts; });
-      devShells = each (pkgs: { default = pkgs.mkShell { packages = [ pkgs.go self.packages.${pkgs.system}.tts-cpp pkgs.age self.packages.${pkgs.system}.baker ]; }; });
+          proxy = mkProxy { name = "familiar-tts"; };
+          withBaker = mkProxy { name = "familiar-tts-with-voice-baker"; withBaker = true; };
+        in { default = proxy; familiar-tts = proxy; familiar-tts-with-voice-baker = withBaker; inherit tts-cpp baker; });
+      checks = each (pkgs: {
+        familiar-tts = self.packages.${pkgs.system}.familiar-tts;
+        familiar-tts-with-voice-baker = self.packages.${pkgs.system}.familiar-tts-with-voice-baker;
+      });
+      devShells = each (pkgs: { default = pkgs.mkShell { packages = [ pkgs.go self.packages.${pkgs.system}.tts-cpp pkgs.age ]; }; voices = pkgs.mkShell { packages = [ pkgs.go self.packages.${pkgs.system}.baker ]; }; });
     };
 }
