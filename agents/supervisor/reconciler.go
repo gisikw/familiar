@@ -4,212 +4,66 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"time"
+
 	"familiar.dev/agents/client"
 	"familiar.dev/agents/harnesses"
 	"familiar.dev/agents/harnesses/claude"
 	"familiar.dev/agents/harnesses/codex"
 	piadapter "familiar.dev/agents/harnesses/pi"
 	"familiar.dev/agents/protocol"
-	"fmt"
-	"log"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"time"
 )
 
 type ActionKind string
+const ( Start ActionKind="start"; Cancel ActionKind="cancel"; Forget ActionKind="forget" )
+type Action struct{Kind ActionKind; Assignment protocol.Assignment; JobID string}
 
-const (
-	Start  ActionKind = "start"
-	Cancel ActionKind = "cancel"
-)
-
-type Action struct {
-	Kind       ActionKind
-	Assignment protocol.Assignment
-}
-
-func Diff(desired []protocol.Assignment, local map[string]Worker) []Action {
-	a := []Action{}
-	for _, d := range desired {
-		w, ok := local[d.Job.ID]
-		if !ok && !d.Job.CancelRequested && d.DesiredState != protocol.Cancelling {
-			a = append(a, Action{Start, d})
-		} else if ok && (d.Job.CancelRequested || d.DesiredState == protocol.Cancelling) {
-			_ = w
-			a = append(a, Action{Cancel, d})
-		}
-	}
-	return a
+// Diff is pure so reconciliation behavior can be tested without processes.
+func Diff(desired []protocol.Assignment,local map[string]Worker)[]Action{
+	out:=[]Action{};seen:=map[string]bool{}
+	for _,d:=range desired{seen[d.Job.ID]=true;_,ok:=local[d.Job.ID];if !ok&&!d.Job.CancelRequested&&d.DesiredState!=protocol.Cancelling{out=append(out,Action{Kind:Start,Assignment:d,JobID:d.Job.ID})}else if ok&&(d.Job.CancelRequested||d.DesiredState==protocol.Cancelling){out=append(out,Action{Kind:Cancel,Assignment:d,JobID:d.Job.ID})}}
+	for id:=range local{if !seen[id]{out=append(out,Action{Kind:Forget,JobID:id})}}
+	return out
 }
 
-type Supervisor struct {
-	Host          string
-	Client        *client.Client
-	Registry      *Registry
-	Tmux          Tmux
-	OfflineWindow time.Duration
-	Adapters      map[string]harnesses.Adapter
-}
+type Supervisor struct{Host string;Client *client.Client;Registry *Registry;Tmux Tmux;OfflineWindow time.Duration;Adapters map[string]harnesses.Adapter;Logger *slog.Logger}
+func(s *Supervisor)log() *slog.Logger{if s.Logger!=nil{return s.Logger};return slog.Default()}
+func(s *Supervisor)adapter(kind protocol.HarnessKind)(harnesses.Adapter,error){a,ok:=s.Adapters[string(kind)];if !ok{return nil,fmt.Errorf("unknown harness %q",kind)};return a,nil}
+func DefaultAdapters(piBinary string,claudeArgv,codexArgv []string)map[string]harnesses.Adapter{return map[string]harnesses.Adapter{"pi":piadapter.Adapter{Binary:piBinary},"claude":claude.Adapter{ArgvTemplate:claudeArgv},"codex":codex.Adapter{ArgvTemplate:codexArgv},"fake":claude.Adapter{ArgvTemplate:[]string{"sh","-c","printf '%s\\n' fake-worker-complete; sleep 1"}}}}
 
-func (s *Supervisor) adapter(kind string) (harnesses.Adapter, error) {
-	a, ok := s.Adapters[kind]
-	if !ok {
-		return nil, fmt.Errorf("unknown harness %q", kind)
-	}
-	return a, nil
-}
-func DefaultAdapters(pi string, claudeArgv, codexArgv []string) map[string]harnesses.Adapter {
-	return map[string]harnesses.Adapter{"pi": piadapter.Adapter{Binary: pi}, "claude": claude.Adapter{ArgvTemplate: claudeArgv}, "codex": codex.Adapter{ArgvTemplate: codexArgv}, "fake": claude.Adapter{ArgvTemplate: []string{"sh", "-c", "printf 'fake worker complete\\n'; sleep 1"}}}
-}
-func (s *Supervisor) Recover(ctx context.Context) {
-	for _, w := range s.Registry.Snapshot() {
-		if s.Tmux.Has(ctx, w.Session) {
-			continue
-		}
-		if time.Now().Before(w.RestartUntil) {
-			session, target, e := s.Tmux.Start(ctx, w.Job.ID, w.Launch)
-			if e == nil {
-				w.Session = session
-				w.Target = target
-				w.StartedAt = time.Now().UTC()
-				s.Registry.Put(w)
-				log.Printf("component=agent-supervisor event=offline_recreate job=%s", w.Job.ID)
-			} else {
-				log.Printf("component=agent-supervisor event=recover_failed job=%s error=%q", w.Job.ID, e)
-			}
-		} else {
-			log.Printf("component=agent-supervisor event=offline_window_expired job=%s", w.Job.ID)
-		}
-	}
-}
-func (s *Supervisor) Tick(ctx context.Context) error {
-	known := map[string]protocol.State{}
-	for id, w := range s.Registry.Snapshot() {
-		known[id] = w.LastState
-	}
-	p, e := s.Client.Poll(ctx, s.Host, known)
-	if e != nil {
-		return e
-	}
-	for _, a := range Diff(p.Assignments, s.Registry.Snapshot()) {
-		switch a.Kind {
-		case Start:
-			if e = s.start(ctx, a.Assignment.Job); e != nil {
-				log.Printf("component=agent-supervisor event=start_failed job=%s error=%q", a.Assignment.Job.ID, e)
-			}
-		case Cancel:
-			s.cancel(ctx, a.Assignment.Job.ID)
-		}
-	}
+// Recover adopts surviving sessions. Only pi (currently the only resumable
+// adapter) is recreated while disconnected, and never after RestartUntil.
+func(s *Supervisor)Recover(ctx context.Context){for id,w:=range s.Registry.Snapshot(){if s.Tmux.Has(ctx,w.Session){continue};if time.Now().After(w.RestartUntil){s.log().Warn("offline restart window expired","job",id);continue};a,err:=s.adapter(w.Job.Harness);if err!=nil{continue};launch,err:=a.Resume(ctx,w.Job,w.Launch);if err!=nil{s.log().Warn("worker cannot resume offline","job",id,"error",err);continue};session,target,err:=s.Tmux.Start(ctx,id,launch);if err!=nil{s.log().Error("offline recreate failed","job",id,"error",err);continue};w.Launch,w.Session,w.Target,w.StartedAt=launch,session,target,time.Now().UTC();_ = s.Registry.Put(w);s.log().Info("worker resumed offline","job",id)}}
+
+func(s *Supervisor)Tick(ctx context.Context)error{
+	known:=map[string]protocol.State{};for id,w:=range s.Registry.Snapshot(){known[id]=w.LastState}
+	poll,err:=s.Client.Poll(ctx,s.Host,known);if err!=nil{return err} // existing workers are untouched
+	for _,a:=range Diff(poll.Assignments,s.Registry.Snapshot()){switch a.Kind{case Start:if err=s.start(ctx,a.Assignment.Job);err!=nil{s.log().Error("start failed","job",a.JobID,"error",err)};case Cancel:s.cancel(ctx,a.JobID);case Forget:s.forget(ctx,a.JobID)}}
+	// Deliver answered blocked questions after assignment reconciliation.
+	for _,d:=range poll.Assignments{w,ok:=s.Registry.Snapshot()[d.Job.ID];if !ok||d.Job.Question==nil||d.Job.Question.Answer==nil||w.AnsweredKey==d.Job.Question.Answer.IdempotencyKey{continue};adapter,e:=s.adapter(w.Job.Harness);if e!=nil{continue};runtime:=s.runtime(w);if e=adapter.Answer(ctx,&runtime,*d.Job.Question.Answer);e==nil{w.AnsweredKey=d.Job.Question.Answer.IdempotencyKey;_ = s.Registry.Put(w)}else if !errors.Is(e,harnesses.ErrUnsupported){s.log().Warn("answer delivery failed","job",w.Job.ID,"error",e)}}
 	return s.observe(ctx)
 }
-func (s *Supervisor) start(ctx context.Context, j protocol.Job) error {
-	if j.Artifacts.Directory == "" {
-		return errors.New("service must assign artifact directory")
-	}
-	if j.Isolation == protocol.IsolationWorktree {
-		wt := filepath.Join(j.Artifacts.Directory, "worktree")
-		base := "HEAD"
-		if base == "" {
-			base = "HEAD"
-		}
-		if o, e := exec.CommandContext(ctx, "git", "-C", j.CWD, "worktree", "add", "--detach", wt, base).CombinedOutput(); e != nil {
-			return fmt.Errorf("git worktree: %s: %w", o, e)
-		}
-		j.CWD = wt
-	}
-	a, e := s.adapter(string(j.Harness))
-	if e != nil {
-		return e
-	}
-	l, e := a.Start(ctx, j)
-	if e != nil {
-		return e
-	}
-	session, target, e := s.Tmux.Start(ctx, j.ID, l)
-	if e != nil {
-		return e
-	}
-	w := Worker{Job: j, Launch: l, Session: session, Target: target, Worktree: func() string {
-		if j.Isolation == protocol.IsolationWorktree {
-			return j.CWD
-		}
-		return ""
-	}(), RestartUntil: time.Now().Add(s.OfflineWindow), LastState: protocol.Starting, StartedAt: time.Now().UTC()}
-	if e = s.Registry.Put(w); e != nil {
-		return e
-	}
-	endpoint := &protocol.TerminalEndpoint{Host: s.Host, Socket: s.Tmux.Socket, Target: target}
-	events := []protocol.ObservedEvent{{ID: j.ID + "-starting", JobID: j.ID, State: protocol.Starting, Terminal: endpoint}, {ID: j.ID + "-running", JobID: j.ID, State: protocol.Running}}
-	if e = s.Client.Events(ctx, protocol.EventBatch{Host: s.Host, Events: events}); e == nil {
-		w.LastState = protocol.Running
-		s.Registry.Put(w)
-	}
-	return e
+func(s *Supervisor)start(ctx context.Context,j protocol.Job)error{
+	if j.Artifacts.Directory==""{return errors.New("service did not assign artifact directory")};if err:=os.MkdirAll(j.Artifacts.Directory,0o700);err!=nil{return err}
+	worktree:="";if j.Isolation==protocol.IsolationWorktree{worktree=filepath.Join(j.Artifacts.Directory,"worktree");if out,err:=exec.CommandContext(ctx,"git","-C",j.CWD,"worktree","add","--detach",worktree,"HEAD").CombinedOutput();err!=nil{return fmt.Errorf("git worktree: %s: %w",out,err)};j.CWD=worktree}
+	a,err:=s.adapter(j.Harness);if err!=nil{return err};launch,err:=a.Start(ctx,j);if err!=nil{return err};session,target,err:=s.Tmux.Start(ctx,j.ID,launch);if err!=nil{return err}
+	w:=Worker{Job:j,Launch:launch,Session:session,Target:target,Worktree:worktree,RestartUntil:time.Now().Add(s.OfflineWindow),LastState:protocol.Starting,StartedAt:time.Now().UTC()};if err=s.Registry.Put(w);err!=nil{return err}
+	return s.publishState(ctx,&w,protocol.Starting)
 }
-func (s *Supervisor) cancel(ctx context.Context, id string) {
-	w, ok := s.Registry.Snapshot()[id]
-	if !ok {
-		return
-	}
-	s.Tmux.Kill(ctx, w.Session)
-	set := protocol.Settlement{ID: id + "-cancelled", JobID: id, Verdict: protocol.Cancelled, Summary: "cancelled by requested state", At: time.Now().UTC()}
-	e := s.Client.Events(ctx, protocol.EventBatch{Host: s.Host, Events: []protocol.ObservedEvent{{ID: id + "-cancel-settlement", JobID: id, Settlement: &set}}})
-	if e == nil {
-		s.Registry.Delete(id)
-	}
+func(s *Supervisor)publishState(ctx context.Context,w *Worker,state protocol.State)error{event:=protocol.ObservedEvent{ID:w.Job.ID+"-"+string(state),JobID:w.Job.ID,State:state,ObservedAt:time.Now().UTC()};if err:=s.Client.Events(ctx,protocol.EventBatch{Host:s.Host,Events:[]protocol.ObservedEvent{event}});err!=nil{return err};w.LastState=state;return s.Registry.Put(*w)}
+func(s *Supervisor)runtime(w Worker)harnesses.Runtime{return harnesses.Runtime{Launch:w.Launch,SendText:func(ctx context.Context,text string)error{return s.Tmux.Send(ctx,w.Target,text)},Cancel:func(ctx context.Context)error{return s.Tmux.Kill(ctx,w.Session)},Alive:func(ctx context.Context)(bool,*int,error){return s.Tmux.Pane(ctx,w.Target)}}}
+func(s *Supervisor)cancel(ctx context.Context,id string){w,ok:=s.Registry.Snapshot()[id];if !ok{return};_ = s.Tmux.Kill(ctx,w.Session);set:=protocol.Settlement{ID:id+"-cancelled",JobID:id,Verdict:protocol.Cancelled,Summary:"cancelled by requested state",At:time.Now().UTC()};if err:=s.Client.Events(ctx,protocol.EventBatch{Host:s.Host,Events:[]protocol.ObservedEvent{{ID:id+"-cancel-settlement",JobID:id,Settlement:&set}}});err==nil{_ = s.Registry.Delete(id)}}
+func(s *Supervisor)forget(ctx context.Context,id string){if w,ok:=s.Registry.Snapshot()[id];ok{_ = s.Tmux.Kill(ctx,w.Session);_ = s.Registry.Delete(id)}}
+func(s *Supervisor)observe(ctx context.Context)error{
+	for id,w:=range s.Registry.Snapshot(){a,err:=s.adapter(w.Job.Harness);if err!=nil{return err};runtime:=s.runtime(w);obs,observeErr:=a.Observe(ctx,w.Job,&runtime)
+		if observeErr==nil&&obs.State==protocol.Running{if w.LastState==protocol.Starting{if err=s.publishState(ctx,&w,protocol.Running);err!=nil{return err}};continue}
+		if observeErr!=nil&&!s.Tmux.ServerAlive(ctx){one:=1;obs=harnesses.Observation{State:protocol.Failed,ExitCode:&one};detail,_:=json.Marshal(map[string]string{"failure_boundary":"private tmux server unavailable"});obs.Detail=detail}else if observeErr!=nil{return observeErr}
+		settlement,err:=a.CollectSettlement(ctx,w.Job,w.Launch,obs);if err!=nil{return err};if len(obs.Detail)>0{settlement.Detail=obs.Detail};event:=protocol.ObservedEvent{ID:id+"-settlement",JobID:id,Settlement:settlement,ObservedAt:time.Now().UTC()};if err=s.Client.Events(ctx,protocol.EventBatch{Host:s.Host,Events:[]protocol.ObservedEvent{event}});err!=nil{return err};_ = s.Registry.Delete(id)
+	};return nil
 }
-func (s *Supervisor) observe(ctx context.Context) error {
-	for id, w := range s.Registry.Snapshot() {
-		alive, code, e := s.Tmux.Pane(ctx, w.Target)
-		if alive {
-			continue
-		}
-		if e != nil && s.Tmux.ServerAlive(ctx) {
-			continue
-		}
-		a, x := s.adapter(string(w.Job.Harness))
-		if x != nil {
-			return x
-		}
-		n := 1
-		if code != nil {
-			n = *code
-		}
-		o := harnesses.Observation{State: protocol.Failed, ExitCode: &n}
-		set, x := a.CollectSettlement(ctx, w.Job, w.Launch, o)
-		if x != nil {
-			return x
-		}
-		if e != nil {
-			set.Verdict = protocol.Failed
-			d, _ := json.Marshal(map[string]string{"failure_boundary": "private tmux server unavailable"})
-			set.Detail = d
-		}
-		batch := protocol.EventBatch{Host: s.Host, Events: []protocol.ObservedEvent{{ID: id + "-settlement", JobID: id, Settlement: set}}}
-		if x = s.Client.Events(ctx, batch); x != nil {
-			return x
-		}
-		s.Registry.Delete(id)
-	}
-	return nil
-}
-func GC(root string, before time.Time) error {
-	es, e := os.ReadDir(root)
-	if os.IsNotExist(e) {
-		return nil
-	}
-	if e != nil {
-		return e
-	}
-	for _, x := range es {
-		p := filepath.Join(root, x.Name())
-		i, e := x.Info()
-		if e == nil && i.ModTime().Before(before) {
-			os.RemoveAll(p)
-		}
-	}
-	return nil
-}
+func GC(root string,before time.Time)error{entries,err:=os.ReadDir(root);if os.IsNotExist(err){return nil};if err!=nil{return err};for _,entry:=range entries{info,e:=entry.Info();if e==nil&&info.ModTime().Before(before){if e=os.RemoveAll(filepath.Join(root,entry.Name()));e!=nil{return e}}};return nil}
