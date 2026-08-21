@@ -1,6 +1,8 @@
 import http from "http";
 import fs from "fs";
 import path from "path";
+import os from "os";
+import crypto from "crypto";
 import { spawn } from "child_process";
 import { debugLog, errorLog } from "./debug.ts";
 
@@ -22,7 +24,54 @@ import { debugLog, errorLog } from "./debug.ts";
 const CAP = Number(process.env.FAMILIAR_UPLOAD_MAX_BYTES ?? 50 * 1024 * 1024);
 
 function dropsDir(): string {
-  return process.env.FAMILIAR_DROPS_DIR || path.join("/tmp", "familiar-drops");
+  if (process.env.FAMILIAR_DROPS_DIR) return path.resolve(process.env.FAMILIAR_DROPS_DIR);
+  if (process.env.FAMILIAR_LOG_PATH) return path.join(path.dirname(path.resolve(process.env.FAMILIAR_LOG_PATH)), "uploads");
+  const uid = process.getuid?.();
+  return path.join(os.tmpdir(), `familiar-drops-${uid ?? "user"}`);
+}
+
+function secureDropsDir(dir: string): void {
+  try {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  } catch (error: any) {
+    if (error?.code !== "EEXIST") throw error;
+  }
+
+  let info = fs.lstatSync(dir);
+  if (info.isSymbolicLink()) throw new Error(`drops directory must not be a symlink: ${dir}`);
+  if (!info.isDirectory()) throw new Error(`drops path must be a directory: ${dir}`);
+  const uid = process.getuid?.();
+  if (uid !== undefined && info.uid !== uid) throw new Error(`drops directory is not owned by the gateway user: ${dir}`);
+
+  fs.chmodSync(dir, 0o700);
+  info = fs.lstatSync(dir);
+  if (info.isSymbolicLink() || !info.isDirectory() || (uid !== undefined && info.uid !== uid) || (info.mode & 0o777) !== 0o700) {
+    throw new Error(`drops directory failed security verification: ${dir}`);
+  }
+}
+
+export function storeDroppedFile(data: Buffer, rawName?: string, directory = dropsDir()): string {
+  const dir = path.resolve(directory);
+  secureDropsDir(dir);
+  const filename = sanitizeName(rawName);
+  const dest = path.join(dir, filename);
+  const temp = path.join(dir, `.${filename}.${process.pid}.${crypto.randomBytes(8).toString("hex")}.tmp`);
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(temp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW ?? 0), 0o600);
+    fs.writeFileSync(fd, data);
+    fs.fchmodSync(fd, 0o600);
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = undefined;
+    secureDropsDir(dir);
+    fs.renameSync(temp, dest);
+    return dest;
+  } catch (error) {
+    if (fd !== undefined) fs.closeSync(fd);
+    try { fs.unlinkSync(temp); } catch { }
+    throw error;
+  }
 }
 
 const CORS: Record<string, string> = {
@@ -220,12 +269,9 @@ export async function handleUpload(req: http.IncomingMessage, res: http.ServerRe
 
   if (data.length === 0) return sendJson(res, 400, { ok: false, error: "empty upload" });
 
-  const dir = dropsDir();
-  const filename = sanitizeName(rawName);
-  const dest = path.join(dir, filename);
+  let dest = dropsDir();
   try {
-    fs.mkdirSync(dir, { recursive: true, mode: 0o755 });
-    fs.writeFileSync(dest, data, { mode: 0o644 });
+    dest = storeDroppedFile(data, rawName);
   } catch (e) {
     errorLog("subscriber", { uploadWriteError: String(e), dest });
     return sendJson(res, 500, { ok: false, error: "write failed" });
