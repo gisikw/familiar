@@ -37,6 +37,11 @@ func TestSettlementIdempotentAndDurable(t *testing.T) {
 	if e = s.Record(ctx, b); e != nil {
 		t.Fatal(e)
 	}
+	altered := *set
+	altered.Summary = "late conflicting detail"
+	if e = s.Record(ctx, protocol.EventBatch{Host: "host", Events: []protocol.ObservedEvent{{ID: "terminal-retry", JobID: j.ID, Settlement: &altered}}}); e != nil {
+		t.Fatal(e)
+	}
 	s.Close()
 	s, e = Open(p)
 	if e != nil {
@@ -44,8 +49,8 @@ func TestSettlementIdempotentAndDurable(t *testing.T) {
 	}
 	defer s.Close()
 	got, e := s.Get(ctx, j.ID)
-	if e != nil || got.State != protocol.Done || got.Settlement == nil {
-		t.Fatalf("reopen: %#v %v", got, e)
+	if e != nil || got.State != protocol.Done || got.Settlement == nil || got.Settlement.Summary != "" {
+		t.Fatalf("reopen/first settlement: %#v %v", got, e)
 	}
 }
 func TestRejectTerminalWithoutSettlement(t *testing.T) {
