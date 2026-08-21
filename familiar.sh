@@ -22,7 +22,10 @@ export HERDR_CONFIG_PATH="${HERDR_CONFIG_PATH:-$HERDR_STATE_DIR/config.toml}"
 export FAMILIAR_IDENTITY_PATH="${FAMILIAR_IDENTITY_PATH:-$REPO/identity}"
 export FAMILIAR_AGE_KEY="${FAMILIAR_AGE_KEY:-$STATE_DIR/age.key}"
 export FAMILIAR_HANDOFF_PATH="${FAMILIAR_HANDOFF_PATH:-$STATE_DIR/handoffs}"
-export FAMILIAR_INBOX_DIR="${FAMILIAR_INBOX_DIR:-$STATE_DIR/inbox}"
+# Worklist durable queue. FAMILIAR_WORKLIST_DIR is canonical; FAMILIAR_INBOX_DIR
+# is a bounded compatibility alias (one release) so a mid-flight external writer
+# does not silently drop items.
+export FAMILIAR_WORKLIST_DIR="${FAMILIAR_WORKLIST_DIR:-${FAMILIAR_INBOX_DIR:-$STATE_DIR/worklist}}"
 export FAMILIAR_RELOAD_REQUEST_PATH="${FAMILIAR_RELOAD_REQUEST_PATH:-$HERDR_STATE_DIR/reload-request}"
 export FAMILIAR_RELOAD_COMPLETE_PATH="${FAMILIAR_RELOAD_COMPLETE_PATH:-$HERDR_STATE_DIR/reload-complete}"
 export FAMILIAR_LOG_PATH="${FAMILIAR_LOG_PATH:-$STATE_DIR/log.jsonl}"
@@ -876,12 +879,12 @@ stop() {
 }
 
 # Out-of-process enqueue (protocol path b): write an atomic envelope into the
-# inbox drop-box. The inbox extension drains state/inbox/incoming/ on its timer
-# and promotes each envelope into a queue item. Mirrors the herdr marker-file
-# pattern: no daemon, no socket, just a file the resident process picks up.
-# Envelope schema is documented in extensions/inbox/PROTOCOL.md.
-#   familiar.sh inbox-enqueue --summary "..." [--priority N] [--type notify|question|review]
-#                             [--body TEXT | --body-file F] [--source S] [--deadline EPOCH_MS]
+# worklist drop-box. The worklist extension drains state/worklist/incoming/ on
+# its timer and promotes each envelope into a queue item. Mirrors the herdr
+# marker-file pattern: no daemon, no socket, just a file the resident process
+# picks up. Envelope schema is documented in extensions/worklist/PROTOCOL.md.
+#   familiar.sh worklist-add --summary "..." [--priority N] [--type notify|question|review]
+#                            [--body TEXT | --body-file F] [--source S] [--deadline EPOCH_MS]
 inbox_enqueue() {
   shift || true
   local priority=2 type=notify summary="" body="" source="cli" deadline=""
@@ -894,14 +897,14 @@ inbox_enqueue() {
       --body-file)  body="$(cat "$2")"; shift 2 ;;
       --source)     source="$2"; shift 2 ;;
       --deadline)   deadline="$2"; shift 2 ;;
-      *) echo "inbox-enqueue: unknown arg $1" >&2; return 2 ;;
+      *) echo "worklist-add: unknown arg $1" >&2; return 2 ;;
     esac
   done
   if [ -z "$summary" ]; then
-    echo "inbox-enqueue: --summary is required" >&2; return 2
+    echo "worklist-add: --summary is required" >&2; return 2
   fi
   [ -z "$body" ] && body="$summary"
-  local incoming="$FAMILIAR_INBOX_DIR/incoming"
+  local incoming="$FAMILIAR_WORKLIST_DIR/incoming"
   mkdir -p "$incoming"
   local id file tmp
   id="cli-$(date +%Y%m%d-%H%M%S)-$RANDOM"
@@ -926,7 +929,8 @@ case ${1:-} in
   stt)        run_stt "$@" ;;
   tts)        run_tts "$@" ;;
   kill)          stop "$@" ;;
-  inbox-enqueue) inbox_enqueue "$@" ;;
+  worklist-add)  inbox_enqueue "$@" ;;
+  inbox-enqueue) inbox_enqueue "$@" ;;  # bounded compat alias (one release)
   client)     client "$@" ;;
   age)        handle_age "$@" ;;
   connect)    connect "$@" ;;

@@ -6,6 +6,13 @@ import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { prepareArtifactDir, getArtifactDir } from "./artifact-dir.ts";
+import {
+  registry as capabilities,
+  WORKLIST_SINK,
+  WORKLIST_SINK_VERSION,
+  type DurableSink,
+  type SinkPriority,
+} from "../lib/capabilities.ts";
 
 /* ============================================================================
  * Subagent extension — async work dispatch onto Herdr agents
@@ -440,6 +447,37 @@ function settle(cmd: DispatchCommand, pass: number, partial: Pick<Settlement, "s
 export default function (pi: ExtensionAPI) {
   const pollers = new Map<string, ReturnType<typeof setInterval>>();
 
+  /* --- worklist durable-sink seam --------------------------------------- */
+  // Resolved at delivery time (never at load): worklist may be absent, may
+  // register later, or may re-register across a /reload. Neither extension
+  // imports the other; both depend only on the neutral capability registry.
+  const resolveSink = (): DurableSink | undefined =>
+    capabilities.resolve<DurableSink>(WORKLIST_SINK, WORKLIST_SINK_VERSION);
+
+  // failed/timeout are more urgent than a clean completion (candidate 4).
+  const settlementPriority = (s: Settlement): SinkPriority => {
+    switch (s.status) {
+      case "crashed":
+      case "timeout":
+        return 1;
+      case "cancelled":
+        return 2;
+      default:
+        return 2; // done
+    }
+  };
+
+  const settlementSummary = (s: Settlement): string => {
+    const verb = s.status === "done" ? "settled" : s.status;
+    const head = s.result ? s.result.split("\n")[0].slice(0, 80) : "(no output)";
+    return `subagent ${s.id} ${verb}: ${head}`;
+  };
+
+  // Durable id for the worklist envelope: stable + pass-scoped so a re-relay is
+  // idempotent and a later subagent_await can withdraw exactly this item.
+  const worklistId = (s: Settlement): string => `subagent-${s.id}-${s.pass}`;
+  const worklistedMarker = (id: string, pass: number) => path.join(jobDir(id), `worklisted-${pass}`);
+
   /* --- relay ------------------------------------------------------------- */
 
   // deliverAs steer + triggerTurn: lands after the current turn if one is
@@ -475,18 +513,73 @@ export default function (pi: ExtensionAPI) {
     return true;
   };
 
-  const relay = (s: Settlement): boolean =>
-    send(path.join(jobDir(s.id), `relayed-${s.pass}`), [
-      `<subagent-settlement id="${s.id}" pass="${s.pass}" status="${s.status}">`,
-      ...(s.reason ? [`reason: ${s.reason}`] : []),
-      s.result || "(no output)",
-      ...(s.workdir ? [`workdir: ${s.workdir}${s.branch ? ` (branch ${s.branch})` : ""}`] : []),
-      ...(s.artifact_dir ? [`artifacts: ${s.artifact_dir}`] : []),
-      ...(s.usage
-        ? [`usage: ${s.usage.input}in/${s.usage.output}out tokens, $${s.usage.cost.toFixed(4)}${s.model ? `, ${s.model}` : ""}`]
-        : []),
-      `</subagent-settlement>`,
-    ]);
+  const settlementLines = (s: Settlement): string[] => [
+    `<subagent-settlement id="${s.id}" pass="${s.pass}" status="${s.status}">`,
+    ...(s.reason ? [`reason: ${s.reason}`] : []),
+    s.result || "(no output)",
+    ...(s.workdir ? [`workdir: ${s.workdir}${s.branch ? ` (branch ${s.branch})` : ""}`] : []),
+    ...(s.artifact_dir ? [`artifacts: ${s.artifact_dir}`] : []),
+    ...(s.usage
+      ? [`usage: ${s.usage.input}in/${s.usage.output}out tokens, $${s.usage.cost.toFixed(4)}${s.model ? `, ${s.model}` : ""}`]
+      : []),
+    `</subagent-settlement>`,
+  ];
+
+  // Relay a settlement's visible delivery. Preferred path: route through the
+  // worklist durable sink (attention policy decides WHEN it surfaces). Fallback:
+  // direct steer relay when the sink is absent, rejects, or throws. Exactly-once
+  // is arbitrated by the `relayed-<pass>` marker: whoever claims it owns
+  // delivery; the losing channel does nothing. A worklisted settlement records
+  // the `worklisted-<pass>` marker so subagent_await can withdraw it (see the
+  // dedup invariant in worklist/PROTOCOL.md). Resolves true once delivery is
+  // owned by SOME channel (so the poller can stop); false if it must retry.
+  const relay = async (s: Settlement): Promise<boolean> => {
+    const marker = path.join(jobDir(s.id), `relayed-${s.pass}`);
+    if (fs.existsSync(marker)) return true;
+
+    const sink = resolveSink();
+    if (sink) {
+      // Claim delivery ownership BEFORE enqueuing so a direct relay or an await
+      // cannot also fire. Roll back on any failure and fall through to direct.
+      if (!claim(marker)) return true;
+      try {
+        const acc = await sink.enqueue({
+          id: worklistId(s),
+          priority: settlementPriority(s),
+          type: "notify",
+          summary: settlementSummary(s),
+          body: settlementLines(s).join("\n"),
+          source: "subagent",
+        });
+        if (acc && acc.accepted) {
+          // Worklist now owns visible delivery. Mark it so await can withdraw.
+          try { fs.writeFileSync(worklistedMarker(s.id, s.pass), ""); } catch { /* best effort */ }
+          return true;
+        }
+        if (acc && acc.superseded) {
+          // Delivery already claimed elsewhere (an await withdrew this id while
+          // our enqueue was in-flight). Do NOT fall back to a direct relay;
+          // keep the relayed marker so nothing surfaces twice. Delivery owned.
+          return true;
+        }
+        // Rejected: relinquish the claim and fall back to a direct relay.
+        try { fs.unlinkSync(marker); } catch { /* nothing to roll back */ }
+      } catch {
+        try { fs.unlinkSync(marker); } catch { /* nothing to roll back */ }
+      }
+    }
+
+    // Fallback: direct steer relay (worklist absent/rejected/errored).
+    return send(marker, settlementLines(s));
+  };
+
+  // Fire relay without blocking the caller; stop the poller once delivery is
+  // owned. Idempotent (marker-guarded), so repeated ticks are safe.
+  const relayAsync = (s: Settlement, onDone?: (owned: boolean) => void) => {
+    void relay(s)
+      .then((owned) => onDone?.(owned))
+      .catch(() => onDone?.(false));
+  };
 
   // Blocked is an interrupt, not a settlement: the child is alive and waiting
   // on an answer. Relay the question, keep the job open, let respond() resume.
@@ -517,7 +610,7 @@ export default function (pi: ExtensionAPI) {
 
     const finish = (pass: number, status: SettlementStatus, reason?: string) => {
       retire(id, cmd, status);
-      if (relay(settle(cmd, pass, { status, reason }))) stopPolling(id);
+      relayAsync(settle(cmd, pass, { status, reason }), (owned) => { if (owned) stopPolling(id); });
     };
 
     // Each pass gets its own deadline: a steered or resurrected job is
@@ -535,7 +628,7 @@ export default function (pi: ExtensionAPI) {
       const pass = currentPass(id);
       const existing = readJSON<Settlement>(path.join(dir, `settlement-${pass}.json`));
       if (existing) {
-        if (relay(existing)) stopPolling(id);
+        relayAsync(existing, (owned) => { if (owned) stopPolling(id); });
         return;
       }
 
@@ -612,7 +705,7 @@ export default function (pi: ExtensionAPI) {
     const error = reviveTopology(cmd);
     if (error) {
       const s = settle(cmd, pass, { status: "crashed", reason: `resurrection failed: ${error}` });
-      if (!relay(s)) monitor(cmd.id);
+      relayAsync(s, (owned) => { if (!owned) monitor(cmd.id); });
       return;
     }
 
@@ -790,8 +883,37 @@ export default function (pi: ExtensionAPI) {
           const pass = currentPass(id);
           const s = readJSON<Settlement>(path.join(jobDir(id), `settlement-${pass}.json`));
           if (s) {
+            // Exactly-once dedup: this settlement may already be queued in the
+            // worklist (relay routed it through the durable sink). await is
+            // taking ownership of delivery here, so the queued item MUST NOT
+            // surface later. Withdraw it before returning the verdict.
+            //   withdraw() true  → item was undelivered (or never existed): we
+            //                      now own the single surface (this tool result)
+            //   withdraw() false → worklist ALREADY delivered it: do not repeat
+            //                      the body; point at the prior delivery instead
+            let alreadySurfaced = false;
+            const sink = resolveSink();
+            if (sink) {
+              // Always attempt withdraw when a sink is present, even if the
+              // `worklisted` marker is not yet on disk: relay's enqueue may be
+              // in-flight. withdraw sets a tombstone that also refuses a late
+              // enqueue, closing the race in both orderings.
+              try {
+                const removed = await sink.withdraw(worklistId(s));
+                alreadySurfaced = removed === false;
+              } catch {
+                /* sink error: fall through; marker+relayed guard below */
+              }
+            }
             claim(path.join(jobDir(id), `relayed-${pass}`)); // this result IS the relay
             stopPolling(id);
+            if (alreadySurfaced) {
+              return ok({
+                id: s.id, pass: s.pass, status: s.status, reason: s.reason,
+                note: "verdict already delivered to the conversation via the worklist; not repeated here",
+                ...(s.artifact_dir ? { artifact_dir: s.artifact_dir } : {}),
+              });
+            }
             return ok({
               id: s.id, pass: s.pass, status: s.status, reason: s.reason,
               result: s.result, usage: s.usage,
@@ -953,7 +1075,7 @@ export default function (pi: ExtensionAPI) {
 
       const settlement = readJSON<Settlement>(path.join(jobDir(id), `settlement-${pass}.json`));
       if (settlement) {
-        if (!relay(settlement)) monitor(id); // no-op when the marker exists
+        relayAsync(settlement, (owned) => { if (!owned) monitor(id); }); // no-op when marker exists
         continue;
       }
 
