@@ -28,7 +28,7 @@ shown prominently in a Familiar client.
 ```mermaid
 flowchart TB
     familiar["Familiar Presence Runtime"]
-    console["Familiar Console Host<br/>optional agent visualization"]
+    interface["Familiar Interface Gateway<br/>optional agent visualization"]
 
     subgraph agentSystem["Familiar Agent System — independently deployable"]
         direction TB
@@ -45,7 +45,7 @@ flowchart TB
     end
 
     familiar -->|"pi extension tools<br/>dispatch / await / steer / cancel"| api
-    console -. "optional read/attach UI<br/>through the same agent API" .-> api
+    interface -. "optional read/attach UI<br/>through the same agent API" .-> api
     api <--> jobs
     jobs <-->|"desired assignment +<br/>semantic job events"| reconciler
     reconciler <--> localRegistry
@@ -76,8 +76,8 @@ The extension may call an API, invoke a CLI, or write to a durable spool. Those
 are transport choices behind the tool contract.
 
 Optional first-class visualization also does not require a generic Familiar
-plugin system. A Familiar client can consume the agent system's ordinary API to
-render purpose-built views such as:
+plugin system. The Familiar Interface Gateway or a Familiar client can consume the agent
+system's ordinary API to render purpose-built views such as:
 
 - a supervision tree in a sidebar;
 - running, blocked, and completed status;

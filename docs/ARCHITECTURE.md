@@ -14,37 +14,49 @@ terminal, and web surfaces may come and go without ending the primary session.
 flowchart TB
     desktop["Familiar Desktop Client<br/>Electron"]
     mobile["Familiar Mobile Client<br/>iOS native"]
+    ssh["Terminal Client<br/>SSH / local console"]
 
-    subgraph console["Familiar Console Host"]
+    subgraph interface["Familiar Interface Gateway"]
         direction LR
-        layout["tmux UI / layout<br/>optional local console"]
-        piClient["pi remote client<br/>primary session attachment"]
-        web["Web and terminal gateway<br/>client ingress / egress"]
+        ingress["Familiar client endpoint<br/>HTTP / WebSocket / local IPC"]
+        interaction["Interaction orchestration<br/>text, voice, delivery"]
+        piClient["Internal pi remote client<br/>primary session attachment"]
+        terminal["Direct terminal / TUI projection"]
     end
 
     subgraph server["Familiar Server"]
         direction TB
-        gateway["Socket / Web / API gateway<br/>and runtime supervisor"]
+        supervisor["Configuration, readiness,<br/>routing, and runtime supervision"]
 
-        subgraph services["Supervised services — one-for-one restart boundaries"]
+        subgraph services["Local supervised service boundaries — one-for-one restart"]
             direction LR
             presence["Familiar Presence Runtime<br/>primary pi session server<br/>identity + continuity + extensions"]
-            llm["Familiar LLM proxy<br/>lazy local llama.cpp backend"]
-            stt["Familiar STT proxy<br/>lazy local backend"]
-            tts["Familiar TTS proxy<br/>lazy local backend"]
+            llm["Familiar LLM proxy<br/>configured upstream or<br/>lazy local llama.cpp"]
+            stt["Familiar STT proxy<br/>configured upstream or<br/>lazy local backend"]
+            tts["Familiar TTS proxy<br/>configured upstream or<br/>lazy local backend"]
         end
     end
 
-    desktop <--> console
-    mobile <--> console
+    desktop <--> ingress
+    mobile <--> ingress
+    ssh <--> terminal
 
-    piClient <-->|"pi-protocol<br/>direct or proxied transport"| presence
-    web <--> gateway
-    gateway <--> presence
+    ingress <--> interaction
+    terminal <--> piClient
+    interaction <--> piClient
+    piClient <-->|"internal pi-protocol"| presence
+    interaction --> stt
+    interaction --> tts
     presence --> llm
-    gateway --> stt
-    gateway --> tts
+    supervisor --> presence
+    supervisor --> llm
+    supervisor --> stt
+    supervisor --> tts
 ```
+
+The Interface Gateway and Familiar Server are logical components. A deployment
+may colocate them, but clients never connect directly to the Presence Runtime's
+pi-protocol endpoint.
 
 ## Identity boundary
 
@@ -62,36 +74,61 @@ calendar, task service, or search provider. Its architecture lives in
 
 ### Familiar clients
 
-The Electron desktop client and native mobile client present Familiar. They do
-not own the primary session or transcript. Closing a client must not stop the
-presence runtime.
+The Electron desktop client, native mobile client, and terminal surfaces present
+Familiar. They do not own the primary session or transcript. Closing a client
+must not stop the Presence Runtime.
 
-### Familiar Console Host
+The desktop bundle supports two deployment paths:
 
-The Console Host is the local presentation bridge. It may be embedded in the
-desktop application or run as a companion service.
+- **Remote:** connect to an existing Familiar URL.
+- **Local:** download and start the pinned local runtime components lazily.
 
-It may host:
+Logical separation remains intact when all components run on one machine. The
+Electron application is a bootstrap and presentation client, not the runtime
+itself.
 
-- an optional tmux-based local console and layout;
-- a pi remote client attached to the primary session;
-- web and terminal ingress/egress for interfaces that cannot connect to a Unix
-  socket or terminal directly.
+### Familiar Interface Gateway
 
-The Console Host is disposable. It can disappear and reconnect without becoming
-the session authority.
+The Interface Gateway is intentionally a hybrid layer: it is a server to
+Familiar clients and a client of the internal pi session runtime. “Gateway” names
+that role rather than forcing it into either side.
+
+It owns:
+
+- the Familiar-facing HTTP, WebSocket, or local-IPC endpoint;
+- the sole internal pi remote-client attachment used for application traffic;
+- text and voice interaction orchestration;
+- response delivery and presentation selection;
+- direct terminal/TUI projection for the current interface.
+
+A voice interaction may cross several services:
+
+```text
+voice input
+→ Familiar Interface Gateway
+→ Familiar STT
+→ Familiar Presence Runtime
+→ Familiar LLM
+→ Familiar Interface Gateway
+→ Familiar TTS, when voice output is requested
+→ client delivery
+```
+
+For now, terminal interfaces attach directly rather than introducing a new
+terminal protocol. A future HTML/canvas/chat presentation may project the same
+session without replacing the direct terminal path.
 
 ### Familiar Server
 
-The Familiar Server supervises the persistent runtime and exposes it to clients.
-It owns:
+The Familiar Server supervises the persistent runtime and its local capability
+proxies. It owns:
 
-- the primary Familiar presence runtime;
-- client-facing socket, web, and API routing;
+- the primary Familiar Presence Runtime;
 - configuration, readiness, and process lifecycle;
-- stable LLM, STT, and TTS service endpoints.
+- stable local LLM, STT, and TTS proxy endpoints;
+- local routing between supervised components.
 
-The server supervisor should coordinate processes and signals, not reimplement
+The server supervisor coordinates processes and signals. It does not reimplement
 pi's transcript or model semantics.
 
 ### Familiar Presence Runtime
@@ -112,51 +149,67 @@ Familiar Presence Runtime
     └── pi-protocol server
 ```
 
-The client side is:
+The internal client side is:
 
 ```text
 pi remote client
-├── pi-coding-agent client UI
+├── pi-coding-agent client facilities
 ├── pi-client / RemoteSession
-└── pi-tui
+└── pi-tui for direct terminal presentation
 ```
 
-`pi-protocol` is the boundary between them: length-framed CBOR over an ordered
-transport, initially a Unix-domain socket and optionally proxied for remote
-clients. The pi TUI is a reconnectable viewer, not the owner of the primary
-session.
-
-Familiar should use this existing pi layering rather than fork pi.
+`pi-protocol` is length-framed CBOR over an ordered transport. It remains an
+internal boundary between the Interface Gateway and Presence Runtime; it is not
+the public desktop/mobile protocol. Familiar should use this existing pi
+layering rather than fork pi.
 
 ### Model and voice services
 
-Familiar LLM, STT, and TTS are stable service proxies supervised beside the
-Presence Runtime. Local backends may be started lazily and replaced without
-changing the endpoint consumed by Familiar.
+Familiar LLM, STT, and TTS are always-local proxy components of the Familiar
+Server. “Local” describes the proxy boundary, not necessarily the backend doing
+the work.
+
+Each proxy follows the same routing rule:
 
 ```text
-Familiar LLM proxy
-└── lazy local llama.cpp backend, when needed
-
-Familiar STT proxy
-└── lazy local transcription backend, when needed
-
-Familiar TTS proxy
-└── lazy local synthesis backend, when needed
+configured endpoint present → forward through the local proxy
+no endpoint configured      → lazily start and supervise the local backend
 ```
 
-Remote providers and local backends are routing choices behind these service
-boundaries, not separate client architectures.
+The proxy remains the stable endpoint consumed by Familiar. Remote services and
+local implementations can change without changing the surrounding architecture.
+
+## Durable ownership
+
+The ownership boundary is architectural; the storage engine is an implementation
+decision.
+
+```text
+pi-owned session state
+├── transcript and session events
+├── model and thinking state
+└── tool calls and results
+
+Familiar-owned continuity state
+├── identity and canon
+├── handoffs and continuity metadata
+├── Familiar configuration
+└── client/device preferences
+```
+
+Familiar-owned state may remain files or move into a small database later. That
+does not change the rule: pi owns its session record; Familiar owns continuity
+beyond that session.
 
 ## Authority model
 
 | Layer | Authoritative for | Not authoritative for |
 |---|---|---|
 | Familiar Presence Runtime | Primary session, transcript, identity and continuity state | Client lifetime or rendering |
-| Familiar Server | Process supervision, configuration, readiness, service routing | Pi transcript/model semantics |
-| LLM/STT/TTS proxies | Stable service endpoints and backend lifecycle | Primary-session ownership |
-| Console Host | Local presentation bridge and attachment | Session lifetime |
-| Desktop/mobile clients | Presentation and input | Runtime or transcript authority |
+| Familiar Server | Process supervision, configuration, readiness, local service routing | Pi transcript/model semantics |
+| Interface Gateway | Interaction orchestration, public client protocol, delivery | Primary-session lifetime |
+| LLM/STT/TTS proxies | Stable local service endpoints and backend lifecycle | Primary-session ownership |
+| Desktop/mobile/terminal clients | Presentation and input | Runtime or transcript authority |
 
 ## Supervision and failure boundaries
 
@@ -168,26 +221,40 @@ all children restart together. The default strategy is equivalent to Erlang
 - the Presence Runtime may remain alive while inference is temporarily
   unavailable;
 - STT or TTS failure degrades voice without ending text sessions;
-- a Console Host or client may restart without touching the primary session;
+- the Interface Gateway may restart without ending the primary session;
+- a client may restart without touching either server component;
 - a broken presentation surface cannot become a runtime failure.
 
 A dependency or readiness edge is not automatically a shared crash boundary.
 
-## Open decisions
+## Settled deployment decisions
 
-1. **Console deployment:** embedded in Electron, companion daemon, or both.
-2. **Remote transport:** where Unix-socket pi protocol becomes authenticated
-   WebSocket or another network-safe transport for mobile and remote clients.
-3. **Terminal projection:** direct terminal attachment versus a Familiar terminal
-   protocol for browser/mobile clients.
-4. **Persistence boundary:** which continuity metadata belongs directly beside
-   pi's session store versus in a small Familiar-owned store.
-5. **Service placement:** whether LLM/STT/TTS proxies always run with the Familiar
-   Server or may be discovered remotely.
+1. **Client/runtime separation:** Electron remains separate from the runtime. It
+   can connect remotely or lazily install and launch a pinned local deployment.
+2. **External protocol:** clients speak a Familiar-owned application protocol to
+   the Interface Gateway. The Presence Runtime's pi-protocol is never exposed
+   directly.
+3. **Terminal projection:** direct attachment remains the initial implementation.
+   Rich HTML/canvas/chat projection is additive future work.
+4. **Durable ownership:** pi owns session records; Familiar owns identity and
+   continuity beyond the pi session. Storage format is deferred.
+5. **Service placement:** LLM/STT/TTS proxies are local Familiar Server
+   components. Configured remote endpoints sit behind those proxies; absent
+   endpoints trigger lazy local backends.
+
+## Remaining design work
+
+1. Define the Familiar client protocol's message schema, authentication,
+   reconnect, replay, and delivery semantics.
+2. Define secure component download, version pinning, verification, upgrade, and
+   rollback for local mode.
+3. Decide the first non-terminal presentation model without coupling it to pi's
+   terminal rendering.
 
 ## Architectural rule
 
-> The Presence Runtime owns continuity. The Familiar Server owns supervision.
-> Service proxies own backend lifecycle. Clients own presentation.
+> The Presence Runtime owns continuity. The Familiar Server owns supervision and
+> local capabilities. The Interface Gateway owns interaction and delivery.
+> Clients own presentation.
 
 No viewer is required for Familiar to remain alive.
