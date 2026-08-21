@@ -3,6 +3,7 @@ import { DecsetTracker, encodeMouse, domButtonToCode } from "/app/mouse.js";
 import { EmojiCompleter, loadEmoji } from "/app/emoji.js";
 import { VoiceCapture } from "/app/voice.js";
 import { STATES as VOICE_STATES } from "/app/voice-state.js";
+import { installVoiceKeyRouter, VOICE_KEY_LABEL } from "/app/voice-key-routing.js";
 
 // Browser terminal for the familiar server. Unlike the Electron client (which
 // bridges restty to node-pty over IPC), here restty talks to the server's /pty
@@ -172,7 +173,21 @@ const root = document.getElementById("terminal");
 const DEFAULT_FONT_SIZE = 14;
 let fontSize = DEFAULT_FONT_SIZE;
 let restty = null;
+let voice = null;
 const transport = createTappedWsTransport();
+
+// Reserve voice input before boot constructs Restty. Restty focuses a hidden
+// `.restty-pane-ime-input` textarea, then forwards window keydown events to its
+// encoder. The old generic INPUT/TEXTAREA focus guard therefore returned before
+// toggle(), after which restty/Herdr consumed Ctrl+Space (normally encoded as
+// NUL). F8 avoids OS/browser Ctrl+Space collisions too. The router recognizes
+// restty's IME sink as terminal focus while preserving the guard for real form
+// controls; capture + stopImmediatePropagation prevents any PTY forwarding.
+installVoiceKeyRouter(window, {
+  getVoice: () => voice,
+  getActiveElement: () => document.activeElement,
+  isTerminalInput: (element) => element?.classList?.contains("restty-pane-ime-input") === true,
+});
 
 async function loadFont(name) {
   const res = await fetch(`/fonts/${name}`);
@@ -373,15 +388,11 @@ async function wireEmoji() {
 boot();
 
 // ---------------------------------------------------------------------------
-// Tap-to-talk voice capture. Ctrl+Space starts recording; a second Ctrl+Space
-// stops, transcribes (server STT), and submits ONE subscriber message into the
-// live pi conversation via the existing /submit audio ingress. Escape cancels.
-//
-// The terminal deliberately CLAIMS Ctrl+Space: it is captured here (capture
-// phase, preventDefault) before restty forwards it to the pty, so the remote
-// TUI never sees a NUL byte. This is intentional and documented in DESIGN.md.
+// Tap-to-talk voice capture. F8 starts recording; a second F8 stops,
+// transcribes (server STT), and submits ONE subscriber message into the live
+// pi conversation via the existing /submit audio ingress. Escape cancels.
+// Keyboard reservation is installed above, before Restty is constructed.
 // ---------------------------------------------------------------------------
-let voice = null;
 function wireVoice() {
   const indicator = document.getElementById("voice-indicator");
   const setIndicator = (state, detail) => {
@@ -401,38 +412,9 @@ function wireVoice() {
     onState: (state, detail) => {
       setIndicator(state, detail);
       if (state === VOICE_STATES.ERROR) toast(detail || "voice error");
-      if (state === VOICE_STATES.RECORDING) toast("recording — Ctrl+Space to send, Esc to cancel");
+      if (state === VOICE_STATES.RECORDING) toast(`recording — ${VOICE_KEY_LABEL} to send, Esc to cancel`);
     },
   });
-
-  // A browser text input / modal owning focus must keep its own keys. We only
-  // claim Ctrl+Space when focus is on the body / the terminal canvas.
-  const focusOwnedByInput = () => {
-    const el = document.activeElement;
-    if (!el || el === document.body) return false;
-    const tag = el.tagName;
-    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
-    if (el.isContentEditable) return true;
-    // The emoji picker is a floating div, not a focusable input; ignore it.
-    return false;
-  };
-
-  window.addEventListener("keydown", (e) => {
-    // Ctrl+Space (space reports as " " or "Spacebar" on old UAs; code is stable).
-    const isSpace = e.code === "Space" || e.key === " " || e.key === "Spacebar";
-    if (e.ctrlKey && !e.metaKey && !e.altKey && isSpace) {
-      if (focusOwnedByInput()) return; // let the input have its keystroke
-      e.preventDefault(); e.stopPropagation(); // never let a NUL reach the pty
-      voice.toggle();
-      return;
-    }
-    // Escape cancels an active capture (only when we own it — otherwise let the
-    // TUI receive Escape as normal).
-    if (e.key === "Escape" && voice.isActive()) {
-      e.preventDefault(); e.stopPropagation();
-      voice.cancel();
-    }
-  }, true);
 
   // No recording may survive an unload or a lost connection.
   window.addEventListener("beforeunload", () => { try { voice.cancel(); } catch (_) { /* ignore */ } });

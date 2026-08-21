@@ -26,7 +26,7 @@ export const STATES = Object.freeze({
 
 // Intents fed in by the host.
 export const INTENTS = Object.freeze({
-  TOGGLE: "toggle", // Ctrl+Space
+  TOGGLE: "toggle", // F8 tap
   CANCEL: "cancel", // Escape / unload
   MIC_READY: "mic_ready", // getUserMedia + recorder ready
   MIC_DENIED: "mic_denied", // permission denied / no device
@@ -126,7 +126,7 @@ export class VoiceStateMachine {
 
       case STATES.ERROR:
         // Any tap (or cancel) clears the error and returns to idle. A fresh
-        // Ctrl+Space then starts a new capture on the following press.
+        // F8 then starts a new capture on the following press.
         if (intent === INTENTS.TOGGLE || intent === INTENTS.CANCEL) {
           this.lastError = null;
           this.state = STATES.IDLE;

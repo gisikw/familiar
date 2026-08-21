@@ -3,9 +3,9 @@
 // VoiceStateMachine so the lifecycle is testable without a microphone.
 //
 // PATH (keypress → pi):
-//   Ctrl+Space (terminal.js) → VoiceCapture.toggle()
+//   F8 (terminal.js) → VoiceCapture.toggle()
 //     → getUserMedia → MediaRecorder (dynamic MIME)
-//   Ctrl+Space again → recorder.stop() → ondataavailable blob
+//   F8 again → recorder.stop() → ondataavailable blob
 //     → base64 → POST /submit  { type:"audio", id, seq:0, data, segments:1 }
 //   server Ingress.transcribe (FAMILIAR_STT_URL) → dispatch → /relay
 //     → subscriber RelayClient.sendParts → pi.sendUserMessage
@@ -68,7 +68,7 @@ export class VoiceCapture {
     this.takeSeq = Date.now() % 1_000_000;
   }
 
-  // Ctrl+Space. Fully synchronous entry; async work is kicked off by actions.
+  // F8 tap. Fully synchronous entry; async work is kicked off by actions.
   toggle() {
     this._run(this.sm.dispatch(INTENTS.TOGGLE));
   }

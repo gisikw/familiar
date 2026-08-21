@@ -150,7 +150,7 @@ describe("error surfaces + recovers on next tap", () => {
     expect(sm.state).toBe(STATES.ERROR);
     expect(sm.lastError).toBe("stt 500");
 
-    // Next Ctrl+Space clears the error (does NOT immediately re-record).
+    // Next F8 clears the error (does NOT immediately re-record).
     r = sm.dispatch(INTENTS.TOGGLE);
     expect(sm.state).toBe(STATES.IDLE);
     expect(types(r)).toEqual([ACTIONS.NOTIFY]);
