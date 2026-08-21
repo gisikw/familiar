@@ -1,6 +1,6 @@
 /* ============================================================================
  * Worklist tests — headless, no pi runtime required.
- * Run with:  nix develop .#stt -c bun test extensions/worklist/worklist.test.ts
+ * Run with:  nix develop .#stt -c bun test integrations/pi/extensions/worklist/worklist.test.ts
  *   (bun is available in the .#stt dev shell; there is no node in .#pi)
  * ============================================================================
  */

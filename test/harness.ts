@@ -5,7 +5,7 @@ process.env.FAMILIAR_TTS_URL = "http://localhost:17998";
 process.env.FAMILIAR_STT_URL = "http://localhost:9932";
 process.env.FAMILIAR_LOG_PATH = "/tmp/familiar-test-log";
 
-import subscriber from "../extensions/subscriber/index.ts";
+import subscriber from "../integrations/pi/extensions/subscriber/index.ts";
 
 const handlers: Record<string, Function[]> = {};
 const sent: any[] = [];

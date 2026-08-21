@@ -1,5 +1,5 @@
 /* ============================================================================
- * Familiar server protocol (moved here from extensions/subscriber/protocol.ts)
+ * Familiar server protocol (moved here from integrations/pi/extensions/subscriber/protocol.ts)
  * ============================================================================
  *
  * The web server owns all HTTP. Remote clients (Hearth, browser terminal,

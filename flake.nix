@@ -69,7 +69,7 @@
           vendorHash = null;
         };
         familiarHerdr = herdr.packages.${system}.default.overrideAttrs (old: {
-          patches = (old.patches or [ ]) ++ [ ./patches/herdr-left-nav-pty.patch ];
+          patches = (old.patches or [ ]) ++ [ ./integrations/pi/patches/herdr-left-nav-pty.patch ];
         });
         piShell = pkgs.mkShell (modelEnv // {
           FAMILIAR_SHELL = "pi";

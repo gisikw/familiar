@@ -198,7 +198,7 @@ run_pi() {
       --arg provider "${FAMILIAR_DEFAULT_PROVIDER:-llama.cpp}" \
       --arg model "${FAMILIAR_DEFAULT_MODEL:-${FAMILIAR_MODEL_FILE%.*}}" \
       --arg dir "$PI_CODING_AGENT_DIR" \
-      --arg ext "$REPO/extensions" '
+      --arg ext "$REPO/integrations/pi/extensions" '
       $prev + {
         lastChangelogVersion: "0.84.1",
         theme: "familiar",
@@ -962,7 +962,7 @@ stop() {
 # worklist drop-box. The worklist extension drains state/worklist/incoming/ on
 # its timer and promotes each envelope into a queue item. Mirrors the herdr
 # marker-file pattern: no daemon, no socket, just a file the resident process
-# picks up. Envelope schema is documented in extensions/worklist/PROTOCOL.md.
+# picks up. Envelope schema is documented in integrations/pi/extensions/worklist/PROTOCOL.md.
 #   familiar.sh worklist-add --summary "..." [--priority N] [--type notify|question|review]
 #                            [--body TEXT | --body-file F] [--source S] [--deadline EPOCH_MS]
 inbox_enqueue() {

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import * as path from "node:path";
 import { nativeAgentArgs } from "./native-agent-args.ts";
 
-const EXT = "/repo/extensions";
+const EXT = "/repo/integrations/pi/extensions";
 const p = (name: string) => path.join(EXT, name, "index.ts");
 const baseOpts = { extDir: EXT, sessionDir: "/sessions", sessionId: "sess-123" };
 

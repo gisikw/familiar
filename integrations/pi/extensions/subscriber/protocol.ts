@@ -10,7 +10,7 @@ export {
   PENDING_ECHO_MAX,
   RELAY_QUEUE_MAX,
   SEGMENT_MIN_CHARS,
-} from "../../services/gateway/src/protocol.ts";
+} from "../../../../services/gateway/src/protocol.ts";
 
 export type {
   SessionEvent,
@@ -24,4 +24,4 @@ export type {
   CancelCommand,
   RelayCommand,
   SubmitPayload,
-} from "../../services/gateway/src/protocol.ts";
+} from "../../../../services/gateway/src/protocol.ts";

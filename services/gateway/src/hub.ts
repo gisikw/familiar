@@ -5,7 +5,7 @@ import { HISTORY_MAX, type MessageEvent, type SessionEvent, type StreamEvent } f
 
 /* --- SSE hub: client registry, history replay, broadcast ------------------
  *
- * Ported faithfully from extensions/subscriber/hub.ts. Now server-owned: the
+ * Ported faithfully from integrations/pi/extensions/subscriber/hub.ts. Now server-owned: the
  * hub is fed by /ingest envelopes rather than an in-process firehose, and the
  * session epoch is re-mintable (newSession) because the id-space lives in the
  * extension firehose, which restarts with each pi session.

@@ -202,7 +202,7 @@ its own direct relay. See the next section.
 ## Subagent settlement routing (candidate 4)
 
 Neither extension imports the other. Both depend only on a tiny neutral,
-versioned, process-local registry: `extensions/lib/capabilities.ts`.
+versioned, process-local registry: `integrations/pi/extensions/lib/capabilities.ts`.
 
 - **Worklist registers** a versioned async durable-enqueue **sink**
   (`worklist.durable-sink@1`) during extension factory initialization, after
@@ -266,9 +266,9 @@ would permanently lose delivery. The same final-transport boundary exists when
 the worklist surfaces an accepted item. Stable ids make queue acceptance and
 ownership retry-safe, not the final push transactional.
 
-Tested in `extensions/lib/capabilities.test.ts` (duplicate-prevention suite),
-`extensions/subagent/relay-state.test.ts` (claim recovery), and
-`extensions/worklist/worklist.test.ts` (store withdraw/dedup).
+Tested in `integrations/pi/extensions/lib/capabilities.test.ts` (duplicate-prevention suite),
+`integrations/pi/extensions/subagent/relay-state.test.ts` (claim recovery), and
+`integrations/pi/extensions/worklist/worklist.test.ts` (store withdraw/dedup).
 
 ---
 
@@ -287,8 +287,8 @@ live countdown recomputed each repaint while an override holds.
 ## Files
 
 ```
-extensions/lib/capabilities.ts    neutral versioned registry + sink contract
-extensions/worklist/
+integrations/pi/extensions/lib/capabilities.ts    neutral versioned registry + sink contract
+integrations/pi/extensions/worklist/
   policy.ts        pure decision core (tiers, attention, escalation, clamp) — no I/O
   store.ts         durable queue + atomic writes + drop-box drain + migration — I/O only
   index.ts         extension: hooks, timer, commands, tool, delivery, surfaces, sink
@@ -296,14 +296,14 @@ extensions/worklist/
   PROTOCOL.md      this file
 ```
 
-Tests: `nix develop .#stt -c bun test extensions/worklist/worklist.test.ts extensions/lib/capabilities.test.ts`
+Tests: `nix develop .#stt -c bun test integrations/pi/extensions/worklist/worklist.test.ts integrations/pi/extensions/lib/capabilities.test.ts`
 (bun lives in the `.#stt` dev shell; there is no `node` in `.#pi`).
 
 ---
 
 ## Migration from `inbox`
 
-- Directory `extensions/inbox/` → `extensions/worklist/` (git mv, history kept).
+- Directory `integrations/pi/extensions/inbox/` → `integrations/pi/extensions/worklist/` (git mv, history kept).
 - State dir `state/inbox/` → `state/worklist/`; every `ensureDirs()` performs
   repeatable reconciliation for legacy `items/`, `items/archive/`, and
   `incoming/`. Known ids dedupe against both live and archived history;

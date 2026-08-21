@@ -5,7 +5,7 @@ import type { StreamHub } from "./hub.ts";
 
 /* --- Audio: segment cache + sequential synthesis queue --------------------
  *
- * Ported from extensions/subscriber/audio.ts. Now server-owned: the server
+ * Ported from integrations/pi/extensions/subscriber/audio.ts. Now server-owned: the server
  * calls FAMILIAR_TTS_URL directly. Segments are registered from /ingest
  * SegmentEvents (the extension firehose still decides WHAT is a segment; the
  * server decides whether to synthesize, since it owns the audio-listener

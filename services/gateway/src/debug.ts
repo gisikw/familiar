@@ -1,6 +1,6 @@
 import fs from "fs";
 
-/* Server-side logging. Mirrors extensions/lib/debug.ts: JSONL sidecar files
+/* Server-side logging. Mirrors integrations/pi/extensions/lib/debug.ts: JSONL sidecar files
  * next to FAMILIAR_LOG_PATH (`${FAMILIAR_LOG_PATH}.${suffix}`) when set,
  * otherwise stderr. FAMILIAR_DEBUG_LEVEL: "off" | "error" | "debug".
  */

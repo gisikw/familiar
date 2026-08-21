@@ -1,7 +1,7 @@
 /**
  * Tests for artifact directory management.
  * 
- * Run: nix develop .#stt -c bun test extensions/subagent/artifact-dir.test.ts
+ * Run: nix develop .#stt -c bun test integrations/pi/extensions/subagent/artifact-dir.test.ts
  */
 
 import { expect, test, describe, beforeEach, afterEach } from "bun:test";

@@ -1,4 +1,4 @@
-// extensions/subagent/native-agent-args.ts — the child (pi) subagent's explicit
+// integrations/pi/extensions/subagent/native-agent-args.ts — the child (pi) subagent's explicit
 // extension set and argv.
 //
 // Kept in its own dependency-free module (no typebox / pi API imports) so the

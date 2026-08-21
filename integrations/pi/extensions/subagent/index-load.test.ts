@@ -74,8 +74,8 @@ esac
 describe("subagent index.ts — real-runtime nativeAgentArgs binding", () => {
   test("loads under the real pi loader without error", async () => {
     const { loadExtensions } = await realLoader();
-    const repo = resolve(import.meta.dir, "..", "..");
-    const indexPath = join(repo, "extensions", "subagent", "index.ts");
+    const repo = resolve(import.meta.dir, "..", "..", "..", "..");
+    const indexPath = join(repo, "integrations", "pi", "extensions", "subagent", "index.ts");
     const res = await loadExtensions([indexPath], repo);
     // A parse/import failure (e.g. an unresolved import) would surface here.
     expect(res.errors).toEqual([]);
@@ -84,8 +84,8 @@ describe("subagent index.ts — real-runtime nativeAgentArgs binding", () => {
 
   test("dispatch.execute reaches the nativeAgentArgs call site (local binding resolves)", async () => {
     const { loadExtensions } = await realLoader();
-    const repo = resolve(import.meta.dir, "..", "..");
-    const indexPath = join(repo, "extensions", "subagent", "index.ts");
+    const repo = resolve(import.meta.dir, "..", "..", "..", "..");
+    const indexPath = join(repo, "integrations", "pi", "extensions", "subagent", "index.ts");
 
     const work = mkdtempSync(join(tmpdir(), "subagent-dispatch-"));
     roots.push(work);
@@ -133,8 +133,8 @@ describe("subagent index.ts — real-runtime nativeAgentArgs binding", () => {
         if (command.agent_args[i] === "-e") loaded.push(command.agent_args[i + 1]);
       }
       expect(loaded).toEqual([
-        join(repo, "extensions", "anthropic-gateway", "index.ts"),
-        join(repo, "extensions", "web", "index.ts"),
+        join(repo, "integrations", "pi", "extensions", "anthropic-gateway", "index.ts"),
+        join(repo, "integrations", "pi", "extensions", "web", "index.ts"),
       ]);
       // Stop the background poller started by monitor(id) so bun can exit.
       await cancel!.definition.execute("tc-2", { id });

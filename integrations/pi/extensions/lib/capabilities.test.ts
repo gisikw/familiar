@@ -1,6 +1,6 @@
 /* ============================================================================
  * capabilities + worklist⇄subagent seam — headless contract tests.
- * Run with:  nix develop .#stt -c bun test extensions/lib/capabilities.test.ts
+ * Run with:  nix develop .#stt -c bun test integrations/pi/extensions/lib/capabilities.test.ts
  * ============================================================================
  *
  * These tests exercise the neutral registry and a FAITHFUL model of the seam
@@ -86,7 +86,7 @@ describe("capability registry: register/resolve/unregister/dispose", () => {
 });
 
 /* --- a faithful worklist sink over a real store --------------------------- */
-// Mirrors extensions/worklist/index.ts sink semantics so the seam invariants
+// Mirrors integrations/pi/extensions/worklist/index.ts sink semantics so the seam invariants
 // are tested without a running pi.
 function makeSink(root: string): DurableSink & { _tombstones: Set<string> } {
   const P = worklistPaths(root);

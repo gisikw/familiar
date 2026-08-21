@@ -5,7 +5,7 @@ import type { SubmitPayload } from "./protocol.ts";
 
 /* --- Ingress: text / chunked-audio takes → RelayCommand -------------------
  *
- * Ported from extensions/subscriber/server.ts (handleSubmit + transcribe*).
+ * Ported from integrations/pi/extensions/subscriber/server.ts (handleSubmit + transcribe*).
  * The server owns STT (FAMILIAR_STT_URL): it transcribes audio takes here,
  * assembles the ready-to-dispatch text parts, and pushes a submit command
  * down the relay for the extension to enact against pi.sendUserMessage. The
