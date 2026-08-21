@@ -20,7 +20,7 @@ flowchart TB
         direction LR
         ingress["Familiar client endpoint<br/>HTTP / WebSocket / local IPC"]
         interaction["Interaction orchestration<br/>text, voice, delivery"]
-        piClient["Internal pi remote client<br/>primary session attachment"]
+        sessionView["Session presentation adapter<br/>temporary: tmux attach<br/>future: pi remote client"]
         terminal["Direct terminal / TUI projection"]
     end
 
@@ -30,7 +30,7 @@ flowchart TB
 
         subgraph services["Local supervised service boundaries — one-for-one restart"]
             direction LR
-            presence["Familiar Presence Runtime<br/>primary pi session server<br/>identity + continuity + extensions"]
+            presence["Familiar Presence Runtime<br/>temporary: full pi in private tmux<br/>future: pi session server"]
             llm["Familiar LLM proxy<br/>configured upstream or<br/>lazy local llama.cpp"]
             stt["Familiar STT proxy<br/>configured upstream or<br/>lazy local backend"]
             tts["Familiar TTS proxy<br/>configured upstream or<br/>lazy local backend"]
@@ -42,9 +42,9 @@ flowchart TB
     ssh <--> terminal
 
     ingress <--> interaction
-    terminal <--> piClient
-    interaction <--> piClient
-    piClient <-->|"internal pi-protocol"| presence
+    terminal <--> sessionView
+    interaction <--> sessionView
+    sessionView <-->|"temporary: PTY attach<br/>future: internal pi-protocol"| presence
     interaction --> stt
     interaction --> tts
     presence --> llm
@@ -96,7 +96,7 @@ that role rather than forcing it into either side.
 It owns:
 
 - the Familiar-facing HTTP, WebSocket, or local-IPC endpoint;
-- the sole internal pi remote-client attachment used for application traffic;
+- the session-presentation adapter used for application traffic;
 - text and voice interaction orchestration;
 - response delivery and presentation selection;
 - direct terminal/TUI projection for the current interface.
@@ -158,10 +158,42 @@ pi remote client
 └── pi-tui for direct terminal presentation
 ```
 
-`pi-protocol` is length-framed CBOR over an ordered transport. It remains an
-internal boundary between the Interface Gateway and Presence Runtime; it is not
-the public desktop/mobile protocol. Familiar should use this existing pi
-layering rather than fork pi.
+`pi-protocol` is length-framed CBOR over an ordered transport. In the target
+state it remains an internal boundary between the Interface Gateway and Presence
+Runtime; it is not the public desktop/mobile protocol. Familiar should use pi's
+existing layering as it matures rather than fork pi.
+
+### Temporary pi adapter
+
+Pi 0.84.1 has stable interactive and headless RPC modes, but its experimental
+persistent server and detachable standard TUI are not yet a complete supported
+workflow. Familiar therefore closes over the current implementation behind two
+replaceable adapters:
+
+```text
+Presence Runtime adapter
+  now:    full interactive pi instance in a private tmux session
+  future: persistent pi session server
+
+Session presentation adapter
+  now:    direct tmux attachment / existing terminal projection
+  future: detachable pi remote client and TUI
+```
+
+The private tmux server keeps the complete pi process alive when no presentation
+is attached. Closing a terminal or Interface Gateway attachment kills only the
+attach client. Existing web/extension ingress continues to handle non-terminal
+interactions during this phase.
+
+The adapter contract, not tmux, is architectural. tmux session names, pane IDs,
+and terminal-detection behavior must not leak into clients or the wider server.
+When pi's native split becomes usable, both adapter internals can be replaced
+without changing the Familiar client protocol, service boundaries, or presence
+identity.
+
+A stable RPC relay remains an available intermediate implementation if semantic
+session access becomes necessary before pi's detachable TUI is ready; it is not
+required for the initial tmux-backed migration.
 
 ### Model and voice services
 
