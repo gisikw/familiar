@@ -2,6 +2,7 @@ package llm
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -26,6 +27,9 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 func helperBackend() {
+	if text := os.Getenv("FAMILIAR_LLM_TEST_STDERR"); text != "" {
+		fmt.Fprintln(os.Stderr, text)
+	}
 	args := os.Args
 	port := ""
 	for i := range args {
@@ -52,7 +56,19 @@ func helperBackend() {
 	})
 	_ = http.ListenAndServe("127.0.0.1:"+port, mux)
 }
-func logger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.Write(p)
+}
+func (b *lockedBuffer) String() string { b.mu.Lock(); defer b.mu.Unlock(); return b.b.String() }
+func logger() *slog.Logger             { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 func runService(t *testing.T, s *Service) *httptest.Server {
 	t.Helper()
 	ts := httptest.NewServer(s.Handler())
@@ -188,8 +204,9 @@ func TestLocalLazySingleFlightCrashRestartAndShutdown(t *testing.T) {
 	}
 	resp.Body.Close()
 	resp, _ = http.Get(ts.URL + "/ready")
-	if resp.StatusCode != 503 {
-		t.Fatalf("early ready status=%d", resp.StatusCode)
+	readyBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 || !strings.Contains(string(readyBody), `"backend":"cold"`) {
+		t.Fatalf("cold ready status=%d body=%s", resp.StatusCode, readyBody)
 	}
 	resp.Body.Close()
 	var wg sync.WaitGroup
@@ -219,7 +236,7 @@ func TestLocalLazySingleFlightCrashRestartAndShutdown(t *testing.T) {
 		t.Fatalf("starts=%d", n)
 	}
 	resp, _ = http.Get(ts.URL + "/ready")
-	if resp.StatusCode != 204 {
+	if resp.StatusCode != 200 {
 		t.Fatalf("ready status=%d", resp.StatusCode)
 	}
 	resp.Body.Close()
@@ -249,20 +266,128 @@ func TestLocalLazySingleFlightCrashRestartAndShutdown(t *testing.T) {
 		t.Fatal("backend survived close")
 	}
 }
-func TestLocalMissingModelFailsWithoutSpawn(t *testing.T) {
+func TestLocalMissingModelRejectedStatically(t *testing.T) {
 	c := DefaultConfig()
 	c.ModelDir = t.TempDir()
 	c.ModelFile = "absent.gguf"
-	c.LlamaServer = "should-not-run"
-	c.StartupTimeout = 100 * time.Millisecond
-	s, _ := New(c, logger())
+	c.LlamaServer = os.Args[0]
+	if _, err := New(c, logger()); err == nil {
+		t.Fatal("missing model accepted")
+	}
+}
+
+func TestBoundedDiagnosticTailRedacts(t *testing.T) {
+	tail := newBoundedTail(64)
+	_, _ = tail.Write([]byte(strings.Repeat("x", 200) + " token=supersecret Authorization: Bearer abc123 https://user:pass@example.test"))
+	if tail.Len() > 64 {
+		t.Fatalf("tail retained %d bytes", tail.Len())
+	}
+	got := tail.String()
+	for _, secret := range []string{"supersecret", "abc123", "user:pass"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("secret leaked in %q", got)
+		}
+	}
+}
+
+func TestChildExitDiagnosticIsBoundedAndDebugOnly(t *testing.T) {
+	c, _ := localConfig(t)
+	c.DebugChild = true
+	c.DiagnosticBytes = 128
+	t.Setenv("FAMILIAR_LLM_TEST_STDERR", strings.Repeat("z", 300)+" token=hunter2")
+	var logs lockedBuffer
+	s, err := New(c, slog.New(slog.NewTextHandler(&logs, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
 	ts := runService(t, s)
-	resp, e := http.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader("{}"))
-	if e != nil {
-		t.Fatal(e)
+	resp, err := http.Get(ts.URL + "/crash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	deadline := time.Now().Add(time.Second)
+	for !strings.Contains(logs.String(), "exit code 3") && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	got := logs.String()
+	if !strings.Contains(got, "exit code 3") || strings.Contains(got, "hunter2") || len(got) > 1024 {
+		t.Fatalf("unsafe diagnostic log (%d bytes): %s", len(got), got)
+	}
+}
+
+func TestChildTailRequiresDebug(t *testing.T) {
+	c, _ := localConfig(t)
+	t.Setenv("FAMILIAR_LLM_TEST_STDERR", "do-not-log-this")
+	var logs lockedBuffer
+	s, err := New(c, slog.New(slog.NewTextHandler(&logs, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := runService(t, s)
+	resp, err := http.Get(ts.URL + "/crash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	deadline := time.Now().Add(time.Second)
+	for !strings.Contains(logs.String(), "exit code 3") && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := logs.String(); strings.Contains(got, "do-not-log-this") || strings.Contains(got, "stderr_tail") {
+		t.Fatalf("debug tail leaked: %s", got)
+	}
+}
+
+func TestRejectsSelfLoops(t *testing.T) {
+	for _, upstream := range []string{"http://127.0.0.1:9931", "http://localhost:9931/v1", "http://[::1]:9931"} {
+		c := DefaultConfig()
+		c.Upstream = upstream
+		if _, err := New(c, logger()); err == nil {
+			t.Errorf("accepted self-loop %s", upstream)
+		}
+	}
+	c := DefaultConfig()
+	c.Upstream = "http://127.0.0.1:9932"
+	if _, err := New(c, logger()); err != nil {
+		t.Fatalf("rejected distinct endpoint: %v", err)
+	}
+	local, _ := localConfig(t)
+	local.Backend = local.Listen
+	if _, err := New(local, logger()); err == nil {
+		t.Error("accepted local backend/listen collision")
+	}
+}
+
+func TestRejectsUnboundedDiagnosticConfiguration(t *testing.T) {
+	c := DefaultConfig()
+	c.Upstream = "http://example.test"
+	c.DiagnosticBytes = maxDiagnosticBytes + 1
+	if _, err := New(c, logger()); err == nil {
+		t.Fatal("accepted unbounded diagnostic retention")
+	}
+}
+
+func TestSlowRequestBodyTimesOut(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { t.Error("slow body reached upstream") }))
+	defer up.Close()
+	c := DefaultConfig()
+	c.Upstream = up.URL
+	c.BodyTimeout = 40 * time.Millisecond
+	s, err := New(c, logger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := runService(t, s)
+	reader, writer := io.Pipe()
+	go func() { _, _ = writer.Write([]byte("{")); time.Sleep(150 * time.Millisecond); _ = writer.Close() }()
+	req, _ := http.NewRequest("POST", ts.URL+"/v1/chat/completions", reader)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 503 {
-		t.Fatalf("status %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusRequestTimeout {
+		t.Fatalf("status=%d", resp.StatusCode)
 	}
 }

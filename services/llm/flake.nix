@@ -19,10 +19,20 @@
             wrapProgram $out/bin/familiar-llm \
               --set-default FAMILIAR_LLAMA_SERVER ${pkgs.llama-cpp}/bin/llama-server
           '';
+          meta = with pkgs.lib; {
+            description = "Stable loopback LLM proxy with lazy llama.cpp supervision";
+            license = licenses.mit;
+            mainProgram = "familiar-llm";
+            platforms = platforms.unix;
+          };
         };
       in {
         packages.default = service;
-        apps.default = flake-utils.lib.mkApp { drv = service; };
+        apps.default = {
+          type = "app";
+          program = "${service}/bin/familiar-llm";
+          meta.description = "Run the Familiar LLM proxy";
+        };
         checks.default = service;
         devShells.default = pkgs.mkShell {
           packages = [ pkgs.go pkgs.llama-cpp ];

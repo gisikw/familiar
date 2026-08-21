@@ -23,7 +23,7 @@ func main() {
 		log.Error("invalid configuration", "error", err)
 		os.Exit(2)
 	}
-	httpServer := &http.Server{Addr: cfg.Listen, Handler: svc.Handler(), ReadHeaderTimeout: 10e9, IdleTimeout: 120e9}
+	httpServer := &http.Server{Addr: cfg.Listen, Handler: svc.Handler(), ReadHeaderTimeout: cfg.ReadHeaderTimeout, IdleTimeout: 2 * cfg.ReadHeaderTimeout}
 	sig, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	errCh := make(chan error, 1)
