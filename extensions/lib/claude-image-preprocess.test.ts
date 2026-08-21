@@ -4,6 +4,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   preprocessProjectionImages,
   CLAUDE_INGEST_FINAL_BYTES,
@@ -274,7 +275,8 @@ describe("Claude synthetic-history image preprocessing",()=>{
     const dir=mkdtempSync(join(tmpdir(),"image-cold-test-")), input=join(dir,"in.png");
     writeFileSync(input,png(2100,110));
     const code=`import {readFileSync} from "node:fs"; import {createHash} from "node:crypto"; import {preprocessProjectionImages} from "./extensions/lib/claude-image-preprocess.ts"; const b=readFileSync(process.argv[1]); const m=[{id:"u",role:"user",content:[{type:"image",imageData:b.toString("base64"),imageMediaType:"image/png"}]}]; const d=Buffer.from(preprocessProjectionImages(m)[0].content[0].imageData,"base64"); console.log(createHash("sha256").update(d).digest("hex"));`;
-    const cold=()=>{const p=spawnSync("bun",["-e",code,input],{cwd:process.cwd(),encoding:"utf8"});expect(p.status).toBe(0);return p.stdout.trim();};
+    const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
+    const cold=()=>{const p=spawnSync("bun",["-e",code,input],{cwd:repoRoot,encoding:"utf8"});expect(p.status).toBe(0);return p.stdout.trim();};
     expect(cold()).toBe(cold());
   });
 
