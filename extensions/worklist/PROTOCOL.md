@@ -304,11 +304,14 @@ Tests: `nix develop .#stt -c bun test extensions/worklist/worklist.test.ts exten
 ## Migration from `inbox`
 
 - Directory `extensions/inbox/` → `extensions/worklist/` (git mv, history kept).
-- State dir `state/inbox/` → `state/worklist/`; a one-shot migration on first
-  `ensureDirs()` copies legacy `items/`, `items/archive/`, `incoming/` and
-  translates `posture.json` → `attention.json`. A legacy permanent `busy` is
-  **dropped to `auto`** — nothing unbounded is carried across the rename. No
-  queued item is ever lost.
+- State dir `state/inbox/` → `state/worklist/`; every `ensureDirs()` performs
+  repeatable reconciliation for legacy `items/`, `items/archive/`, and
+  `incoming/`. Known ids dedupe against both live and archived history;
+  divergent or invalid legacy items are preserved under collision-safe
+  `migration-conflicts/` names; late compatibility-writer drops are continuously
+  promoted. `posture.json` is translated when attention state is absent, and a
+  legacy permanent `busy` is **dropped to `auto`** so no unbounded override is
+  carried across the rename.
 - Env: `FAMILIAR_WORKLIST_DIR` (canonical) falls back to `FAMILIAR_INBOX_DIR`
   (bounded, one release).
 - CLI: `familiar.sh worklist-add`; `inbox-enqueue` kept as a bounded alias.

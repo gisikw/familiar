@@ -912,7 +912,8 @@ inbox_enqueue() {
   local id file tmp
   id="cli-$(date +%Y%m%d-%H%M%S)-$RANDOM"
   file="$incoming/$id.json"
-  tmp="$(umask 077; mktemp "$incoming/.${id}.XXXXXX.tmp")" || return 1
+  # mktemp requires trailing Xs on BSD/macOS as well as GNU implementations.
+  tmp="$(umask 077; mktemp "$incoming/.${id}.tmp.XXXXXX")" || return 1
   if ! (umask 077; jq -n \
     --argjson priority "$priority" \
     --arg type "$type" \

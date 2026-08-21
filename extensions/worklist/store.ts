@@ -17,8 +17,10 @@
  * is one skippable item. Acked items are moved to items/archive/ rather than
  * deleted, so /peek history and audit survive.
  *
- * Migration: earlier releases stored under state/inbox/ with posture.json. On
- * first ensureDirs() we adopt any legacy tree once, never losing queued items.
+ * Migration: earlier releases stored under state/inbox/ with posture.json.
+ * Every ensureDirs() repeatably reconciles that compatibility tree: known ids
+ * dedupe against live/archive history, divergent or invalid items are preserved
+ * as collision-safe conflicts, and late legacy incoming writes are still drained.
  */
 
 import * as fs from "node:fs";
