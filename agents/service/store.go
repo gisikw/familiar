@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"time"
 
 	"familiar.dev/agents/protocol"
@@ -62,6 +63,7 @@ func (s *Store) Close() error                    { return s.db.Close() }
 func (s *Store) Ready(ctx context.Context) error { return s.db.PingContext(ctx) }
 
 func (s *Store) Create(ctx context.Context, c protocol.CreateJob) (protocol.Job, error) {
+	requestedArtifacts := c.Artifacts
 	if c.IdempotencyKey == "" || c.Harness == "" || c.Host == "" || c.Prompt == "" || c.CWD == "" {
 		return protocol.Job{}, errors.New("idempotency_key, harness, host, cwd, and prompt are required")
 	}
@@ -89,7 +91,8 @@ func (s *Store) Create(ctx context.Context, c protocol.CreateJob) (protocol.Job,
 	if getErr != nil {
 		return protocol.Job{}, err
 	}
-	if old.Harness != c.Harness || old.Model != c.Model || old.CWD != c.CWD || old.Isolation != c.Isolation || old.Prompt != c.Prompt || old.Host != c.Host {
+	artifactMismatch := requestedArtifacts.Directory != "" && requestedArtifacts.Directory != old.Artifacts.Directory || requestedArtifacts.RetentionDays != old.Artifacts.RetentionDays || !reflect.DeepEqual(requestedArtifacts.Labels, old.Artifacts.Labels)
+	if old.Harness != c.Harness || old.Model != c.Model || old.CWD != c.CWD || old.Isolation != c.Isolation || old.Prompt != c.Prompt || old.Host != c.Host || artifactMismatch {
 		return protocol.Job{}, errors.New("idempotency key already used for a different request")
 	}
 	return old, nil

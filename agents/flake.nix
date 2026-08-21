@@ -27,7 +27,7 @@
         });
       in {
         packages = { inherit cli service supervisor; default = cli; };
-        apps.default = { type = "app"; program = "${cli}/bin/familiar-agents"; };
+        apps.default = { type = "app"; program = "${cli}/bin/familiar-agents"; meta.description = "Control Familiar delegated agents"; };
         checks = { inherit cli service supervisor; };
         devShells.default = pkgs.mkShell { packages = [ pkgs.go pkgs.tmux pkgs.git ]; };
       });
