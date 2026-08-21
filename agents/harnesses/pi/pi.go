@@ -44,7 +44,11 @@ func (a Adapter) Resume(_ context.Context, j protocol.Job, l harnesses.Launch) (
 	if l.Session == "" {
 		return harnesses.Launch{}, errors.New("pi resume requires session")
 	}
-	l.Argv = []string{a.bin(), "--mode", "json", "--print", "--session", l.Session, j.Prompt}
+	l.Argv = []string{a.bin(), "--mode", "json", "--print", "--session", l.Session}
+	if j.Model != "" {
+		l.Argv = append(l.Argv, "--model", j.Model)
+	}
+	l.Argv = append(l.Argv, "Continue the interrupted delegated task from the existing session.")
 	return l, nil
 }
 func (Adapter) Prompt(ctx context.Context, r *harnesses.Runtime, p string) error {
@@ -65,24 +69,82 @@ func (Adapter) Cancel(ctx context.Context, r *harnesses.Runtime) error {
 	}
 	return r.Cancel(ctx)
 }
-func (Adapter) Observe(_ context.Context, j protocol.Job, r *harnesses.Runtime) (harnesses.Observation, error) {
-	o := harnesses.Observation{State: protocol.Running}
-	f, e := os.Open(r.Launch.Transcript)
-	if os.IsNotExist(e) {
-		return o, nil
+func (Adapter) Observe(ctx context.Context, j protocol.Job, r *harnesses.Runtime) (harnesses.Observation, error) {
+	if r.Alive == nil {
+		return harnesses.Observation{}, harnesses.ErrUnsupported
 	}
-	if e != nil {
+	alive, code, err := r.Alive(ctx)
+	if err != nil {
+		return harnesses.Observation{}, err
+	}
+	o := harnesses.Observation{State: protocol.Running, ExitCode: code}
+	f, e := os.Open(r.Launch.Transcript)
+	if e == nil {
+		defer f.Close()
+		scan := bufio.NewScanner(f)
+		scan.Buffer(make([]byte, 64<<10), 4<<20)
+		for scan.Scan() {
+			b := append([]byte(nil), scan.Bytes()...)
+			if !json.Valid(b) {
+				continue
+			}
+			h := sha256.Sum256(b)
+			o.Progress = &protocol.Progress{ID: j.ID + "-pi-" + hex.EncodeToString(h[:8]), JobID: j.ID, At: time.Now().UTC(), Message: "pi lifecycle event", Detail: json.RawMessage(b)}
+		}
+		if err = scan.Err(); err != nil {
+			return o, err
+		}
+	} else if !os.IsNotExist(e) {
 		return o, e
 	}
-	defer f.Close()
-	s := bufio.NewScanner(f)
-	for s.Scan() {
-		b := append([]byte(nil), s.Bytes()...)
-		h := sha256.Sum256(b)
-		o.Progress = &protocol.Progress{ID: j.ID + "-pi-" + hex.EncodeToString(h[:8]), JobID: j.ID, At: time.Now().UTC(), Message: "pi lifecycle event", Detail: json.RawMessage(b)}
+	if !alive {
+		o.State = protocol.Failed
 	}
-	return o, s.Err()
+	return o, nil
 }
 func (Adapter) CollectSettlement(_ context.Context, j protocol.Job, l harnesses.Launch, o harnesses.Observation) (*protocol.Settlement, error) {
-	return harnesses.BasicSettlement(j, l, o)
+	s, err := harnesses.BasicSettlement(j, l, o)
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.Open(l.Session)
+	if os.IsNotExist(err) {
+		return s, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	scan := bufio.NewScanner(f)
+	scan.Buffer(make([]byte, 64<<10), 4<<20)
+	for scan.Scan() {
+		var v any
+		if json.Unmarshal(scan.Bytes(), &v) == nil {
+			collectUsage(v, &s.Usage)
+		}
+	}
+	return s, scan.Err()
+}
+func collectUsage(v any, u *protocol.Usage) {
+	switch x := v.(type) {
+	case map[string]any:
+		for k, v := range x {
+			if m, ok := v.(map[string]any); ok && (k == "usage" || k == "tokens") {
+				addNumber(m, "input", &u.InputTokens)
+				addNumber(m, "inputTokens", &u.InputTokens)
+				addNumber(m, "output", &u.OutputTokens)
+				addNumber(m, "outputTokens", &u.OutputTokens)
+			}
+			collectUsage(v, u)
+		}
+	case []any:
+		for _, v := range x {
+			collectUsage(v, u)
+		}
+	}
+}
+func addNumber(m map[string]any, k string, p *int64) {
+	if n, ok := m[k].(float64); ok {
+		*p += int64(n)
+	}
 }

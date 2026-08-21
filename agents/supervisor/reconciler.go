@@ -226,6 +226,12 @@ func (s *Supervisor) observe(ctx context.Context) error {
 		runtime := s.runtime(w)
 		obs, observeErr := a.Observe(ctx, w.Job, &runtime)
 		if observeErr == nil && obs.State == protocol.Running {
+			if obs.Progress != nil {
+				event := protocol.ObservedEvent{ID: obs.Progress.ID, JobID: id, Progress: obs.Progress, ObservedAt: time.Now().UTC()}
+				if err = s.Client.Events(ctx, protocol.EventBatch{Host: s.Host, Events: []protocol.ObservedEvent{event}}); err != nil {
+					return err
+				}
+			}
 			if w.LastState == protocol.Starting {
 				// Retry the idempotent starting event first: its original response may
 				// have been lost even though the worker was successfully created.
@@ -261,21 +267,39 @@ func (s *Supervisor) observe(ctx context.Context) error {
 	}
 	return nil
 }
+
 // GCSettled removes only service-confirmed terminal job artifacts, honoring a
 // per-job retention override. root bounds deletion and must contain each path.
 func GCSettled(jobs []protocol.Job, root string, now time.Time, defaultAge time.Duration) error {
 	absRoot, err := filepath.Abs(root)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	for _, j := range jobs {
-		if !j.State.Terminal() || j.Artifacts.Directory == "" { continue }
+		if !j.State.Terminal() || j.Artifacts.Directory == "" {
+			continue
+		}
 		path, err := filepath.Abs(j.Artifacts.Directory)
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 		rel, err := filepath.Rel(absRoot, path)
-		if err != nil || rel == "." || rel == ".." || filepath.IsAbs(rel) || len(rel) >= 3 && rel[:3] == ".."+string(os.PathSeparator) { continue }
+		if err != nil || rel == "." || rel == ".." || filepath.IsAbs(rel) || len(rel) >= 3 && rel[:3] == ".."+string(os.PathSeparator) {
+			continue
+		}
 		age := defaultAge
-		if j.Artifacts.RetentionDays > 0 { age = time.Duration(j.Artifacts.RetentionDays)*24*time.Hour }
-		at := j.UpdatedAt; if j.Settlement != nil && !j.Settlement.At.IsZero() { at = j.Settlement.At }
-		if !at.IsZero() && now.Sub(at) >= age { if err = os.RemoveAll(path); err != nil { return err } }
+		if j.Artifacts.RetentionDays > 0 {
+			age = time.Duration(j.Artifacts.RetentionDays) * 24 * time.Hour
+		}
+		at := j.UpdatedAt
+		if j.Settlement != nil && !j.Settlement.At.IsZero() {
+			at = j.Settlement.At
+		}
+		if !at.IsZero() && now.Sub(at) >= age {
+			if err = os.RemoveAll(path); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
