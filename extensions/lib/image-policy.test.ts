@@ -124,7 +124,15 @@ describe("collectImages + enforceImagePolicy", () => {
     expect(enforceImagePolicy(messages)).toEqual({ count: 2 });
   });
 
-  test("too many images throws count cap", () => {
+  test("counts historical and current images together, allowing exactly the wire cap", () => {
+    const messages: Message[] = [
+      { id: "history", role: "user", content: Array.from({ length: 99 }, () => ({ type: "image" as const, imageData: PNG_B64, imageMediaType: "image/png" })) },
+      { id: "current", role: "user", content: [{ type: "image", imageData: PNG_B64, imageMediaType: "image/png" }] },
+    ];
+    expect(enforceImagePolicy(messages)).toEqual({ count: MAX_IMAGES_PER_REQUEST });
+  });
+
+  test("too many images throws explicitly instead of letting Claude Code silently reduce 101 to 80", () => {
     const many: Message[] = [{ id: "u", role: "user", content: Array.from({ length: MAX_IMAGES_PER_REQUEST + 1 }, () => ({ type: "image" as const, imageData: PNG_B64, imageMediaType: "image/png" })) }];
     expect(() => enforceImagePolicy(many)).toThrow(/exceeds the 100-image per-request/);
   });
@@ -182,6 +190,19 @@ describe("projection of images (inline base64, deterministic)", () => {
     expect(rows[1].message.content[0].content).toEqual([
       { type: "image", source: { type: "base64", media_type: "image/png", data: PNG_B64 } },
     ]);
+  });
+
+  test("retains direct-user and tool-result images across historical turns", () => {
+    const messages: Message[] = [
+      { id: "u1", createdAt: "2026-06-20T15:30:00Z", role: "user", content: [{ type: "image", imageData: PNG_B64, imageMediaType: "image/png" }, { type: "text", text: "first" }] },
+      { id: "a1", createdAt: "2026-06-20T15:30:01Z", role: "assistant", content: [{ type: "tool_use", toolUseId: "toolu_1", toolName: "read", toolInput: { path: "shot.jpg" } }] },
+      { id: "t1", createdAt: "2026-06-20T15:30:02Z", role: "tool", content: [{ type: "tool_result", toolResultFor: "toolu_1", toolOutput: "second", toolResultImages: [{ data: JPEG_B64, mediaType: "image/jpeg" }] }] },
+      { id: "a2", createdAt: "2026-06-20T15:30:03Z", role: "assistant", content: [{ type: "text", text: "seen" }] },
+    ];
+    const projected = projectClaudeCodeJSONL(messages, OPTS);
+    expect(projected).toContain(PNG_B64);
+    expect(projected).toContain(JPEG_B64);
+    expect((projected.match(/\"type\":\"image\"/g) ?? [])).toHaveLength(2);
   });
 
   test("deterministic: same image input → identical projected bytes", () => {

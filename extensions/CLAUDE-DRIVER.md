@@ -139,16 +139,40 @@ Because base64 lives inline in the projected JSONL there are **no image temp
 files** to leak and **no local paths** to perturb the deterministic cache
 prefix — the colocation win's cleanup/determinism concerns simply don't arise.
 
-**Caps (real Anthropic Messages API limits; `lib/image-policy.ts`), no tiamat
-retention-window gating** (that gating only existed to bound a re-projected wire
-payload — RESEARCH §3.8):
+**History policy (empirically re-checked against Claude Code 2.1.197): retain
+images verbatim until ordinary compaction.** A generated-fixture, zero-cost
+headless `--resume` probe captured the body at a local fake Anthropic upstream.
+Claude Code sent historical direct-user images, historical image-bearing tool
+results, and three direct images across three prior turns unchanged. It also
+sent all twelve image-bearing `Read` results whose older generated text exceeded
+the microcompaction savings threshold. Thus there is no independent image-age window
+to copy into the Familiar projection.
+
+The nearby Claude Code microcompaction is tool-result policy, not a general
+historical-image filter. In 2.1.197's bundled source it can replace eligible old
+tool results wholesale with `[Old tool result content cleared]`, keeps the five
+most recent eligible tool calls, and requires an estimated 20,000 tokens saved.
+Its first-party `context_hint` path is feature/server-negotiated, so its exact
+activation and cache effect are version-sensitive; the fake-upstream probe did
+not negotiate it. Explicit `/compact`/autocompaction naturally changes the
+transcript to a summary, after which old images are no longer present to
+project. Pi remains the transcript authority: Familiar does not mutate pi's
+history or invent a Claude-only summary.
+
+**Caps and bounded growth** (`lib/image-policy.ts`):
 - media type ∈ {png, jpeg, gif, webp} (else actionable `invalid_request_error`),
 - ≤ 5 MiB decoded per image, ≤ 100 images/request, ≤ 8000 px/side (dims parsed
   cheaply for png/jpeg/gif),
-- strict base64 round-trip validation rejects truncated/garbage payloads.
-Every violation throws an explicit, located `invalid_request_error`
-(`messages[i].content[j] … / tool_result image[k]`) — **never silently drops
-pixels**.
+- strict base64 round-trip validation rejects truncated/garbage payloads,
+- loopback B independently caps the complete HTTP body at 32 MiB.
+
+The 100-image aggregate cap counts current and historical, direct and
+image-bearing tool-result images. The same probe found that 2.1.197 sends 100
+but, when given 101, silently reduces the body to 80 images. Familiar rejects
+101 explicitly before spawning Claude instead, preserving current-image
+semantics while bounding replay. Every malformed/count/size violation is a
+located `invalid_request_error` (`messages[i].content[j] … / tool_result
+image[k]`) — **never silently drops current pixels**.
 
 **Projection**: a `tool_result` carrying images projects to array content
 (`[{text?},{image base64}…]`) with `toolUseResult.isImage:true`; a direct user
@@ -163,9 +187,10 @@ loopback A + `claude -p` + loopback B, tiny generated PNGs of known colors):
    a PURPLE image tool_result, turn 2 (fresh claude, `--resume` over the
    projected transcript) reads it → `"vivid purple/violet"`;
 3. unsupported media type → actionable error surfaced (never dropped).
-Unit: `lib/image-policy.test.ts` (24 tests: valid PNG/JPEG, multiple images,
-malformed/oversize/oversize-dims, count cap, deterministic projection, image
-tool_results, body extraction). 75 unit tests pass total.
+Unit: `lib/image-policy.test.ts` covers valid PNG/JPEG, multiple and historical
+images, malformed/oversize/oversize-dims, aggregate count cap, deterministic
+projection, image tool_results, and body extraction. The safe probe and results
+are retained in the dispatched investigation artifact directory.
 
 ## What is STUBBED / not yet wired
 
