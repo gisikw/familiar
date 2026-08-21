@@ -135,7 +135,8 @@ function handle(req: http.IncomingMessage, res: http.ServerResponse) {
     });
     if (pathname === "/cancel") return ingress.handleCancel(req, res);
     if (pathname === "/ingest") return void handleIngest(req, res);
-    if (pathname === "/upload") return void handleUpload(req, res, searchParams).catch((err) => {
+    if (pathname === "/upload") return void handleUpload(req, res, searchParams,
+      (message) => relay.send({ type: "submit", parts: [message] })).catch((err) => {
       errorLog("subscriber", { uploadError: String(err) });
       if (!res.headersSent) { res.statusCode = 500; res.end(); }
     });

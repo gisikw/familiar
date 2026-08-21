@@ -78,7 +78,7 @@
           # The extension refuses to dispatch unless this is "herdr".
           FAMILIAR_SUBAGENT_MODE = "herdr";
           PI_PACKAGE_DIR = "${pkgs.pi-coding-agent}/lib/node_modules/pi-monorepo";
-          packages = with pkgs; [ age curl jq sqlite pi-coding-agent familiarHerdr familiarSplash librsvg ffmpeg ];
+          packages = with pkgs; [ age curl jq sqlite pi-coding-agent familiarHerdr familiarSplash librsvg ffmpeg tmux util-linux ];
         });
       in
       {
@@ -109,7 +109,8 @@
           });
           # The standalone familiar server (./server): a plain Node service —
           # SSE hub, ingress/egress relay, and the restty browser terminal
-          # bridged to a herdr attach. node-pty ships no Linux prebuild, so a
+          # bridged to a disposable Presence Runtime tmux attach. node-pty
+          # ships no Linux prebuild, so a
           # C/C++ + Python toolchain is present for its first-install native
           # build (npm bundles node-gyp). No FAMILIAR_SHELL re-exec: the
           # services pane invokes `npm start` in this shell directly.

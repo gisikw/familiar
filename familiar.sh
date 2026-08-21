@@ -42,6 +42,9 @@ export FAMILIAR_RELOAD_REQUEST_PATH="${FAMILIAR_RELOAD_REQUEST_PATH:-$HERDR_STAT
 export FAMILIAR_RELOAD_COMPLETE_PATH="${FAMILIAR_RELOAD_COMPLETE_PATH:-$HERDR_STATE_DIR/reload-complete}"
 export FAMILIAR_LOG_PATH="${FAMILIAR_LOG_PATH:-$STATE_DIR/log.jsonl}"
 export FAMILIAR_SUBSCRIBER_PORT="${FAMILIAR_SUBSCRIBER_PORT:-1692}"
+export FAMILIAR_PRESENCE_STATE_DIR="${FAMILIAR_PRESENCE_STATE_DIR:-$STATE_DIR/presence}"
+export FAMILIAR_PRESENCE_SOCKET="${FAMILIAR_PRESENCE_SOCKET:-$FAMILIAR_PRESENCE_STATE_DIR/tmux.sock}"
+export FAMILIAR_PRESENCE_CTL="${FAMILIAR_PRESENCE_CTL:-$REPO/services/presence/presence.sh}"
 # Session storage. Overriding this is the deliberate escape hatch for a wedged
 # session: point it at a clean-room dir to bail out without touching the main
 # continuity line. Not a first-class verb on purpose — forking continuity
@@ -373,7 +376,9 @@ start_herdr_server() {
 run_in_herdr_pane() {
   local pane=$1 role=$2 command
   if [ "$role" = pi ]; then
-    printf -v command 'printf "\\033[2J\\033[H"; %q %q' "$SELF" "$role"
+    # Herdr owns only this disposable viewer. The full interactive pi process
+    # lives in the private Presence Runtime tmux server.
+    printf -v command 'printf "\\033[2J\\033[H"; exec %q attach' "$FAMILIAR_PRESENCE_CTL"
   elif [ "$role" = server ]; then
     # The familiar server (web presence) is a plain Node service under ./server,
     # launched DIRECTLY here — there is deliberately no `familiar.sh server`
@@ -398,11 +403,14 @@ split_herdr_pane() {
 }
 
 wait_for_pi_pane() {
-  local pane=$1 response
-  while true; do
-    if response=$(herdr agent get "$pane" 2>/dev/null) \
-      && jq -e '.result.agent.agent == "pi"' <<<"$response" >/dev/null; then
-      return
+  # Pi is now behind tmux, so Herdr process-tree agent detection cannot see it.
+  # Readiness is the Presence adapter's live-pane contract instead.
+  local _pane=$1 tries=0
+  until "$FAMILIAR_PRESENCE_CTL" status --quiet >/dev/null 2>&1; do
+    tries=$((tries + 1))
+    if [ "$tries" -ge 100 ]; then
+      echo "Presence Runtime did not become ready at $FAMILIAR_PRESENCE_SOCKET" >&2
+      return 1
     fi
     sleep 0.1
   done
@@ -944,7 +952,10 @@ start() {
 
 stop() {
   ensure_devshell pi "$@"
+  # Explicit full shutdown owns both layers. Incidental Herdr loss deliberately
+  # never calls Presence stop, preserving pi and its PTY.
   herdr session stop "$HERDR_SESSION" --json 2>/dev/null || herdr server stop 2>/dev/null || true
+  "$FAMILIAR_PRESENCE_CTL" stop || true
 }
 
 # Out-of-process enqueue (protocol path b): write an atomic envelope into the

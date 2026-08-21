@@ -8,8 +8,8 @@ import { debugLog, errorLog } from "./debug.ts";
  *
  * Kevin drags a file (a screenshot, usually) onto the browser terminal or the
  * Electron client; the bytes land here, get written to a drops directory on
- * the server host, and the running herdr agent is told the path so pi can read
- * it. Two intake shapes are accepted:
+ * the server host, and the path is sent through the existing pi relay ingress.
+ * Two intake shapes are accepted:
  *
  *   (a) raw body   — filename from ?name= or an X-Filename header. Simplest for
  *                    programmatic clients (Electron: one fetch, no FormData).
@@ -110,7 +110,7 @@ function parseMultipart(buf: Buffer, contentType: string): { filename?: string; 
   return null;
 }
 
-/* --- herdr notify --------------------------------------------------------- */
+/* --- Presence compatibility ingress -------------------------------------- */
 
 function run(cmd: string, args: string[], env: NodeJS.ProcessEnv): Promise<{ code: number; out: string; err: string }> {
   return new Promise((resolve) => {
@@ -156,7 +156,7 @@ async function resolveTarget(env: NodeJS.ProcessEnv): Promise<{ target: string }
  * the CLI targets the current session. A test override — FAMILIAR_UPLOAD_NOTIFY_CMD
  * — replaces the CLI with an arbitrary shell command (drop path/message exposed
  * as env vars) so smoke tests never poke a live agent. */
-async function notify(filePath: string): Promise<{ notified: boolean; error?: string }> {
+export async function notifyDroppedFile(filePath: string, relayNotify?: (message: string) => boolean): Promise<{ notified: boolean; error?: string }> {
   const message = `[file dropped: ${filePath}]`;
   const env = { ...process.env }; // KEEP HERDR_* — this call must target the session.
 
@@ -171,6 +171,12 @@ async function notify(filePath: string): Promise<{ notified: boolean; error?: st
     return { notified: false, error: `notify cmd exit ${r.code}: ${r.err || r.out}`.trim() };
   }
 
+  if (relayNotify) {
+    if (relayNotify(message)) return { notified: true };
+    return { notified: false, error: "presence relay has no connected pi subscriber" };
+  }
+
+  // Bounded legacy fallback for standalone embedding without a relay callback.
   const resolved = await resolveTarget(env);
   if ("error" in resolved) return { notified: false, error: resolved.error };
 
@@ -182,7 +188,7 @@ async function notify(filePath: string): Promise<{ notified: boolean; error?: st
 
 /* --- entry point ---------------------------------------------------------- */
 
-export async function handleUpload(req: http.IncomingMessage, res: http.ServerResponse, searchParams: URLSearchParams) {
+export async function handleUpload(req: http.IncomingMessage, res: http.ServerResponse, searchParams: URLSearchParams, relayNotify?: (message: string) => boolean) {
   if (req.method === "OPTIONS") { res.writeHead(204, CORS); return res.end(); }
   if (req.method !== "POST") { res.writeHead(405, CORS); return res.end(); }
 
@@ -225,7 +231,7 @@ export async function handleUpload(req: http.IncomingMessage, res: http.ServerRe
     return sendJson(res, 500, { ok: false, error: "write failed" });
   }
 
-  const { notified, error } = await notify(dest);
+  const { notified, error } = await notifyDroppedFile(dest, relayNotify);
   debugLog("subscriber", { upload: dest, bytes: data.length, notified, notifyError: error });
 
   const body_out: Record<string, unknown> = { ok: true, path: dest, notified };

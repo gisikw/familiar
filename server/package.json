@@ -2,7 +2,7 @@
   "name": "familiar-server",
   "version": "0.1.0",
   "private": true,
-  "description": "Familiar server — standalone web presence: SSE firehose hub, ingress/egress relay, and a browser terminal that attaches to the running herdr session.",
+  "description": "Familiar server — SSE/relay gateway and browser terminal attached to the Presence Runtime.",
   "type": "module",
   "scripts": {
     "start": "node --experimental-transform-types src/main.ts",

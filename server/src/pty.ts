@@ -1,16 +1,16 @@
 import type http from "http";
 import { WebSocketServer, type WebSocket } from "ws";
 import { spawn as ptySpawn, type IPty } from "node-pty";
+import { fileURLToPath } from "url";
 import { debugLog, errorLog } from "./debug.ts";
 
 /* --- Browser terminal PTY bridge ------------------------------------------
  *
  * Bridges restty's built-in WebSocket PTY transport to a node-pty child that
- * ATTACHES to the already-running herdr session (never boots a second
- * familiar.sh). The attach command is FAMILIAR_ATTACH_CMD, defaulting to
- * `herdr session attach <FAMILIAR_ATTACH_SESSION|familiar>` — the same
- * invocation an external terminal would use. Set FAMILIAR_ATTACH_CMD to a
- * plain shell (e.g. `bash -l`) to smoke-test without herdr.
+ * ATTACHES directly to the Presence Runtime's private tmux target. Herdr is
+ * not in this lifecycle path. FAMILIAR_ATTACH_CMD remains a test override;
+ * otherwise FAMILIAR_PRESENCE_CTL (or the repository adapter) is invoked with
+ * `attach`.
  *
  * restty PTY protocol (see restty dist/pty.d.ts):
  *   client → server : JSON text frames {type:"input",data} / {type:"resize",cols,rows}
@@ -38,30 +38,26 @@ import { debugLog, errorLog } from "./debug.ts";
 // via setImmediate (near-zero added latency, still merges redraw bursts).
 const FLUSH_MS = Number(process.env.FAMILIAR_PTY_FLUSH_MS ?? 0);
 
-function attachCommand(): { file: string; args: string[] } {
+export function attachCommand(): { file: string; args: string[] } {
   const raw = process.env.FAMILIAR_ATTACH_CMD;
   if (raw && raw.trim()) {
     // Split on whitespace — attach invocations are simple argv, no quoting.
     const parts = raw.trim().split(/\s+/);
     return { file: parts[0], args: parts.slice(1) };
   }
-  const session = process.env.FAMILIAR_ATTACH_SESSION || process.env.HERDR_SESSION || "familiar";
-  return { file: "herdr", args: ["session", "attach", session] };
+  const controller = process.env.FAMILIAR_PRESENCE_CTL
+    || fileURLToPath(new URL("../../services/presence/presence.sh", import.meta.url));
+  return { file: controller, args: ["attach"] };
 }
 
 function startPty(cols: number, rows: number): IPty {
   const { file, args } = attachCommand();
-  // Scrub herdr's own env fingerprints before spawning the attach. The server
-  // runs inside a herdr pane (services tab), so a plain env inheritance makes
-  // `herdr session attach` believe it is being nested inside itself and refuse
-  // ("nested herdr is disabled by default"). The browser bridge is an outside
-  // window into the session, not a nesting — so the child must look like an
-  // external terminal. Session-name resolution (HERDR_SESSION) happens in
-  // attachCommand() before this scrub, so it is unaffected.
+  // Preserve Familiar/Herdr context. The child is the Presence adapter (not a
+  // nested Herdr client), and a cold-started pi may need the current workspace
+  // identity for bounded compatibility with Herdr-backed extensions.
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (v === undefined) continue;
-    if (k.startsWith("HERDR_")) continue;
     // Also drop outer-context markers that herdr's client uses to DECIDE the
     // outer terminal is a multiplexer/remote where it should NOT assume kitty
     // graphics capability (herdr src/client/mod.rs reads SSH_CONNECTION /
@@ -73,21 +69,9 @@ function startPty(cols: number, rows: number): IPty {
     if (k === "SSH_CONNECTION" || k === "SSH_TTY" || k === "SSH_CLIENT" || k === "STY") continue;
     env[k] = v;
   }
-  // The blanket HERDR_* scrub above is needed for HERDR_ENV (the nested-herdr
-  // guard), but the attach client independently reads herdr configuration.
-  // Preserve the server's explicit config path so both sides see
-  // experimental.kitty_graphics=true. Without this, the client falls back to
-  // ~/.config/herdr/config.toml, advertises zero pixel geometry, and the server
-  // never serializes kitty APC graphics for this connection.
-  if (process.env.HERDR_CONFIG_PATH) env.HERDR_CONFIG_PATH = process.env.HERDR_CONFIG_PATH;
-
   env.TERM = "xterm-256color";
   env.COLORTERM = "truecolor";
   // The surface beyond this pty is restty, which implements kitty graphics.
-  // Keep the outer-terminal capability fingerprint truthful while retaining
-  // xterm-256color for terminfo safety. The config path above is the
-  // load-bearing inline-graphics gate; these markers remain useful for herdr's
-  // direct/file graphics capability path.
   env.TERM_PROGRAM = process.env.FAMILIAR_ATTACH_TERM_PROGRAM || "ghostty";
   env.KITTY_WINDOW_ID = process.env.FAMILIAR_ATTACH_KITTY_WINDOW_ID || "1";
   return ptySpawn(file, args, {

@@ -21,9 +21,9 @@ Binds `127.0.0.1:1692`. See `DESIGN.md` for the full protocol rationale.
   extension subscribes to and enacts against the pi API.
 - **Segment audio** (`GET /segments/:mid/:idx/audio`) — synthesized wav.
 - **Browser terminal** (`GET /terminal`, `GET /`) — the restty WASM terminal
-  bridged over a `/pty` WebSocket to a `node-pty` child that ATTACHES to the
-  running herdr session (`FAMILIAR_ATTACH_CMD`, default
-  `herdr session attach familiar`). Replaces the Electron client's local-shell
+  bridged over a `/pty` WebSocket to a `node-pty` child that ATTACHES directly
+  to the private Presence Runtime tmux target (`FAMILIAR_ATTACH_CMD` remains a
+  test override). Replaces the Electron client's local-shell
   dance. Fonts + mouse + emoji-completer ported from the client renderer.
 
 ## Run
@@ -42,8 +42,8 @@ properties; no separate build step.
 | --- | --- | --- |
 | `FAMILIAR_SERVER_PORT` / `FAMILIAR_SUBSCRIBER_PORT` | `1692` | listen port |
 | `FAMILIAR_SERVER_HOST` | `127.0.0.1` | listen host |
-| `FAMILIAR_ATTACH_CMD` | `herdr session attach <session>` | PTY command the browser terminal attaches to. Set to `bash -l` to smoke-test without herdr. |
-| `FAMILIAR_ATTACH_SESSION` / `HERDR_SESSION` | `familiar` | session name used by the default attach command |
+| `FAMILIAR_ATTACH_CMD` | Presence controller `attach` | Test override for the browser PTY child. Set to `bash -l` to smoke-test without tmux. |
+| `FAMILIAR_PRESENCE_CTL` | repository `services/presence/presence.sh` | Presence lifecycle controller path. |
 | `FAMILIAR_ATTACH_CWD` | server cwd | working dir for the attach child |
 | `FAMILIAR_STT_URL` / `FAMILIAR_TTS_URL` | — | dumb HTTP model endpoints |
 | `FAMILIAR_TTS_VOICE` | — | optional TTS voice selection |
