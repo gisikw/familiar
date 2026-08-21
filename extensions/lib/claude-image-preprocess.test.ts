@@ -213,6 +213,37 @@ describe("Claude synthetic-history image preprocessing",()=>{
     const truncated=Buffer.from(opaque);truncated.writeUInt32LE(truncated.readUInt32LE(4)+2,4);bad(truncated,/RIFF extent must exactly match/);
   });
 
+  test("VP8X rejects every reserved flag and reserved-24-bit violation",()=>{
+    const opaque=ffmpegConvert(png(16,16),"libwebp"), vp8=webpChunks(opaque).find(c=>c.kind==="VP8 ")!.data;
+    const bad=(data:Buffer)=>{const m=direct(makeWebp([{kind:"VP8X",data},{kind:"VP8 ",data:vp8}]));m.content[0].imageMediaType="image/webp";expect(()=>preprocessProjectionImages([m],{run:()=>Buffer.alloc(0)})).toThrow(/malformed VP8X/);};
+    for(const bit of [0x80,0x40,0x01]){const x=vp8xData();x[0]=bit;bad(x);}
+    for(const byte of [1,2,3]){const x=vp8xData();x[byte]=1;bad(x);}
+  });
+
+  test("WebP accepts RFC-valid out-of-order EXIF/XMP and ignores ANIM text in payload",()=>{
+    const opaque=ffmpegConvert(png(16,16),"libwebp"), vp8=webpChunks(opaque).find(c=>c.kind==="VP8 ")!.data;
+    const exif=Buffer.from("Exif\0\0MM\0*\0\0\0\b\0\0\0\0\0\0","binary"), xmp=Buffer.from("<x:xmpmeta/>");
+    const accepted=[
+      makeWebp([{kind:"VP8X",data:Object.assign(vp8xData(),{[0]:0x08})},{kind:"EXIF",data:exif},{kind:"VP8 ",data:vp8}]),
+      makeWebp([{kind:"VP8X",data:Object.assign(vp8xData(),{[0]:0x0c})},{kind:"VP8 ",data:vp8},{kind:"XMP ",data:xmp},{kind:"EXIF",data:exif}]),
+      makeWebp([{kind:"VP8X",data:vp8xData()},{kind:"VP8 ",data:vp8},{kind:"ZZZZ",data:Buffer.from("ANIM")}]),
+    ];
+    for(const b of accepted){const m=direct(b);m.content[0].imageMediaType="image/webp";expect(projectedImage(preprocessProjectionImages([m],{run:()=>Buffer.alloc(0)})[0]).data.equals(b)).toBe(true);}
+  });
+
+  test("WebP retains metadata uniqueness/flags and detects only parsed animation controls",()=>{
+    const opaque=ffmpegConvert(png(16,16),"libwebp"), vp8=webpChunks(opaque).find(c=>c.kind==="VP8 ")!.data, exif=Buffer.from("Exif");
+    const bad=(b:Buffer,re:RegExp)=>{const m=direct(b);m.content[0].imageMediaType="image/webp";expect(()=>preprocessProjectionImages([m],{run:()=>Buffer.alloc(0)})).toThrow(re);};
+    const exifX=vp8xData();exifX[0]=0x08;
+    bad(makeWebp([{kind:"VP8X",data:exifX},{kind:"EXIF",data:exif},{kind:"VP8 ",data:vp8},{kind:"EXIF",data:exif}]),/duplicate EXIF/);
+    bad(makeWebp([{kind:"VP8X",data:exifX},{kind:"VP8 ",data:vp8}]),/feature flags do not match/);
+    bad(makeWebp([{kind:"VP8X",data:vp8xData()},{kind:"VP8 ",data:vp8},{kind:"EXIF",data:exif}]),/feature flags do not match/);
+    for(const kind of ["ANIM","ANMF"]){bad(makeWebp([{kind:"VP8X",data:vp8xData()},{kind,data:Buffer.alloc(0)},{kind:"VP8 ",data:vp8}]),/animated image\/webp/);}
+    const animX=vp8xData();animX[0]=0x02;
+    bad(makeWebp([{kind:"VP8X",data:animX},{kind:"VP8 ",data:vp8}]),/animated image\/webp/);
+    bad(makeWebp([{kind:"VP8X",data:vp8xData()},{kind:"ANIM",data:Buffer.alloc(0)},{kind:"ANIM",data:Buffer.alloc(0)},{kind:"VP8 ",data:vp8}]),/animated image\/webp/);
+  });
+
   test("strict WebP parser retains valid opaque and external-alpha controls",()=>{
     const opaque=ffmpegConvert(png(16,16),"libwebp"), om=direct(opaque);om.content[0].imageMediaType="image/webp";
     expect(projectedImage(preprocessProjectionImages([om])[0]).data.equals(opaque)).toBe(true);

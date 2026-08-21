@@ -125,6 +125,19 @@ function webpHasAlpha(buf: Buffer): boolean {
   const images = [...vp8, ...vp8l];
   if (vp8x.length > 1) throw new ClaudeImagePreprocessError("WebP has duplicate VP8X chunks");
   if (vp8x.length && vp8x[0] !== 0) throw new ClaudeImagePreprocessError("WebP VP8X chunk must be first");
+  let flags = 0;
+  if (vp8x.length) {
+    const x = chunks[0];
+    // RFC 9649 section 2.7: Rsv bits in the flag octet and all following
+    // 24 reserved bits are mandatory zeroes.
+    if (x.size !== 10 || (buf[x.data] & 0xc1) || buf[x.data + 1] || buf[x.data + 2] || buf[x.data + 3]) {
+      throw new ClaudeImagePreprocessError("WebP has a malformed VP8X chunk");
+    }
+    flags = buf[x.data];
+  }
+  if (indexes("ANIM").length || indexes("ANMF").length || (flags & 0x02)) {
+    throw new ClaudeImagePreprocessError("animated image/webp is not supported in synthetic history");
+  }
   if (alph.length > 1) throw new ClaudeImagePreprocessError("WebP has duplicate ALPH chunks");
   if (images.length !== 1) throw new ClaudeImagePreprocessError("WebP must contain exactly one VP8 or VP8L image payload");
   const imageIndex = images[0], image = chunks[imageIndex];
@@ -152,17 +165,11 @@ function webpHasAlpha(buf: Buffer): boolean {
     if (chunks.length !== 1) throw new ClaudeImagePreprocessError("simple WebP may contain only one image payload chunk");
     return alpha;
   }
-  const x = chunks[0];
-  if (x.size !== 10 || (buf[x.data] & 0xc1)) throw new ClaudeImagePreprocessError("WebP has a malformed VP8X chunk");
-  const flags = buf[x.data];
   const unique = (kind: string) => { const found = indexes(kind); if (found.length > 1) throw new ClaudeImagePreprocessError(`WebP has duplicate ${kind} chunks`); return found[0]; };
   const iccp = unique("ICCP"), exif = unique("EXIF"), xmp = unique("XMP ");
-  if (indexes("ANIM").length || indexes("ANMF").length) throw new ClaudeImagePreprocessError("animated WebP is not supported in synthetic history");
   if (iccp !== undefined && iccp > imageIndex) throw new ClaudeImagePreprocessError("WebP ICCP must precede image data");
-  if (exif !== undefined && exif < imageIndex) throw new ClaudeImagePreprocessError("WebP EXIF must follow image data");
-  if (xmp !== undefined && xmp < imageIndex) throw new ClaudeImagePreprocessError("WebP XMP must follow image data");
-  if (exif !== undefined && xmp !== undefined && exif > xmp) throw new ClaudeImagePreprocessError("WebP EXIF must precede XMP");
-  if (flags & 0x02) throw new ClaudeImagePreprocessError("WebP animation flag has no valid supported animation structure");
+  // EXIF and XMP are metadata chunks. RFC 9649 explicitly requires readers to
+  // accept them out of the recommended order, including before image data.
   if (!!(flags & 0x20) !== (iccp !== undefined) || !!(flags & 0x08) !== (exif !== undefined) || !!(flags & 0x04) !== (xmp !== undefined)) {
     throw new ClaudeImagePreprocessError("WebP VP8X feature flags do not match its chunks");
   }
@@ -192,7 +199,6 @@ function isAnimated(buf: Buffer, mt: string): boolean {
       if (frames > 1) return true;
     }
   }
-  if (mt === "image/webp") return buf.includes(Buffer.from("ANIM"), 12);
   return false;
 }
 
