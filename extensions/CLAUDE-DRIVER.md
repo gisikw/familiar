@@ -190,23 +190,39 @@ exceeded Claude's 5 MiB preflight limit failed before any upstream request.
 
 Familiar now preprocesses only the projection copy of historical direct-user
 and tool-result images (`lib/claude-image-preprocess.ts`), retaining pi's exact
-transcript as authority. It uses pinned `ffmpeg`, max 2000px/512,000 bytes,
-original-family-first then bounded JPEG fallback, strips metadata, caches at
-most 64 transformed results (~31.25 MiB), and errors explicitly on failure.
+transcript as authority. It uses the Nix-shell `ffmpeg`, max 2000px/512,000
+bytes, a 10s hard timeout per decode/encode and 30s whole-projection deadline,
+one thread, 8000px/16MP per-image plus 64MP aggregate pre-decode work limits,
+and a 40 MiB child-output cap. Every original and final output is
+actually decoded; magic must agree with the declared media type. The cache is
+bounded to 64 entries **and** 32 MiB of conservative retained V8 memory
+(including two-byte base64/key strings), and is wiped on session shutdown.
 The trailing direct-user image is left for Claude's native ingestion path, so
 its exact encoder and original/display-dimension annotation remain intact.
-Familiar's historical encoder is deterministic but is not claimed byte-for-byte
-identical to Claude's private Sharp/native encoder; its dimensions, format
-fallback, and byte bound match the observable policy.
+
+Format rules are explicit: animated GIF/WebP history is rejected rather than
+silently reduced to frame one; an alpha PNG/WebP may remain lossless, but is
+rejected if meeting 512,000 bytes would require JPEG (no silent flattening).
+Byte-preserved, in-bounds images preserve EXIF/ICC metadata and orientation;
+transformed images use ffmpeg's default autorotation and strip all metadata.
+The original-family-first handling of 512001–3932160-byte PNG/WebP is a
+**deliberate bounded divergence** from Claude Code 2.1.197's direct JPEG attempt:
+it avoids needless lossy screenshot conversion while preserving the observed
+dimension/byte envelope. Deterministic bit flags and one encoder thread are
+used, but output is only promised for the pinned ffmpeg build, not byte parity
+with Claude's private Sharp/native encoder.
 
 **Caps and bounded growth** (`lib/image-policy.ts`):
 - media type ∈ {png, jpeg, gif, webp} (else actionable `invalid_request_error`),
 - projected historical images ≤512,000 bytes and ≤2000px/side,
 - a trailing current source may be up to 32 MiB so Claude can preprocess it;
   malformed base64, unsupported type, or >8000px still errors locally,
-- ≤100 images/request; loopback B caps the complete outbound body at 32 MiB.
+- all decoded image sources together are ≤32 MiB and their declared area is
+  ≤64MP, with an error located at the image that crosses either work budget,
+- loopback A rejects encoded bodies over 48 MiB incrementally before JSON parse;
+  ≤100 images/request; loopback B caps transformed outbound bodies at 32 MiB.
 
-The aggregate cap counts current/historical and direct/tool-result images.
+The aggregate caps count current/historical and direct/tool-result images.
 2.1.197 sends 100 but silently reduces 101 to 80; Familiar rejects 101
 explicitly. At worst-case 512,000-byte historical outputs the 32 MiB body cap
 binds first at roughly 49 images (base64 overhead included); typical generated

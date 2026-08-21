@@ -21,6 +21,11 @@ export const SUPPORTED_MEDIA_TYPES = ["image/png", "image/jpeg", "image/gif", "i
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // Anthropic per-image hard cap
 export const MAX_IMAGES_PER_REQUEST = 100; // Anthropic Messages API per-request cap
 export const MAX_DIMENSION = 8000; // Anthropic max px per side
+// Bounds total decoded ingress/work before preprocessing. This deliberately
+// composes with loopback A's encoded-body cap rather than multiplying 32 MiB by
+// the 100-image count allowance.
+export const MAX_AGGREGATE_IMAGE_SOURCE_BYTES = 32 * 1024 * 1024;
+export const MAX_AGGREGATE_IMAGE_PIXELS = 64_000_000;
 
 export class ImagePolicyError extends Error {
   code = "image_policy";
@@ -154,6 +159,32 @@ export function enforceImageCount(messages: Message[]): { count: number } {
     );
   }
   return { count };
+}
+
+export function enforceAggregateImageSourceBytes(messages: Message[], maxBytes = MAX_AGGREGATE_IMAGE_SOURCE_BYTES, maxPixels = MAX_AGGREGATE_IMAGE_PIXELS): { count: number; bytes: number; pixels: number } {
+  const refs = collectImages(messages);
+  let bytes = 0, pixels = 0;
+  for (const ref of refs) {
+    // Check the encoded length before allocating a decoded Buffer. Four base64
+    // chars represent at most three bytes; whitespace is accepted by the strict
+    // decoder and already bounded by loopback A's body cap.
+    const encoded = ref.data.replace(/\s+/g, "");
+    const upperBound = Math.ceil(encoded.length / 4) * 3;
+    if (bytes + upperBound > maxBytes + 2) {
+      throw new ImagePolicyError(`aggregate image data exceeds Familiar's ${(maxBytes / 1048576).toFixed(0)} MiB request work limit at ${ref.where}`);
+    }
+    const decoded = decodeBase64Strict(ref.data, ref.where);
+    bytes += decoded.length;
+    if (bytes > maxBytes) {
+      throw new ImagePolicyError(`aggregate image data exceeds Familiar's ${(maxBytes / 1048576).toFixed(0)} MiB request work limit at ${ref.where}`);
+    }
+    const dims = imageDimensions(decoded);
+    if (dims) pixels += dims.w * dims.h;
+    if (!Number.isSafeInteger(pixels) || pixels > maxPixels) {
+      throw new ImagePolicyError(`aggregate decoded image area exceeds Familiar's ${maxPixels / 1_000_000} MP request work limit at ${ref.where}`);
+    }
+  }
+  return { count: refs.length, bytes, pixels };
 }
 
 export function enforceImagePolicy(messages: Message[], opts: { maxImageBytes?: number } = {}): { count: number } {

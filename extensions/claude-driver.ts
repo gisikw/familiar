@@ -25,11 +25,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseAnthropicBody, type AnthropicRequest } from "./lib/anthropic-body.ts";
-import { enforceImageCount, enforceImagePolicy, ImagePolicyError } from "./lib/image-policy.ts";
-import { preprocessProjectionImages, ClaudeImagePreprocessError, CLAUDE_INGEST_MAX_SOURCE_BYTES } from "./lib/claude-image-preprocess.ts";
+import { enforceAggregateImageSourceBytes, enforceImageCount, enforceImagePolicy, ImagePolicyError } from "./lib/image-policy.ts";
+import { preprocessProjectionImages, clearClaudeImageCache, ClaudeImagePreprocessError, CLAUDE_INGEST_MAX_SOURCE_BYTES } from "./lib/claude-image-preprocess.ts";
 import { runClaude, synthesizeCleanSSE, type SSEFrame } from "./lib/claude-runner.ts";
 import { createClaudeFacingHandler } from "./lib/loopback-b.ts";
 import { materializeClaudeCredentials, resolveClaudeCredential } from "./lib/claude-credentials.ts";
+import { BoundedBody } from "./lib/bounded-body.ts";
 import {
   projectClaudeCodeJSONL,
   appendToolResultResumeGuard,
@@ -45,6 +46,9 @@ import {
 const MCP_SERVER = "pi";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MCP_STUB_PATH = path.join(HERE, "lib", "mcp-stub.ts");
+// Encoded JSON cap. A 32 MiB aggregate decoded-image budget needs at most
+// ~42.7 MiB base64; 48 MiB leaves bounded room for text/tools/system fields.
+export const CLAUDE_LOOPBACK_A_MAX_BODY_BYTES = 48 * 1024 * 1024;
 
 // Upstream for loopback B. Overridable for tests (points at a fake api server).
 const UPSTREAM_BASE = (process.env.FAMILIAR_CLAUDE_UPSTREAM_BASE || "https://api.anthropic.com").replace(/\/$/, "");
@@ -85,12 +89,26 @@ export default function (pi: ExtensionAPI) {
 
   // ---- pi-facing gateway: POST /anthropic/v1/messages ----------------------
   function handleMessages(req: http.IncomingMessage, res: http.ServerResponse): void {
-    const chunks: Buffer[] = [];
-    req.on("data", (c: Buffer) => chunks.push(c));
+    const body = new BoundedBody(CLAUDE_LOOPBACK_A_MAX_BODY_BYTES);
+    let rejected = false;
+    const rejectLarge = () => {
+      if (rejected) return;
+      rejected = true;
+      body.clear();
+      res.writeHead(413, { "content-type": "application/json", connection: "close" });
+      res.end(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: `request body exceeds Familiar's ${CLAUDE_LOOPBACK_A_MAX_BODY_BYTES / 1048576} MiB ingress limit` } }));
+    };
+    const declaredLength = Number(req.headers["content-length"] ?? 0);
+    if (Number.isFinite(declaredLength) && declaredLength > CLAUDE_LOOPBACK_A_MAX_BODY_BYTES) rejectLarge();
+    req.on("data", (c: Buffer) => {
+      if (rejected) return;
+      try { body.push(c); } catch { rejectLarge(); }
+    });
     req.on("end", async () => {
+      if (rejected) return;
       let parsed;
       try {
-        parsed = parseAnthropicBody(JSON.parse(Buffer.concat(chunks).toString("utf8")) as AnthropicRequest);
+        parsed = parseAnthropicBody(JSON.parse(body.finish().toString("utf8")) as AnthropicRequest);
       } catch (e) {
         res.writeHead(400, { "content-type": "application/json" });
         res.end(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: String(e) } }));
@@ -138,6 +156,7 @@ export default function (pi: ExtensionAPI) {
         const last = parsed.messages[parsed.messages.length - 1];
         try {
           enforceImageCount(parsed.messages);
+          enforceAggregateImageSourceBytes(parsed.messages);
           projectionMessages = preprocessProjectionImages(projectionMessages);
           enforceImagePolicy(projectionMessages);
           if (last?.role === "user") {
@@ -367,6 +386,7 @@ export default function (pi: ExtensionAPI) {
     for (const h of inflight) { try { h.abort(); } catch {} }
     inflight.clear();
     ratelimitByTurn.clear();
+    clearClaudeImageCache();
     if (registered) { try { pi.unregisterProvider("anthropic"); } catch {} registered = false; }
     if (piServer) { try { piServer.close(); } catch {} piServer = null; }
     if (clServer) { try { clServer.close(); } catch {} clServer = null; }

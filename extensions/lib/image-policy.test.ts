@@ -5,6 +5,7 @@ import { expect, test, describe } from "bun:test";
 import * as zlib from "node:zlib";
 import {
   enforceImagePolicy,
+  enforceAggregateImageSourceBytes,
   validateImage,
   decodeBase64Strict,
   imageDimensions,
@@ -143,6 +144,18 @@ describe("collectImages + enforceImagePolicy", () => {
   test("too many images throws explicitly instead of letting Claude Code silently reduce 101 to 80", () => {
     const many: Message[] = [{ id: "u", role: "user", content: Array.from({ length: MAX_IMAGES_PER_REQUEST + 1 }, () => ({ type: "image" as const, imageData: PNG_B64, imageMediaType: "image/png" })) }];
     expect(() => enforceImagePolicy(many)).toThrow(/exceeds the 100-image per-request/);
+  });
+
+  test("aggregate source budget has exact/over boundaries and names the current image", () => {
+    const a = makePng(1, 1, [1, 2, 3]);
+    const one: Message[] = [{ id: "u", role: "user", content: [{ type: "image", imageData: a.toString("base64"), imageMediaType: "image/png" }] }];
+    expect(enforceAggregateImageSourceBytes(one, a.length)).toEqual({ count: 1, bytes: a.length, pixels: 1 });
+    const two: Message[] = [{ id: "u", role: "user", content: [
+      { type: "image", imageData: a.toString("base64"), imageMediaType: "image/png" },
+      { type: "image", imageData: a.toString("base64"), imageMediaType: "image/png" },
+    ] }];
+    expect(() => enforceAggregateImageSourceBytes(two, a.length)).toThrow(/work limit at messages\[0\]\.content\[1\]/);
+    expect(() => enforceAggregateImageSourceBytes(two, a.length * 2, 1)).toThrow(/decoded image area.*content\[1\]/);
   });
 
   test("malformed image in a tool_result surfaces an actionable error", () => {
