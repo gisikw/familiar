@@ -115,7 +115,7 @@
             FAMILIAR_SHELL = "gateway";
             packages = with pkgs; [ nodejs_22 python3 gnumake gcc curl ];
           };
-          # The Electron chrome shell under client/. It is a DUMB CLIENT: a
+          # The Electron chrome shell under apps/desktop/. It is a DUMB CLIENT: a
           # frameless Electron window that loads the familiar server's served
           # terminal page (FAMILIAR_BASE_URL). No node-pty, no vendored restty,
           # no bundled fonts — the served page owns all of that. Only Electron

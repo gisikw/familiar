@@ -906,14 +906,14 @@ connect() {
   return "$status"
 }
 
-# The Electron terminal app under client/. Runs in the `client` devShell so the
+# The Electron terminal app under apps/desktop/. Runs in the `client` devShell so the
 # Node version lives only in flake.nix. npm install runs only when node_modules
 # is missing or package-lock.json is newer than it (cheap staleness check), so a
 # normal launch skips it. bash 3.2 compatible: no associative arrays, and the
 # staleness test is a plain `-nt`.
 client() {
   ensure_devshell client "$@"
-  local dir="$REPO/client"
+  local dir="$REPO/apps/desktop"
   cd "$dir" || { echo "no client dir at $dir" >&2; return 1; }
   if [ ! -d node_modules ] || [ package-lock.json -nt node_modules ]; then
     npm install || return 1

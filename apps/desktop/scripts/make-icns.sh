@@ -9,10 +9,10 @@
 #                           (e.g. running this on Kevin's Mac).
 #
 # Requires rsvg-convert (librsvg). Under nix:  nix shell nixpkgs#librsvg
-# nixpkgs#libicns -c ./client/scripts/make-icns.sh
+# nixpkgs#libicns -c ./apps/desktop/scripts/make-icns.sh
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 MASTER="$ROOT/assets/icon.svg"
 # The touch icon uses the full-bleed master (no Apple-grid margin): iOS applies
 TOUCH_MASTER="$ROOT/assets/icon-touch.svg"
@@ -20,7 +20,7 @@ TOUCH_MASTER="$ROOT/assets/icon-touch.svg"
 # screen. icon-touch.svg is the pre-margin snapshot of icon.svg.
 OUT="$ROOT/assets/icons"          # PNG set (gitignored build output)
 WEB="$ROOT/services/gateway/web"            # apple-touch-icon lands here
-ICNS="$ROOT/client/build/icon.icns"
+ICNS="$ROOT/apps/desktop/build/icon.icns"
 
 [ -f "$MASTER" ] || { echo "missing master: $MASTER" >&2; exit 1; }
 

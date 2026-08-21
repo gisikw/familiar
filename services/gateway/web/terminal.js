@@ -114,7 +114,7 @@ window.__familiarProbe = runProbe;
 // ---------------------------------------------------------------------------
 // Custom PTY transport: wrap restty's built-in WebSocket transport so we can
 // (a) tap onData for DECSET tracking + the latency probe, and (b) track grid
-// geometry from resize. Mirrors client/src/renderer's IPC transport shape.
+// geometry from resize. Mirrors apps/desktop/src/renderer's IPC transport shape.
 // ---------------------------------------------------------------------------
 function createTappedWsTransport() {
   const inner = createWebSocketPtyTransport();

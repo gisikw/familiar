@@ -108,7 +108,7 @@ window. On the tailnet, identity auth passes and no redirect happens at all.
 ## Layout
 
 ```
-client/
+apps/desktop/
   package.json            electron app; main = src/main/main.js
   src/
     main/
