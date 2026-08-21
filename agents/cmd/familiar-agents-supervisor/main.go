@@ -2,14 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"familiar.dev/agents/client"
 	"familiar.dev/agents/supervisor"
 	"flag"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 )
@@ -20,49 +20,60 @@ func env(k, d string) string {
 	}
 	return d
 }
-func split(s string) []string {
-	if s == "" {
-		return nil
+func argvEnv(k string, fallback []string) []string {
+	v := os.Getenv(k)
+	if v == "" {
+		return fallback
 	}
-	return strings.Fields(s)
+	var out []string
+	if json.Unmarshal([]byte(v), &out) != nil {
+		slog.Error("argv environment must be JSON array", "key", k)
+		os.Exit(2)
+	}
+	return out
 }
 func main() {
-	host, _ := os.Hostname()
-	endpoint := flag.String("service", env("FAMILIAR_AGENTS_ENDPOINT", "http://127.0.0.1:7337"), "service URL or unix:///path")
-	h := flag.String("host", env("FAMILIAR_AGENTS_HOST", host), "explicit host identity")
-	state := flag.String("state", env("FAMILIAR_AGENTS_SUPERVISOR_STATE", ".agents-supervisor"), "private state directory")
-	interval := flag.Duration("poll", 5*time.Second, "reconciliation interval")
-	offline := flag.Duration("offline-restart-window", 30*time.Minute, "maximum disconnected recreation age")
+	home, _ := os.UserHomeDir()
+	stateDefault := filepath.Join(home, ".local", "state", "familiar", "agents-supervisor")
+	host := flag.String("host", env("FAMILIAR_AGENTS_HOST", "local"), "explicit worker host name")
+	endpoint := flag.String("service", env("FAMILIAR_AGENTS_ENDPOINT", "http://127.0.0.1:7337"), "service HTTP URL or unix://path")
+	state := flag.String("state", env("FAMILIAR_AGENTS_SUPERVISOR_STATE", stateDefault), "local durable state directory")
+	interval := flag.Duration("poll", 5*time.Second, "reconcile interval")
+	offline := flag.Duration("offline-restart-window", 30*time.Minute, "maximum disconnected recreation window")
 	pi := flag.String("pi", env("FAMILIAR_AGENTS_PI", "pi"), "pi executable")
-	cl := flag.String("claude-argv", env("FAMILIAR_AGENTS_CLAUDE_ARGV", ""), "minimal adapter argv template")
-	co := flag.String("codex-argv", env("FAMILIAR_AGENTS_CODEX_ARGV", ""), "minimal adapter argv template")
 	flag.Parse()
-	abs, e := filepath.Abs(*state)
-	if e != nil {
-		log.Fatal(e)
+	if *host == "" || *offline < 0 {
+		slog.Error("invalid supervisor configuration")
+		os.Exit(2)
 	}
-	r, e := supervisor.OpenRegistry(filepath.Join(abs, "workers.json"))
-	if e != nil {
-		log.Fatal(e)
+	if err := os.MkdirAll(*state, 0700); err != nil {
+		slog.Error("state directory", "error", err)
+		os.Exit(1)
 	}
-	tm := supervisor.Tmux{Binary: "tmux", Socket: filepath.Join(abs, "tmux.sock"), Config: filepath.Join(abs, "tmux.conf")}
-	if e = tm.Prepare(); e != nil {
-		log.Fatal(e)
+	reg, err := supervisor.OpenRegistry(filepath.Join(*state, "workers.json"))
+	if err != nil {
+		slog.Error("registry", "error", err)
+		os.Exit(1)
 	}
-	s := supervisor.Supervisor{Host: *h, Client: client.New(*endpoint), Registry: r, Tmux: tm, OfflineWindow: *offline, Adapters: supervisor.DefaultAdapters(*pi, split(*cl), split(*co))}
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
+	tm := supervisor.Tmux{Socket: filepath.Join(*state, "tmux.sock"), Config: filepath.Join(*state, "tmux.conf")}
+	if err = tm.Prepare(); err != nil {
+		slog.Error("tmux prepare", "error", err)
+		os.Exit(1)
+	}
+	s := &supervisor.Supervisor{Host: *host, Client: client.New(*endpoint), Registry: reg, Tmux: tm, OfflineWindow: *offline, Adapters: supervisor.DefaultAdapters(*pi, argvEnv("FAMILIAR_AGENTS_CLAUDE_ARGV", []string{"claude", "{prompt}"}), argvEnv("FAMILIAR_AGENTS_CODEX_ARGV", []string{"codex", "{prompt}"}))}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 	s.Recover(ctx)
-	tick := time.NewTicker(*interval)
-	defer tick.Stop()
+	ticker := time.NewTicker(*interval)
+	defer ticker.Stop()
 	for {
-		if e = s.Tick(ctx); e != nil {
-			log.Printf("component=agent-supervisor event=reconcile_error error=%q", e)
+		if err = s.Tick(ctx); err != nil && ctx.Err() == nil {
+			slog.Warn("reconcile failed; workers preserved", "error", err)
 		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-tick.C:
+		case <-ticker.C:
 		}
 	}
 }

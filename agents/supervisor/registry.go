@@ -20,6 +20,7 @@ type Worker struct {
 	RestartUntil time.Time        `json:"restart_until"`
 	LastState    protocol.State   `json:"last_state"`
 	LastExit     *int             `json:"last_exit,omitempty"`
+	AnsweredKey  string           `json:"answered_key,omitempty"`
 	StartedAt    time.Time        `json:"started_at"`
 }
 type Registry struct {
