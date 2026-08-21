@@ -6,9 +6,16 @@
       url = "github:herdrdev/herdr";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    server = { url = "path:./services/server"; inputs.nixpkgs.follows = "nixpkgs"; inputs.flake-utils.follows = "flake-utils"; };
+    llm = { url = "path:./services/llm"; inputs.nixpkgs.follows = "nixpkgs"; inputs.flake-utils.follows = "flake-utils"; };
+    stt = { url = "path:./services/stt"; inputs.nixpkgs.follows = "nixpkgs"; inputs.flake-utils.follows = "flake-utils"; };
+    tts = { url = "path:./services/tts"; inputs.nixpkgs.follows = "nixpkgs"; };
+    gateway-module = { url = "path:./services/gateway"; inputs.nixpkgs.follows = "nixpkgs"; inputs.flake-utils.follows = "flake-utils"; };
+    desktop = { url = "path:./apps/desktop"; inputs.nixpkgs.follows = "nixpkgs"; inputs.flake-utils.follows = "flake-utils"; };
+    agents = { url = "path:./agents"; inputs.nixpkgs.follows = "nixpkgs"; inputs.flake-utils.follows = "flake-utils"; };
   };
 
-  outputs = { self, nixpkgs, flake-utils, herdr }:
+  outputs = { self, nixpkgs, flake-utils, herdr, server, llm, stt, tts, gateway-module, desktop, agents }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
@@ -82,6 +89,19 @@
         });
       in
       {
+        packages = rec {
+          familiar-server = server.packages.${system}.default;
+          familiar-llm = llm.packages.${system}.default;
+          familiar-stt = stt.packages.${system}.default;
+          familiar-gateway = gateway-module.packages.${system}.default;
+          familiar-agents = agents.packages.${system}.cli;
+          familiar-agents-service = agents.packages.${system}.service;
+          familiar-agents-supervisor = agents.packages.${system}.supervisor;
+          default = familiar-server;
+        } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          familiar-tts = tts.packages.${system}.default;
+          familiar-desktop = desktop.packages.${system}.default;
+        };
         checks = pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           drop-serve-lifecycle = pkgs.runCommand "drop-serve-lifecycle" {
             nativeBuildInputs = with pkgs; [ bash coreutils gnugrep gawk netcat-openbsd ];
@@ -91,6 +111,16 @@
             bash ${self}/test/drop-serve-lifecycle.test.sh ${self}/familiar.sh
             touch $out
           '';
+        };
+        apps = {
+          default = flake-utils.lib.mkApp { drv = server.packages.${system}.default; };
+          familiar-server = flake-utils.lib.mkApp { drv = server.packages.${system}.default; };
+          familiar-gateway = flake-utils.lib.mkApp { drv = gateway-module.packages.${system}.default; };
+          familiar-agents = flake-utils.lib.mkApp { drv = agents.packages.${system}.cli; };
+          familiar-agents-service = flake-utils.lib.mkApp { drv = agents.packages.${system}.service; };
+          familiar-agents-supervisor = flake-utils.lib.mkApp { drv = agents.packages.${system}.supervisor; };
+        } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          familiar-desktop = flake-utils.lib.mkApp { drv = desktop.packages.${system}.default; };
         };
         devShells = {
           default = piShell;

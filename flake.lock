@@ -1,5 +1,43 @@
 {
   "nodes": {
+    "agents": {
+      "inputs": {
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./agents",
+        "type": "path"
+      },
+      "original": {
+        "path": "./agents",
+        "type": "path"
+      },
+      "parent": []
+    },
+    "desktop": {
+      "inputs": {
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./apps/desktop",
+        "type": "path"
+      },
+      "original": {
+        "path": "./apps/desktop",
+        "type": "path"
+      },
+      "parent": []
+    },
     "flake-utils": {
       "inputs": {
         "systems": "systems"
@@ -17,6 +55,25 @@
         "repo": "flake-utils",
         "type": "github"
       }
+    },
+    "gateway-module": {
+      "inputs": {
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./services/gateway",
+        "type": "path"
+      },
+      "original": {
+        "path": "./services/gateway",
+        "type": "path"
+      },
+      "parent": []
     },
     "herdr": {
       "inputs": {
@@ -39,6 +96,25 @@
         "type": "github"
       }
     },
+    "llm": {
+      "inputs": {
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./services/llm",
+        "type": "path"
+      },
+      "original": {
+        "path": "./services/llm",
+        "type": "path"
+      },
+      "parent": []
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1786599213,
@@ -57,9 +133,16 @@
     },
     "root": {
       "inputs": {
+        "agents": "agents",
+        "desktop": "desktop",
         "flake-utils": "flake-utils",
+        "gateway-module": "gateway-module",
         "herdr": "herdr",
-        "nixpkgs": "nixpkgs"
+        "llm": "llm",
+        "nixpkgs": "nixpkgs",
+        "server": "server",
+        "stt": "stt",
+        "tts": "tts"
       }
     },
     "rust-overlay": {
@@ -83,6 +166,44 @@
         "type": "github"
       }
     },
+    "server": {
+      "inputs": {
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./services/server",
+        "type": "path"
+      },
+      "original": {
+        "path": "./services/server",
+        "type": "path"
+      },
+      "parent": []
+    },
+    "stt": {
+      "inputs": {
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./services/stt",
+        "type": "path"
+      },
+      "original": {
+        "path": "./services/stt",
+        "type": "path"
+      },
+      "parent": []
+    },
     "systems": {
       "locked": {
         "lastModified": 1681028828,
@@ -97,6 +218,22 @@
         "repo": "default",
         "type": "github"
       }
+    },
+    "tts": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./services/tts",
+        "type": "path"
+      },
+      "original": {
+        "path": "./services/tts",
+        "type": "path"
+      },
+      "parent": []
     }
   },
   "root": "root",
