@@ -250,7 +250,7 @@ func (s *Store) Record(ctx context.Context, batch protocol.EventBatch) error {
 				if old.ID != ev.Settlement.ID || old.JobID != ev.Settlement.JobID || old.Verdict != ev.Settlement.Verdict {
 					return errors.New("conflicting settlement")
 				}
-				next = old.Verdict
+				next, j.Settlement = old.Verdict, &old // first durable settlement wins
 			} else if !errors.Is(err, sql.ErrNoRows) {
 				return err
 			} else {
@@ -258,8 +258,8 @@ func (s *Store) Record(ctx context.Context, batch protocol.EventBatch) error {
 				if _, err = tx.ExecContext(ctx, `INSERT INTO settlements(id,job_id,body,created) VALUES(?,?,?,?)`, ev.Settlement.ID, j.ID, settleBody, stamp(ev.Settlement.At)); err != nil {
 					return err
 				}
+				next, j.Settlement = ev.Settlement.Verdict, ev.Settlement
 			}
-			next, j.Settlement = ev.Settlement.Verdict, ev.Settlement
 		}
 		if next != "" {
 			if err = protocol.ValidateTransition(j.State, next, ev.Settlement != nil || j.Settlement != nil); err != nil {
