@@ -36,26 +36,29 @@ type Config struct {
 }
 
 type ChildConfig struct {
-	Name              string            `toml:"name"`
-	Argv              []string          `toml:"argv"`
-	WorkingDir        string            `toml:"working_dir"`
-	Env               map[string]string `toml:"env"`
-	Required          bool              `toml:"required"`
-	Presence          bool              `toml:"presence"`
-	Detached          bool              `toml:"detached"`
-	StopArgv          []string          `toml:"stop_argv"`
-	DependsOn         []string          `toml:"depends_on"`
-	DependencyTimeout Duration          `toml:"dependency_timeout"`
-	Probe             ProbeConfig       `toml:"probe"`
-	Restart           RestartConfig     `toml:"restart"`
+	Name                    string            `toml:"name"`
+	Argv                    []string          `toml:"argv"`
+	WorkingDir              string            `toml:"working_dir"`
+	Env                     map[string]string `toml:"env"`
+	Required                bool              `toml:"required"`
+	Presence                bool              `toml:"presence"`
+	Detached                bool              `toml:"detached"`
+	StopArgv                []string          `toml:"stop_argv"`
+	DependsOn               []string          `toml:"depends_on"`
+	DependencyTimeout       Duration          `toml:"dependency_timeout"`
+	DependencyTimeoutPolicy string            `toml:"dependency_timeout_policy"`
+	Probe                   ProbeConfig       `toml:"probe"`
+	Restart                 RestartConfig     `toml:"restart"`
 }
 
 type ProbeConfig struct {
-	Type     string   `toml:"type"`
-	URL      string   `toml:"url"`
-	Argv     []string `toml:"argv"`
-	Interval Duration `toml:"interval"`
-	Timeout  Duration `toml:"timeout"`
+	Type             string   `toml:"type"`
+	URL              string   `toml:"url"`
+	Argv             []string `toml:"argv"`
+	Interval         Duration `toml:"interval"`
+	Timeout          Duration `toml:"timeout"`
+	SuccessThreshold int      `toml:"success_threshold"`
+	FailureThreshold int      `toml:"failure_threshold"`
 }
 
 type RestartConfig struct {
@@ -103,6 +106,9 @@ func applyChildDefaults(c *ChildConfig) {
 	if c.DependencyTimeout == 0 {
 		c.DependencyTimeout = Duration(30 * time.Second)
 	}
+	if c.DependencyTimeoutPolicy == "" {
+		c.DependencyTimeoutPolicy = "fail-child"
+	}
 	if c.Probe.Type == "" {
 		c.Probe.Type = "none"
 	}
@@ -111,6 +117,9 @@ func applyChildDefaults(c *ChildConfig) {
 	}
 	if c.Probe.Timeout == 0 {
 		c.Probe.Timeout = Duration(2 * time.Second)
+	}
+	if c.Probe.SuccessThreshold == 0 {
+		c.Probe.SuccessThreshold = 1
 	}
 	if c.Restart.Policy == "" {
 		c.Restart.Policy = "on-failure"
@@ -162,11 +171,17 @@ func ValidateConfig(c Config) error {
 		if x.Presence && !x.Detached {
 			return fmt.Errorf("presence child %s must use detached=true so its session can outlive the supervisor", x.Name)
 		}
+		if x.DependencyTimeoutPolicy != "fail-child" && x.DependencyTimeoutPolicy != "start-degraded" {
+			return fmt.Errorf("child %s: invalid dependency timeout policy", x.Name)
+		}
 		if x.Probe.Type != "none" && x.Probe.Type != "http" && x.Probe.Type != "exec" {
 			return fmt.Errorf("child %s: invalid probe type", x.Name)
 		}
 		if x.Probe.Type == "http" && x.Probe.URL == "" || x.Probe.Type == "exec" && len(x.Probe.Argv) == 0 {
 			return fmt.Errorf("child %s: incomplete probe", x.Name)
+		}
+		if x.Probe.SuccessThreshold < 1 || x.Probe.FailureThreshold < 0 {
+			return fmt.Errorf("child %s: invalid probe thresholds", x.Name)
 		}
 		r := x.Restart
 		if r.Policy != "always" && r.Policy != "on-failure" && r.Policy != "never" {

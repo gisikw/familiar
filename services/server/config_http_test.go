@@ -52,6 +52,24 @@ func TestLoadConfigResolvesPathsAndRejectsUnknown(t *testing.T) {
 	}
 }
 
+func TestCanonicalConfigLoads(t *testing.T) {
+	c, err := LoadConfig("familiar-server.toml.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Children) != 5 {
+		t.Fatalf("children=%d", len(c.Children))
+	}
+	for _, child := range c.Children {
+		if child.Probe.Type != "none" && child.Probe.FailureThreshold == 0 {
+			t.Fatalf("canonical child %s has no probe restart threshold", child.Name)
+		}
+		if len(child.DependsOn) > 0 && child.DependencyTimeoutPolicy != "fail-child" {
+			t.Fatalf("canonical child %s dependency policy=%s", child.Name, child.DependencyTimeoutPolicy)
+		}
+	}
+}
+
 func TestHTTPReadinessStatusAndOperators(t *testing.T) {
 	x := fakeChild("worker", "while :; do sleep 1; done")
 	s := startSupervisor(t, testConfig(t, x))

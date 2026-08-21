@@ -36,7 +36,8 @@ type child struct {
 	restarts                               int
 	lastExit                               string
 	manualStop, shuttingDown, forceRestart bool
-	readinessLost                          bool
+	readinessLost, dependencyFailed        bool
+	probeSuccesses, probeFailures          int
 	history                                []time.Time
 	wake                                   chan struct{}
 	done                                   chan struct{}
@@ -120,6 +121,15 @@ func (s *Supervisor) Ready() bool {
 	return true
 }
 
+func (c *child) dependenciesReady() bool {
+	for _, n := range c.cfg.DependsOn {
+		if !c.sup.children[n].status().Ready {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *child) waitDependencies() bool {
 	if len(c.cfg.DependsOn) == 0 {
 		return true
@@ -130,14 +140,10 @@ func (c *child) waitDependencies() bool {
 	tick := time.NewTicker(20 * time.Millisecond)
 	defer tick.Stop()
 	for {
-		all := true
-		for _, n := range c.cfg.DependsOn {
-			if !c.sup.children[n].status().Ready {
-				all = false
-				break
-			}
-		}
-		if all {
+		if c.dependenciesReady() {
+			c.mu.Lock()
+			c.dependencyFailed = false
+			c.mu.Unlock()
 			return true
 		}
 		select {
@@ -151,8 +157,19 @@ func (c *child) waitDependencies() bool {
 				return false
 			}
 		case <-deadline.C:
-			c.sup.log.Warn("dependency wait timed out", "child", c.cfg.Name, "dependencies", strings.Join(c.cfg.DependsOn, ","))
-			return true
+			c.mu.Lock()
+			c.dependencyFailed = true
+			c.ready = false
+			if c.cfg.DependencyTimeoutPolicy == "fail-child" {
+				c.state = "dependency-failed"
+			}
+			c.mu.Unlock()
+			c.sup.log.Warn("dependency wait timed out", "child", c.cfg.Name, "dependencies", strings.Join(c.cfg.DependsOn, ","), "policy", c.cfg.DependencyTimeoutPolicy)
+			if c.cfg.DependencyTimeoutPolicy == "start-degraded" {
+				return true
+			}
+			// A failed dependency gates this child, but recovery remains automatic.
+			deadline.Reset(c.cfg.DependencyTimeout.Value())
 		case <-tick.C:
 		}
 	}
@@ -203,8 +220,10 @@ func (c *child) run() {
 		c.mu.Lock()
 		c.proc = cmd
 		c.state = "running"
+		c.probeSuccesses = 0
+		c.probeFailures = 0
 		if c.cfg.Probe.Type == "none" {
-			c.ready = true
+			c.ready = !c.dependencyFailed
 		}
 		c.mu.Unlock()
 		c.sup.log.Info("child started", "child", c.cfg.Name, "pid", cmd.Process.Pid)
@@ -218,8 +237,14 @@ func (c *child) run() {
 		shutdown := c.shuttingDown
 		manual = c.manualStop
 		force := c.forceRestart
+		probeFailed := c.readinessLost
 		c.forceRestart = false
+		c.readinessLost = false
 		c.mu.Unlock()
+		if probeFailed {
+			desc = "readiness probe failed"
+			failed = true
+		}
 		c.sup.log.Info("child exited", "child", c.cfg.Name, "status", desc)
 		if shutdown {
 			return
@@ -363,24 +388,60 @@ func (c *child) probeLoop() {
 				continue
 			}
 			ok := c.probe()
+			depsReady := c.dependenciesReady()
 			lost := false
+			var proc *exec.Cmd
 			c.mu.Lock()
 			if c.state == "running" {
-				c.ready = ok
-				if c.cfg.Detached && c.cfg.Probe.Type != "none" && !ok {
-					c.readinessLost = true
-					lost = true
+				c.dependencyFailed = !depsReady
+				if ok {
+					c.probeSuccesses++
+					c.probeFailures = 0
+					c.ready = depsReady && c.probeSuccesses >= c.cfg.Probe.SuccessThreshold
+				} else {
+					c.probeSuccesses = 0
+					c.probeFailures++
+					c.ready = false
+					if c.cfg.Probe.FailureThreshold > 0 && c.probeFailures >= c.cfg.Probe.FailureThreshold && !c.readinessLost {
+						c.readinessLost = true
+						lost = true
+						proc = c.proc
+					}
 				}
 			}
 			c.mu.Unlock()
 			if lost {
-				select {
-				case c.wake <- struct{}{}:
-				default:
+				c.sup.log.Warn("readiness failure threshold reached", "child", c.cfg.Name, "failures", c.cfg.Probe.FailureThreshold)
+				if c.cfg.Detached || proc == nil {
+					select {
+					case c.wake <- struct{}{}:
+					default:
+					}
+				} else {
+					c.terminateAfterProbeFailure(proc)
 				}
 			}
 		}
 	}
+}
+
+func (c *child) terminateAfterProbeFailure(cmd *exec.Cmd) {
+	signalProcessGroup(cmd, false)
+	go func() {
+		t := time.NewTimer(c.sup.cfg.ShutdownGrace.Value())
+		defer t.Stop()
+		select {
+		case <-c.sup.ctx.Done():
+			return
+		case <-t.C:
+			c.mu.Lock()
+			stillRunning := c.proc == cmd
+			c.mu.Unlock()
+			if stillRunning {
+				signalProcessGroup(cmd, true)
+			}
+		}
+	}()
 }
 func (c *child) probe() bool {
 	ctx, cancel := context.WithTimeout(c.sup.ctx, c.cfg.Probe.Timeout.Value())

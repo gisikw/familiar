@@ -1,5 +1,7 @@
-# Canonical source-tree deployment for all five Familiar Server children.
-# Relative working/state directories resolve from this file's directory.
+# Canonical Linux source-tree deployment for all five Familiar Server children.
+# ./familiar.sh server resolves familiar.toml/environment endpoints and provisions
+# missing local LLM/STT models before launching this file. Relative working/state
+# directories resolve from this file's directory.
 listen = "127.0.0.1:9940"
 state_dir = "../../state/server"
 shutdown_grace = "10s"
@@ -17,6 +19,7 @@ required = true
 [children.probe]
 type = "http"
 url = "http://127.0.0.1:9931/ready"
+failure_threshold = 3
 [children.restart]
 policy = "on-failure"
 initial_backoff = "500ms"
@@ -33,6 +36,7 @@ required = false
 [children.probe]
 type = "http"
 url = "http://127.0.0.1:9932/ready"
+failure_threshold = 3
 
 [[children]]
 name = "tts"
@@ -43,6 +47,7 @@ required = false
 type = "http"
 # TTS uses the z-suffixed endpoint; unlike LLM/STT it has no /ready alias.
 url = "http://127.0.0.1:9933/readyz"
+failure_threshold = 3
 
 [[children]]
 name = "presence"
@@ -54,11 +59,15 @@ detached = true
 required = true
 depends_on = ["llm"]
 dependency_timeout = "45s"
+dependency_timeout_policy = "fail-child"
 [children.probe]
 type = "exec"
 argv = ["./services/presence/presence.sh", "status", "--quiet"]
 interval = "1s"
 timeout = "3s"
+# Do not report a transient tmux pane between pi crash/respawn cycles as ready.
+success_threshold = 3
+failure_threshold = 3
 
 [[children]]
 name = "gateway"
@@ -67,6 +76,7 @@ working_dir = "../.."
 required = true
 depends_on = ["presence", "stt", "tts"]
 dependency_timeout = "30s"
+dependency_timeout_policy = "fail-child"
 [children.env]
 FAMILIAR_PRESENCE_CTL = "./services/presence/presence.sh"
 FAMILIAR_STT_URL = "http://127.0.0.1:9932"
@@ -75,3 +85,4 @@ FAMILIAR_TTS_URL = "http://127.0.0.1:9933"
 type = "http"
 # The gateway's real readiness/liveness endpoint is /health, not /ready.
 url = "http://127.0.0.1:1692/health"
+failure_threshold = 3

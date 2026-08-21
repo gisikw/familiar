@@ -127,6 +127,7 @@ func TestDependencyDelayAndTimeout(t *testing.T) {
 			consumer := fakeChild("consumer", "touch '"+started+"'; sleep 30")
 			consumer.DependsOn = []string{"dep"}
 			consumer.DependencyTimeout = Duration(120 * time.Millisecond)
+			consumer.DependencyTimeoutPolicy = "start-degraded"
 			begin := time.Now()
 			s := startSupervisor(t, testConfig(t, dep, consumer))
 			_ = s
@@ -141,6 +142,71 @@ func TestDependencyDelayAndTimeout(t *testing.T) {
 		})
 	}
 }
+func TestDependencyTimeoutPoliciesAffectReadiness(t *testing.T) {
+	for _, policy := range []string{"fail-child", "start-degraded"} {
+		t.Run(policy, func(t *testing.T) {
+			dir := t.TempDir()
+			depReady := filepath.Join(dir, "dep-ready")
+			started := filepath.Join(dir, "started")
+			dep := fakeChild("dep", "sleep 30")
+			dep.Required = false
+			dep.Probe = ProbeConfig{Type: "exec", Argv: []string{"/bin/sh", "-c", "test -f '" + depReady + "'"}, Interval: Duration(10 * time.Millisecond), Timeout: Duration(50 * time.Millisecond)}
+			consumer := fakeChild("consumer", "touch '"+started+"'; sleep 30")
+			consumer.DependsOn = []string{"dep"}
+			consumer.DependencyTimeout = Duration(60 * time.Millisecond)
+			consumer.DependencyTimeoutPolicy = policy
+			s := startSupervisor(t, testConfig(t, dep, consumer))
+			time.Sleep(150 * time.Millisecond)
+			if s.Ready() {
+				t.Fatal("aggregate ready while required child's dependency failed")
+			}
+			_, err := os.Stat(started)
+			if (policy == "start-degraded") != (err == nil) {
+				t.Fatalf("policy=%s started err=%v", policy, err)
+			}
+			if err := os.WriteFile(depReady, []byte("x"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			waitFor(t, time.Second, s.Ready)
+			waitFor(t, time.Second, func() bool { _, err := os.Stat(started); return err == nil })
+		})
+	}
+}
+
+func TestProbeFailureRestartsOrdinaryChild(t *testing.T) {
+	starts := filepath.Join(t.TempDir(), "starts")
+	x := fakeChild("worker", "echo x >> '"+starts+"'; sleep 30")
+	x.Probe = ProbeConfig{Type: "exec", Argv: []string{"/bin/false"}, Interval: Duration(10 * time.Millisecond), Timeout: Duration(50 * time.Millisecond), FailureThreshold: 2}
+	x.Restart.MaxRestarts = 2
+	s := startSupervisor(t, testConfig(t, x))
+	waitFor(t, time.Second, func() bool {
+		b, err := os.ReadFile(starts)
+		return err == nil && len(strings.Fields(string(b))) >= 2
+	})
+	st, _ := s.Child("worker")
+	if st.Restarts < 1 {
+		t.Fatalf("restart count=%d", st.Restarts)
+	}
+}
+
+func TestProbeSuccessThresholdGatesReadiness(t *testing.T) {
+	x := fakeChild("presence", "sleep 30")
+	x.Probe = ProbeConfig{Type: "exec", Argv: []string{"/bin/sh", "-c", "exit 0"}, Interval: Duration(60 * time.Millisecond), Timeout: Duration(500 * time.Millisecond), SuccessThreshold: 3}
+	s := startSupervisor(t, testConfig(t, x))
+	time.Sleep(100 * time.Millisecond)
+	if s.Ready() {
+		t.Fatal("ready before consecutive probe success threshold")
+	}
+	end := time.Now().Add(time.Second)
+	for time.Now().Before(end) && !s.Ready() {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !s.Ready() {
+		st, _ := s.Child("presence")
+		t.Fatalf("success threshold never became ready: %+v", st)
+	}
+}
+
 func TestGracefulShutdownReverseDependencyOrder(t *testing.T) {
 	base := fakeChild("base", "sleep 30")
 	top := fakeChild("top", "sleep 30")

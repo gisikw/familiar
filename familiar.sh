@@ -927,9 +927,64 @@ client() {
   npm start
 }
 
+provision_server_model() {
+  local label=$1 file=$2 url=$3
+  if [ -z "$file" ] || [ -z "$url" ]; then
+    echo "familiar: local $label requires a model file and URL" >&2
+    return 1
+  fi
+  [ -f "$MODEL_DIR/$file" ] && return 0
+  mkdir -p "$MODEL_DIR"
+  echo "familiar: provisioning $label model" >&2
+  curl -fL --retry 5 -C - -o "$MODEL_DIR/$file.part" "$url" \
+    && mv "$MODEL_DIR/$file.part" "$MODEL_DIR/$file"
+}
+
+server_local_url() {
+  case "$1" in
+    "http://localhost:$2"|"http://localhost:$2/"|"http://127.0.0.1:$2"|"http://127.0.0.1:$2/"|"http://[::1]:$2"|"http://[::1]:$2/") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 server() {
   shift || true
-  local config="${FAMILIAR_SERVER_CONFIG:-$REPO/services/server/familiar-server.toml.example}"
+  local canonical="$REPO/services/server/familiar-server.toml.example"
+  local config="${FAMILIAR_SERVER_CONFIG:-$canonical}"
+  if [ "$config" = "$canonical" ] && [ "$(uname -s)" != Linux ]; then
+    echo "familiar: the canonical five-child server deployment is Linux-only (set FAMILIAR_SERVER_CONFIG for a platform-specific deployment)" >&2
+    return 2
+  fi
+
+  # The pi shell supplies pinned model defaults and download tooling. Re-entry
+  # retains familiar.toml/ambient overrides loaded above.
+  ensure_devshell pi server "$@"
+  export FAMILIAR_MODEL_DIR="$MODEL_DIR"
+
+  # User-facing endpoint settings describe backends. Children always consume
+  # the stable local proxies, so bridge configured endpoints into proxy-specific
+  # upstream variables before replacing the public URLs.
+  if [ -z "${FAMILIAR_LLM_UPSTREAM:-}" ] && [ -n "${LLAMA_BASE_URL:-}" ] && ! server_local_url "$LLAMA_BASE_URL" 9931; then
+    export FAMILIAR_LLM_UPSTREAM="$LLAMA_BASE_URL"
+  fi
+  if [ -z "${STT_UPSTREAM_URL:-}" ] && [ -n "${FAMILIAR_STT_URL:-}" ] && ! server_local_url "$FAMILIAR_STT_URL" 9932; then
+    export STT_UPSTREAM_URL="$FAMILIAR_STT_URL"
+  fi
+  if [ -z "${FAMILIAR_TTS_UPSTREAM:-}" ] && [ -n "${FAMILIAR_TTS_URL:-}" ] && ! server_local_url "$FAMILIAR_TTS_URL" 9933; then
+    export FAMILIAR_TTS_UPSTREAM="$FAMILIAR_TTS_URL"
+  fi
+
+  if [ -z "${FAMILIAR_LLM_UPSTREAM:-}" ]; then
+    provision_server_model llm "${FAMILIAR_MODEL_FILE:-}" "${FAMILIAR_MODEL_URL:-}"
+  fi
+  if [ -z "${STT_UPSTREAM_URL:-}" ]; then
+    provision_server_model stt "${FAMILIAR_STT_MODEL_FILE:-}" "${FAMILIAR_STT_MODEL_URL:-}"
+    export STT_MODEL="$MODEL_DIR/$FAMILIAR_STT_MODEL_FILE"
+  fi
+
+  export LLAMA_BASE_URL="http://127.0.0.1:9931" NEED_LLAMA=1
+  export FAMILIAR_STT_URL="http://127.0.0.1:9932"
+  export FAMILIAR_TTS_URL="http://127.0.0.1:9933"
   exec nix run "$REPO#familiar-server" -- --config "$config" "$@"
 }
 
