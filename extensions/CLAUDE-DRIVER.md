@@ -159,20 +159,60 @@ transcript to a summary, after which old images are no longer present to
 project. Pi remains the transcript authority: Familiar does not mutate pi's
 history or invent a Claude-only summary.
 
+**Ingestion preprocessing and synthetic-resume parity.** A second generated
+Retina-like fixture probe found an important boundary: ordinary Claude Code
+images are preprocessed at ingestion, while image bytes loaded from synthetic
+`--resume` JSONL bypass that pass. Current stream-json and ordinary `@path`
+ingestion behaved identically. In 2.1.197 the ingestion pipeline:
+
+- leaves an image byte-identical only when it is both ≤2000px/side and ≤500 KiB;
+- scales larger dimensions to about 2000px preserving aspect ratio;
+- uses a staged 3.75 MiB resize/re-encode pass (same-family PNG and JPEG
+  qualities 80/60/40/20, with a 1000px quality-20 fallback), then a separate
+  JPEG quality search for the final budget;
+- enforces a final 512,000-byte budget (observed outputs 56–509 KiB);
+- converts high-entropy PNG/JPEG/WebP Retina fixtures to JPEG;
+- strips EXIF/ICC/orientation metadata whenever it transforms an image.
+
+Examples: a generated 3024×1964 screenshot PNG went 168,661-byte PNG →
+79,381-byte 1999×1298 PNG; high-entropy Retina PNG/JPEG/WebP inputs of
+17,850,996/12,012,566/5,943,466 bytes became 429–431 KiB 1999×1298 JPEGs.
+A 408,914-byte 1999×1200 JPEG was byte/hash/metadata identical; a 3,941,958-byte
+one became a 509,161-byte JPEG. Three and 21 Retina screenshot inputs were each
+processed independently and produced 345,498-byte and 2,254,511-byte complete
+requests. More than 20 does not trigger a different client transform: the
+client already uses 2000px; the separate `many-image` rule is API-side.
+
+Synthetic resume history diverged before this fix: a small compressible Retina
+PNG was replayed byte-identically at 3024×1964, and under-5-MiB JPEG/WebP
+fixtures were replayed byte-identically with metadata. Images whose **base64**
+exceeded Claude's 5 MiB preflight limit failed before any upstream request.
+
+Familiar now preprocesses only the projection copy of historical direct-user
+and tool-result images (`lib/claude-image-preprocess.ts`), retaining pi's exact
+transcript as authority. It uses pinned `ffmpeg`, max 2000px/512,000 bytes,
+original-family-first then bounded JPEG fallback, strips metadata, caches at
+most 64 transformed results (~31.25 MiB), and errors explicitly on failure.
+The trailing direct-user image is left for Claude's native ingestion path, so
+its exact encoder and original/display-dimension annotation remain intact.
+Familiar's historical encoder is deterministic but is not claimed byte-for-byte
+identical to Claude's private Sharp/native encoder; its dimensions, format
+fallback, and byte bound match the observable policy.
+
 **Caps and bounded growth** (`lib/image-policy.ts`):
 - media type ∈ {png, jpeg, gif, webp} (else actionable `invalid_request_error`),
-- ≤ 5 MiB decoded per image, ≤ 100 images/request, ≤ 8000 px/side (dims parsed
-  cheaply for png/jpeg/gif),
-- strict base64 round-trip validation rejects truncated/garbage payloads,
-- loopback B independently caps the complete HTTP body at 32 MiB.
+- projected historical images ≤512,000 bytes and ≤2000px/side,
+- a trailing current source may be up to 32 MiB so Claude can preprocess it;
+  malformed base64, unsupported type, or >8000px still errors locally,
+- ≤100 images/request; loopback B caps the complete outbound body at 32 MiB.
 
-The 100-image aggregate cap counts current and historical, direct and
-image-bearing tool-result images. The same probe found that 2.1.197 sends 100
-but, when given 101, silently reduces the body to 80 images. Familiar rejects
-101 explicitly before spawning Claude instead, preserving current-image
-semantics while bounding replay. Every malformed/count/size violation is a
-located `invalid_request_error` (`messages[i].content[j] … / tool_result
-image[k]`) — **never silently drops current pixels**.
+The aggregate cap counts current/historical and direct/tool-result images.
+2.1.197 sends 100 but silently reduces 101 to 80; Familiar rejects 101
+explicitly. At worst-case 512,000-byte historical outputs the 32 MiB body cap
+binds first at roughly 49 images (base64 overhead included); typical generated
+Retina screenshots in the probe were ~79 KiB each, so the 100-image count cap
+binds first. Every malformed/count/preprocessing violation is a located error —
+**never silent current-image loss**.
 
 **Projection**: a `tool_result` carrying images projects to array content
 (`[{text?},{image base64}…]`) with `toolUseResult.isImage:true`; a direct user

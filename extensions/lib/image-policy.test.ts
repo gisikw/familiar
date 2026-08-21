@@ -77,6 +77,11 @@ describe("decodeBase64Strict", () => {
 describe("imageDimensions", () => {
   test("PNG dims", () => expect(imageDimensions(PNG)).toEqual({ w: 16, h: 16 }));
   test("JPEG dims", () => expect(imageDimensions(JPEG)).toEqual({ w: 24, h: 32 }));
+  test("WebP VP8X dims", () => {
+    const webp = Buffer.alloc(30); webp.write("RIFF", 0); webp.write("WEBP", 8); webp.write("VP8X", 12);
+    webp.writeUIntLE(3019, 24, 3); webp.writeUIntLE(1963, 27, 3);
+    expect(imageDimensions(webp)).toEqual({ w: 3020, h: 1964 });
+  });
   test("unknown → null", () => expect(imageDimensions(Buffer.from([1, 2, 3, 4]))).toBeNull());
 });
 
@@ -91,7 +96,10 @@ describe("validateImage", () => {
     const big = Buffer.alloc(MAX_IMAGE_BYTES + 1024, 0x41);
     // give it a PNG header so media-type check passes; size check should still fire
     big.set([137, 80, 78, 71, 13, 10, 26, 10], 0);
-    expect(() => validateImage({ data: big.toString("base64"), mediaType: "image/png", where: "big" })).toThrow(/exceeds the 5 MiB per-image/);
+    big.writeUInt32BE(1, 16); big.writeUInt32BE(1, 20);
+    const ref = { data: big.toString("base64"), mediaType: "image/png", where: "big" };
+    expect(() => validateImage(ref)).toThrow(/exceeds the 5 MiB per-image/);
+    expect(() => validateImage(ref, 32 * 1024 * 1024)).not.toThrow();
   });
   test("oversize dimensions throws", () => {
     const wide = makePng(1, 1, [0, 0, 0]);

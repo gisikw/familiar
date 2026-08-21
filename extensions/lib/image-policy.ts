@@ -5,11 +5,12 @@
 // Because base64 lives inline in the projected JSONL there are NO image temp
 // files to leak and NO local paths to perturb the deterministic cache prefix.
 //
-// Caps mirror Anthropic's documented Messages API limits (not claude.ai's
-// stricter UI limits, and NOT tiamat's retention-window gating which existed
-// only to bound a re-projected wire payload — dropped here per RESEARCH §3.8):
+// Wire caps mirror Claude Code 2.1.197 / Anthropic request limits. Synthetic
+// historical images are preprocessed before this policy runs; the trailing
+// direct-user image may use a larger explicit source bound because Claude's
+// ordinary ingestion pass resizes/re-encodes it before outbound submission.
 //   • media type ∈ {png, jpeg, gif, webp}
-//   • ≤ MAX_IMAGE_BYTES decoded per image (5 MiB, Anthropic hard per-image cap)
+//   • ≤ MAX_IMAGE_BYTES decoded per projected/wire image (5 MiB)
 //   • ≤ MAX_IMAGES_PER_REQUEST images total across the whole request (100)
 //   • ≤ MAX_DIMENSION px per side when dimensions are cheaply parseable
 // Every violation throws an actionable invalid_request_error (never silently
@@ -72,6 +73,16 @@ export function imageDimensions(buf: Buffer): { w: number; h: number } | null {
   if (buf.length >= 10 && buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x38) {
     return { w: buf.readUInt16LE(6), h: buf.readUInt16LE(8) };
   }
+  // WebP: RIFF/WEBP followed by VP8, VP8L, or VP8X dimensions.
+  if (buf.length >= 30 && buf.toString("ascii", 0, 4) === "RIFF" && buf.toString("ascii", 8, 12) === "WEBP") {
+    const kind = buf.toString("ascii", 12, 16);
+    if (kind === "VP8 ") return { w: buf.readUInt16LE(26) & 0x3fff, h: buf.readUInt16LE(28) & 0x3fff };
+    if (kind === "VP8L" && buf.length >= 25) {
+      const n = buf.readUInt32LE(21);
+      return { w: (n & 0x3fff) + 1, h: ((n >>> 14) & 0x3fff) + 1 };
+    }
+    if (kind === "VP8X") return { w: buf.readUIntLE(24, 3) + 1, h: buf.readUIntLE(27, 3) + 1 };
+  }
   // JPEG: scan segments for a SOF marker (0xFFC0..0xCF except C4/C8/CC)
   if (buf.length >= 4 && buf[0] === 0xff && buf[1] === 0xd8) {
     let off = 2;
@@ -92,7 +103,7 @@ export function imageDimensions(buf: Buffer): { w: number; h: number } | null {
 
 // validateImage — validate a single image ref (media type, base64, size, dims).
 // Throws ImagePolicyError on any violation.
-export function validateImage(ref: ImageRef): void {
+export function validateImage(ref: ImageRef, maxBytes = MAX_IMAGE_BYTES): void {
   const mt = (ref.mediaType || "").toLowerCase();
   if (!SUPPORTED_MEDIA_TYPES.includes(mt as (typeof SUPPORTED_MEDIA_TYPES)[number])) {
     throw new ImagePolicyError(
@@ -100,9 +111,9 @@ export function validateImage(ref: ImageRef): void {
     );
   }
   const buf = decodeBase64Strict(ref.data, ref.where);
-  if (buf.length > MAX_IMAGE_BYTES) {
+  if (buf.length > maxBytes) {
     throw new ImagePolicyError(
-      `image at ${ref.where} is ${(buf.length / (1024 * 1024)).toFixed(2)} MiB, exceeds the ${(MAX_IMAGE_BYTES / (1024 * 1024)).toFixed(0)} MiB per-image limit`,
+      `image at ${ref.where} is ${(buf.length / (1024 * 1024)).toFixed(2)} MiB, exceeds the ${(maxBytes / (1024 * 1024)).toFixed(0)} MiB per-image limit`,
     );
   }
   const dims = imageDimensions(buf);
@@ -135,13 +146,19 @@ export function collectImages(messages: Message[]): ImageRef[] {
 
 // enforceImagePolicy — validate the whole request. Throws ImagePolicyError on
 // the first violation (count cap, media type, size, dims, malformed base64).
-export function enforceImagePolicy(messages: Message[]): { count: number } {
-  const refs = collectImages(messages);
-  if (refs.length > MAX_IMAGES_PER_REQUEST) {
+export function enforceImageCount(messages: Message[]): { count: number } {
+  const count = collectImages(messages).length;
+  if (count > MAX_IMAGES_PER_REQUEST) {
     throw new ImagePolicyError(
-      `request carries ${refs.length} images, exceeds the ${MAX_IMAGES_PER_REQUEST}-image per-request limit`,
+      `request carries ${count} images, exceeds the ${MAX_IMAGES_PER_REQUEST}-image per-request limit`,
     );
   }
-  for (const ref of refs) validateImage(ref);
+  return { count };
+}
+
+export function enforceImagePolicy(messages: Message[], opts: { maxImageBytes?: number } = {}): { count: number } {
+  const refs = collectImages(messages);
+  enforceImageCount(messages);
+  for (const ref of refs) validateImage(ref, opts.maxImageBytes ?? MAX_IMAGE_BYTES);
   return { count: refs.length };
 }

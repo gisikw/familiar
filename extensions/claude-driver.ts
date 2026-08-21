@@ -25,7 +25,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseAnthropicBody, type AnthropicRequest } from "./lib/anthropic-body.ts";
-import { enforceImagePolicy, ImagePolicyError } from "./lib/image-policy.ts";
+import { enforceImageCount, enforceImagePolicy, ImagePolicyError } from "./lib/image-policy.ts";
+import { preprocessProjectionImages, ClaudeImagePreprocessError, CLAUDE_INGEST_MAX_SOURCE_BYTES } from "./lib/claude-image-preprocess.ts";
 import { runClaude, synthesizeCleanSSE, type SSEFrame } from "./lib/claude-runner.ts";
 import { createClaudeFacingHandler } from "./lib/loopback-b.ts";
 import { materializeClaudeCredentials, resolveClaudeCredential } from "./lib/claude-credentials.ts";
@@ -127,20 +128,30 @@ export default function (pi: ExtensionAPI) {
       let sentAny = false;
 
       try {
-        // Validate images end-to-end (real Anthropic caps; never silently drop
-        // pixels). Direct user image blocks AND image-bearing tool_results are
-        // projected as inline base64 — the only representation Claude Code
-        // 2.1.197 accepts headlessly (a local-file source is rejected upstream).
-        try {
-          enforceImagePolicy(parsed.messages);
-        } catch (e) {
-          if (e instanceof ImagePolicyError) throw Object.assign(e, { code: "unsupported_content" });
-          throw e;
-        }
-
-        // --- Projection: whole transcript minus trailing user content -------
+        // Validate the aggregate count before doing any image work. Historical
+        // images then receive the preprocessing they would have received at
+        // ordinary Claude Code ingestion; synthetic --resume JSONL bypasses
+        // that native pass. The trailing direct-user image remains untouched so
+        // Claude can run its exact ingestion pipeline and dimension annotation.
         const toolNames = parsed.tools.map((t) => t.name).filter(Boolean);
         let projectionMessages = messagesForProjection(parsed.messages);
+        const last = parsed.messages[parsed.messages.length - 1];
+        try {
+          enforceImageCount(parsed.messages);
+          projectionMessages = preprocessProjectionImages(projectionMessages);
+          enforceImagePolicy(projectionMessages);
+          if (last?.role === "user") {
+            // Claude accepts large current images and reduces them before wire
+            // submission. Keep an explicit local safety bound and all existing
+            // malformed/media/dimension errors rather than rejecting at 5 MiB.
+            enforceImagePolicy([last], { maxImageBytes: CLAUDE_INGEST_MAX_SOURCE_BYTES });
+          }
+        } catch (e) {
+          if (e instanceof ImagePolicyError || e instanceof ClaudeImagePreprocessError) {
+            throw Object.assign(e, { code: "unsupported_content" });
+          }
+          throw e;
+        }
         projectionMessages = rewriteToolNamesForProjection(projectionMessages, toolNames, MCP_SERVER);
 
         // Deterministic session id from a stable seed. We key on the FIRST
@@ -161,7 +172,6 @@ export default function (pi: ExtensionAPI) {
         }
 
         // --- stdin line: trailing user text/images, OR continuation after tool
-        const last = parsed.messages[parsed.messages.length - 1];
         const continuation = last && last.role === "tool";
         const trailingUserText = last && last.role === "user"
           ? last.content.map((c) => (c.type === "text" ? c.text ?? "" : "")).join("")
