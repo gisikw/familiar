@@ -127,7 +127,11 @@ func main() {
 		root := f.String("root", "artifacts", "artifact root")
 		age := f.Duration("older-than", 30*24*time.Hour, "minimum age")
 		f.Parse(args[1:])
-		if e := supervisor.GC(*root, time.Now().Add(-*age)); e != nil {
+		jobs, e := c.List(ctx, "")
+		if e != nil {
+			fatal(e)
+		}
+		if e = supervisor.GCSettled(jobs, *root, time.Now(), *age); e != nil {
 			fatal(e)
 		}
 	default:
