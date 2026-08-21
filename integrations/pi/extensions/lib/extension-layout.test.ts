@@ -47,7 +47,7 @@ describe("pi 0.84.1 extension discovery contract", () => {
     const repo = resolve(import.meta.dir, "..", "..", "..", "..");
     const extensionRoot = join(repo, "integrations", "pi", "extensions");
     const expected = [
-      "anthropic-gateway", "handoff", "identity", "ratelimit", "refamiliarize",
+      "agents", "anthropic-gateway", "handoff", "identity", "ratelimit", "refamiliarize",
       "subagent", "subscriber", "telemetry", "timegap", "web", "worklist", "zip",
     ];
     const rootScripts = readdirSync(extensionRoot)

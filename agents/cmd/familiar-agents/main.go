@@ -40,7 +40,7 @@ func main() {
 	root.Parse(os.Args[1:])
 	args := root.Args()
 	if len(args) == 0 {
-		fatal(fmt.Errorf("usage: familiar-agents [--service URL] [--json] {dispatch|status|list|attach-hint|cancel|answer|gc}"))
+		fatal(fmt.Errorf("usage: familiar-agents [--service URL] [--json] {dispatch|status|list|await|attach-hint|cancel|answer|gc}"))
 	}
 	ctx := context.Background()
 	c := client.New(*endpoint)
@@ -86,6 +86,28 @@ func main() {
 			fatal(e)
 		}
 		print(j)
+	case "await":
+		f := flag.NewFlagSet("await", flag.ExitOnError)
+		timeout := f.Duration("timeout", 10*time.Minute, "maximum wait; does not cancel the job")
+		f.Parse(args[1:])
+		if f.NArg() != 1 {
+			fatal(fmt.Errorf("await requires one job id"))
+		}
+		deadline := time.Now().Add(*timeout)
+		for {
+			j, e := c.Get(ctx, f.Arg(0))
+			if e != nil {
+				fatal(e)
+			}
+			if j.State.Terminal() || j.State == protocol.Blocked {
+				print(j)
+				return
+			}
+			if time.Now().After(deadline) {
+				fatal(fmt.Errorf("await timed out after %s; job was not cancelled", *timeout))
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
 	case "cancel":
 		need(args, 2)
 		j, e := c.Cancel(ctx, args[1])
