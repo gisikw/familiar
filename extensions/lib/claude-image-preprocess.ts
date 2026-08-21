@@ -100,31 +100,73 @@ function pngHasAlpha(buf: Buffer): boolean {
 }
 
 function webpHasAlpha(buf: Buffer): boolean {
-  const declaredEnd = 8 + buf.readUInt32LE(4);
-  if (declaredEnd > buf.length || declaredEnd < 20) throw new ClaudeImagePreprocessError("WebP has a truncated or invalid RIFF size");
-  let p = 12, sawImage = false, alpha = false;
+  const riffSize = buf.readUInt32LE(4), declaredEnd = 8 + riffSize;
+  if (riffSize < 12 || (riffSize & 1) || declaredEnd !== buf.length) {
+    throw new ClaudeImagePreprocessError("WebP RIFF extent must exactly match the input");
+  }
+  const chunks: { kind: string; data: number; size: number }[] = [];
+  let p = 12;
   while (p < declaredEnd) {
     if (p + 8 > declaredEnd) throw new ClaudeImagePreprocessError("WebP has a truncated chunk header");
-    const kind = buf.toString("ascii", p, p + 4), n = buf.readUInt32LE(p + 4);
-    const data = p + 8, end = data + n;
+    const kind = buf.toString("ascii", p, p + 4), size = buf.readUInt32LE(p + 4);
+    const data = p + 8, end = data + size;
     if (end > declaredEnd) throw new ClaudeImagePreprocessError("WebP has a truncated or oversized chunk");
-    if (kind === "VP8X") {
-      if (n !== 10) throw new ClaudeImagePreprocessError("WebP has a malformed VP8X chunk");
-      alpha ||= !!(buf[data] & 0x10);
-    } else if (kind === "ALPH") {
-      if (n < 1) throw new ClaudeImagePreprocessError("WebP has an empty ALPH chunk");
-      alpha = true;
-    } else if (kind === "VP8L") {
-      if (n < 5 || buf[data] !== 0x2f) throw new ClaudeImagePreprocessError("WebP has a malformed VP8L header");
-      const bits = buf.readUInt32LE(data + 1);
-      if (bits >>> 29) throw new ClaudeImagePreprocessError("WebP VP8L header has an unsupported version");
-      alpha ||= !!(bits & 0x10000000); // VP8L alpha_is_used bit after 14-bit W/H fields
-      sawImage = true;
-    } else if (kind === "VP8 ") sawImage = true;
-    p = end + (n & 1);
-    if (p > declaredEnd) throw new ClaudeImagePreprocessError("WebP chunk padding exceeds RIFF bounds");
+    chunks.push({ kind, data, size });
+    if (size & 1) {
+      if (end >= declaredEnd) throw new ClaudeImagePreprocessError("odd-sized WebP chunk is missing its padding byte");
+      if (buf[end] !== 0) throw new ClaudeImagePreprocessError("WebP chunk padding byte must be zero");
+      p = end + 1;
+    } else p = end;
   }
-  if (!sawImage) throw new ClaudeImagePreprocessError("WebP contains no decodable image chunk");
+  if (p !== declaredEnd || !chunks.length) throw new ClaudeImagePreprocessError("WebP has an incomplete chunk structure");
+
+  const indexes = (kind: string) => chunks.flatMap((c, i) => c.kind === kind ? [i] : []);
+  const vp8x = indexes("VP8X"), alph = indexes("ALPH"), vp8 = indexes("VP8 "), vp8l = indexes("VP8L");
+  const images = [...vp8, ...vp8l];
+  if (vp8x.length > 1) throw new ClaudeImagePreprocessError("WebP has duplicate VP8X chunks");
+  if (vp8x.length && vp8x[0] !== 0) throw new ClaudeImagePreprocessError("WebP VP8X chunk must be first");
+  if (alph.length > 1) throw new ClaudeImagePreprocessError("WebP has duplicate ALPH chunks");
+  if (images.length !== 1) throw new ClaudeImagePreprocessError("WebP must contain exactly one VP8 or VP8L image payload");
+  const imageIndex = images[0], image = chunks[imageIndex];
+
+  let alpha = false;
+  if (image.kind === "VP8L") {
+    if (image.size < 5 || buf[image.data] !== 0x2f) throw new ClaudeImagePreprocessError("WebP has a malformed VP8L header");
+    const bits = buf.readUInt32LE(image.data + 1);
+    if (bits >>> 29) throw new ClaudeImagePreprocessError("WebP VP8L header has an unsupported version");
+    alpha = !!(bits & 0x10000000); // alpha_is_used after 14-bit W/H fields
+    if (alph.length) throw new ClaudeImagePreprocessError("WebP ALPH is incompatible with VP8L intrinsic alpha");
+  } else {
+    if (image.size < 10 || buf[image.data + 3] !== 0x9d || buf[image.data + 4] !== 0x01 || buf[image.data + 5] !== 0x2a) {
+      throw new ClaudeImagePreprocessError("WebP has a malformed VP8 frame header");
+    }
+    if (alph.length) {
+      const a = chunks[alph[0]];
+      if (!vp8x.length || alph[0] !== imageIndex - 1) throw new ClaudeImagePreprocessError("WebP ALPH must immediately precede VP8 in extended format");
+      if (a.size < 1 || (buf[a.data] & 0xc0) || (buf[a.data] & 3) > 1) throw new ClaudeImagePreprocessError("WebP has a malformed ALPH header");
+      alpha = true;
+    }
+  }
+
+  if (!vp8x.length) {
+    if (chunks.length !== 1) throw new ClaudeImagePreprocessError("simple WebP may contain only one image payload chunk");
+    return alpha;
+  }
+  const x = chunks[0];
+  if (x.size !== 10 || (buf[x.data] & 0xc1)) throw new ClaudeImagePreprocessError("WebP has a malformed VP8X chunk");
+  const flags = buf[x.data];
+  const unique = (kind: string) => { const found = indexes(kind); if (found.length > 1) throw new ClaudeImagePreprocessError(`WebP has duplicate ${kind} chunks`); return found[0]; };
+  const iccp = unique("ICCP"), exif = unique("EXIF"), xmp = unique("XMP ");
+  if (indexes("ANIM").length || indexes("ANMF").length) throw new ClaudeImagePreprocessError("animated WebP is not supported in synthetic history");
+  if (iccp !== undefined && iccp > imageIndex) throw new ClaudeImagePreprocessError("WebP ICCP must precede image data");
+  if (exif !== undefined && exif < imageIndex) throw new ClaudeImagePreprocessError("WebP EXIF must follow image data");
+  if (xmp !== undefined && xmp < imageIndex) throw new ClaudeImagePreprocessError("WebP XMP must follow image data");
+  if (exif !== undefined && xmp !== undefined && exif > xmp) throw new ClaudeImagePreprocessError("WebP EXIF must precede XMP");
+  if (flags & 0x02) throw new ClaudeImagePreprocessError("WebP animation flag has no valid supported animation structure");
+  if (!!(flags & 0x20) !== (iccp !== undefined) || !!(flags & 0x08) !== (exif !== undefined) || !!(flags & 0x04) !== (xmp !== undefined)) {
+    throw new ClaudeImagePreprocessError("WebP VP8X feature flags do not match its chunks");
+  }
+  if (!!(flags & 0x10) !== alpha) throw new ClaudeImagePreprocessError("WebP VP8X alpha flag does not match image transparency");
   return alpha;
 }
 

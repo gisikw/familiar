@@ -203,7 +203,7 @@ its exact encoder and original/display-dimension annotation remain intact.
 Format rules are explicit: animated GIF/WebP history is rejected rather than
 silently reduced to frame one; PNG intrinsic alpha and grayscale/RGB/indexed
 `tRNS`, plus WebP ALPH/VP8X/intrinsic VP8L alpha, are parsed with strict chunk
-bounds. Such PNG/WebP may remain transparency-preserving, but are rejected if
+bounds, exact RIFF extent/padding, and WebP ordering/uniqueness rules. Such PNG/WebP may remain transparency-preserving, but are rejected if
 meeting 512,000 bytes would require JPEG (no silent flattening).
 Byte-preserved, in-bounds images preserve EXIF/ICC metadata and orientation;
 transformed images use ffmpeg's default autorotation and strip all metadata.

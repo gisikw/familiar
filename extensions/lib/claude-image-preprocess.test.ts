@@ -23,6 +23,10 @@ function chunk(type:string,data:Buffer):Buffer { const t=Buffer.from(type),n=Buf
 function png(w:number,h:number,entropy=false):Buffer { const sig=Buffer.from([137,80,78,71,13,10,26,10]),ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(w,0);ihdr.writeUInt32BE(h,4);ihdr[8]=8;ihdr[9]=2;let x=0x12345678;const rows=[];for(let y=0;y<h;y++){const r=Buffer.allocUnsafe(1+w*3);r[0]=0;for(let i=1;i<r.length;i++){if(entropy){x^=x<<13;x^=x>>>17;x^=x<<5;r[i]=x&255;}else r[i]=(i+y)%16<8?40:180;}rows.push(r);}return Buffer.concat([sig,chunk("IHDR",ihdr),chunk("IDAT",zlib.deflateSync(Buffer.concat(rows),{level:6})),chunk("IEND",Buffer.alloc(0))]); }
 function alphaPng(w:number,h:number):Buffer { const sig=Buffer.from([137,80,78,71,13,10,26,10]),ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(w,0);ihdr.writeUInt32BE(h,4);ihdr[8]=8;ihdr[9]=6;let x=0x87654321;const raw=Buffer.alloc((1+w*4)*h);for(let y=0;y<h;y++){const o=y*(1+w*4);for(let i=1;i<=w*4;i++){x^=x<<13;x^=x>>>17;x^=x<<5;raw[o+i]=x&255;}}return Buffer.concat([sig,chunk("IHDR",ihdr),chunk("IDAT",zlib.deflateSync(raw)),chunk("IEND",Buffer.alloc(0))]); }
 function trnsPng(w:number,h:number,colorType:0|2|3,transparent:boolean):Buffer { const sig=Buffer.from([137,80,78,71,13,10,26,10]),ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(w);ihdr.writeUInt32BE(h,4);ihdr[8]=8;ihdr[9]=colorType;const bpp=colorType===2?3:1,raw=Buffer.alloc((1+w*bpp)*h);let x=0x13579bdf;for(let y=0;y<h;y++){const o=y*(1+w*bpp);for(let i=1;i<=w*bpp;i++){x^=x<<13;x^=x>>>17;x^=x<<5;raw[o+i]=x&255;}}const extra:Buffer[]=[];if(colorType===3){const pal=Buffer.alloc(768);for(let i=0;i<pal.length;i++)pal[i]=i&255;extra.push(chunk("PLTE",pal),chunk("tRNS",Buffer.from([transparent?0:255])));}else if(transparent)extra.push(chunk("tRNS",Buffer.alloc(colorType===0?2:6)));return Buffer.concat([sig,chunk("IHDR",ihdr),...extra,chunk("IDAT",zlib.deflateSync(raw)),chunk("IEND",Buffer.alloc(0))]); }
+function webpChunks(buf:Buffer):{kind:string,data:Buffer}[]{const out=[];for(let p=12;p+8<=buf.length;){const kind=buf.toString("ascii",p,p+4),n=buf.readUInt32LE(p+4);out.push({kind,data:buf.subarray(p+8,p+8+n)});p+=8+n+(n&1);}return out;}
+function webpChunk(kind:string,data:Buffer,pad=0):Buffer {const h=Buffer.alloc(8);h.write(kind,0,"ascii");h.writeUInt32LE(data.length,4);return Buffer.concat([h,data,...(data.length&1?[Buffer.from([pad])]:[])]);}
+function makeWebp(chunks:{kind:string,data:Buffer,pad?:number}[]):Buffer {const body=Buffer.concat([Buffer.from("WEBP"),...chunks.map(c=>webpChunk(c.kind,c.data,c.pad))]),h=Buffer.alloc(8);h.write("RIFF");h.writeUInt32LE(body.length,4);return Buffer.concat([h,body]);}
+function vp8xData(alpha=false):Buffer {const d=Buffer.alloc(10);if(alpha)d[0]=0x10;d.writeUIntLE(15,4,3);d.writeUIntLE(15,7,3);return d;}
 function losslessWebp(input:Buffer):Buffer { const p=spawnSync("ffmpeg",["-hide_banner","-loglevel","error","-i","pipe:0","-frames:v","1","-c:v","libwebp","-lossless","1","-compression_level","6","-f","webp","pipe:1"],{input,maxBuffer:20*1024*1024});if(p.status!==0)throw Error(String(p.stderr));return p.stdout; }
 const direct=(buf:Buffer):Message=>({id:"u",role:"user",content:[{type:"image",imageData:buf.toString("base64"),imageMediaType:"image/png"}]});
 
@@ -189,6 +193,33 @@ describe("Claude synthetic-history image preprocessing",()=>{
   test("malformed PNG transparency chunk bounds fail explicitly",()=>{
     const b=trnsPng(10,10,0,true); b.writeUInt32BE(0xffffffff,33);
     expect(()=>preprocessProjectionImages([direct(b)],{run:()=>Buffer.alloc(0)})).toThrow(/truncated or oversized chunk/);
+  });
+
+  test("strict WebP structure rejects padding, ordering, uniqueness and extent attacks",()=>{
+    const opaque=ffmpegConvert(png(16,16),"libwebp"), oc=webpChunks(opaque), vp8=oc.find(c=>c.kind==="VP8 ")!.data;
+    const lossless=losslessWebp(png(16,16)), vp8l=webpChunks(lossless).find(c=>c.kind==="VP8L")!.data;
+    const alph=Buffer.from([0]);
+    const bad=(b:Buffer,re:RegExp)=>{const m=direct(b);m.content[0].imageMediaType="image/webp";expect(()=>preprocessProjectionImages([m],{run:()=>Buffer.alloc(0)})).toThrow(re);};
+
+    const odd=vp8l.length&1?vp8l:Buffer.concat([vp8l,Buffer.from([0])]);
+    bad(makeWebp([{kind:"VP8L",data:odd,pad:7}]),/padding byte must be zero/);
+    bad(makeWebp([{kind:"VP8X",data:vp8xData(true)},{kind:"VP8 ",data:vp8},{kind:"ALPH",data:alph}]),/ALPH must immediately precede/);
+    bad(makeWebp([{kind:"VP8X",data:vp8xData(true)},{kind:"ALPH",data:alph},{kind:"ALPH",data:alph},{kind:"VP8 ",data:vp8}]),/duplicate ALPH/);
+    bad(makeWebp([{kind:"VP8 ",data:vp8},{kind:"VP8 ",data:vp8}]),/exactly one VP8 or VP8L/);
+    bad(makeWebp([{kind:"VP8 ",data:vp8},{kind:"VP8L",data:vp8l}]),/exactly one VP8 or VP8L/);
+    bad(makeWebp([{kind:"VP8 ",data:vp8},{kind:"VP8X",data:vp8xData()}]),/VP8X chunk must be first/);
+    bad(makeWebp([{kind:"VP8X",data:vp8xData()},{kind:"VP8X",data:vp8xData()},{kind:"VP8 ",data:vp8}]),/duplicate VP8X/);
+    bad(Buffer.concat([opaque,Buffer.from([0])]),/RIFF extent must exactly match/);
+    const truncated=Buffer.from(opaque);truncated.writeUInt32LE(truncated.readUInt32LE(4)+2,4);bad(truncated,/RIFF extent must exactly match/);
+  });
+
+  test("strict WebP parser retains valid opaque and external-alpha controls",()=>{
+    const opaque=ffmpegConvert(png(16,16),"libwebp"), om=direct(opaque);om.content[0].imageMediaType="image/webp";
+    expect(projectedImage(preprocessProjectionImages([om])[0]).data.equals(opaque)).toBe(true);
+    const alpha=ffmpegConvert(alphaPng(16,16),"libwebp"), kinds=webpChunks(alpha).map(c=>c.kind);
+    expect(kinds).toEqual(["VP8X","ALPH","VP8 "]);
+    const am=direct(alpha);am.content[0].imageMediaType="image/webp";
+    expect(projectedImage(preprocessProjectionImages([am])[0]).data.equals(alpha)).toBe(true);
   });
 
   test("animated GIF/WebP are rejected instead of silently losing frames",()=>{
