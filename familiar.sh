@@ -13,7 +13,19 @@ HERDR_COLD_START=0
 # when nix develop or /refamiliarize re-enters this script.
 # shellcheck source=scripts/familiar-config.sh
 . "$REPO/scripts/familiar-config.sh"
-familiar_config_load "$REPO"
+CONFIG_LOAD_FAILED=0
+if ! familiar_config_load "$REPO"; then
+  CONFIG_LOAD_FAILED=1
+  case "${1:-}" in
+    kill|worklist-add|inbox-enqueue|age|config-check)
+      echo "familiar: continuing '${1:-}' without optional familiar.toml; fix it and run: $SELF config-check" >&2
+      ;;
+    *)
+      echo "familiar: startup refused; fix optional familiar.toml or move it aside, then retry" >&2
+      exit 1
+      ;;
+  esac
+fi
 
 export HERDR_SESSION="${HERDR_SESSION:-familiar}"
 export HERDR_CONFIG_PATH="${HERDR_CONFIG_PATH:-$HERDR_STATE_DIR/config.toml}"
@@ -933,7 +945,16 @@ inbox_enqueue() {
   echo "$id"
 }
 
+config_check() {
+  if [ "$CONFIG_LOAD_FAILED" -ne 0 ]; then
+    echo 'familiar: familiar.toml validation failed (contents suppressed)' >&2
+    return 1
+  fi
+  echo 'familiar: familiar.toml configuration is valid'
+}
+
 case ${1:-} in
+  config-check) config_check ;;
   pi)         run_pi "$@" ;;
   llama)      run_llama "$@" ;;
   stt)        run_stt "$@" ;;

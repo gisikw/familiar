@@ -53,13 +53,17 @@ The loader records which variables were truly ambient, exports file values, and
 reloads on every recursive entry. Consequently file values survive a dev shell
 that sets the same name, while an explicit ambient override remains untouched.
 The provenance marker and all loaded values survive `nix develop` and
-`/refamiliarize` execs.
+`/refamiliarize` execs. The loader also records its own exports separately. On
+each successful reload it clears that prior set (including upstream aliases)
+before applying the new snapshot, so removing a key really removes its stale
+value while the original ambient set remains untouched. This includes a
+same-session JSON-to-setup-token cutover.
 
 ## Canonical groups and migration
 
 Use tables whose names match the established environment prefix: `[pi]`,
 `[anthropic]`, `[openai]`, `[model]`, `[llama]`, `[stt]`, `[tts]`, `[herdr]`,
-`[searxng]`, `[brave]`, `[fetch]`, `[subagent]`, and `[theme]`. Cross-cutting
+`[searxng]`, `[brave]`, `[fetch]`, `[subagent]`, `[zip]`, and `[theme]`. Cross-cutting
 paths and runtime policy live under `[familiar]`; the loader deliberately does
 not double that prefix. Thus these mechanical moves preserve effective names:
 
@@ -117,10 +121,16 @@ generic Familiar names shown in `familiar.toml.example`.
 
 ## Changes and failures
 
-After editing, keep mode 0600 and use `/refamiliarize` or stop and rerun
-`./familiar.sh`. A cold restart regenerates the unified theme and restarts
-services with the new exports. Malformed TOML, unsupported types, normalized-key
-collisions, and insecure permissions abort startup with a generic error.
+After editing, keep mode 0600, run `./familiar.sh config-check`, and use
+`/refamiliarize` or stop and rerun `./familiar.sh`. A cold restart regenerates
+the unified theme and restarts services with the new exports. Malformed TOML,
+unsupported types, normalized-key collisions, and insecure permissions abort
+ordinary startup with a secret-suppressed error. They do not brick the bounded
+recovery/operational verbs `kill`, `worklist-add` (`inbox-enqueue` alias), or
+`age`: those continue using ambient values and defaults after a loud warning.
+`config-check` remains runnable and returns nonzero until the optional file is
+fixed or moved aside. Other launch verbs fail closed and do not silently ignore
+the file.
 
 To retire a legacy `.env`, do **not** source it as a migration shortcut. Accept
 only plain assignments whose quoting can be decoded without expansion, remove a

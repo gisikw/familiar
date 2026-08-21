@@ -15,21 +15,26 @@ let
   envName = path:
     let flat = normalize (builtins.concatStringsSep "_" path);
     in if hasPrefix "FAMILIAR_" flat then flat else "FAMILIAR_${flat}";
+  credentialNames = [
+    "FAMILIAR_ANTHROPIC_CLAUDE_CREDENTIALS_JSON"
+    "FAMILIAR_ANTHROPIC_CLAUDE_OAUTH_TOKEN"
+  ];
+  isCredentialPath = path: builtins.elem (envName path) credentialNames;
   scalar = path: value:
     let
       kind = builtins.typeOf value;
       joined = builtins.concatStringsSep "." path;
-      secretString = joined == "anthropic.claude_credentials_json"
-        || joined == "anthropic.claude_oauth_token";
-    in if secretString && kind != "string" then
-         throw "${joined} must be a TOML string"
+    in if isCredentialPath path && kind != "string" then
+         throw "credential setting must be a TOML string"
        else if kind == "string" then value
        else if kind == "bool" then (if value then "true" else "false")
        else if kind == "int" || kind == "float" then builtins.toJSON value
        else if kind == "list" then builtins.toJSON value
        else throw "unsupported value at ${builtins.concatStringsSep "." path}: ${kind}";
   flatten = path: value:
-    if builtins.isAttrs value then
+    if builtins.isAttrs value && isCredentialPath path then
+      throw "credential setting must be a TOML string"
+    else if builtins.isAttrs value then
       builtins.concatLists (map (key: flatten (path ++ [ key ]) value.${key})
         (builtins.attrNames value))
     else [ { name = envName path; value = scalar path value; } ];

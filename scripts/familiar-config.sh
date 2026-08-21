@@ -26,6 +26,26 @@ familiar_config_capture_explicit() {
   export _FAMILIAR_CONFIG_EXPLICIT_ENV="$names"
 }
 
+familiar_config_mark_loaded() {
+  case ":${_FAMILIAR_CONFIG_LOADED_ENV:-}:" in
+    *":$1:"*) ;;
+    *) _FAMILIAR_CONFIG_LOADED_ENV="${_FAMILIAR_CONFIG_LOADED_ENV:+$_FAMILIAR_CONFIG_LOADED_ENV:}$1" ;;
+  esac
+  export _FAMILIAR_CONFIG_LOADED_ENV
+}
+
+familiar_config_clear_loaded() {
+  local name old=${_FAMILIAR_CONFIG_LOADED_ENV:-}
+  _FAMILIAR_CONFIG_LOADED_ENV=
+  export _FAMILIAR_CONFIG_LOADED_ENV
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    # The first-entry provenance set is immutable across exec/devshell recursion.
+    # Thus only values actually exported by an earlier loader pass are removed.
+    familiar_config_name_is_explicit "$name" || unset "$name"
+  done < <(printf '%s\n' "$old" | tr ':' '\n')
+}
+
 familiar_config_alias() {
   local target=$1 source=$2 value
   familiar_config_name_is_explicit "$target" && return 0
@@ -33,18 +53,22 @@ familiar_config_alias() {
     value=${!source}
     printf -v "$target" '%s' "$value"
     export "$target"
+    familiar_config_mark_loaded "$target"
   fi
 }
 
 familiar_config_load() {
   local repo=$1
   local config=${FAMILIAR_CONFIG_PATH:-$repo/familiar.toml}
-  local stream name length value mode
+  local stream errors name length value mode
 
   if [[ ! -v _FAMILIAR_CONFIG_EXPLICIT_ENV ]]; then
     familiar_config_capture_explicit
   fi
-  [ -f "$config" ] || return 0
+  if [ ! -f "$config" ]; then
+    familiar_config_clear_loaded
+    return 0
+  fi
 
   mode=$(stat -c '%a' "$config" 2>/dev/null || stat -f '%Lp' "$config" 2>/dev/null || true)
   if [ "$mode" != 600 ]; then
@@ -57,13 +81,23 @@ familiar_config_load() {
   }
 
   stream=$(mktemp "${TMPDIR:-/tmp}/familiar-config.XXXXXX") || return 1
+  errors=$(mktemp "${TMPDIR:-/tmp}/familiar-config-errors.XXXXXX") || { rm -f "$stream"; return 1; }
   if ! FAMILIAR_CONFIG_PATH="$config" nix eval --impure --raw --file \
-      "$repo/scripts/familiar-config.nix" >"$stream" 2>/dev/null; then
-    rm -f "$stream"
-    echo 'familiar: could not parse familiar.toml (contents suppressed)' >&2
+      "$repo/scripts/familiar-config.nix" >"$stream" 2>"$errors"; then
+    if grep -q 'credential setting must be a TOML string' "$errors"; then
+      echo 'familiar: Claude credential settings must be TOML strings (contents suppressed)' >&2
+    else
+      echo 'familiar: could not parse familiar.toml (contents suppressed)' >&2
+    fi
+    rm -f "$stream" "$errors"
     return 1
   fi
+  rm -f "$errors"
 
+  # Parsing is transactional: retain the previous environment on failure, but
+  # after success clear every non-ambient export from the prior pass before
+  # applying this snapshot. This makes same-session key removal deterministic.
+  familiar_config_clear_loaded
   while IFS= read -r name <&3 && IFS= read -r length <&3; do
     if [[ ! $name =~ ^FAMILIAR_[A-Z0-9_]+$ || ! $length =~ ^[0-9]+$ ]]; then
       rm -f "$stream"; echo 'familiar: invalid config parser output' >&2; return 1
@@ -77,6 +111,7 @@ familiar_config_load() {
     if ! familiar_config_name_is_explicit "$name"; then
       printf -v "$name" '%s' "$value"
       export "$name"
+      familiar_config_mark_loaded "$name"
     fi
   done 3<"$stream"
   rm -f "$stream"

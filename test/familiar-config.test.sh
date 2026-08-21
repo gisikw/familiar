@@ -142,4 +142,93 @@ set -e
 [ "$status" -ne 0 ] || fail "normalized-key collision succeeded"
 [[ $err == *'contents suppressed'* ]] || fail "collision error was not generic"
 
-echo "familiar config tests: ok"
+# A successful same-process reload clears only exports owned by the prior pass.
+NEXT="$TMP/next.toml"
+cat >"$CONFIG" <<'TOML'
+[anthropic]
+claude_credentials_json = '''{"claudeAiOauth":{"accessToken":"placeholder-a","refreshToken":"placeholder-r","expiresAt":1}}'''
+[pi]
+offline = 1
+TOML
+cat >"$NEXT" <<'TOML'
+[anthropic]
+claude_oauth_token = "setup-token-placeholder"
+TOML
+chmod 600 "$CONFIG" "$NEXT"
+out=$(env -i PATH="$PATH" HOME="${HOME:-/tmp}" FAMILIAR_CONFIG_PATH="$CONFIG" PI_TELEMETRY=ambient bash -c '
+  set -eu; source "$1/scripts/familiar-config.sh"; familiar_config_load "$1"
+  cp "$2" "$FAMILIAR_CONFIG_PATH"; chmod 600 "$FAMILIAR_CONFIG_PATH"; familiar_config_load "$1"
+  json=present; [[ ${FAMILIAR_ANTHROPIC_CLAUDE_CREDENTIALS_JSON+x} ]] || json=cleared
+  rm "$FAMILIAR_CONFIG_PATH"; familiar_config_load "$1"
+  token=present; [[ ${FAMILIAR_ANTHROPIC_CLAUDE_OAUTH_TOKEN+x}${CLAUDE_CODE_OAUTH_TOKEN+x} ]] || token=cleared
+  printf "%s/%s/%s" "$json" "$token" "$PI_TELEMETRY"
+' bash "$REPO" "$NEXT")
+assert_eq "$out" 'cleared/cleared/ambient' "same-session credential cutover/removal provenance"
+
+# The provenance markers are exported, so an actual exec re-entry (the shape
+# used by /refamiliarize) performs the same cutover rather than recapturing the
+# inherited file value as ambient.
+cp "$NEXT" "$CONFIG"; chmod 600 "$CONFIG"
+OLD="$TMP/old.toml"
+cat >"$OLD" <<'TOML'
+[anthropic]
+claude_credentials_json = "placeholder-json"
+TOML
+chmod 600 "$OLD"
+out=$(env -i PATH="$PATH" HOME="${HOME:-/tmp}" FAMILIAR_CONFIG_PATH="$OLD" bash -c '
+  set -eu; source "$1/scripts/familiar-config.sh"; familiar_config_load "$1"
+  cp "$2" "$FAMILIAR_CONFIG_PATH"; chmod 600 "$FAMILIAR_CONFIG_PATH"
+  exec bash -c '\''set -eu; source "$1/scripts/familiar-config.sh"; familiar_config_load "$1"; [[ ! ${FAMILIAR_ANTHROPIC_CLAUDE_CREDENTIALS_JSON+x} && ${CLAUDE_CODE_OAUTH_TOKEN+x} ]] && printf cutover'\'' bash "$1"
+' bash "$REPO" "$NEXT")
+assert_eq "$out" cutover "exec re-entry credential cutover"
+
+# Credential leaves are string-only based on their final normalized export,
+# including flat and punctuation-compatible spellings and table/object values.
+for key in anthropic_claude_oauth_token anthropic_claude_credentials_json \
+           '"anthropic-claude-oauth-token"' '"anthropic-claude-credentials-json"' \
+           grouped_oauth grouped_json; do
+  for value in 7 true '["placeholder"]' '{ placeholder = "hidden" }'; do
+    case "$key" in
+      grouped_oauth) printf '[anthropic]\nclaude_oauth_token = %s\n' "$value" >"$CONFIG" ;;
+      grouped_json) printf '[anthropic]\nclaude_credentials_json = %s\n' "$value" >"$CONFIG" ;;
+      *) printf '%s = %s\n' "$key" "$value" >"$CONFIG" ;;
+    esac
+    chmod 600 "$CONFIG"
+    set +e
+    err=$(env -i PATH="$PATH" HOME="${HOME:-/tmp}" FAMILIAR_CONFIG_PATH="$CONFIG" bash -c \
+      'source "$1/scripts/familiar-config.sh"; familiar_config_load "$1"' bash "$REPO" 2>&1)
+    status=$?
+    set -e
+    [ "$status" -ne 0 ] || fail "non-string credential succeeded: $key/$value"
+    [[ $err == *'credential settings must be TOML strings'* ]] || fail "credential type diagnostic not actionable"
+    [[ $err != *hidden* ]] || fail "credential type diagnostic exposed contents"
+  done
+done
+
+# Malformed optional config fails ordinary launch and validation, while the
+# bounded operational ingress remains available using ambient/default values.
+printf 'broken = "DO_NOT_PRINT_RECOVERY_SECRET\n' >"$CONFIG"; chmod 600 "$CONFIG"
+set +e
+err=$(env -i PATH="$PATH" HOME="${HOME:-/tmp}" FAMILIAR_CONFIG_PATH="$CONFIG" \
+  "$REPO/familiar.sh" config-check 2>&1); status=$?
+set -e
+[ "$status" -ne 0 ] || fail "config-check accepted malformed TOML"
+[[ $err == *'validation failed'* && $err != *DO_NOT_PRINT_RECOVERY_SECRET* ]] || fail "config-check diagnostic"
+set +e
+err=$(env -i PATH="$PATH" HOME="${HOME:-/tmp}" FAMILIAR_CONFIG_PATH="$CONFIG" \
+  "$REPO/familiar.sh" pi 2>&1); status=$?
+set -e
+[ "$status" -ne 0 ] || fail "ordinary launch accepted malformed TOML"
+[[ $err == *'startup refused'* && $err != *DO_NOT_PRINT_RECOVERY_SECRET* ]] || fail "ordinary launch failure policy"
+mkdir -p "$TMP/bin"
+cat >"$TMP/bin/jq" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' '{"placeholder":true}'
+SH
+chmod +x "$TMP/bin/jq"
+out=$(env -i PATH="$TMP/bin:$PATH" HOME="${HOME:-/tmp}" FAMILIAR_CONFIG_PATH="$CONFIG" \
+  FAMILIAR_WORKLIST_DIR="$TMP/recovery-worklist" "$REPO/familiar.sh" worklist-add --summary placeholder 2>"$TMP/recovery.err")
+[[ $out == cli-* ]] || fail "worklist recovery verb unavailable"
+[[ $(<"$TMP/recovery.err") == *"continuing 'worklist-add'"* ]] || fail "recovery warning missing"
+
+ echo "familiar config tests: ok"
