@@ -12,25 +12,35 @@ import (
 )
 
 type Worker struct {
-	Job          protocol.Job     `json:"job"`
-	Launch       harnesses.Launch `json:"launch"`
-	Session      string           `json:"session"`
-	Target       string           `json:"target"`
-	Worktree     string           `json:"worktree,omitempty"`
-	RestartUntil time.Time        `json:"restart_until"`
-	LastState    protocol.State   `json:"last_state"`
-	LastExit     *int             `json:"last_exit,omitempty"`
-	AnsweredKey  string           `json:"answered_key,omitempty"`
-	StartedAt    time.Time        `json:"started_at"`
+	Job               protocol.Job     `json:"job"`
+	Launch            harnesses.Launch `json:"launch"`
+	Session           string           `json:"session"`
+	Target            string           `json:"target"`
+	Worktree          string           `json:"worktree,omitempty"`
+	RestartUntil      time.Time        `json:"restart_until"`
+	LastState         protocol.State   `json:"last_state"`
+	LastExit          *int             `json:"last_exit,omitempty"`
+	AnsweredKey       string           `json:"answered_key,omitempty"`
+	ObservationCursor int64            `json:"observation_cursor,omitempty"`
+	StartedAt         time.Time        `json:"started_at"`
 }
+
+type StartAttempt struct {
+	Count             int       `json:"count"`
+	NextAttempt       time.Time `json:"next_attempt,omitempty"`
+	Reason            string    `json:"reason,omitempty"`
+	SettlementPending bool      `json:"settlement_pending,omitempty"`
+}
+
 type Registry struct {
-	path    string
-	mu      sync.Mutex
-	Workers map[string]Worker `json:"workers"`
+	path     string
+	mu       sync.Mutex
+	Workers  map[string]Worker       `json:"workers"`
+	Attempts map[string]StartAttempt `json:"start_attempts,omitempty"`
 }
 
 func OpenRegistry(path string) (*Registry, error) {
-	r := &Registry{path: path, Workers: map[string]Worker{}}
+	r := &Registry{path: path, Workers: map[string]Worker{}, Attempts: map[string]StartAttempt{}}
 	b, e := os.ReadFile(path)
 	if errors.Is(e, os.ErrNotExist) {
 		return r, nil
@@ -43,6 +53,9 @@ func OpenRegistry(path string) (*Registry, error) {
 	}
 	if r.Workers == nil {
 		r.Workers = map[string]Worker{}
+	}
+	if r.Attempts == nil {
+		r.Attempts = map[string]StartAttempt{}
 	}
 	return r, nil
 }
@@ -65,6 +78,25 @@ func (r *Registry) Delete(id string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.Workers, id)
+	delete(r.Attempts, id)
+	return r.save()
+}
+func (r *Registry) Attempt(id string) (StartAttempt, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	a, ok := r.Attempts[id]
+	return a, ok
+}
+func (r *Registry) PutAttempt(id string, a StartAttempt) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.Attempts[id] = a
+	return r.save()
+}
+func (r *Registry) ClearAttempt(id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.Attempts, id)
 	return r.save()
 }
 func (r *Registry) save() error {

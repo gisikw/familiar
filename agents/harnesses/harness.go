@@ -20,18 +20,21 @@ type Launch struct {
 }
 
 type Runtime struct {
-	Launch   Launch
-	SendText func(context.Context, string) error
-	Cancel   func(context.Context) error
-	Alive    func(context.Context) (bool, *int, error)
+	Launch            Launch
+	ObservationCursor int64 // durable adapter-specific byte/event cursor
+	SendText          func(context.Context, string) error
+	Cancel            func(context.Context) error
+	Alive             func(context.Context) (bool, *int, error)
 }
 
 type Observation struct {
-	State    protocol.State
-	ExitCode *int
-	Progress *protocol.Progress
-	Question *protocol.BlockedQuestion
-	Detail   []byte
+	State      protocol.State
+	ExitCode   *int
+	Progress   *protocol.Progress // compatibility for adapters projecting one event
+	Progresses []*protocol.Progress
+	Cursor     int64
+	Question   *protocol.BlockedQuestion
+	Detail     []byte
 }
 
 // Adapter is deliberately explicit even when a minimal harness cannot support

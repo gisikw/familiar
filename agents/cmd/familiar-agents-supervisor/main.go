@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -38,14 +39,20 @@ func main() {
 	host := flag.String("host", env("FAMILIAR_AGENTS_HOST", "local"), "explicit worker host name")
 	endpoint := flag.String("service", env("FAMILIAR_AGENTS_ENDPOINT", "http://127.0.0.1:7337"), "service HTTP URL or unix://path")
 	state := flag.String("state", env("FAMILIAR_AGENTS_SUPERVISOR_STATE", stateDefault), "local durable state directory")
+	artifactRoot := flag.String("artifact-root", env("FAMILIAR_AGENTS_ARTIFACT_ROOT", ""), "host-local artifact root (default: STATE/artifacts)")
+	allowedRoots := flag.String("allowed-cwd-roots", env("FAMILIAR_AGENTS_ALLOWED_CWD_ROOTS", home), "allowed CWD roots separated by the OS path-list separator")
 	interval := flag.Duration("poll", 5*time.Second, "reconcile interval")
 	offline := flag.Duration("offline-restart-window", 30*time.Minute, "maximum disconnected recreation window")
 	pi := flag.String("pi", env("FAMILIAR_AGENTS_PI", "pi"), "pi executable")
 	flag.Parse()
-	if *host == "" || *offline < 0 {
+	if *host == "" || *offline < 0 || *allowedRoots == "" {
 		slog.Error("invalid supervisor configuration")
 		os.Exit(2)
 	}
+	if *artifactRoot == "" {
+		*artifactRoot = filepath.Join(*state, "artifacts")
+	}
+	roots := strings.Split(*allowedRoots, string(os.PathListSeparator))
 	if err := os.MkdirAll(*state, 0700); err != nil {
 		slog.Error("state directory", "error", err)
 		os.Exit(1)
@@ -60,7 +67,7 @@ func main() {
 		slog.Error("tmux prepare", "error", err)
 		os.Exit(1)
 	}
-	s := &supervisor.Supervisor{Host: *host, Client: client.New(*endpoint), Registry: reg, Tmux: tm, OfflineWindow: *offline, Adapters: supervisor.DefaultAdapters(*pi, argvEnv("FAMILIAR_AGENTS_CLAUDE_ARGV", []string{"claude", "{prompt}"}), argvEnv("FAMILIAR_AGENTS_CODEX_ARGV", []string{"codex", "{prompt}"}))}
+	s := &supervisor.Supervisor{Host: *host, Client: client.New(*endpoint), Registry: reg, Tmux: tm, OfflineWindow: *offline, ArtifactRoot: *artifactRoot, AllowedCWDRoots: roots, Adapters: supervisor.DefaultAdapters(*pi, argvEnv("FAMILIAR_AGENTS_CLAUDE_ARGV", []string{"claude", "{prompt}"}), argvEnv("FAMILIAR_AGENTS_CODEX_ARGV", []string{"codex", "{prompt}"}))}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	// Reconcile with global truth before any reboot recreation. Only when the

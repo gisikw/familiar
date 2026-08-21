@@ -55,13 +55,17 @@ func Diff(desired []protocol.Assignment, local map[string]Worker) []Action {
 }
 
 type Supervisor struct {
-	Host          string
-	Client        *client.Client
-	Registry      *Registry
-	Tmux          Tmux
-	OfflineWindow time.Duration
-	Adapters      map[string]harnesses.Adapter
-	Logger        *slog.Logger
+	Host             string
+	Client           *client.Client
+	Registry         *Registry
+	Tmux             Tmux
+	OfflineWindow    time.Duration
+	ArtifactRoot     string
+	AllowedCWDRoots  []string
+	MaxStartAttempts int
+	StartBackoff     time.Duration
+	Adapters         map[string]harnesses.Adapter
+	Logger           *slog.Logger
 }
 
 func (s *Supervisor) log() *slog.Logger {
@@ -135,7 +139,7 @@ func (s *Supervisor) Tick(ctx context.Context) error {
 	for _, a := range Diff(poll.Assignments, s.Registry.Snapshot()) {
 		switch a.Kind {
 		case Start:
-			if err = s.start(ctx, a.Assignment.Job); err != nil {
+			if err = s.reconcileStart(ctx, a.Assignment.Job); err != nil {
 				s.log().Error("start failed", "job", a.JobID, "error", err)
 			}
 		case Cancel:
@@ -164,24 +168,99 @@ func (s *Supervisor) Tick(ctx context.Context) error {
 	}
 	return s.observe(ctx)
 }
-func (s *Supervisor) start(ctx context.Context, j protocol.Job) error {
-	if j.Artifacts.Directory == "" {
-		return errors.New("service did not assign artifact directory")
+
+type startError struct {
+	err       error
+	permanent bool
+}
+
+func (e *startError) Error() string { return e.err.Error() }
+func permanentStart(format string, args ...any) error {
+	return &startError{err: fmt.Errorf(format, args...), permanent: true}
+}
+
+func (s *Supervisor) reconcileStart(ctx context.Context, j protocol.Job) error {
+	now := time.Now().UTC()
+	attempt, exists := s.Registry.Attempt(j.ID)
+	if exists && attempt.SettlementPending {
+		return s.publishStartFailure(ctx, j, attempt)
 	}
-	if err := os.MkdirAll(j.Artifacts.Directory, 0o700); err != nil {
+	if exists && now.Before(attempt.NextAttempt) {
+		return nil
+	}
+	err := s.start(ctx, j)
+	if err == nil {
+		return s.Registry.ClearAttempt(j.ID)
+	}
+	attempt.Count++
+	attempt.Reason = err.Error()
+	max := s.MaxStartAttempts
+	if max <= 0 {
+		max = 3
+	}
+	var classified *startError
+	permanent := errors.As(err, &classified) && classified.permanent
+	if permanent || attempt.Count >= max {
+		attempt.SettlementPending = true
+	} else {
+		backoff := s.StartBackoff
+		if backoff <= 0 {
+			backoff = 5 * time.Second
+		}
+		attempt.NextAttempt = now.Add(backoff * time.Duration(1<<(attempt.Count-1)))
+	}
+	if saveErr := s.Registry.PutAttempt(j.ID, attempt); saveErr != nil {
+		return saveErr
+	}
+	if attempt.SettlementPending {
+		return s.publishStartFailure(ctx, j, attempt)
+	}
+	return err
+}
+
+func (s *Supervisor) publishStartFailure(ctx context.Context, j protocol.Job, attempt StartAttempt) error {
+	set := protocol.Settlement{ID: j.ID + "-start-failed", JobID: j.ID, Verdict: protocol.Failed, Summary: fmt.Sprintf("worker failed to start after %d attempt(s): %s", attempt.Count, attempt.Reason), At: time.Now().UTC()}
+	detail, _ := json.Marshal(map[string]any{"failure_boundary": "worker_start", "attempts": attempt.Count, "reason": attempt.Reason})
+	set.Detail = detail
+	event := protocol.ObservedEvent{ID: j.ID + "-start-failed-event", JobID: j.ID, Settlement: &set, ObservedAt: time.Now().UTC()}
+	if err := s.Client.Events(ctx, protocol.EventBatch{Host: s.Host, Events: []protocol.ObservedEvent{event}}); err != nil {
+		return err // pending settlement remains durable locally for redelivery
+	}
+	return s.Registry.ClearAttempt(j.ID)
+}
+
+func (s *Supervisor) start(ctx context.Context, j protocol.Job) error {
+	a, err := s.adapter(j.Harness)
+	if err != nil {
+		return permanentStart("%v", err)
+	}
+	cwd, err := filepath.EvalSymlinks(j.CWD)
+	if err != nil {
+		return permanentStart("invalid cwd %q: %v", j.CWD, err)
+	}
+	cwd, err = filepath.Abs(cwd)
+	if err != nil || !withinAny(cwd, s.AllowedCWDRoots) {
+		return permanentStart("cwd %q is outside configured allowed roots", j.CWD)
+	}
+	j.CWD = cwd
+	if j.Artifacts.ID == "" || filepath.Base(j.Artifacts.ID) != j.Artifacts.ID || j.Artifacts.ID == "." || j.Artifacts.ID == ".." {
+		return permanentStart("invalid logical artifact id %q", j.Artifacts.ID)
+	}
+	root, err := filepath.Abs(s.ArtifactRoot)
+	if err != nil || s.ArtifactRoot == "" {
+		return permanentStart("invalid supervisor artifact root")
+	}
+	j.Artifacts.Directory = filepath.Join(root, j.Artifacts.ID)
+	if err = os.MkdirAll(j.Artifacts.Directory, 0o700); err != nil {
 		return err
 	}
 	worktree := ""
 	if j.Isolation == protocol.IsolationWorktree {
 		worktree = filepath.Join(j.Artifacts.Directory, "worktree")
-		if out, err := exec.CommandContext(ctx, "git", "-C", j.CWD, "worktree", "add", "--detach", worktree, "HEAD").CombinedOutput(); err != nil {
-			return fmt.Errorf("git worktree: %s: %w", out, err)
+		if out, worktreeErr := exec.CommandContext(ctx, "git", "-C", j.CWD, "worktree", "add", "--detach", worktree, "HEAD").CombinedOutput(); worktreeErr != nil {
+			return fmt.Errorf("git worktree: %s: %w", out, worktreeErr)
 		}
 		j.CWD = worktree
-	}
-	a, err := s.adapter(j.Harness)
-	if err != nil {
-		return err
 	}
 	launch, err := a.Start(ctx, j)
 	if err != nil {
@@ -195,7 +274,12 @@ func (s *Supervisor) start(ctx context.Context, j protocol.Job) error {
 	if err = s.Registry.Put(w); err != nil {
 		return err
 	}
-	return s.publishState(ctx, &w, protocol.Starting)
+	// Registration is the process-reality boundary. A failed service delivery
+	// is retried by observation and must not be misclassified as a start failure.
+	if err = s.publishState(ctx, &w, protocol.Starting); err != nil {
+		s.log().Warn("starting observation deferred", "job", j.ID, "error", err)
+	}
+	return nil
 }
 func (s *Supervisor) publishState(ctx context.Context, w *Worker, state protocol.State) error {
 	event := protocol.ObservedEvent{ID: w.Job.ID + "-" + string(state), JobID: w.Job.ID, State: state, ObservedAt: time.Now().UTC()}
@@ -209,7 +293,7 @@ func (s *Supervisor) publishState(ctx context.Context, w *Worker, state protocol
 	return s.Registry.Put(*w)
 }
 func (s *Supervisor) runtime(w Worker) harnesses.Runtime {
-	return harnesses.Runtime{Launch: w.Launch, SendText: func(ctx context.Context, text string) error { return s.Tmux.Send(ctx, w.Target, text) }, Cancel: func(ctx context.Context) error { return s.Tmux.Kill(ctx, w.Session) }, Alive: func(ctx context.Context) (bool, *int, error) { return s.Tmux.Pane(ctx, w.Target) }}
+	return harnesses.Runtime{Launch: w.Launch, ObservationCursor: w.ObservationCursor, SendText: func(ctx context.Context, text string) error { return s.Tmux.Send(ctx, w.Target, text) }, Cancel: func(ctx context.Context) error { return s.Tmux.Kill(ctx, w.Session) }, Alive: func(ctx context.Context) (bool, *int, error) { return s.Tmux.Pane(ctx, w.Target) }}
 }
 func (s *Supervisor) cancel(ctx context.Context, id string) {
 	w, ok := s.Registry.Snapshot()[id]
@@ -236,13 +320,25 @@ func (s *Supervisor) observe(ctx context.Context) error {
 		}
 		runtime := s.runtime(w)
 		obs, observeErr := a.Observe(ctx, w.Job, &runtime)
-		if observeErr == nil && obs.State == protocol.Running {
-			if obs.Progress != nil {
-				event := protocol.ObservedEvent{ID: obs.Progress.ID, JobID: id, Progress: obs.Progress, ObservedAt: time.Now().UTC()}
+		if observeErr == nil {
+			progresses := obs.Progresses
+			if len(progresses) == 0 && obs.Progress != nil {
+				progresses = []*protocol.Progress{obs.Progress}
+			}
+			for _, progress := range progresses {
+				event := protocol.ObservedEvent{ID: progress.ID, JobID: id, Progress: progress, ObservedAt: time.Now().UTC()}
 				if err = s.Client.Events(ctx, protocol.EventBatch{Host: s.Host, Events: []protocol.ObservedEvent{event}}); err != nil {
 					return err
 				}
 			}
+			if obs.Cursor != w.ObservationCursor {
+				w.ObservationCursor = obs.Cursor
+				if err = s.Registry.Put(w); err != nil {
+					return err
+				}
+			}
+		}
+		if observeErr == nil && obs.State == protocol.Running {
 			if w.LastState == protocol.Starting {
 				// Retry the idempotent starting event first: its original response may
 				// have been lost even though the worker was successfully created.
@@ -284,6 +380,24 @@ func (s *Supervisor) observe(ctx context.Context) error {
 	return nil
 }
 
+func withinAny(path string, roots []string) bool {
+	for _, configured := range roots {
+		root, err := filepath.EvalSymlinks(configured)
+		if err != nil {
+			continue
+		}
+		root, err = filepath.Abs(root)
+		if err != nil {
+			continue
+		}
+		rel, err := filepath.Rel(root, path)
+		if err == nil && rel != ".." && !filepath.IsAbs(rel) && !(len(rel) >= 3 && rel[:3] == ".."+string(os.PathSeparator)) {
+			return true
+		}
+	}
+	return false
+}
+
 // GCSettled removes only service-confirmed terminal job artifacts, honoring a
 // per-job retention override. root bounds deletion and must contain each path.
 func GCSettled(jobs []protocol.Job, root string, now time.Time, defaultAge time.Duration) error {
@@ -292,10 +406,10 @@ func GCSettled(jobs []protocol.Job, root string, now time.Time, defaultAge time.
 		return err
 	}
 	for _, j := range jobs {
-		if !j.State.Terminal() || j.Artifacts.Directory == "" {
+		if !j.State.Terminal() || j.Artifacts.ID == "" || filepath.Base(j.Artifacts.ID) != j.Artifacts.ID {
 			continue
 		}
-		path, err := filepath.Abs(j.Artifacts.Directory)
+		path, err := filepath.Abs(filepath.Join(absRoot, j.Artifacts.ID))
 		if err != nil {
 			return err
 		}

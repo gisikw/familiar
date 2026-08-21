@@ -92,10 +92,18 @@ const (
 	IsolationWorktree IsolationPolicy = "worktree"
 )
 
-type ArtifactMetadata struct {
-	Directory     string            `json:"directory,omitempty"`
+type ArtifactRequest struct {
 	RetentionDays int               `json:"retention_days,omitempty"`
 	Labels        map[string]string `json:"labels,omitempty"`
+}
+
+type ArtifactMetadata struct {
+	// ID is a service-assigned logical identifier. Supervisors resolve it below
+	// their host-local artifact root; filesystem paths never cross the wire.
+	ID            string            `json:"id"`
+	RetentionDays int               `json:"retention_days,omitempty"`
+	Labels        map[string]string `json:"labels,omitempty"`
+	Directory     string            `json:"-"` // host-local, supervisor-owned
 }
 
 // Job identity and request fields are immutable after creation. Host, State,
@@ -127,14 +135,14 @@ type Job struct {
 }
 
 type CreateJob struct {
-	IdempotencyKey string           `json:"idempotency_key"`
-	Harness        HarnessKind      `json:"harness"`
-	Model          string           `json:"model,omitempty"`
-	CWD            string           `json:"cwd"`
-	Isolation      IsolationPolicy  `json:"isolation,omitempty"`
-	Prompt         string           `json:"prompt"`
-	Artifacts      ArtifactMetadata `json:"artifacts,omitempty"`
-	Host           string           `json:"host"`
+	IdempotencyKey string          `json:"idempotency_key"`
+	Harness        HarnessKind     `json:"harness"`
+	Model          string          `json:"model,omitempty"`
+	CWD            string          `json:"cwd"`
+	Isolation      IsolationPolicy `json:"isolation,omitempty"`
+	Prompt         string          `json:"prompt"`
+	Artifacts      ArtifactRequest `json:"artifacts,omitempty"`
+	Host           string          `json:"host"`
 }
 
 type Assignment struct {

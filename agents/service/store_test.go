@@ -53,6 +53,56 @@ func TestSettlementIdempotentAndDurable(t *testing.T) {
 		t.Fatalf("reopen/first settlement: %#v %v", got, e)
 	}
 }
+func TestAnswerIdempotencyConflict(t *testing.T) {
+	s, e := Open(filepath.Join(t.TempDir(), "db"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	block := func(key, question string) protocol.Job {
+		j, err := s.Create(ctx, protocol.CreateJob{IdempotencyKey: key, Harness: "fake", Host: "host", Prompt: "go", CWD: "/tmp"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		events := []protocol.ObservedEvent{
+			{ID: key + "-start", JobID: j.ID, State: protocol.Starting},
+			{ID: key + "-run", JobID: j.ID, State: protocol.Running},
+			{ID: key + "-question", JobID: j.ID, Question: &protocol.BlockedQuestion{ID: question, Prompt: "answer", At: time.Now()}},
+		}
+		if err = s.Record(ctx, protocol.EventBatch{Host: "host", Events: events}); err != nil {
+			t.Fatal(err)
+		}
+		return j
+	}
+	first := block("answer-job-1", "q1")
+	a := protocol.Answer{IdempotencyKey: "answer-key", QuestionID: "q1", Text: "yes"}
+	if _, e = s.Answer(ctx, first.ID, a); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = s.Answer(ctx, first.ID, a); e != nil {
+		t.Fatalf("exact retry failed: %v", e)
+	}
+	changed := a
+	changed.Text = "no"
+	if _, e = s.Answer(ctx, first.ID, changed); e == nil {
+		t.Fatal("reused answer key with changed text")
+	}
+	second := block("answer-job-2", "q2")
+	if _, e = s.Answer(ctx, second.ID, protocol.Answer{IdempotencyKey: "answer-key", QuestionID: "q2", Text: "yes"}); e == nil {
+		t.Fatal("reused answer key for another job/question")
+	}
+}
+
+func TestServiceAssignsLogicalArtifactID(t *testing.T) {
+	s, _ := Open(filepath.Join(t.TempDir(), "db"))
+	defer s.Close()
+	j := create(t, s)
+	if j.Artifacts.ID != j.ID || j.Artifacts.Directory != "" || filepath.IsAbs(j.Artifacts.ID) {
+		t.Fatalf("service leaked a filesystem artifact path: %#v", j.Artifacts)
+	}
+}
+
 func TestRejectTerminalWithoutSettlement(t *testing.T) {
 	s, _ := Open(filepath.Join(t.TempDir(), "db"))
 	defer s.Close()

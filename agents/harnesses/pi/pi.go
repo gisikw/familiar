@@ -7,11 +7,16 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"familiar.dev/agents/harnesses"
-	"familiar.dev/agents/protocol"
+	"fmt"
+	"io"
+	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
+
+	"familiar.dev/agents/harnesses"
+	"familiar.dev/agents/protocol"
 )
 
 type Adapter struct{ Binary string }
@@ -77,25 +82,48 @@ func (Adapter) Observe(ctx context.Context, j protocol.Job, r *harnesses.Runtime
 	if err != nil {
 		return harnesses.Observation{}, err
 	}
-	o := harnesses.Observation{State: protocol.Running, ExitCode: code}
+	o := harnesses.Observation{State: protocol.Running, ExitCode: code, Cursor: r.ObservationCursor}
 	f, e := os.Open(r.Launch.Transcript)
 	if e == nil {
 		defer f.Close()
-		scan := bufio.NewScanner(f)
-		scan.Buffer(make([]byte, 64<<10), 4<<20)
-		for scan.Scan() {
-			b := append([]byte(nil), scan.Bytes()...)
-			if !json.Valid(b) {
-				continue
-			}
-			h := sha256.Sum256(b)
-			o.Progress = &protocol.Progress{ID: j.ID + "-pi-" + hex.EncodeToString(h[:8]), JobID: j.ID, At: time.Now().UTC(), Message: "pi lifecycle event", Detail: json.RawMessage(b)}
-		}
-		if err = scan.Err(); err != nil {
+		if _, err = f.Seek(r.ObservationCursor, io.SeekStart); err != nil {
 			return o, err
+		}
+		reader := bufio.NewReaderSize(f, 64<<10)
+		for {
+			line, readErr := reader.ReadString('\n')
+			if readErr != nil && !errors.Is(readErr, io.EOF) {
+				return o, readErr
+			}
+			// A writer may be in the middle of a JSON record. Do not advance the
+			// durable cursor until its newline makes the record complete.
+			if !strings.HasSuffix(line, "\n") {
+				break
+			}
+			lineOffset := o.Cursor
+			o.Cursor += int64(len(line))
+			b := []byte(strings.TrimSuffix(line, "\n"))
+			var header struct {
+				Type      string    `json:"type"`
+				Timestamp time.Time `json:"timestamp"`
+			}
+			if json.Unmarshal(b, &header) == nil && recognizedEvent(header.Type) {
+				h := sha256.Sum256(b)
+				at := header.Timestamp
+				if at.IsZero() {
+					at = time.Now().UTC()
+				}
+				o.Progresses = append(o.Progresses, &protocol.Progress{ID: fmt.Sprintf("%s-pi-%d-%s", j.ID, lineOffset, hex.EncodeToString(h[:8])), JobID: j.ID, At: at, Message: "pi " + header.Type, Detail: json.RawMessage(append([]byte(nil), b...))})
+			}
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
 		}
 	} else if !os.IsNotExist(e) {
 		return o, e
+	}
+	if len(o.Progresses) > 0 {
+		o.Progress = o.Progresses[len(o.Progresses)-1]
 	}
 	if !alive {
 		o.State = protocol.Failed
@@ -125,26 +153,59 @@ func (Adapter) CollectSettlement(_ context.Context, j protocol.Job, l harnesses.
 	}
 	return s, scan.Err()
 }
-func collectUsage(v any, u *protocol.Usage) {
-	switch x := v.(type) {
-	case map[string]any:
-		for k, v := range x {
-			if m, ok := v.(map[string]any); ok && (k == "usage" || k == "tokens") {
-				addNumber(m, "input", &u.InputTokens)
-				addNumber(m, "inputTokens", &u.InputTokens)
-				addNumber(m, "output", &u.OutputTokens)
-				addNumber(m, "outputTokens", &u.OutputTokens)
-			}
-			collectUsage(v, u)
-		}
-	case []any:
-		for _, v := range x {
-			collectUsage(v, u)
-		}
+
+// JSON mode emits these documented lifecycle records. Session headers and
+// arbitrary extension payloads are intentionally not projected as progress.
+func recognizedEvent(kind string) bool {
+	switch kind {
+	case "agent_start", "agent_end", "turn_start", "turn_end", "message_start", "message_update", "message_end",
+		"tool_execution_start", "tool_execution_update", "tool_execution_end", "queue_update", "compaction_start", "compaction_end", "auto_retry_start", "auto_retry_end":
+		return true
+	default:
+		return false
 	}
 }
-func addNumber(m map[string]any, k string, p *int64) {
-	if n, ok := m[k].(float64); ok {
-		*p += int64(n)
+
+type piUsage struct {
+	Input  int64 `json:"input"`
+	Output int64 `json:"output"`
+	Cost   struct {
+		Total float64 `json:"total"`
+	} `json:"cost"`
+}
+type sessionRecord struct {
+	Type    string   `json:"type"`
+	Usage   *piUsage `json:"usage,omitempty"`
+	Message *struct {
+		Role  string   `json:"role"`
+		Usage *piUsage `json:"usage,omitempty"`
+	} `json:"message,omitempty"`
+}
+
+// Session usage records are per-operation deltas, not cumulative snapshots.
+// We add only usage-bearing fields defined by pi's session schema and return
+// the final cumulative total. Nested details/retainedTail copies are ignored.
+func collectUsage(v any, u *protocol.Usage) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return
+	}
+	var record sessionRecord
+	if json.Unmarshal(b, &record) != nil {
+		return
+	}
+	var usage *piUsage
+	switch record.Type {
+	case "message":
+		if record.Message != nil && (record.Message.Role == "assistant" || record.Message.Role == "toolResult") {
+			usage = record.Message.Usage
+		}
+	case "compaction", "branch_summary":
+		usage = record.Usage
+	}
+	if usage != nil {
+		u.InputTokens += usage.Input
+		u.OutputTokens += usage.Output
+		u.CostMicros += int64(math.Round(usage.Cost.Total * 1_000_000))
 	}
 }

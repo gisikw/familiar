@@ -18,6 +18,15 @@ terminate any nonterminal state. A terminal transition is invalid without a
 settlement committed in the same durable transaction. Repeated nonterminal
 observations and exact duplicate event deliveries are harmless.
 
-The global registry owns semantic state. A supervisor may report process facts,
-but cannot overwrite immutable job identity/request fields or another host's
-assignment. Harness detail is evidence, not a second common state vocabulary.
+The global registry owns semantic state. `artifacts.id` is a logical,
+service-assigned job artifact identifier—not a path. Each supervisor resolves it
+beneath its configured host-local artifact root; artifact directories never
+cross the wire, and caller-supplied directory fields are rejected. Requested
+`cwd` remains semantic assignment data but is authorized against host-local
+allowed roots before launch.
+
+A supervisor may report process facts, but cannot overwrite immutable job
+identity/request fields or another host's assignment. Harness detail is
+evidence, not a second common state vocabulary. Pre-worker start attempts and
+observation cursors are host-local recovery state and are intentionally absent
+from this global protocol.

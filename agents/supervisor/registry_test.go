@@ -13,7 +13,7 @@ func TestRegistryRecovery(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	w := Worker{Job: protocol.Job{ID: "j", Harness: "fake"}, Session: "worker-j", RestartUntil: time.Now().Add(time.Hour)}
+	w := Worker{Job: protocol.Job{ID: "j", Harness: "fake"}, Session: "worker-j", ObservationCursor: 1234, RestartUntil: time.Now().Add(time.Hour)}
 	if e = r.Put(w); e != nil {
 		t.Fatal(e)
 	}
@@ -21,7 +21,7 @@ func TestRegistryRecovery(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if got := r2.Snapshot()["j"]; got.Session != "worker-j" {
+	if got := r2.Snapshot()["j"]; got.Session != "worker-j" || got.ObservationCursor != 1234 {
 		t.Fatalf("not recovered: %#v", got)
 	}
 }
