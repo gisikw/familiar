@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -128,6 +129,8 @@ func applyChildDefaults(c *ChildConfig) {
 	}
 }
 
+var validChildName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
+
 func ValidateConfig(c Config) error {
 	host, _, err := net.SplitHostPort(c.Listen)
 	if err != nil {
@@ -144,12 +147,17 @@ func ValidateConfig(c Config) error {
 	for i := range c.Children {
 		x := &c.Children[i]
 		applyChildDefaults(x)
-		if x.Name == "" || names[x.Name] {
-			return fmt.Errorf("child name %q is empty or duplicated", x.Name)
+		if !validChildName.MatchString(x.Name) || names[x.Name] {
+			return fmt.Errorf("child name %q is invalid or duplicated", x.Name)
 		}
 		names[x.Name] = true
 		if len(x.Argv) == 0 {
 			return fmt.Errorf("child %s has empty argv", x.Name)
+		}
+		for key := range x.Env {
+			if key == "" || strings.ContainsAny(key, "=\x00") {
+				return fmt.Errorf("child %s has invalid environment key", x.Name)
+			}
 		}
 		if x.Presence && !x.Detached {
 			return fmt.Errorf("presence child %s must use detached=true so its session can outlive the supervisor", x.Name)
