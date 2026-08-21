@@ -220,6 +220,16 @@ err=$(env -i PATH="$PATH" HOME="${HOME:-/tmp}" FAMILIAR_CONFIG_PATH="$CONFIG" \
 set -e
 [ "$status" -ne 0 ] || fail "ordinary launch accepted malformed TOML"
 [[ $err == *'startup refused'* && $err != *DO_NOT_PRINT_RECOVERY_SECRET* ]] || fail "ordinary launch failure policy"
+# age is intentionally not a recovery bypass: without parsed FAMILIAR_AGE_KEY it
+# could create a default key and overwrite an arbitrary requested target.
+AGE_TARGET="$TMP/must-not-be-created.age"
+set +e
+err=$(printf 'placeholder' | env -i PATH="$PATH" HOME="${HOME:-/tmp}" FAMILIAR_CONFIG_PATH="$CONFIG" \
+  "$REPO/familiar.sh" age "$AGE_TARGET" 2>&1); status=$?
+set -e
+[ "$status" -ne 0 ] || fail "age bypassed malformed config"
+[ ! -e "$AGE_TARGET" ] || fail "blocked age created its target"
+[[ $err == *'startup refused'* && $err != *"continuing 'age'"* && $err != *DO_NOT_PRINT_RECOVERY_SECRET* ]] || fail "age failure policy"
 mkdir -p "$TMP/bin"
 cat >"$TMP/bin/jq" <<'SH'
 #!/usr/bin/env bash

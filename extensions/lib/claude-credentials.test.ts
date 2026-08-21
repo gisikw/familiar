@@ -34,6 +34,35 @@ describe("Claude credentials", () => {
     expect(cred?.kind).toBe("oauth-token");
   });
 
+  test("direct-token aliases reject differing ambient values but accept equal or missing aliases", () => {
+    const upstream = "DO_NOT_REPORT_upstream_token";
+    const familiar = "DO_NOT_REPORT_familiar_token";
+    try {
+      resolveClaudeCredential({
+        _FAMILIAR_CONFIG_EXPLICIT_ENV: "CLAUDE_CODE_OAUTH_TOKEN:FAMILIAR_ANTHROPIC_CLAUDE_OAUTH_TOKEN",
+        CLAUDE_CODE_OAUTH_TOKEN: upstream,
+        FAMILIAR_ANTHROPIC_CLAUDE_OAUTH_TOKEN: familiar,
+      });
+      throw new Error("accepted differing aliases");
+    } catch (error) {
+      const message = String(error);
+      expect(message).toContain("CLAUDE_CODE_OAUTH_TOKEN conflicts with FAMILIAR_ANTHROPIC_CLAUDE_OAUTH_TOKEN");
+      expect(message).toContain("values suppressed");
+      expect(message).not.toContain(upstream);
+      expect(message).not.toContain(familiar);
+    }
+
+    const equal = resolveClaudeCredential({
+      _FAMILIAR_CONFIG_EXPLICIT_ENV: "CLAUDE_CODE_OAUTH_TOKEN:FAMILIAR_ANTHROPIC_CLAUDE_OAUTH_TOKEN",
+      CLAUDE_CODE_OAUTH_TOKEN: "equal-placeholder",
+      FAMILIAR_ANTHROPIC_CLAUDE_OAUTH_TOKEN: "equal-placeholder",
+    });
+    expect(equal).toMatchObject({ kind: "oauth-token", token: "equal-placeholder" });
+    expect(resolveClaudeCredential({ CLAUDE_CODE_OAUTH_TOKEN: "upstream-only" })?.kind).toBe("oauth-token");
+    expect(resolveClaudeCredential({ FAMILIAR_ANTHROPIC_CLAUDE_OAUTH_TOKEN: "familiar-only" })?.kind).toBe("oauth-token");
+    expect(resolveClaudeCredential({})).toBeNull();
+  });
+
   test("legacy setting remains JSON-only and cannot misclassify a raw secret", () => {
     expect(() => resolveClaudeCredential({ FAMILIAR_ANTHROPIC_OAUTH: "not-json-placeholder" })).toThrow("FAMILIAR_ANTHROPIC_OAUTH (legacy)");
   });

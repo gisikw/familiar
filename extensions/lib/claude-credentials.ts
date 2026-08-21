@@ -31,11 +31,20 @@ function parseCredentialsJson(raw: string, setting: string): Record<string, unkn
 
 export function resolveClaudeCredential(env: NodeJS.ProcessEnv = process.env): ClaudeCredential | null {
   let json = env.FAMILIAR_ANTHROPIC_CLAUDE_CREDENTIALS_JSON;
-  let token = env.CLAUDE_CODE_OAUTH_TOKEN ?? env.FAMILIAR_ANTHROPIC_CLAUDE_OAUTH_TOKEN;
+  const upstreamToken = env.CLAUDE_CODE_OAUTH_TOKEN;
+  const familiarToken = env.FAMILIAR_ANTHROPIC_CLAUDE_OAUTH_TOKEN;
+  let token = upstreamToken ?? familiarToken;
   let legacy = env.FAMILIAR_ANTHROPIC_OAUTH;
   // The loader records ambient provenance. If an ambient credential form exists,
   // it wins over a different form loaded from TOML, just like every other key.
+  const hasProvenance = env._FAMILIAR_CONFIG_EXPLICIT_ENV !== undefined;
   const explicit = new Set((env._FAMILIAR_CONFIG_EXPLICIT_ENV ?? "").split(":").filter(Boolean));
+  const upstreamIsAmbient = !hasProvenance || explicit.has("CLAUDE_CODE_OAUTH_TOKEN");
+  const familiarIsAmbient = !hasProvenance || explicit.has("FAMILIAR_ANTHROPIC_CLAUDE_OAUTH_TOKEN");
+  if (upstreamToken !== undefined && familiarToken !== undefined &&
+      upstreamIsAmbient && familiarIsAmbient && upstreamToken !== familiarToken) {
+    throw new Error("familiar: CLAUDE_CODE_OAUTH_TOKEN conflicts with FAMILIAR_ANTHROPIC_CLAUDE_OAUTH_TOKEN (values suppressed)");
+  }
   const explicitJson = explicit.has("FAMILIAR_ANTHROPIC_CLAUDE_CREDENTIALS_JSON");
   const explicitToken = explicit.has("CLAUDE_CODE_OAUTH_TOKEN") || explicit.has("FAMILIAR_ANTHROPIC_CLAUDE_OAUTH_TOKEN");
   const explicitLegacy = explicit.has("FAMILIAR_ANTHROPIC_OAUTH");

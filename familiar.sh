@@ -17,7 +17,7 @@ CONFIG_LOAD_FAILED=0
 if ! familiar_config_load "$REPO"; then
   CONFIG_LOAD_FAILED=1
   case "${1:-}" in
-    kill|worklist-add|inbox-enqueue|age|config-check)
+    kill|worklist-add|inbox-enqueue|config-check)
       echo "familiar: continuing '${1:-}' without optional familiar.toml; fix it and run: $SELF config-check" >&2
       ;;
     *)
