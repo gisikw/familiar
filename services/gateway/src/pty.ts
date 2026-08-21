@@ -46,7 +46,7 @@ export function attachCommand(): { file: string; args: string[] } {
     return { file: parts[0], args: parts.slice(1) };
   }
   const controller = process.env.FAMILIAR_PRESENCE_CTL
-    || fileURLToPath(new URL("../../services/presence/presence.sh", import.meta.url));
+    || fileURLToPath(new URL("../../presence/presence.sh", import.meta.url));
   return { file: controller, args: ["attach"] };
 }
 

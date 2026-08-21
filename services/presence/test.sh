@@ -94,6 +94,8 @@ ok "symlink state is rejected"
 if [ -z "${SKIP_BROWSER_CONTRACT:-}" ]; then
   grep -q 'args: \["attach"\]' "$HERE/../gateway/src/pty.ts" || fail "browser default is not Presence attach"
   grep -q 'FAMILIAR_ATTACH_CMD' "$HERE/../gateway/src/pty.ts" || fail "browser test override missing"
+  grep -q 'new URL("../../presence/presence.sh"' "$HERE/../gateway/src/pty.ts" \
+    || fail "browser Presence fallback path is not gateway-relative"
   ok "browser attach command points at Presence"
 fi
 
