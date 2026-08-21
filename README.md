@@ -54,6 +54,16 @@ Edit or create new files via:
 The files are decrypted at runtime. On first use, a key will be generated at
 $FAMILIAR_AGE_KEY, which defaults to ./state/age.key.
 
+## Quota footer
+
+When pi is logged into `openai-codex`, Familiar shows Codex subscription windows
+as explicit used/remaining percentages and reset durations. It uses quota headers
+when pi exposes them, otherwise a read-only account-usage GET at most every five
+minutes. The extension reads only pi's current OAuth access token/account ID;
+pi alone refreshes and writes auth. Last-known values are marked `stale` when the
+first-party but semi-private endpoint is unavailable. This is distinct from
+request tokens, API RPM/TPM, and generic ChatGPT allowances.
+
 ## Primitives
 
 - Work Tracking

@@ -1,0 +1,21 @@
+{
+  "plan_type": "example-plan",
+  "rate_limit": {
+    "allowed": true,
+    "limit_reached": false,
+    "primary_window": {
+      "used_percent": 15,
+      "limit_window_seconds": 604800,
+      "reset_after_seconds": 44865,
+      "reset_at": 1787337197
+    },
+    "secondary_window": {
+      "used_percent": 40,
+      "limit_window_seconds": 18000,
+      "reset_after_seconds": 3600
+    }
+  },
+  "code_review_rate_limit": null,
+  "additional_rate_limits": [{"metered_feature":"redacted-example","rate_limit":{"primary_window":{"used_percent":99,"limit_window_seconds":60}}}],
+  "credits": {"has_credits": false, "unlimited": false, "balance": "0"}
+}

@@ -3,59 +3,38 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { debugLog, errorLog } from "./lib/debug.ts";
+import {
+  CodexUsagePoller,
+  fetchCodexUsage,
+  formatReset,
+  formatWindow,
+  parseCodexHeaders,
+  readCodexCredential,
+  type CodexUsage,
+} from "./lib/openai-codex-usage.ts";
 
-/* ============================================================================
- * RATELIMIT — surface Anthropic subscription utilization in pi's footer
- * ============================================================================
- *
- * Successful Anthropic API responses carry `anthropic-ratelimit-*` headers for
- * free (and `retry-after` on 429s). When pi talks to the tiamat gateway these
- * ride every response, so we can show live 5h/7d utilization without polling.
- *
- * HOW WE SEE HEADERS — the clean way (no fetch monkeypatching):
- *   pi exposes `after_provider_response { status, headers }`, fired after the
- *   HTTP response is received and before its stream body is consumed. `headers`
- *   is a normalized `Record<string,string>`. That is exactly the hook this
- *   feature needs — we never touch the response, only read it. (Header
- *   availability is provider/transport dependent; non-gateway or header-less
- *   providers simply yield nothing and we render nothing.)
- *
- * BEHAVIOR:
- *   - capture anthropic-ratelimit-* + retry-after on every response
- *   - cache the latest snapshot in memory and to state/ratelimit.json (atomic)
- *   - footer: compact "5h 8% · 7d 53%"; loud (warning/error) when the unified
- *     status is not "allowed" or a retry-after appears
- *   - degrade silently: no headers => no footer, never throw
- *   - debug via lib/debug.ts, never console noise
- */
-
+/* Subscription quota only: Claude's rolling utilization headers and Codex's
+ * account windows. This intentionally does not show request tokens, OpenAI API
+ * RPM/TPM, generic ChatGPT allowances, credits, or code-review limits. */
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.dirname(HERE);
-
-const STATE_FILE =
-  process.env.FAMILIAR_RATELIMIT_PATH ||
+const STATE_FILE = process.env.FAMILIAR_RATELIMIT_PATH ||
   (process.env.FAMILIAR_LOG_PATH
     ? path.join(path.dirname(process.env.FAMILIAR_LOG_PATH), "ratelimit.json")
     : path.join(REPO, "state", "ratelimit.json"));
-
 const STATUS_KEY = "ratelimit";
 
-interface Snapshot {
-  /** epoch ms when captured */
+interface AnthropicSnapshot {
   at: number;
-  /** HTTP status of the response the headers came from */
   httpStatus: number;
-  /** anthropic-ratelimit-unified-status, e.g. "allowed" | "allowed_warning" | ... */
   unifiedStatus?: string;
-  /** 0..1 utilization for the rolling 5h window */
   util5h?: number;
-  /** 0..1 utilization for the rolling 7d window */
   util7d?: number;
-  /** retry-after seconds, present on 429s */
   retryAfter?: number;
-  /** every captured anthropic-ratelimit-* header, verbatim (for audit/debug) */
   raw: Record<string, string>;
 }
+interface State { anthropic?: AnthropicSnapshot; codex?: CodexUsage }
+type Tone = "dim" | "warning" | "error";
 
 const num = (v: string | undefined): number | undefined => {
   if (v === undefined) return undefined;
@@ -63,132 +42,130 @@ const num = (v: string | undefined): number | undefined => {
   return Number.isFinite(n) ? n : undefined;
 };
 
-const pct = (u: number | undefined): string | undefined =>
-  u === undefined ? undefined : `${Math.round(u * 100)}%`;
-
-/** Pull the ratelimit story out of a normalized header map. Returns null when
- * nothing relevant is present (non-gateway provider, older response, etc). */
-function extract(status: number, headers: Record<string, string>): Snapshot | null {
-  // Normalize keys to lowercase; pi already lowercases, but be defensive so a
-  // future transport change can't silently blind us.
+export function extractAnthropic(status: number, headers: Record<string, string>, now = Date.now()): AnthropicSnapshot | null {
   const h: Record<string, string> = {};
   for (const [k, v] of Object.entries(headers)) h[k.toLowerCase()] = v;
-
   const raw: Record<string, string> = {};
-  for (const [k, v] of Object.entries(h)) {
-    if (k.startsWith("anthropic-ratelimit-")) raw[k] = v;
-  }
+  for (const [k, v] of Object.entries(h)) if (k.startsWith("anthropic-ratelimit-")) raw[k] = v;
   const retryAfter = num(h["retry-after"]);
-  if (Object.keys(raw).length === 0 && retryAfter === undefined) return null;
-
+  if (!Object.keys(raw).length && retryAfter === undefined) return null;
   return {
-    at: Date.now(),
-    httpStatus: status,
+    at: now, httpStatus: status,
     unifiedStatus: raw["anthropic-ratelimit-unified-status"],
     util5h: num(raw["anthropic-ratelimit-unified-5h-utilization"]),
     util7d: num(raw["anthropic-ratelimit-unified-7d-utilization"]),
-    retryAfter,
-    raw,
+    retryAfter, raw,
   };
 }
 
-type Tone = "dim" | "warning" | "error";
-
-/** Decide how loud the footer should be. retry-after or a non-allowed unified
- * status is loud; heavy utilization is a soft warning. */
-function tone(s: Snapshot): Tone {
+function anthropicTone(s: AnthropicSnapshot): Tone {
   if (s.retryAfter !== undefined || s.httpStatus === 429) return "error";
-  if (s.unifiedStatus && s.unifiedStatus !== "allowed") {
-    return s.unifiedStatus.includes("warning") ? "warning" : "error";
-  }
-  const peak = Math.max(s.util5h ?? 0, s.util7d ?? 0);
-  if (peak >= 0.9) return "warning";
-  return "dim";
+  if (s.unifiedStatus && s.unifiedStatus !== "allowed") return s.unifiedStatus.includes("warning") ? "warning" : "error";
+  return Math.max(s.util5h ?? 0, s.util7d ?? 0) >= 0.9 ? "warning" : "dim";
 }
 
-/** Build the compact footer body, e.g. "5h 8% · 7d 53%". Returns undefined when
- * there is nothing worth showing. */
-function body(s: Snapshot): string | undefined {
+export function anthropicBody(s: AnthropicSnapshot): string | undefined {
   const parts: string[] = [];
-  const p5 = pct(s.util5h);
-  const p7 = pct(s.util7d);
-  if (p5) parts.push(`5h ${p5}`);
-  if (p7) parts.push(`7d ${p7}`);
-  let text = parts.join(" · ");
+  if (s.util5h !== undefined) parts.push(`Claude 5h ${Math.round(s.util5h * 100)}% used`);
+  if (s.util7d !== undefined) parts.push(`7d ${Math.round(s.util7d * 100)}% used`);
+  if (s.retryAfter !== undefined) parts.push(`retry ${s.retryAfter}s`);
+  else if (s.unifiedStatus && s.unifiedStatus !== "allowed") parts.push(s.unifiedStatus);
+  return parts.length ? parts.join(" · ") : undefined;
+}
 
-  if (s.retryAfter !== undefined) {
-    const wait = `retry ${s.retryAfter}s`;
-    text = text ? `${text} · ${wait}` : wait;
-  } else if (s.unifiedStatus && s.unifiedStatus !== "allowed") {
-    text = text ? `${text} · ${s.unifiedStatus}` : s.unifiedStatus;
-  }
-  return text || undefined;
+export function codexBody(s: CodexUsage, stale: boolean, now = Date.now()): string | undefined {
+  const windows = s.windows.slice(0, 2).map((w) => {
+    const reset = formatReset(w.resetAt, now);
+    const remaining = Math.round(100 - w.usedPercent);
+    return `${formatWindow(w.windowSeconds)} ${Math.round(w.usedPercent)}% used/${remaining}% left${reset ? ` reset ${reset}` : ""}`;
+  });
+  return windows.length ? `Codex ${windows.join(" · ")}${stale ? " · stale" : ""}` : undefined;
 }
 
 export default function (pi: ExtensionAPI) {
-  let latest: Snapshot | undefined;
+  let state: State = {};
+  let codexStale = false;
   let lastRendered = "";
   let ctxRef: ExtensionContext | undefined;
+  let pollTimer: ReturnType<typeof setInterval> | undefined;
 
-  const persist = (s: Snapshot) => {
+  const persist = () => {
     try {
       fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
       const tmp = `${STATE_FILE}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(s, null, 2));
+      fs.writeFileSync(tmp, JSON.stringify(state, null, 2), { mode: 0o600 });
+      fs.chmodSync(tmp, 0o600);
       fs.renameSync(tmp, STATE_FILE);
-    } catch (err) {
-      errorLog("ratelimit", { persistError: String(err) });
-    }
+    } catch (err) { errorLog("ratelimit", { persistError: String(err) }); }
   };
-
-  const loadPersisted = (): Snapshot | undefined => {
+  const load = (): State => {
     try {
-      return JSON.parse(fs.readFileSync(STATE_FILE, "utf-8")) as Snapshot;
-    } catch {
-      return undefined;
-    }
+      const parsed = JSON.parse(fs.readFileSync(STATE_FILE, "utf8")) as State | AnthropicSnapshot;
+      return "raw" in parsed ? { anthropic: parsed as AnthropicSnapshot } : parsed;
+    } catch { return {}; }
   };
-
-  /** Render the current snapshot to the footer, in place, only when it changed. */
   const render = () => {
-    if (!ctxRef?.hasUI || !latest) return;
-    const text = body(latest);
-    if (!text) return;
-    const t = tone(latest);
-    const theme = ctxRef.ui.theme;
-    const glyph = t === "error" ? "▲ " : t === "warning" ? "△ " : "";
-    const painted = theme.fg(t, `${glyph}${text}`);
-    if (painted === lastRendered) return;
-    lastRendered = painted;
-    ctxRef.ui.setStatus(STATUS_KEY, painted);
+    if (!ctxRef?.hasUI) return;
+    const entries: Array<{ text: string; tone: Tone }> = [];
+    const claude = state.anthropic && anthropicBody(state.anthropic);
+    if (claude && state.anthropic) entries.push({ text: claude, tone: anthropicTone(state.anthropic) });
+    const codex = state.codex && codexBody(state.codex, codexStale);
+    if (codex && state.codex) {
+      const peak = Math.max(...state.codex.windows.map((w) => w.usedPercent));
+      entries.push({ text: codex, tone: codexStale || peak >= 90 ? "warning" : "dim" });
+    }
+    if (!entries.length) return;
+    const tone: Tone = entries.some((e) => e.tone === "error") ? "error" : entries.some((e) => e.tone === "warning") ? "warning" : "dim";
+    const glyph = tone === "error" ? "▲ " : tone === "warning" ? "△ " : "";
+    const painted = ctxRef.ui.theme.fg(tone, glyph + entries.map((e) => e.text).join("  |  "));
+    if (painted !== lastRendered) { lastRendered = painted; ctxRef.ui.setStatus(STATUS_KEY, painted); }
   };
 
-  // Restore the last snapshot on session start so the footer isn't blank until
-  // the first response of the new session lands.
+  const poller = new CodexUsagePoller(readCodexCredential, (credential) => fetchCodexUsage(credential));
+  const poll = () => {
+    void poller.poll().then((usage) => {
+      if (usage) state.codex = usage;
+      codexStale = poller.stale;
+      if (usage) persist();
+      render();
+    }).catch(() => { /* poller is defensive; never affect an agent turn */ });
+  };
+  const activeCodex = (ctx: ExtensionContext) => ctx.model?.provider === "openai-codex";
+
   pi.on("session_start", async (_event, ctx) => {
     ctxRef = ctx;
-    if (!latest) latest = loadPersisted();
+    state = load();
+    poller.seed(state.codex);
     render();
+    if (activeCodex(ctx)) poll();
+    if (!pollTimer) {
+      pollTimer = setInterval(() => { if (ctxRef && activeCodex(ctxRef)) poll(); }, 5 * 60_000);
+      pollTimer.unref?.();
+    }
   });
-
+  pi.on("session_shutdown", async () => {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = undefined;
+  });
+  pi.on("turn_end", async (_event, ctx) => {
+    ctxRef = ctx;
+    if (activeCodex(ctx)) poll();
+  });
   pi.on("after_provider_response", async (event, ctx) => {
     ctxRef = ctx;
     try {
-      const snap = extract(event.status, event.headers ?? {});
-      if (!snap) return; // non-gateway / header-less provider: show nothing.
-      latest = snap;
-      persist(snap);
-      debugLog("ratelimit", {
-        httpStatus: snap.httpStatus,
-        unifiedStatus: snap.unifiedStatus,
-        util5h: snap.util5h,
-        util7d: snap.util7d,
-        retryAfter: snap.retryAfter,
-      });
+      const codex = parseCodexHeaders(event.headers ?? {});
+      if (codex) {
+        state.codex = codex;
+        codexStale = false;
+        poller.seed(codex, true); // fresh in-band data suppresses the fallback poll
+      }
+      const anthropic = extractAnthropic(event.status, event.headers ?? {});
+      if (anthropic) state.anthropic = anthropic;
+      if (!codex && !anthropic) return;
+      persist();
+      debugLog("ratelimit", { providerQuota: codex ? "codex" : "anthropic", httpStatus: event.status });
       render();
-    } catch (err) {
-      // Never let footer bookkeeping break a real response.
-      errorLog("ratelimit", { handlerError: String(err) });
-    }
+    } catch (err) { errorLog("ratelimit", { handlerError: String(err) }); }
   });
 }
