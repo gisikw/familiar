@@ -188,6 +188,9 @@ func (s *Supervisor) start(ctx context.Context, j protocol.Job) error {
 }
 func (s *Supervisor) publishState(ctx context.Context, w *Worker, state protocol.State) error {
 	event := protocol.ObservedEvent{ID: w.Job.ID + "-" + string(state), JobID: w.Job.ID, State: state, ObservedAt: time.Now().UTC()}
+	if state == protocol.Starting || state == protocol.Running {
+		event.Terminal = &protocol.TerminalEndpoint{Host: s.Host, Socket: s.Tmux.Socket, Target: w.Target}
+	}
 	if err := s.Client.Events(ctx, protocol.EventBatch{Host: s.Host, Events: []protocol.ObservedEvent{event}}); err != nil {
 		return err
 	}
@@ -258,6 +261,27 @@ func (s *Supervisor) observe(ctx context.Context) error {
 	}
 	return nil
 }
+// GCSettled removes only service-confirmed terminal job artifacts, honoring a
+// per-job retention override. root bounds deletion and must contain each path.
+func GCSettled(jobs []protocol.Job, root string, now time.Time, defaultAge time.Duration) error {
+	absRoot, err := filepath.Abs(root)
+	if err != nil { return err }
+	for _, j := range jobs {
+		if !j.State.Terminal() || j.Artifacts.Directory == "" { continue }
+		path, err := filepath.Abs(j.Artifacts.Directory)
+		if err != nil { return err }
+		rel, err := filepath.Rel(absRoot, path)
+		if err != nil || rel == "." || rel == ".." || filepath.IsAbs(rel) || len(rel) >= 3 && rel[:3] == ".."+string(os.PathSeparator) { continue }
+		age := defaultAge
+		if j.Artifacts.RetentionDays > 0 { age = time.Duration(j.Artifacts.RetentionDays)*24*time.Hour }
+		at := j.UpdatedAt; if j.Settlement != nil && !j.Settlement.At.IsZero() { at = j.Settlement.At }
+		if !at.IsZero() && now.Sub(at) >= age { if err = os.RemoveAll(path); err != nil { return err } }
+	}
+	return nil
+}
+
+// GC is a low-level age-based helper retained for host administration. The CLI
+// uses GCSettled so running jobs can never be removed by semantic GC.
 func GC(root string, before time.Time) error {
 	entries, err := os.ReadDir(root)
 	if os.IsNotExist(err) {
