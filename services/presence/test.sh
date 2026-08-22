@@ -76,9 +76,30 @@ runp ensure-viewer >/dev/null
 [ "$(tmux -S "$socket" show-options -v -t viewer prefix)" = None ] || fail "viewer prefix enabled"
 [ "$(tmux -S "$socket" show-options -v -t viewer mouse)" = off ] || fail "viewer captures mouse"
 [ "$(tmux -S "$socket" show-options -Av -t presence prefix)" = C-b ] || fail "viewer policy changed Presence prefix"
-[ "$(tmux -S "$socket" show-window-options -v -t viewer:0 allow-passthrough)" = on ] \
-  || fail "viewer passthrough disabled"
-ok "viewer creation is idempotent and options are session-scoped"
+[ "$(tmux -S "$socket" show-window-options -v -t viewer:0 allow-passthrough)" = all ] \
+  || fail "viewer passthrough is not enabled for every visibility state"
+[ "$(tmux -S "$socket" show-options -gv extended-keys)" = on ] \
+  || fail "extended keys are not enabled"
+case $(tmux -S "$socket" show-options -gv terminal-features) in
+  *tmux\*:extkeys*) ;; *) fail "nested tmux terminal lacks extkeys feature" ;; esac
+[ "$(tmux -S "$socket" display-message -p -t viewer:0.1 '#{pane_active}')" = 1 ] \
+  || fail "viewer main pane did not receive focus after ensure"
+[ "$(tmux -S "$socket" display-message -p -t viewer:0.0 '#{pane_input_off}')" = 1 ] \
+  || fail "sidebar pane input is enabled"
+ok "viewer creation sets passthrough, extended keys, main focus, and inert sidebar input"
+
+# The client-attached hook restores main focus even if chrome was selected.
+tmux -S "$socket" select-pane -e -t viewer:0.0
+tmux -S "$socket" select-pane -t viewer:0.0
+set +e
+timeout 0.5 script -qec "tmux -S '$socket' attach-session -t viewer" /dev/null >/dev/null 2>&1
+set -e
+[ "$(tmux -S "$socket" display-message -p -t viewer:0.1 '#{pane_active}')" = 1 ] \
+  || fail "viewer attach did not restore main-pane focus"
+runp ensure-viewer >/dev/null
+[ "$(tmux -S "$socket" display-message -p -t viewer:0.0 '#{pane_input_off}')" = 1 ] \
+  || fail "re-ensure did not disable sidebar input"
+ok "client attach restores main focus and ensure disables sidebar input"
 
 # A headless window resize fires the lock hook and restores a disturbed width.
 tmux -S "$socket" resize-pane -t viewer:0.0 -x 40
@@ -100,7 +121,9 @@ for _ in $(seq 1 20); do
   sleep .05
 done
 case "$sidebar_state" in 0:*run-sidebar*) ;; *) fail "sidebar was not respawned: $sidebar_state" ;; esac
-ok "dead sidebar command is respawned"
+[ "$(tmux -S "$socket" display-message -p -t viewer:0.0 '#{pane_input_off}')" = 1 ] \
+  || fail "respawn re-enabled sidebar input"
+ok "dead sidebar command is respawned with input still disabled"
 
 main_start=$(tmux -S "$socket" display-message -p -t viewer:0.1 '#{pane_start_command}')
 case "$main_start" in

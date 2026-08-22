@@ -66,12 +66,18 @@ Pane 1 runs the equivalent of:
 TMUX= tmux -S state/presence/tmux.sock attach-session -t presence
 ```
 
-Clearing `TMUX` permits this nested same-server attach. The outer Viewer has
-session-local `prefix None`, `status off`, `mouse off`, and
-`pane-border-status off`; users cannot operate its chrome and mouse sequences
-pass to the inner client. Presence retains its `C-b` prefix and ordinary
-behavior. `allow-passthrough on` is enabled in the owned config and explicitly
-on the Viewer window so kitty APCs can cross both tmux layers.
+Clearing `TMUX` permits this nested same-server attach. The outer Viewer has session-local `prefix None`, `status off`, `mouse off`,
+and `pane-border-status off`; users cannot operate its chrome and mouse
+sequences pass to the inner client. Pane 1 is selected at creation and on each
+client attach, while pane 0 has input disabled. Presence retains its `C-b`
+prefix and ordinary behavior.
+
+The sidebar wraps each kitty APC in tmux's DCS passthrough envelope (including
+ESC doubling); raw kitty APCs are parsed and discarded by tmux rather than
+forwarded. `allow-passthrough all` is enabled globally and explicitly on the
+Viewer window so wrapped repaints can cross tmux regardless of visibility.
+Extended keys and `extkeys` terminal features are enabled for common direct and
+nested client TERM families.
 
 ## Tests
 
@@ -82,14 +88,6 @@ nix flake check --no-build
 
 The focused test uses only temporary private sockets and a fake worker. It
 covers config isolation, worker continuity/recovery, concurrency, path and stop
-isolation, idempotent Viewer creation, session-scoped options, the 28-column
-resize lock, nested attach command shape, and the Gateway entrypoint contract.
-
-## Known issue
-
-The sidebar's kitty-graphics mark does not yet render in the browser terminal
-(text fallback shows instead). Verified 2026-08-22: the APC transmission
-happens (55s screenshot byte-identical to 20s — repaint cycle covered), pi TUI
-renders correctly, so the loss is specific to the sidebar pane's passthrough
-path into restty. Candidates: passthrough replay semantics for non-active
-panes, or restty capability negotiation. Cosmetic; the mark is placeholder art.
+isolation, idempotent Viewer creation, passthrough and extended-key options,
+main-pane focus, disabled sidebar input, the 28-column resize lock, nested
+attach command shape, and the Gateway entrypoint contract.

@@ -129,11 +129,13 @@ send_mark() {
     chunk=${data:$offset:4096}
     offset=$((offset + 4096))
     if [ "$offset" -lt "$total" ]; then more=1; else more=0; fi
+    # tmux does not forward a raw kitty APC. Wrap each command in tmux's DCS
+    # passthrough envelope and double ESC bytes in the enclosed APC.
     if [ "$first" -eq 1 ]; then
-      printf "\\033_Gf=100,a=T,c=16,r=8,m=%d;%s\\033\\\\" "$more" "$chunk"
+      printf '\033Ptmux;\033\033_Gf=100,a=T,c=16,r=8,m=%d;%s\033\033\\\033\\' "$more" "$chunk"
       first=0
     else
-      printf "\\033_Gm=%d;%s\\033\\\\" "$more" "$chunk"
+      printf '\033Ptmux;\033\033_Gm=%d;%s\033\033\\\033\\' "$more" "$chunk"
     fi
   done
   printf '\033[11;7H\033[1;38;2;90;212;230mF A M I L I A R\033[0m'
