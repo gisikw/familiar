@@ -4,6 +4,7 @@ import { EmojiCompleter, loadEmoji } from "/app/emoji.js";
 import { VoiceCapture } from "/app/voice.js";
 import { STATES as VOICE_STATES } from "/app/voice-state.js";
 import { installVoiceKeyRouter, VOICE_KEY_LABEL } from "/app/voice-key-routing.js";
+import { TerminalReplyGate } from "/app/terminal-replies.js";
 
 // Browser terminal for the familiar server. Unlike the Electron client (which
 // bridges restty to node-pty over IPC), here restty talks to the server's /pty
@@ -26,6 +27,7 @@ import { installVoiceKeyRouter, VOICE_KEY_LABEL } from "/app/voice-key-routing.j
 
 // Shared app-mouse tracker: fed by pty output, read by the mouse layer.
 const decset = new DecsetTracker();
+const terminalReplies = new TerminalReplyGate();
 let gridCols = 80;
 let gridRows = 24;
 
@@ -43,6 +45,7 @@ function wsUrl() {
 // ---------------------------------------------------------------------------
 const outputTaps = new Set();
 function feedOutput(data) {
+  terminalReplies.observeOutput(data);
   decset.feed(data);
   for (const tap of outputTaps) {
     try { tap(data); } catch (_) { /* ignore */ }
@@ -133,7 +136,10 @@ function createTappedWsTransport() {
       return inner.connect({ ...options, callbacks: wrapped });
     },
     disconnect() { return inner.disconnect(); },
-    sendInput(data) { return inner.sendInput(data); },
+    sendInput(data) {
+      if (!terminalReplies.allowInput(data)) return;
+      return inner.sendInput(data);
+    },
     resize(cols, rows, meta) {
       if (cols) gridCols = cols;
       if (rows) gridRows = rows;
