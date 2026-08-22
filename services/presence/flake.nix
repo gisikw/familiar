@@ -16,6 +16,7 @@
             export FAMILIAR_PRESENCE_CONFIG=${./tmux.conf}
             export FAMILIAR_SIDEBAR_SCRIPT=${./sidebar.sh}
             export FAMILIAR_SIDEBAR_MARK=${../../assets/familiar-mark.svg}
+            export FAMILIAR_SIDEBAR_MARK_PNG=${../../assets/familiar-mark.png}
             exec bash ${./presence.sh} "$@"
           '';
         };

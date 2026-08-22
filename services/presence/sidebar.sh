@@ -6,6 +6,7 @@ set -u
 HERE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
 REPO=${FAMILIAR_REPO:-$(CDPATH='' cd -- "$HERE/../.." && pwd -P)}
 MARK=${FAMILIAR_SIDEBAR_MARK:-$REPO/assets/familiar-mark.svg}
+MARK_PNG=${FAMILIAR_SIDEBAR_MARK_PNG:-$REPO/assets/familiar-mark.png}
 ACCENT=${FAMILIAR_SIDEBAR_ACCENT:-#5ad4e6}
 TMP=''
 MODE=text
@@ -19,13 +20,17 @@ trap 'exit 0' INT TERM
 printf '\033[?25l'
 
 prepare_mark() {
-  command -v rsvg-convert >/dev/null 2>&1 || return 1
   command -v base64 >/dev/null 2>&1 || return 1
-  [ -r "$MARK" ] || return 1
   TMP=$(mktemp -d "${TMPDIR:-/tmp}/familiar-sidebar.XXXXXX") || return 1
-  sed "s/currentColor/$ACCENT/g" "$MARK" > "$TMP/mark.svg" || return 1
-  rsvg-convert -w 256 -h 256 "$TMP/mark.svg" -o "$TMP/mark.png" >/dev/null 2>&1 || return 1
-  [ -s "$TMP/mark.png" ]
+  if command -v rsvg-convert >/dev/null 2>&1 && [ -r "$MARK" ]; then
+    sed "s/currentColor/$ACCENT/g" "$MARK" > "$TMP/mark.svg" \
+      && rsvg-convert -w 256 -h 256 "$TMP/mark.svg" -o "$TMP/mark.png" >/dev/null 2>&1 \
+      && [ -s "$TMP/mark.png" ] && return 0
+  fi
+  # Pre-rendered accent PNG: keeps the mark visible where librsvg is absent
+  # (e.g. the presence child launched straight from the supervisor).
+  [ -r "$MARK_PNG" ] || return 1
+  cp "$MARK_PNG" "$TMP/mark.png" && [ -s "$TMP/mark.png" ]
 }
 
 send_mark() {
