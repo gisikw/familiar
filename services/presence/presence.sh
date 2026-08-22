@@ -50,7 +50,7 @@ refresh_environment() {
   local name
   while IFS='=' read -r name _; do
     case "$name" in
-      FAMILIAR_*|PI_*|LLAMA_*|ANTHROPIC_*|OPENAI_*|HERDR_WORKSPACE_ID|HERDR_SESSION|HERDR_CONFIG_PATH)
+      FAMILIAR_*|PI_*|LLAMA_*|ANTHROPIC_*|OPENAI_*)
         tmux_owned set-environment -g "$name" "${!name}" >/dev/null ;;
     esac
   done < <(env)
@@ -60,7 +60,20 @@ worker_command() {
   if [ -n "${FAMILIAR_PRESENCE_COMMAND:-}" ]; then
     exec "$BASH_EXE" -lc "$FAMILIAR_PRESENCE_COMMAND"
   fi
-  exec "$REPO/familiar.sh" pi
+  local request=${FAMILIAR_RELOAD_REQUEST_PATH:-$REPO/state/run/reload-request}
+  local complete=${FAMILIAR_RELOAD_COMPLETE_PATH:-$REPO/state/run/reload-complete}
+  while :; do
+    "$REPO/familiar.sh" pi || true
+    if [ -f "$request" ]; then
+      mkdir -p "$(dirname "$complete")"
+      mv -f "$request" "$complete"
+      # Re-enter through the current script/config/dev shell. familiar.sh pi
+      # always launches pi with --continue, preserving session continuity.
+      unset FAMILIAR_SHELL FAMILIAR_INTERACTIVE_SHELL
+      continue
+    fi
+    sleep 1
+  done
 }
 
 start_session() {

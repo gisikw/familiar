@@ -24,7 +24,6 @@ describe("configuration",()=>{
   test("canonical environment naming is deterministic",()=>expect(envName(["theme","ansi","bright-blue"])).toBe("FAMILIAR_THEME_ANSI_BRIGHT_BLUE"));
   test("rejects malformed, unknown, and invalid settings",()=>{
     expect(()=>validateConfig({flat:1})).toThrow(ConfigError);expect(()=>validateConfig({wat:{key:1}})).toThrow("invalid Familiar configuration");
-    expect(()=>validateConfig({subagent:{mode:"herdr"}})).toThrow(ConfigError);
     expect(()=>applyEnvironment({fetch:{}},{FAMILIAR_FETCH_ALLOW_PRIVATE:"maybe"})).toThrow("true or false");
   });
   test("requires private file mode and suppresses TOML contents",async()=>{

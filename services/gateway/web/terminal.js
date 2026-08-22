@@ -8,7 +8,7 @@ import { installVoiceKeyRouter, VOICE_KEY_LABEL } from "/app/voice-key-routing.j
 // Browser terminal for the familiar server. Unlike the Electron client (which
 // bridges restty to node-pty over IPC), here restty talks to the server's /pty
 // WebSocket endpoint, which bridges to a node-pty child attached to the running
-// herdr session.
+// terminal session.
 //
 // WHY A CUSTOM TRANSPORT (mouse root-cause fix): the app-mouse layer needs two
 // things from the terminal that restty 0.2.6 does NOT expose as public methods:
@@ -179,7 +179,7 @@ const transport = createTappedWsTransport();
 // Reserve voice input before boot constructs Restty. Restty focuses a hidden
 // `.restty-pane-ime-input` textarea, then forwards window keydown events to its
 // encoder. The old generic INPUT/TEXTAREA focus guard therefore returned before
-// toggle(), after which restty/Herdr consumed Ctrl+Space (normally encoded as
+// toggle(), after which restty/terminal consumed Ctrl+Space (normally encoded as
 // NUL). F8 avoids OS/browser Ctrl+Space collisions too. The router recognizes
 // restty's IME sink as terminal focus while preserving the guard for real form
 // controls; capture + stopImmediatePropagation prevents any PTY forwarding.
@@ -226,7 +226,7 @@ async function boot() {
   // (no such window bg) would look full-black. We fetch the server-resolved
   // theme (/theme.json — a GhosttyTheme built from FAMILIAR_THEME_* at boot):
   // background/foreground/cursor/selection + the ANSI-16 palette all track the
-  // unified Familiar theme, so browser panes match the herdr/pi/Electron look
+  // unified Familiar theme, so browser panes match the remote terminal/Electron look
   // and change on cold restart with no asset rebuild. Falls back to the
   // built-in Catppuccin Mocha (then restty default) if the endpoint is down.
   let theme;
@@ -269,7 +269,7 @@ async function boot() {
   try { window.__familiarBackend = restty.getBackend(); } catch (_) { window.__familiarBackend = "unknown"; }
 
   if (new URLSearchParams(location.search).get("probe") === "1") {
-    // Give the attach a moment to settle (herdr draws its UI), then probe.
+    // Give the attach a moment to settle (the terminal attaches), then probe.
     setTimeout(() => runProbe(30), 1500);
   }
 }

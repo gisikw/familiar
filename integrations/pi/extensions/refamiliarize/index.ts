@@ -16,7 +16,7 @@ const requestReload = (ctx: ExtensionContext): string | undefined => {
 
 export default function refamiliarizeExtension(pi: ExtensionAPI) {
   pi.registerCommand("refamiliarize", {
-    description: "Restart the complete Familiar Herdr environment and resume this session",
+    description: "Restart the complete Familiar environment and resume this session",
     handler: async (_args, ctx) => {
       const error = requestReload(ctx);
       if (error) ctx.ui.notify(error, "error");
@@ -27,7 +27,7 @@ export default function refamiliarizeExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "refamiliarize",
     label: "Refamiliarize",
-    description: "Gracefully stop Pi, restart the complete Familiar Herdr environment, resume this session, and continue with a Reload complete user message.",
+    description: "Gracefully stop Pi, restart the complete Familiar environment, resume this session, and continue with a Reload complete user message.",
     parameters: Type.Object({}),
     async execute(_id, _params, _signal, _update, ctx) {
       const error = requestReload(ctx);

@@ -29,10 +29,6 @@ skip_version_check = 1
 # tz = "America/Chicago"
 # debug_level = "debug"
 
-[herdr]
-# session = "familiar"
-# config_path = "./state/herdr/config.toml"
-
 [server]
 # config = "./services/server/familiar-server.toml.example"
 # listen = "127.0.0.1:9940"
@@ -107,8 +103,7 @@ cursor_text  = "#222222"  # adapted for readable glyph contrast
 
 # --- Terminal ANSI 16-color palette ---------------------------------------
 # Drives restty browser panes (colors.palette[0..15]) and is exported as
-# FAMILIAR_ANSI_0..15 for newly opened herdr panes (env handoff; herdr has no
-# native per-pane ANSI-16 key).
+# FAMILIAR_ANSI_0..15 for terminal palette handoff.
 [theme.ansi]
 black   = "#222222"
 red     = "#fc618d"

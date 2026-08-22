@@ -6,7 +6,7 @@ human must verify Chromium/Electron's device and OS-permission boundary.
 
 ## Prerequisites
 
-Run Familiar with a live Herdr/pi subscriber and working `FAMILIAR_STT_URL`.
+Run Familiar with a live pi subscriber and working `FAMILIAR_STT_URL`.
 Use HTTPS or `http://localhost` in a browser. Have a microphone available.
 
 ## Browser

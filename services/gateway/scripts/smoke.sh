@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Headless smoke test for the familiar server. Uses a plain shell for the PTY
-# attach (FAMILIAR_ATTACH_CMD) so it runs without herdr. Requires: node 22,
+# attach (FAMILIAR_ATTACH_CMD) so it runs without the production supervisor. Requires: node 22,
 # curl. Run from services/gateway/ inside a shell that has node on PATH.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -15,14 +15,14 @@ export FAMILIAR_SERVER_HOST=127.0.0.1
 # $(command -v bash) sidesteps PATH resolution entirely, and dropping -i avoids
 # interactive job-control quirks (SIGTTOU / "no job control" noise) in envs
 # with no controlling tty. Byte-in→byte-out is proven either way. The real
-# production attach (FAMILIAR_ATTACH_CMD -> herdr) must likewise be reachable
+# production attach (FAMILIAR_ATTACH_CMD -> Presence) must likewise be reachable
 # on the services-pane PATH; see README.
 export FAMILIAR_ATTACH_CMD="$(command -v bash) --norc"
 export FAMILIAR_DEBUG_LEVEL=error
 
 # /upload config, set BEFORE the server starts (the server reads its OWN env).
 # Drops land in a throwaway dir. The notify step is faked with a shell override
-# so the smoke NEVER prompts a real herdr agent: it exits 0 normally (proving
+# so the smoke NEVER prompts a real resident agent: it exits 0 normally (proving
 # the notify wiring), but non-zero for any drop whose path contains FAILME
 # (proving graceful failure -> notified:false, file still saved).
 export FAMILIAR_DROPS_DIR="$(mktemp -d)"
@@ -99,7 +99,7 @@ kill $CURL_RELAY 2>/dev/null
 # 5. WS PTY bridge echo. Use node's ws client to attach and drive a shell.
 node "$(dirname "$0")/ws-smoke.mjs" "ws://127.0.0.1:$PORT/pty" && ok "WS PTY echo" || bad "WS PTY echo"
 
-# 6. POST /upload round-trips. The herdr notify step is faked via
+# 6. POST /upload round-trips. The notification step is faked via
 # FAMILIAR_UPLOAD_NOTIFY_CMD (exported above) so no real agent is ever prompted;
 # both success (notified:true) and graceful failure (notified:false) are
 # asserted. Drops go to $FAMILIAR_DROPS_DIR.
@@ -156,10 +156,6 @@ CORS=$(curl -sS -D - -o /dev/null -X OPTIONS "$UP" -H 'Origin: file://' \
   -H 'Access-Control-Request-Method: POST' 2>/dev/null)
 echo "$CORS" | grep -qi 'access-control-allow-origin: \*' && ok "upload CORS preflight" || bad "upload CORS preflight"
 
-# 6g. herdr agent list is read-only and safe to exercise if herdr is present.
-if command -v herdr >/dev/null 2>&1; then
-  herdr agent list >/dev/null 2>&1 && ok "herdr agent list (read-only) reachable" || echo "NOTE: herdr agent list not reachable in sandbox"
-fi
 rm -rf "$DROPS"
 
 echo "----"

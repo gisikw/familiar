@@ -6,9 +6,7 @@
 # familiar.toml loader is a SEPARATE agent — we only consume the env contract).
 # Emits consumer-specific artifacts so no color literal is duplicated:
 #
-#   theme_herdr_fragment   -> a [theme]/[theme.custom] TOML block for config.toml
 #   theme_pi_json          -> a pi theme JSON (themes/familiar.json)
-#   theme_sidebar_accent   -> the sidebar mark accent hex (for herdr-sidebar.sh)
 #   theme_ansi_env         -> FAMILIAR_ANSI_0..15 exports (pane palette handoff)
 #
 # Env contract (matches services/gateway/src/theme/resolve.ts exactly):
@@ -76,40 +74,6 @@ _theme_resolve_all() {
     printf 'A_%s=%q\n' "$k" "$got"
   done
 }
-
-# --- consumer: herdr [theme] TOML fragment ---------------------------------
-# Maps Familiar semantic roles onto herdr's theme.custom token set (the exact
-# keys herdr 0.8.x accepts; see `strings herdr | grep theme.custom`). Only the
-# intersection is emitted — herdr has no ANSI-16 knob, so pane palette is
-# handled via TERM/env, not here.
-theme_herdr_fragment() {
-  local _resolved; _resolved="$(_theme_resolve_all)" || exit 3; eval "$_resolved"
-  cat <<EOF
-[theme]
-# Familiar unified theme (generated — edit [theme] in familiar.toml, not here).
-name = "catppuccin"
-
-[theme.custom]
-accent = "$R_accent"
-panel_bg = "$R_background"
-sidebar_bg = "$R_surface"
-active_row_bg = "$R_selectionBg"
-selection_bg = "$R_selectionBg"
-surface0 = "$R_overlay"
-surface1 = "$R_borderMuted"
-surface_dim = "$R_surfaceDim"
-text = "$R_text"
-subtext0 = "$R_muted"
-green = "$A_green"
-yellow = "$A_yellow"
-red = "$A_red"
-blue = "$A_blue"
-teal = "$R_accent"
-peach = "$A_yellow"
-mauve = "$A_magenta"
-EOF
-}
-
 # --- consumer: pi theme JSON -----------------------------------------------
 # Builds a full pi theme (all 51 required tokens) from Familiar roles + ANSI.
 # Written to $PI_CODING_AGENT_DIR/themes/familiar.json; settings.json selects
@@ -165,10 +129,8 @@ theme_sidebar_accent() {
 }
 
 # --- consumer: ANSI env for new panes --------------------------------------
-# herdr/restty have no per-pane ANSI-16 config key, so newly opened panes inherit
-# the palette via env the shell/TUI can honor. We export FAMILIAR_ANSI_0..15 so a
-# pane's rc can emit OSC 4 sequences if desired. This is the honest limit: it is
-# env handoff, not a herdr-native palette setting (none exists in 0.8.x).
+# Terminal consumers may inherit the palette through the environment. We export FAMILIAR_ANSI_0..15 so a
+# A shell or TUI can use these values to emit OSC 4 sequences if desired.
 theme_ansi_env() {
   local _resolved; _resolved="$(_theme_resolve_all)" || exit 3; eval "$_resolved"
   local order=(black red green yellow blue magenta cyan white \
@@ -185,10 +147,9 @@ theme_ansi_env() {
 # Standalone dispatch so tests / familiar.sh can call one action.
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
   case "${1:-}" in
-    herdr)   theme_herdr_fragment ;;
     pi)      theme_pi_json ;;
     accent)  theme_sidebar_accent ;;
     ansi)    theme_ansi_env ;;
-    *) echo "usage: familiar-theme.sh {herdr|pi|accent|ansi}" >&2; exit 2 ;;
+    *) echo "usage: familiar-theme.sh {pi|accent|ansi}" >&2; exit 2 ;;
   esac
 fi
