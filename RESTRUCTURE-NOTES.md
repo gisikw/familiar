@@ -13,7 +13,7 @@ The initially empty boundaries were subsequently implemented: `services/server/`
 ## References updated
 
 - `familiar.sh`: pi settings extension root, gateway working directory/dev shell/pane role, desktop working directory, and worklist protocol documentation path.
-- Root `flake.nix`: Herdr patch path, gateway dev shell/name, and desktop/gateway comments.
+- Root `flake.nix`: gateway dev shell/name and desktop/gateway comments.
 - `services/presence/test.sh`: gateway source location and gateway-relative Presence fallback assertion. `services/presence/presence.sh` itself remains repository-root-relative and still executes `familiar.sh pi`.
 - `services/gateway/`: package identity, README/run path, desktop asset-vendoring path, protocol shim consumers, theme source comments, smoke/test commands, `.gitignore`, and the default Presence controller URL.
 - `apps/desktop/`: root computation in the icon script, icon output and shared asset paths, gateway web icon destination, README layout, and launcher path.

@@ -2,7 +2,7 @@
 // App-mouse forwarding. restty DOES encode mouse down/up/move via its internal
 // MouseController, but only when its DECSET tracking state (1000/1002/1003/1006)
 // is active — and in our IPC transport path plain clicks weren't reaching the
-// remote app (herdr/pi), while local selection worked. Rather than fight
+// remote app (remote terminal), while local selection worked. Rather than fight
 // restty's selection-vs-mouse arbitration, we own app-mouse explicitly:
 //
 //   1. Parse the pty OUTPUT stream for DECSET/DECRST 1000/1002/1003/1006/1015/

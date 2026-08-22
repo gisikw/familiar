@@ -177,37 +177,13 @@ function run(cmd: string, args: string[], env: NodeJS.ProcessEnv): Promise<{ cod
   });
 }
 
-/* Resolve which agent/pane to notify. Explicit config wins; otherwise fall
- * back to the sole agent if exactly one exists. Returns null when ambiguous. */
-async function resolveTarget(env: NodeJS.ProcessEnv): Promise<{ target: string } | { error: string }> {
-  const configured = process.env.FAMILIAR_UPLOAD_NOTIFY_TARGET;
-  if (configured) return { target: configured };
-  const r = await run("herdr", ["agent", "list"], env);
-  if (r.code !== 0) return { error: `herdr agent list failed: ${r.err || r.out || r.code}` };
-  let agents: Array<{ pane_id?: string; name?: string; agent?: string }> = [];
-  try {
-    agents = JSON.parse(r.out)?.result?.agents ?? [];
-  } catch (e) {
-    return { error: `herdr agent list unparseable: ${String(e)}` };
-  }
-  if (agents.length === 1) {
-    const a = agents[0];
-    const target = a.pane_id || a.name || a.agent;
-    if (target) return { target };
-  }
-  if (agents.length === 0) return { error: "no herdr agents to notify" };
-  return { error: `ambiguous notify target (${agents.length} agents); set FAMILIAR_UPLOAD_NOTIFY_TARGET` };
-}
-
-/* Deliver the drop message to the agent. Uses `herdr agent prompt`, the
- * documented mechanism for submitting text to an agent so pi actually receives
- * (and can act on) it. The whole herdr env is kept (unlike the PTY attach) so
- * the CLI targets the current session. A test override — FAMILIAR_UPLOAD_NOTIFY_CMD
+/* Deliver the drop message through the resident pi relay. A test override —
+ * FAMILIAR_UPLOAD_NOTIFY_CMD
  * — replaces the CLI with an arbitrary shell command (drop path/message exposed
  * as env vars) so smoke tests never poke a live agent. */
 export async function notifyDroppedFile(filePath: string, relayNotify?: (message: string) => boolean): Promise<{ notified: boolean; error?: string }> {
   const message = `[file dropped: ${filePath}]`;
-  const env = { ...process.env }; // KEEP HERDR_* — this call must target the session.
+  const env = { ...process.env };
 
   const override = process.env.FAMILIAR_UPLOAD_NOTIFY_CMD;
   if (override) {
@@ -225,14 +201,7 @@ export async function notifyDroppedFile(filePath: string, relayNotify?: (message
     return { notified: false, error: "presence relay has no connected pi subscriber" };
   }
 
-  // Bounded legacy fallback for standalone embedding without a relay callback.
-  const resolved = await resolveTarget(env);
-  if ("error" in resolved) return { notified: false, error: resolved.error };
-
-  const r = await run("herdr", ["agent", "prompt", resolved.target, message], env);
-  // herdr's CLI can exit 0 while reporting a JSON {error:...}; treat that as failure.
-  if (r.code === 0 && !/"error"\s*:/.test(r.out)) return { notified: true };
-  return { notified: false, error: (r.err || r.out || `exit ${r.code}`).trim() };
+  return { notified: false, error: "presence relay is unavailable" };
 }
 
 /* --- entry point ---------------------------------------------------------- */

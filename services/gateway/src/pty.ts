@@ -7,8 +7,8 @@ import { debugLog, errorLog } from "./debug.ts";
 /* --- Browser terminal PTY bridge ------------------------------------------
  *
  * Bridges restty's built-in WebSocket PTY transport to a node-pty child that
- * ATTACHES directly to the Presence Runtime's private tmux target. Herdr is
- * not in this lifecycle path. FAMILIAR_ATTACH_CMD remains a test override;
+ * ATTACHES directly to the Presence Runtime's private tmux target.
+ * FAMILIAR_ATTACH_CMD remains a test override;
  * otherwise FAMILIAR_PRESENCE_CTL (or the repository adapter) is invoked with
  * `attach`.
  *
@@ -52,17 +52,13 @@ export function attachCommand(): { file: string; args: string[] } {
 
 function startPty(cols: number, rows: number): IPty {
   const { file, args } = attachCommand();
-  // Preserve Familiar/Herdr context. The child is the Presence adapter (not a
-  // nested Herdr client), and a cold-started pi may need the current workspace
-  // identity for bounded compatibility with Herdr-backed extensions.
+  // Preserve Familiar context for the Presence adapter and resident pi.
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (v === undefined) continue;
-    // Also drop outer-context markers that herdr's client uses to DECIDE the
-    // outer terminal is a multiplexer/remote where it should NOT assume kitty
-    // graphics capability (herdr src/client/mod.rs reads SSH_CONNECTION /
-    // SSH_TTY / STY alongside the positive TERM_PROGRAM / KITTY_WINDOW_ID
-    // signals). The server itself is reached over SSH, so these are present in
+    // Drop outer SSH context so it cannot override the positive
+    // TERM_PROGRAM/KITTY_WINDOW_ID graphics capability signals. The server
+    // itself may be reached over SSH, so these are present in
     // our own env and would otherwise leak into the attach child and defeat the
     // KITTY_WINDOW_ID/TERM_PROGRAM signals we set below. The browser is a
     // direct, local-feeling window onto the pty, so present it that way.

@@ -27,7 +27,7 @@
  *   GET  /segments/:mid/:idx/audio  Synthesized wav for a segment.
  *                                   202 = synthesizing (retry), 404 = unknown/evicted, 503 = failed.
  *   GET  /terminal, /               Browser terminal (restty WASM).
- *   GET  /pty  (WebSocket)          restty PTY protocol bridged to a herdr attach.
+ *   GET  /pty  (WebSocket)          restty PTY protocol bridged to a Presence attach.
  *
  * Stream events (one JSON object per SSE `data:` line on /stream):
  *

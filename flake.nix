@@ -2,10 +2,6 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    herdr = {
-      url = "github:herdrdev/herdr";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
     server = { url = "path:./services/server"; inputs.nixpkgs.follows = "nixpkgs"; inputs.flake-utils.follows = "flake-utils"; };
     llm = { url = "path:./services/llm"; inputs.nixpkgs.follows = "nixpkgs"; inputs.flake-utils.follows = "flake-utils"; };
     stt = { url = "path:./services/stt"; inputs.nixpkgs.follows = "nixpkgs"; inputs.flake-utils.follows = "flake-utils"; };
@@ -15,7 +11,7 @@
     agents = { url = "path:./agents"; inputs.nixpkgs.follows = "nixpkgs"; inputs.flake-utils.follows = "flake-utils"; };
   };
 
-  outputs = { self, nixpkgs, flake-utils, herdr, server, llm, stt, tts, gateway-module, desktop, agents }:
+  outputs = { self, nixpkgs, flake-utils, server, llm, stt, tts, gateway-module, desktop, agents }:
     flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ] (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
@@ -69,23 +65,11 @@
         # state, so a pure build can't decrypt them — and shouldn't, or the
         # voice lands in the world-readable nix store.
         bakePython = pkgs.python3.withPackages (ps: with ps; [ gguf torch ]);
-        familiarSplash = pkgs.buildGoModule {
-          pname = "familiar-splash";
-          version = "0.1.0";
-          src = ./scripts/splash;
-          vendorHash = null;
-        };
-        familiarHerdr = herdr.packages.${system}.default.overrideAttrs (old: {
-          patches = (old.patches or [ ]) ++ [ ./integrations/pi/patches/herdr-left-nav-pty.patch ];
-        });
         piShell = pkgs.mkShell (modelEnv // {
           FAMILIAR_SHELL = "pi";
           FAMILIAR_INTERACTIVE_SHELL = "${pkgs.bashInteractive}/bin/bash";
-          # Subagents run as Herdr agents in their own panes/worktrees.
-          # The extension refuses to dispatch unless this is "herdr".
-          FAMILIAR_SUBAGENT_MODE = "herdr";
           PI_PACKAGE_DIR = "${pkgs.pi-coding-agent}/lib/node_modules/pi-monorepo";
-          packages = with pkgs; [ age curl jq sqlite pi-coding-agent familiarHerdr familiarSplash librsvg ffmpeg tmux util-linux ]
+          packages = with pkgs; [ age curl jq sqlite pi-coding-agent librsvg ffmpeg tmux util-linux ]
             ++ [ agents.packages.${system}.cli ];
         });
       in

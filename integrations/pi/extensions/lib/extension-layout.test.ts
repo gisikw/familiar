@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -43,12 +43,12 @@ describe("pi 0.84.1 extension discovery contract", () => {
       .toContain("root TypeScript auto-loaded");
   });
 
-  test("Familiar exposes only named directory entrypoints and valid child -e paths", () => {
+  test("Familiar exposes only named directory entrypoints", () => {
     const repo = resolve(import.meta.dir, "..", "..", "..", "..");
     const extensionRoot = join(repo, "integrations", "pi", "extensions");
     const expected = [
       "agents", "anthropic-gateway", "handoff", "identity", "ratelimit", "refamiliarize",
-      "subagent", "subscriber", "telemetry", "timegap", "web", "worklist", "zip",
+      "subscriber", "telemetry", "timegap", "web", "worklist", "zip",
     ];
     const rootScripts = readdirSync(extensionRoot)
       .filter((name: string) => name.endsWith(".ts") || name.endsWith(".js"));
@@ -60,15 +60,5 @@ describe("pi 0.84.1 extension discovery contract", () => {
       })
       .sort();
     expect(entrypoints).toEqual(expected.sort());
-
-    // The child (pi) subagent's explicit `-e` set lives in its own
-    // dependency-free module. It must route Anthropic only through the external
-    // gateway while preserving the route-neutral web tools.
-    const childArgs = readFileSync(join(extensionRoot, "subagent", "native-agent-args.ts"), "utf8");
-    for (const name of ["anthropic-gateway", "web"]) {
-      expect(childArgs).toContain(`ext("${name}")`);
-      expect(statSync(join(extensionRoot, name, "index.ts")).isFile()).toBe(true);
-    }
-    expect(childArgs).not.toContain("claude-driver");
   });
 });

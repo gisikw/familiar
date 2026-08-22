@@ -4,8 +4,6 @@ set -euo pipefail
 SELF="$(realpath "$0" 2>/dev/null || { cd "$(dirname "$0")" && printf '%s/%s' "$(pwd -P)" "$(basename "$0")"; })"
 REPO="$(dirname "$SELF")"
 STATE_DIR="$REPO/state"
-HERDR_STATE_DIR="$STATE_DIR/herdr"
-HERDR_COLD_START=0
 
 # Local configuration must load before defaults and before dev-shell recursion:
 # file values beat defaults, while the ambient variables captured by the loader
@@ -27,9 +25,6 @@ if ! familiar_config_load "$REPO"; then
   esac
 fi
 
-export HERDR_SESSION="${HERDR_SESSION:-familiar}"
-export HERDR_CONFIG_PATH="${HERDR_CONFIG_PATH:-$HERDR_STATE_DIR/config.toml}"
-
 # Defaults (lowest precedence)
 export FAMILIAR_IDENTITY_PATH="${FAMILIAR_IDENTITY_PATH:-$REPO/identity}"
 export FAMILIAR_AGE_KEY="${FAMILIAR_AGE_KEY:-$STATE_DIR/age.key}"
@@ -38,8 +33,8 @@ export FAMILIAR_HANDOFF_PATH="${FAMILIAR_HANDOFF_PATH:-$STATE_DIR/handoffs}"
 # is a bounded compatibility alias (one release) so a mid-flight external writer
 # does not silently drop items.
 export FAMILIAR_WORKLIST_DIR="${FAMILIAR_WORKLIST_DIR:-${FAMILIAR_INBOX_DIR:-$STATE_DIR/worklist}}"
-export FAMILIAR_RELOAD_REQUEST_PATH="${FAMILIAR_RELOAD_REQUEST_PATH:-$HERDR_STATE_DIR/reload-request}"
-export FAMILIAR_RELOAD_COMPLETE_PATH="${FAMILIAR_RELOAD_COMPLETE_PATH:-$HERDR_STATE_DIR/reload-complete}"
+export FAMILIAR_RELOAD_REQUEST_PATH="${FAMILIAR_RELOAD_REQUEST_PATH:-$STATE_DIR/run/reload-request}"
+export FAMILIAR_RELOAD_COMPLETE_PATH="${FAMILIAR_RELOAD_COMPLETE_PATH:-$STATE_DIR/run/reload-complete}"
 export FAMILIAR_LOG_PATH="${FAMILIAR_LOG_PATH:-$STATE_DIR/log.jsonl}"
 export FAMILIAR_SUBSCRIBER_PORT="${FAMILIAR_SUBSCRIBER_PORT:-1692}"
 export FAMILIAR_PRESENCE_STATE_DIR="${FAMILIAR_PRESENCE_STATE_DIR:-$STATE_DIR/presence}"
@@ -208,7 +203,7 @@ run_pi() {
         # is staged but deliberately not enabled until its rollout is approved.
         extensions: ([
           "anthropic-gateway", "handoff", "identity",
-          "ratelimit", "refamiliarize", "subagent", "subscriber", "telemetry",
+          "ratelimit", "refamiliarize", "subscriber", "telemetry",
           "timegap", "web", "worklist", "zip"
         ] | map($ext + "/" + .))
       }
@@ -262,10 +257,9 @@ run_pi() {
       --no-context-files \
       --no-skills \
       --skill "$REPO/skills/" || true
-    if [ -f "$FAMILIAR_RELOAD_REQUEST_PATH" ]; then
-      herdr server stop >/dev/null 2>&1 || true
-      return
-    fi
+    # Presence owns requested reloads: return to its worker loop, which
+    # promotes the marker and starts this command again with --continue.
+    if [ -f "$FAMILIAR_RELOAD_REQUEST_PATH" ]; then return; fi
     sleep 1
   done
 }
@@ -299,229 +293,6 @@ handle_age() {
     "${EDITOR:-vi}" "$tmp"
     cmp -s "$tmp" "$orig" || age -r "$pubkey" -o "$target" "$tmp"
   fi
-}
-
-write_herdr_config() {
-  mkdir -p "$HERDR_STATE_DIR" "$(dirname "$HERDR_CONFIG_PATH")"
-  # Unified theme: generate the [theme]/[theme.custom] block from the canonical
-  # palette + FAMILIAR_THEME_* env (scripts/familiar-theme.sh). A bad color
-  # aborts (set -e) before a broken config is written.
-  local theme_block
-  theme_block="$(bash "$REPO/scripts/familiar-theme.sh" herdr)"
-  cat > "$HERDR_CONFIG_PATH" <<EOF
-onboarding = false
-
-$theme_block
-
-[terminal]
-default_shell = "$FAMILIAR_INTERACTIVE_SHELL"
-new_cwd = "follow"
-
-[update]
-version_check = false
-manifest_check = false
-
-[[keys.command]]
-key = "prefix+shift+q"
-type = "shell"
-command = "\$HERDR_BIN_PATH server stop"
-description = "stop the Familiar Herdr server"
-
-[ui]
-sidebar_width = 30
-sidebar_min_width = 24
-sidebar_max_width = 36
-prompt_new_workspace_name = false
-# The Familiar workspace holds only the pi tab (services live in their own
-# workspace), so this hides the tab row when the user is working in pi.
-hide_tab_bar_when_single_tab = true
-# Reclaim the scrollbar column — the thin line on the right edge of an
-# otherwise unsplit pane.
-pane_scrollbars = false
-# No outside frame around the pane area either; splits keep their internal
-# dividers via pane_borders (default true).
-pane_outer_borders = false
-
-[ui.sidebar.pty]
-command = "$REPO/scripts/herdr-sidebar.sh"
-rows = 12
-cwd = "$REPO"
-
-# The sidebar mark is transmitted via kitty graphics (scripts/herdr-sidebar.sh).
-# Herdr's kitty-graphics rendering for attached clients is experimental and OFF
-# by default — without this the APC transmit is swallowed and the sidebar shows
-# only the wordmark text.
-[experimental]
-kitty_graphics = true
-EOF
-}
-
-herdr_server_running() {
-  herdr status server --json 2>/dev/null | jq -e '.running == true' >/dev/null
-}
-
-wait_for_herdr() {
-  local tries=0
-  until herdr_server_running; do
-    tries=$((tries + 1))
-    if [ "$tries" -ge 100 ]; then
-      echo "Herdr server did not become ready; see $HERDR_STATE_DIR/server.stdout.log" >&2
-      return 1
-    fi
-    sleep 0.1
-  done
-}
-
-start_herdr_server() {
-  if herdr_server_running; then return; fi
-  HERDR_COLD_START=1
-  nohup herdr server </dev/null >"$HERDR_STATE_DIR/server.stdout.log" 2>&1 &
-  wait_for_herdr
-}
-
-run_in_herdr_pane() {
-  local pane=$1 role=$2 command
-  if [ "$role" = pi ]; then
-    # Herdr owns only this disposable viewer. The full interactive pi process
-    # lives in the private Presence Runtime tmux server.
-    printf -v command 'printf "\\033[2J\\033[H"; exec %q attach' "$FAMILIAR_PRESENCE_CTL"
-  elif [ "$role" = gateway ]; then
-    # The Familiar gateway (web presence) is a plain Node service under
-    # ./services/gateway, launched DIRECTLY here — there is deliberately no
-    # `familiar.sh gateway` subcommand. Install deps on first run (node-pty
-    # native build + vendored web assets via postinstall), then supervise with
-    # a restart loop, matching llama/stt/tts. Its toolchain is the .#gateway
-    # devshell (nodejs_22 + a C/py toolchain for node-pty).
-    printf -v command \
-      'cd %q && { [ -d node_modules ] || nix develop %q#gateway -c npm install; }; while true; do nix develop %q#gateway -c npm start || true; sleep 1; done' \
-      "$REPO/services/gateway" "$REPO" "$REPO"
-  else
-    printf -v command '%q %q' "$SELF" "$role"
-  fi
-  herdr pane rename "$pane" "$role" >/dev/null
-  herdr pane run "$pane" "$command" >/dev/null
-}
-
-split_herdr_pane() {
-  local pane=$1 direction=$2
-  herdr pane split "$pane" --direction "$direction" --cwd "$REPO" --no-focus \
-    | jq -er '.result.pane.pane_id'
-}
-
-wait_for_pi_pane() {
-  # Pi is now behind tmux, so Herdr process-tree agent detection cannot see it.
-  # Readiness is the Presence adapter's live-pane contract instead.
-  local _pane=$1 tries=0
-  until "$FAMILIAR_PRESENCE_CTL" status --quiet >/dev/null 2>&1; do
-    tries=$((tries + 1))
-    if [ "$tries" -ge 100 ]; then
-      echo "Presence Runtime did not become ready at $FAMILIAR_PRESENCE_SOCKET" >&2
-      return 1
-    fi
-    sleep 0.1
-  done
-}
-
-launch_pi_with_splash() {
-  local workspace=$1 pi_tab=$2 pi_pane=$3 response splash_tab splash_pane
-  local ready_file handoff_file command
-
-  response=$(herdr tab create --workspace "$workspace" --cwd "$REPO" --label loading --no-focus)
-  splash_tab=$(jq -er '.result.tab.tab_id' <<<"$response")
-  splash_pane=$(jq -er '.result.root_pane.pane_id' <<<"$response")
-  ready_file="$HERDR_STATE_DIR/splash-ready-${splash_pane//:/-}"
-  handoff_file="$HERDR_STATE_DIR/splash-handoff-${splash_pane//:/-}"
-  rm -f "$ready_file" "$handoff_file"
-
-  printf -v command '%q %q %q %q' \
-    familiar-splash "$ready_file" "$handoff_file" "$pi_pane"
-  herdr pane run "$splash_pane" "$command" >/dev/null
-  run_in_herdr_pane "$pi_pane" pi
-  herdr tab focus "$splash_tab" >/dev/null
-
-  # Finish the cut beside the attaching Herdr client. Both tabs have full-size
-  # PTYs, so focusing Pi before closing the splash causes no resize redraw.
-  (
-    wait_for_pi_pane "$pi_pane"
-    : > "$ready_file"
-    until [ -e "$handoff_file" ]; do sleep 0.05; done
-    herdr tab focus "$pi_tab" >/dev/null
-    herdr tab close "$splash_tab" >/dev/null
-    rm -f "$ready_file" "$handoff_file"
-  ) >/dev/null 2>&1 &
-}
-
-populate_familiar_workspace() {
-  local workspace=$1 pi_tab=$2 pi_root=$3
-  local service_response service_root pane direction role
-  local -a services=()
-
-  # The Interface Gateway always runs — it is not gated behind a NEED_ flag
-  # like the optional local models. It is the first service so it takes the
-  # services-tab root pane; llama/stt/tts split off it when enabled.
-  services+=(gateway)
-  [ -n "${NEED_LLAMA:-}" ] && services+=(llama)
-  [ -n "${NEED_STT:-}" ] && services+=(stt)
-  [ -n "${NEED_TTS:-}" ] && services+=(tts)
-  # Services live in their OWN workspace (not a second tab in the Familiar
-  # workspace): with ui.hide_tab_bar_when_single_tab, this leaves the Familiar
-  # workspace single-tab so the tab row disappears while looking at pi.
-  # Reuse/replace the previous services workspace across cold starts so they
-  # do not accumulate in the sidebar.
-  local services_id_file="$HERDR_STATE_DIR/services-workspace-id" old_services
-  if [ "${#services[@]}" -gt 0 ]; then
-    if [ -s "$services_id_file" ]; then
-      old_services=$(<"$services_id_file")
-      herdr workspace close "$old_services" >/dev/null 2>&1 || true
-    fi
-    service_response=$(herdr workspace create --cwd "$REPO" --label services --no-focus)
-    jq -er '.result.workspace.workspace_id' <<<"$service_response" > "$services_id_file"
-    service_root=$(jq -er '.result.root_pane.pane_id' <<<"$service_response")
-    run_in_herdr_pane "$service_root" "${services[0]}"
-    for role in "${services[@]:1}"; do
-      direction=right
-      [ "$role" = tts ] && direction=down
-      pane=$(split_herdr_pane "$service_root" "$direction")
-      run_in_herdr_pane "$pane" "$role"
-    done
-  fi
-
-  launch_pi_with_splash "$workspace" "$pi_tab" "$pi_root"
-}
-
-ensure_familiar_workspace() {
-  local id_file="$HERDR_STATE_DIR/workspace-id" workspace pi_root pi_tab response old_tab
-  local -a old_tabs=()
-  if [ -s "$id_file" ]; then
-    workspace=$(<"$id_file")
-    if herdr workspace get "$workspace" >/dev/null 2>&1; then
-      if [ "$HERDR_COLD_START" != 1 ]; then return; fi
-
-      # Snapshot restore deliberately revives layout, not arbitrary processes.
-      # Keep the workspace itself (and therefore its sidebar ordering), but
-      # replace its shell-only tabs with our declarative live layout. Create
-      # replacements first so closing the old last tab cannot close the space.
-      mapfile -t old_tabs < <(
-        herdr tab list --workspace "$workspace" | jq -er '.result.tabs[].tab_id'
-      )
-      response=$(herdr tab create --workspace "$workspace" --cwd "$REPO" --label pi --no-focus)
-      pi_root=$(jq -er '.result.root_pane.pane_id' <<<"$response")
-      pi_tab=$(jq -er '.result.tab.tab_id' <<<"$response")
-      populate_familiar_workspace "$workspace" "$pi_tab" "$pi_root"
-      for old_tab in "${old_tabs[@]}"; do
-        herdr tab close "$old_tab" >/dev/null
-      done
-      return
-    fi
-  fi
-
-  response=$(herdr workspace create --cwd "$REPO" --label Familiar --focus)
-  workspace=$(jq -er '.result.workspace.workspace_id' <<<"$response")
-  pi_root=$(jq -er '.result.root_pane.pane_id' <<<"$response")
-  pi_tab=$(jq -er '.result.tab.tab_id' <<<"$response")
-  printf '%s\n' "$workspace" > "$id_file"
-  herdr tab rename "$pi_tab" pi >/dev/null
-  populate_familiar_workspace "$workspace" "$pi_tab" "$pi_root"
 }
 
 # --- image drop transport ----------------------------------------------------
@@ -993,48 +764,16 @@ agents() {
   exec nix run "$REPO#familiar-agents" -- "$@"
 }
 
-start() {
-  local client_status
-  ensure_devshell pi "$@"
-  if [ "${HERDR_ENV:-}" = 1 ]; then
-    echo "Familiar is already running inside Herdr session $HERDR_SESSION" >&2
-    return 1
-  fi
-  setup_llama; setup_stt; setup_tts
-  write_herdr_config
-
-  while true; do
-    start_herdr_server
-    ensure_familiar_workspace
-    if herdr --session "$HERDR_SESSION"; then
-      client_status=0
-    else
-      client_status=$?
-    fi
-    if [ ! -f "$FAMILIAR_RELOAD_REQUEST_PATH" ]; then
-      return "$client_status"
-    fi
-    mv -f "$FAMILIAR_RELOAD_REQUEST_PATH" "$FAMILIAR_RELOAD_COMPLETE_PATH"
-    # Re-enter through the updated script and flake, not this process's stale
-    # function definitions or dev shell. The replacement server will restore
-    # the workspace, resume Pi, and consume reload-complete.
-    exec env -u FAMILIAR_SHELL -u FAMILIAR_INTERACTIVE_SHELL "$SELF"
-  done
-}
-
 stop() {
   ensure_devshell pi "$@"
-  # Explicit full shutdown owns both layers. Incidental Herdr loss deliberately
-  # never calls Presence stop, preserving pi and its PTY.
-  herdr session stop "$HERDR_SESSION" --json 2>/dev/null || herdr server stop 2>/dev/null || true
   "$FAMILIAR_PRESENCE_CTL" stop || true
 }
 
 # Out-of-process enqueue (protocol path b): write an atomic envelope into the
 # worklist drop-box. The worklist extension drains state/worklist/incoming/ on
-# its timer and promotes each envelope into a queue item. Mirrors the herdr
-# marker-file pattern: no daemon, no socket, just a file the resident process
-# picks up. Envelope schema is documented in integrations/pi/extensions/worklist/PROTOCOL.md.
+# its timer and promotes each envelope into a queue item. This is a marker-file
+# pattern: no daemon or socket, just a file the resident process picks up.
+# Envelope schema is documented in integrations/pi/extensions/worklist/PROTOCOL.md.
 #   familiar.sh worklist-add --summary "..." [--priority N] [--type notify|question|review]
 #                            [--body TEXT | --body-file F] [--source S] [--deadline EPOCH_MS]
 inbox_enqueue() {
@@ -1109,5 +848,6 @@ case ${1:-} in
   connect)    connect "$@" ;;
   drop-serve) drop_serve "$@" ;;
   drop-fetch) drop_fetch "$@" ;;
-  *)          start "$@" ;;
+  "")         server "$@" ;;
+  *)          echo "usage: $0 {server|agents|client|pi|llama|stt|tts|kill|age|connect|drop-serve|drop-fetch|worklist-add|config-check}" >&2; exit 2 ;;
 esac

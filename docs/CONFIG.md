@@ -68,8 +68,9 @@ same-session JSON-to-setup-token cutover.
 ## Canonical groups and migration
 
 Use tables whose names match the established environment prefix: `[pi]`,
-`[anthropic]`, `[openai]`, `[model]`, `[llama]`, `[stt]`, `[tts]`, `[herdr]`,
-`[searxng]`, `[brave]`, `[fetch]`, `[subagent]`, `[zip]`, and `[theme]`. Cross-cutting
+`[anthropic]`, `[openai]`, `[server]`, `[agents]`, `[model]`, `[llama]`,
+`[stt]`, `[tts]`, `[searxng]`, `[brave]`, `[fetch]`, `[zip]`, and `[theme]`.
+Cross-cutting
 paths and runtime policy live under `[familiar]`; the loader deliberately does
 not double that prefix. These are the mechanical moves from the retired flat
 spellings to the canonical tables (the effective export name is unchanged):
@@ -81,7 +82,6 @@ spellings to the canonical tables (the effective export name is unchanged):
 | `anthropic_base_url` | `[anthropic] base_url` | `FAMILIAR_ANTHROPIC_BASE_URL` |
 | `stt_url` | `[stt] url` | `FAMILIAR_STT_URL` |
 | `tts_voice` | `[tts] voice` | `FAMILIAR_TTS_VOICE` |
-| `herdr_session` | `[herdr] session` | `FAMILIAR_HERDR_SESSION` |
 | `brave_api_key` | `[brave] api_key` | `FAMILIAR_BRAVE_API_KEY` |
 
 Flat top-level keys are no longer supported: the loader rejects any key that is
@@ -96,8 +96,7 @@ A few upstream programs require established non-Familiar names. Familiar maps
 their `PI_*` counterparts, and maps `FAMILIAR_ANTHROPIC_BASE_URL`,
 `FAMILIAR_ANTHROPIC_API_KEY`, and `FAMILIAR_ANTHROPIC_AUTH_TOKEN` to
 `ANTHROPIC_*`. It maps `[openai]` URL/key to `OPENAI_BASE_URL` and
-`OPENAI_API_KEY`, and covers `LLAMA_BASE_URL`, `HERDR_SESSION`, and
-`HERDR_CONFIG_PATH`. An upstream name that was explicitly ambient is preserved.
+`OPENAI_API_KEY`, and covers `LLAMA_BASE_URL`. An upstream name that was explicitly ambient is preserved.
 Local configuration should always use the
 generic Familiar names shown in `familiar.toml.example`.
 
