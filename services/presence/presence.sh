@@ -213,8 +213,17 @@ attach_viewer() {
 run_sidebar() {
   # Keep supervising the renderer in addition to the pane-died hook: a renderer
   # error should never turn the fixed chrome pane into a dead pane.
+  #
+  # The pane inherits the tmux server's environment, which in production comes
+  # from the supervisor and carries no jq/curl/librsvg. The repo's pi dev shell
+  # already packages all three, so enter it when nix is available; fall back to
+  # a bare run (mark text fallback, no registry) rather than fail the pane.
   while :; do
-    "$BASH_EXE" "$SIDEBAR" || true
+    if command -v nix >/dev/null 2>&1; then
+      nix develop "$REPO#pi" --command "$BASH_EXE" "$SIDEBAR" || "$BASH_EXE" "$SIDEBAR" || true
+    else
+      "$BASH_EXE" "$SIDEBAR" || true
+    fi
     sleep 1
   done
 }
