@@ -174,9 +174,15 @@ func TestDependencyTimeoutPoliciesAffectReadiness(t *testing.T) {
 }
 
 func TestProbeFailureRestartsOrdinaryChild(t *testing.T) {
-	starts := filepath.Join(t.TempDir(), "starts")
-	x := fakeChild("worker", "echo x >> '"+starts+"'; sleep 30")
-	x.Probe = ProbeConfig{Type: "exec", Argv: []string{"/bin/false"}, Interval: Duration(10 * time.Millisecond), Timeout: Duration(50 * time.Millisecond), FailureThreshold: 2}
+	dir := t.TempDir()
+	starts := filepath.Join(dir, "starts")
+	ready := filepath.Join(dir, "ready")
+	// The child becomes ready (marker present), then loses readiness
+	// (marker removed): the liveness failure threshold only arms after
+	// first readiness, so a probe that never succeeded would never
+	// trigger a restart.
+	x := fakeChild("worker", "echo x >> '"+starts+"'; touch '"+ready+"'; sleep 0.1; rm -f '"+ready+"'; sleep 30")
+	x.Probe = ProbeConfig{Type: "exec", Argv: []string{"/bin/sh", "-c", "test -f '" + ready + "'"}, Interval: Duration(10 * time.Millisecond), Timeout: Duration(50 * time.Millisecond), FailureThreshold: 2}
 	x.Restart.MaxRestarts = 2
 	s := startSupervisor(t, testConfig(t, x))
 	waitFor(t, time.Second, func() bool {

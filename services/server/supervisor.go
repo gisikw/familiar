@@ -37,6 +37,7 @@ type child struct {
 	lastExit                               string
 	manualStop, shuttingDown, forceRestart bool
 	readinessLost, dependencyFailed        bool
+	becameReady                            bool
 	probeSuccesses, probeFailures          int
 	history                                []time.Time
 	wake                                   chan struct{}
@@ -222,6 +223,7 @@ func (c *child) run() {
 		c.state = "running"
 		c.probeSuccesses = 0
 		c.probeFailures = 0
+		c.becameReady = false
 		if c.cfg.Probe.Type == "none" {
 			c.ready = !c.dependencyFailed
 		}
@@ -398,11 +400,19 @@ func (c *child) probeLoop() {
 					c.probeSuccesses++
 					c.probeFailures = 0
 					c.ready = depsReady && c.probeSuccesses >= c.cfg.Probe.SuccessThreshold
+					if c.ready {
+						c.becameReady = true
+					}
 				} else {
 					c.probeSuccesses = 0
 					c.probeFailures++
 					c.ready = false
-					if c.cfg.Probe.FailureThreshold > 0 && c.probeFailures >= c.cfg.Probe.FailureThreshold && !c.readinessLost {
+					// The failure threshold is liveness semantics: it only arms
+					// once this process run has been ready at least once. A child
+					// still booting (e.g. loading a multi-GB model) is not
+					// "losing" readiness it never had; startup time is bounded by
+					// the restart/backoff machinery only if the process exits.
+					if c.becameReady && c.cfg.Probe.FailureThreshold > 0 && c.probeFailures >= c.cfg.Probe.FailureThreshold && !c.readinessLost {
 						c.readinessLost = true
 						lost = true
 						proc = c.proc
