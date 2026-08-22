@@ -14,7 +14,7 @@ export interface FamiliarConfig {
   llama?: { base_url?: string };
   stt?: { url?: string; model_file?: string; model_url?: string };
   tts?: { url?: string; voice?: string; model_file?: string; model_url?: string };
-  anthropic?: { base_url?: string; api_key?: string; auth_token?: string; claude_credentials_json?: string; claude_oauth_token?: string };
+  anthropic?: { base_url?: string; api_key?: string; auth_token?: string };
   openai?: { base_url?: string; api_key?: string };
   searxng?: { url?: string };
   brave?: { api_key?: string; url?: string };
@@ -35,7 +35,7 @@ export const DEFAULT_CONFIG: FamiliarConfig = {
 
 const schema: Record<string, Record<string, "string"|"number"|"boolean"|"table">> = {
   pi:{telemetry:"number",offline:"number",skip_version_check:"number",coding_agent_dir:"string"}, familiar:{identity_path:"string",age_key:"string",handoff_path:"string",handoff_prompt_path:"string",worklist_dir:"string",inbox_dir:"string",log_path:"string",model_dir:"string",default_provider:"string",default_model:"string",artifact_dir:"string",subscriber_port:"number",tz:"string",debug_level:"string"},
-  herdr:{session:"string",config_path:"string"}, server:{config:"string",listen:"string"}, agents:{endpoint:"string",host:"string"}, model:{file:"string",url:"string"}, llama:{base_url:"string"}, stt:{url:"string",model_file:"string",model_url:"string"}, tts:{url:"string",voice:"string",model_file:"string",model_url:"string"}, anthropic:{base_url:"string",api_key:"string",auth_token:"string",claude_credentials_json:"string",claude_oauth_token:"string"}, openai:{base_url:"string",api_key:"string"}, searxng:{url:"string"}, brave:{api_key:"string",url:"string"}, fetch:{allow_private:"boolean"}, subagent:{mode:"string",model:"string",timeout:"number",dir:"string",session_dir:"string"}, zip:{model:"string"},
+  herdr:{session:"string",config_path:"string"}, server:{config:"string",listen:"string"}, agents:{endpoint:"string",host:"string"}, model:{file:"string",url:"string"}, llama:{base_url:"string"}, stt:{url:"string",model_file:"string",model_url:"string"}, tts:{url:"string",voice:"string",model_file:"string",model_url:"string"}, anthropic:{base_url:"string",api_key:"string",auth_token:"string"}, openai:{base_url:"string",api_key:"string"}, searxng:{url:"string"}, brave:{api_key:"string",url:"string"}, fetch:{allow_private:"boolean"}, subagent:{mode:"string",model:"string",timeout:"number",dir:"string",session_dir:"string"}, zip:{model:"string"},
   theme:{name:"string",background:"string",surface:"string",surface_dim:"string",overlay:"string",text:"string",muted:"string",accent:"string",success:"string",warning:"string",error:"string",border:"string",border_muted:"string",selection_bg:"string",cursor:"string",cursor_text:"string",ansi:"table"},
 };
 const ansiKeys = ["black","red","green","yellow","blue","magenta","cyan","white","bright_black","bright_red","bright_green","bright_yellow","bright_blue","bright_magenta","bright_cyan","bright_white"];
@@ -56,11 +56,6 @@ export function validateConfig(value: unknown): FamiliarConfig {
         for(const [ak,av] of Object.entries(leaf)){if(!ansiKeys.includes(ak))issues.push(`theme.ansi.${ak}: unknown setting`);else if(typeof av!=="string")issues.push(`theme.ansi.${ak} must be a string`);}
       } else if(typeof leaf!==expected || (expected==="number"&&!Number.isFinite(leaf))) issues.push(`${table}.${key} must be a ${expected}`);
     }
-  }
-  const anth=(value as Record<string,any>).anthropic;
-  if(anth?.claude_credentials_json && anth?.claude_oauth_token) issues.push("anthropic: choose only one Claude credential form");
-  if(anth?.claude_credentials_json) {
-    try { const parsed=JSON.parse(anth.claude_credentials_json); const c=parsed?.claudeAiOauth??parsed; if(typeof c?.accessToken!=="string"||typeof c?.refreshToken!=="string"||typeof c?.expiresAt!=="number") throw 0; } catch { issues.push("anthropic.claude_credentials_json must contain accessToken, refreshToken, and numeric expiresAt"); }
   }
   if(issues.length) throw new ConfigError(`invalid Familiar configuration (${issues.length} ${issues.length===1?"issue":"issues"})`,issues);
   return value as FamiliarConfig;

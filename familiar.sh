@@ -207,7 +207,7 @@ run_pi() {
         # Keep the live extension set explicit. integrations/pi/extensions/agents
         # is staged but deliberately not enabled until its rollout is approved.
         extensions: ([
-          "anthropic-gateway", "claude-driver", "handoff", "identity",
+          "anthropic-gateway", "handoff", "identity",
           "ratelimit", "refamiliarize", "subagent", "subscriber", "telemetry",
           "timegap", "web", "worklist", "zip"
         ] | map($ext + "/" + .))

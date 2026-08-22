@@ -18,7 +18,7 @@ try {
   assert.deepEqual(result.errors, [], `extension load errors: ${JSON.stringify(result.errors, null, 2)}`);
   const loaded = result.extensions.map((extension) => extension.resolvedPath).sort();
   const expected = [
-    "anthropic-gateway", "handoff", "identity", "ratelimit", "refamiliarize",
+    "agents", "anthropic-gateway", "handoff", "identity", "ratelimit", "refamiliarize",
     "subagent", "subscriber", "telemetry", "timegap", "web", "worklist", "zip",
   ].map((name) => join(repo, "integrations", "pi", "extensions", name, "index.ts")).sort();
   assert.deepEqual(loaded, expected);
