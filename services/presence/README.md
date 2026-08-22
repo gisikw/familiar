@@ -1,56 +1,68 @@
-# Familiar Presence Runtime (temporary tmux adapter)
+# Familiar Presence Runtime (tmux adapter)
 
-This service owns the one full interactive `./familiar.sh pi` process. It hides
-that process behind a private tmux server so Herdr and browser terminals are
-only disposable viewers. This is an adapter for the current pi TUI, **not** a
-generic agent launcher or a public protocol.
+This service owns the resident `./familiar.sh pi` process and the terminal
+viewer around it. Both sessions live on one private tmux server:
 
-## Contract
+```text
+browser /pty or SSH
+  -> presence.sh viewer
+  -> viewer session: [ 28-column sidebar | nested tmux client ]
+                                      -> presence session -> familiar.sh pi
+```
+
+## Commands
 
 ```sh
-services/presence/presence.sh ensure   # idempotently make the worker live
-services/presence/presence.sh attach   # ensure, then replace self with a viewer
+services/presence/presence.sh ensure          # make the worker live
+services/presence/presence.sh ensure-viewer   # headless/idempotent setup
+services/presence/presence.sh viewer          # setup and attach to viewer
+services/presence/presence.sh attach          # alias of viewer
+services/presence/presence.sh attach-presence # direct debug attach to pi
 services/presence/presence.sh status [--quiet]
-services/presence/presence.sh stop     # explicit destruction of owned server
+services/presence/presence.sh stop
 ```
 
 The defaults are `state/presence/`, `state/presence/tmux.sock`, session
-`presence`. `FAMILIAR_PRESENCE_STATE_DIR`, `FAMILIAR_PRESENCE_SOCKET`, and
-`FAMILIAR_PRESENCE_SESSION` override them. State and socket must be absolute,
-the socket must remain beneath state, and symlink/non-socket surprises are
-rejected. State is mode 0700; lock and copied config are 0600.
+`presence`, and viewer session `viewer`. `FAMILIAR_PRESENCE_STATE_DIR`,
+`FAMILIAR_PRESENCE_SOCKET`, `FAMILIAR_PRESENCE_SESSION`, and
+`FAMILIAR_VIEWER_SESSION` override them. State and socket must be absolute, the
+socket must remain beneath state, and symlink/non-socket surprises are rejected.
 
-The server is always selected with `tmux -S` and created with the owned,
-explicit `tmux.conf` via `-f`; default/user servers and configs are not used.
-There is one pane, no status or pane-border chrome, and normal `C-b` command
-access remains. `remain-on-exit` leaves crashes recoverable. `ensure` uses a
-bounded file lock and respawns only a dead/missing owned pane. Attach-client
-exit never reaches the worker.
+The server is selected exclusively with `tmux -S` and starts with the owned
+`tmux.conf`; system and user configs are not read. `ensure` is serialized with
+a bounded file lock and recovers only a missing/dead owned worker.
 
-`FAMILIAR_PRESENCE_COMMAND` exists only as a test/development override. The
-production worker is exactly `./familiar.sh pi`, whose existing restart loop
-continues to own pi crash recovery and transcript continuation.
+## Viewer layer
 
-## Reload and shutdown
+Viewer has exactly two panes. Pane 0 is resized to 28 columns at creation and by
+`client-resized`, `window-resized`, and `after-split-window` hooks. It runs
+`sidebar.sh` under a resident supervisor, with a `pane-died` respawn hook. The
+script rasterizes `assets/familiar-mark.svg` with `rsvg-convert`, colors it with
+the Familiar accent, and transmits the PNG with chunked kitty graphics APC
+sequences. It redraws on `WINCH` and periodically for late clients. Missing
+assets, `rsvg-convert`, or `base64` degrade to a styled `familiar` label.
 
-`/refamiliarize` leaves the reload marker, exits pi, and stops Herdr as before.
-The tmux dead pane does not auto-respawn. The outer launcher moves the marker to
-reload-complete, starts the updated Herdr environment, and the new viewer's
-`ensure` respawns the pane once with new code. `./familiar.sh kill` explicitly
-stops Herdr and this private tmux server. Ordinary Herdr/viewer loss does not.
+Pane 1 runs the equivalent of:
 
-Uploads use the existing server-to-extension relay compatibility ingress rather
-than trying to discover pi through Herdr. It reports `notified:false` when no pi
-relay subscriber is connected; the uploaded bytes remain saved.
+```sh
+TMUX= tmux -S state/presence/tmux.sock attach-session -t presence
+```
+
+Clearing `TMUX` permits this nested same-server attach. The outer Viewer has
+session-local `prefix None`, `status off`, `mouse off`, and
+`pane-border-status off`; users cannot operate its chrome and mouse sequences
+pass to the inner client. Presence retains its `C-b` prefix and ordinary
+behavior. `allow-passthrough on` is enabled in the owned config and explicitly
+on the Viewer window so kitty APCs can cross both tmux layers.
 
 ## Tests
 
 ```sh
 bash services/presence/test.sh
-nix flake check ./services/presence
-nix build ./services/presence
+nix flake check --no-build
 ```
 
-The focused test uses isolated sockets and a fake worker; it checks PID
-continuity, reattachment, concurrency, dead/session recovery, hostile user
-config isolation, chrome/prefix options, path safety, and stop isolation.
+The focused test uses only temporary private sockets and a fake worker. It
+covers config isolation, worker continuity/recovery, concurrency, path and stop
+isolation, idempotent Viewer creation, session-scoped options, the 28-column
+resize lock, nested attach command shape, and the Gateway entrypoint contract.

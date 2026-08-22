@@ -11,8 +11,13 @@
       packages = eachSystem (pkgs: {
         default = pkgs.writeShellApplication {
           name = "familiar-presence";
-          runtimeInputs = [ pkgs.bash pkgs.coreutils pkgs.tmux pkgs.util-linux ];
-          text = ''export FAMILIAR_PRESENCE_CONFIG=${./tmux.conf}; exec bash ${./presence.sh} "$@"'';
+          runtimeInputs = [ pkgs.bash pkgs.coreutils pkgs.librsvg pkgs.tmux pkgs.util-linux ];
+          text = ''
+            export FAMILIAR_PRESENCE_CONFIG=${./tmux.conf}
+            export FAMILIAR_SIDEBAR_SCRIPT=${./sidebar.sh}
+            export FAMILIAR_SIDEBAR_MARK=${../../assets/familiar-mark.svg}
+            exec bash ${./presence.sh} "$@"
+          '';
         };
       });
       checks = eachSystem (pkgs: {
