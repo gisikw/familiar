@@ -17,6 +17,12 @@ func TestFamiliarServerColdStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := os.Stat(filepath.Join(repo, "familiar.sh")); err != nil {
+		// The nix checkPhase builds services/server in isolation; the repo
+		// entry point is not part of that source, so this integration test
+		// only runs from a full checkout.
+		t.Skipf("familiar.sh not available (isolated build): %v", err)
+	}
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "bin")
 	models := filepath.Join(dir, "models")
