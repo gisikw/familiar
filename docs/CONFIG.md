@@ -58,9 +58,9 @@ Precedence, highest first:
 The loader records which variables were truly ambient, exports file values, and
 reloads on every recursive entry. Consequently file values survive a dev shell
 that sets the same name, while an explicit ambient override remains untouched.
-The provenance marker and all loaded values survive `nix develop` and
-`/refamiliarize` execs. The loader also records its own exports separately. On
-each successful reload it clears that prior set (including upstream aliases)
+The provenance marker and all loaded values survive `nix develop` recursion.
+The loader also records its own exports separately. On each successful reload
+it clears that prior set (including upstream aliases)
 before applying the new snapshot, so removing a key really removes its stale
 value while the original ambient set remains untouched. This includes a
 same-session JSON-to-setup-token cutover.
@@ -102,8 +102,8 @@ generic Familiar names shown in `familiar.toml.example`.
 
 ## Changes and failures
 
-After editing, keep mode 0600, run `./familiar.sh config-check`, and use
-`/refamiliarize` or stop and rerun `./familiar.sh`. A cold restart regenerates
+After editing, keep mode 0600, run `./familiar.sh config-check`, then stop and
+rerun `./familiar.sh`. A cold restart regenerates
 the unified theme and restarts services with the new exports. Malformed TOML,
 unsupported types, normalized-key collisions, and insecure permissions abort
 ordinary startup with a secret-suppressed error. They do not brick the bounded

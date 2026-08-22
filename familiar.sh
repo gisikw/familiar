@@ -8,7 +8,7 @@ STATE_DIR="$REPO/state"
 # Local configuration must load before defaults and before dev-shell recursion:
 # file values beat defaults, while the ambient variables captured by the loader
 # beat file values. The exported provenance marker keeps that ordering stable
-# when nix develop or /refamiliarize re-enters this script.
+# when nix develop re-enters this script.
 # shellcheck source=scripts/familiar-config.sh
 . "$REPO/scripts/familiar-config.sh"
 CONFIG_LOAD_FAILED=0
@@ -33,8 +33,6 @@ export FAMILIAR_HANDOFF_PATH="${FAMILIAR_HANDOFF_PATH:-$STATE_DIR/handoffs}"
 # is a bounded compatibility alias (one release) so a mid-flight external writer
 # does not silently drop items.
 export FAMILIAR_WORKLIST_DIR="${FAMILIAR_WORKLIST_DIR:-${FAMILIAR_INBOX_DIR:-$STATE_DIR/worklist}}"
-export FAMILIAR_RELOAD_REQUEST_PATH="${FAMILIAR_RELOAD_REQUEST_PATH:-$STATE_DIR/run/reload-request}"
-export FAMILIAR_RELOAD_COMPLETE_PATH="${FAMILIAR_RELOAD_COMPLETE_PATH:-$STATE_DIR/run/reload-complete}"
 export FAMILIAR_LOG_PATH="${FAMILIAR_LOG_PATH:-$STATE_DIR/log.jsonl}"
 export FAMILIAR_SUBSCRIBER_PORT="${FAMILIAR_SUBSCRIBER_PORT:-1692}"
 export FAMILIAR_PRESENCE_STATE_DIR="${FAMILIAR_PRESENCE_STATE_DIR:-$STATE_DIR/presence}"
@@ -203,7 +201,7 @@ run_pi() {
         # is staged but deliberately not enabled until its rollout is approved.
         extensions: ([
           "anthropic-gateway", "handoff", "identity",
-          "ratelimit", "refamiliarize", "subscriber", "telemetry",
+          "ratelimit", "subscriber", "telemetry",
           "timegap", "web", "worklist", "zip"
         ] | map($ext + "/" + .))
       }
@@ -248,18 +246,13 @@ run_pi() {
     # session, and it writes a handoff first.
     #
     # `|| true` is load-bearing under `set -e`: a bare command as the loop body
-    # aborts the whole function on any non-zero exit, so a crashed pi would
-    # skip both the reload check below and the respawn — leaving a dead pane
-    # with no supervisor, and stalling /refamiliarize unless shutdown happened
-    # to exit 0.
+    # aborts the whole function on any non-zero exit, leaving a dead pane with
+    # no supervisor instead of respawning pi.
     command pi \
       --continue \
       --no-context-files \
       --no-skills \
       --skill "$REPO/skills/" || true
-    # Presence owns requested reloads: return to its worker loop, which
-    # promotes the marker and starts this command again with --continue.
-    if [ -f "$FAMILIAR_RELOAD_REQUEST_PATH" ]; then return; fi
     sleep 1
   done
 }
