@@ -42,7 +42,9 @@ for _ in $(seq 1 50); do curl -fsS "http://127.0.0.1:$PORT/health" >/dev/null 2>
 curl -fsS "http://127.0.0.1:$PORT/health" | grep -q '"ok":true' && ok "health" || bad "health"
 
 # 2. terminal HTML + assets
-curl -fsS "http://127.0.0.1:$PORT/terminal" | grep -q '<title>Familiar Terminal' && ok "/terminal HTML" || bad "/terminal HTML"
+TERMINAL_HTML=$(curl -fsS "http://127.0.0.1:$PORT/terminal")
+echo "$TERMINAL_HTML" | grep -q '<title>familiar</title>' && ok "/terminal HTML" || bad "/terminal HTML"
+if echo "$TERMINAL_HTML" | grep -qi 'Content-Security-Policy'; then bad "/terminal has baked-in CSP"; else ok "/terminal proxy-owned CSP"; fi
 curl -fsS "http://127.0.0.1:$PORT/" | grep -q 'terminal.js' && ok "/ HTML" || bad "/ HTML"
 curl -fsS -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/vendor/restty.esm.js" | grep -q 200 && ok "restty asset" || bad "restty asset"
 curl -fsS -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/fonts/OpenMoji-black-glyf.ttf" | grep -q 200 && ok "font asset" || bad "font asset"

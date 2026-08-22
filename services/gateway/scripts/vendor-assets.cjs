@@ -1,19 +1,14 @@
 #!/usr/bin/env node
-// Postinstall: vendor the browser-terminal static assets so the server can
-// serve them with no bundler.
-//   1. restty's self-contained ESM bundle (WASM embedded) -> vendor/restty.esm.js
-//   2. fonts (ProggyClean NF, JetBrains Mono, OpenMoji cmap) -> fonts/
-//   3. emoji.json (Slack-style :name: completer data)        -> vendor/emoji.json
+// Postinstall: extract restty's self-contained browser bundle (WASM embedded)
+// from the npm package so the gateway can serve it without a bundler.
 //
-// Fonts + emoji.json are copied from ../../apps/desktop/src/renderer (the Electron
-// renderer already carries the tracked upstream copies) so there is a single
-// source of truth. restty comes from this package's own node_modules.
+// Fonts and emoji data are tracked directly by the gateway because it is their
+// runtime owner. Static gateway assets must not depend on the dumb desktop
+// client's source tree.
 const fs = require("fs");
 const path = require("path");
 
 const root = path.resolve(__dirname, "..");
-const repo = path.resolve(root, "..", "..");
-const clientRenderer = path.join(repo, "apps", "desktop", "src", "renderer");
 
 function copy(src, dst, label) {
   if (!fs.existsSync(src)) {
@@ -31,23 +26,4 @@ copy(
   path.join(root, "node_modules", "restty", "dist", "restty.esm.js"),
   path.join(root, "vendor", "restty.esm.js"),
   "vendor/restty.esm.js",
-);
-
-// 2. fonts
-const fonts = [
-  "ProggyCleanNerdFontMono-Regular.ttf",
-  "JetBrainsMono-Regular.ttf",
-  "JetBrainsMono-Bold.ttf",
-  "JetBrainsMono-Italic.ttf",
-  "OpenMoji-black-glyf.ttf",
-];
-for (const f of fonts) {
-  copy(path.join(clientRenderer, "fonts", f), path.join(root, "fonts", f), `fonts/${f}`);
-}
-
-// 3. emoji data
-copy(
-  path.join(clientRenderer, "vendor", "emoji.json"),
-  path.join(root, "vendor", "emoji.json"),
-  "vendor/emoji.json",
 );

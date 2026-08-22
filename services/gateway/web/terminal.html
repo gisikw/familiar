@@ -2,12 +2,11 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <!-- Same-origin only; WASM eval + inline styles for restty; ws: for the
-         PTY bridge. Served from localhost (and later fronted by nginx). -->
-    <meta
-      http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws: wss:"
-    />
+    <!-- Deployment CSP belongs at the reverse proxy. This page is served both
+         directly and behind authenticated HTTPS proxies, and restty needs WASM,
+         WebSockets, dynamic styles, and locally served font buffers. A baked-in
+         meta policy cannot account for those deployment origins and is additive
+         with (rather than overridden by) proxy response headers. -->
     <title>familiar</title>
     <!-- SVG favicon: currentColor with no surrounding CSS resolves to black,
          which is the deliberate choice — the mark stays legible on any tab
