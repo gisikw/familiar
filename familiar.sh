@@ -670,8 +670,47 @@ drop_server_nc_flags() {
 # The server. nc handles one connection then exits, so the loop rebinds each
 # time; the fifo turns nc's stdout back into the handler's stdin, which is how
 # you get a request/response exchange out of a tool that only does streams.
+#
+# The exchange runs in the background deliberately. Bash defers a TERM trap
+# while it waits for a foreground pipeline, so an idle listener used to make
+# the parent immortal: the trap could not run until nc exited, but nc would not
+# exit until another client connected. Keep both pipeline PIDs so cleanup kills
+# only our children and reaps them before releasing inherited output FDs.
+DROP_SERVE_NC_PID=""
+DROP_SERVE_HANDLER_PID=""
+DROP_SERVE_HANDLER_PID_FILE=""
+DROP_SERVE_SOCK=""
+DROP_SERVE_FIFO=""
+
+drop_serve_stop_exchange() {
+  local pid
+  if [ -n "$DROP_SERVE_HANDLER_PID_FILE" ] && [ -r "$DROP_SERVE_HANDLER_PID_FILE" ]; then
+    IFS= read -r pid < "$DROP_SERVE_HANDLER_PID_FILE" || pid=""
+    case $pid in ''|*[!0-9]*) ;; *) DROP_SERVE_HANDLER_PID=$pid ;; esac
+  fi
+  [ -z "$DROP_SERVE_NC_PID" ] || kill "$DROP_SERVE_NC_PID" 2>/dev/null || true
+  [ -z "$DROP_SERVE_HANDLER_PID" ] || kill "$DROP_SERVE_HANDLER_PID" 2>/dev/null || true
+  [ -z "$DROP_SERVE_NC_PID" ] || wait "$DROP_SERVE_NC_PID" 2>/dev/null || true
+  [ -z "$DROP_SERVE_HANDLER_PID" ] || wait "$DROP_SERVE_HANDLER_PID" 2>/dev/null || true
+  DROP_SERVE_NC_PID=""
+  DROP_SERVE_HANDLER_PID=""
+  [ -z "$DROP_SERVE_HANDLER_PID_FILE" ] || rm -f "$DROP_SERVE_HANDLER_PID_FILE"
+}
+
+drop_serve_cleanup() {
+  trap - EXIT INT TERM
+  drop_serve_stop_exchange
+  rm -f "$DROP_SERVE_SOCK" "$DROP_SERVE_FIFO" "$DROP_SERVE_HANDLER_PID_FILE"
+}
+
+drop_serve_signal() {
+  local status=$1
+  trap - INT TERM
+  exit "$status"
+}
+
 drop_serve() {
-  local sock=${2:-} fifo nc_flags fails=0
+  local sock=${2:-} fifo nc_flags fails=0 status
   if [ -z "$sock" ]; then
     echo "Usage: familiar.sh drop-serve <socket-path>" >&2
     return 1
@@ -682,18 +721,31 @@ drop_serve() {
   nc_flags=$(drop_server_nc_flags)
   mkdir -p "$(dirname "$sock")"
   fifo="$sock.fifo"
-  rm -f "$sock" "$fifo"
+  DROP_SERVE_SOCK=$sock
+  DROP_SERVE_FIFO=$fifo
+  DROP_SERVE_HANDLER_PID_FILE="$fifo.handler-pid"
+  rm -f "$sock" "$fifo" "$DROP_SERVE_HANDLER_PID_FILE"
   mkfifo "$fifo" || return 1
-  trap 'rm -f "$sock" "$fifo"' EXIT INT TERM
+  trap drop_serve_cleanup EXIT
+  trap 'drop_serve_signal 130' INT
+  trap 'drop_serve_signal 143' TERM
 
   while :; do
-    rm -f "$sock"
-    # `|| true` is load-bearing under `set -e`: a bare command as the loop body
-    # aborts the whole function on any non-zero exit, so one hung-up client
-    # would take the server down with it and leave the tunnel pointing at
-    # nothing. It must not, however, turn a listener that can never bind into a
-    # hot spin, so an immediate failure is counted and eventually fatal.
-    if drop_handle < "$fifo" | nc $nc_flags "$sock" > "$fifo"; then
+    rm -f "$sock" "$DROP_SERVE_HANDLER_PID_FILE"
+    # $$ retains the top-level PID in a subshell, and BASHPID needs Bash 4.
+    # Asking a tiny child for its PPID identifies this pipeline subshell on the
+    # stock macOS Bash 3.2 too. Publish it before opening the fifo so the parent
+    # can terminate both sides even when no client has ever connected.
+    {
+      handler_pid=$(exec sh -c 'printf %s "$PPID"')
+      printf '%s\n' "$handler_pid" > "$DROP_SERVE_HANDLER_PID_FILE"
+      drop_handle < "$fifo"
+    } | nc $nc_flags "$sock" > "$fifo" &
+    DROP_SERVE_NC_PID=$!
+    status=0
+    wait "$DROP_SERVE_NC_PID" || status=$?
+    drop_serve_stop_exchange
+    if [ "$status" -eq 0 ]; then
       fails=0
     else
       fails=$((fails + 1))
@@ -815,7 +867,12 @@ connect() {
 
   "$SELF" drop-serve "$local_sock" &
   daemon=$!
-  trap 'kill "$daemon" 2>/dev/null || true; rm -f "$local_sock" "$local_sock.fifo"' EXIT INT TERM
+  # EXIT owns cleanup; signal traps exit explicitly so an interrupted ssh cannot
+  # resume the function and leave the server (and its inherited output FDs)
+  # behind. Waiting also prevents a zombie in long-running caller shells.
+  trap 'kill "$daemon" 2>/dev/null || true; wait "$daemon" 2>/dev/null || true; rm -f "$local_sock" "$local_sock.fifo" "$local_sock.fifo.handler-pid"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 
   waited=0
   while [ ! -S "$local_sock" ] && [ "$waited" -lt 25 ]; do

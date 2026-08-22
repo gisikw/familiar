@@ -82,6 +82,16 @@
         });
       in
       {
+        checks = pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          drop-serve-lifecycle = pkgs.runCommand "drop-serve-lifecycle" {
+            nativeBuildInputs = with pkgs; [ bash coreutils gnugrep gawk netcat-openbsd ];
+          } ''
+            export HOME="$TMPDIR/home"
+            mkdir -p "$HOME"
+            bash ${self}/test/drop-serve-lifecycle.test.sh ${self}/familiar.sh
+            touch $out
+          '';
+        };
         devShells = {
           default = piShell;
           pi = piShell;
