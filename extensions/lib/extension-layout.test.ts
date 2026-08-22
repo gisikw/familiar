@@ -47,9 +47,8 @@ describe("pi 0.84.1 extension discovery contract", () => {
     const repo = resolve(import.meta.dir, "..", "..");
     const extensionRoot = join(repo, "extensions");
     const expected = [
-      "anthropic-gateway", "claude-driver", "handoff", "identity", "ratelimit",
-      "refamiliarize", "subagent", "subscriber", "telemetry", "timegap", "web",
-      "worklist", "zip",
+      "anthropic-gateway", "handoff", "identity", "ratelimit", "refamiliarize",
+      "subagent", "subscriber", "telemetry", "timegap", "web", "worklist", "zip",
     ];
     const rootScripts = readdirSync(extensionRoot)
       .filter((name: string) => name.endsWith(".ts") || name.endsWith(".js"));
@@ -62,20 +61,14 @@ describe("pi 0.84.1 extension discovery contract", () => {
       .sort();
     expect(entrypoints).toEqual(expected.sort());
 
-    // The child (pi) subagent's explicit `-e` set now lives in its own
-    // dependency-free module (native-agent-args.ts). It must name valid child
-    // entrypoints, in the authority-bearing order: anthropic-gateway (fallback)
-    // before claude-driver (loopback authority), then web (route-neutral).
+    // The child (pi) subagent's explicit `-e` set lives in its own
+    // dependency-free module. It must route Anthropic only through the external
+    // gateway while preserving the route-neutral web tools.
     const childArgs = readFileSync(join(extensionRoot, "subagent", "native-agent-args.ts"), "utf8");
-    const positions = ["anthropic-gateway", "claude-driver", "web"].map((name) => {
-      const marker = `ext("${name}")`;
-      expect(childArgs).toContain(marker);
+    for (const name of ["anthropic-gateway", "web"]) {
+      expect(childArgs).toContain(`ext("${name}")`);
       expect(statSync(join(extensionRoot, name, "index.ts")).isFile()).toBe(true);
-      return childArgs.indexOf(marker);
-    });
-    // Order is load-bearing: claude-driver must be loaded AFTER anthropic-gateway
-    // (last same-id provider registration wins), and web stays last.
-    expect(positions[0]).toBeLessThan(positions[1]);
-    expect(positions[1]).toBeLessThan(positions[2]);
+    }
+    expect(childArgs).not.toContain("claude-driver");
   });
 });

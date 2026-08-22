@@ -90,38 +90,12 @@ familiar.toml`, then run `bash test/familiar-config.test.sh` for the loader
 check or cold-start Familiar. Neither path displays values. Migration is a
 one-time move of each key under its canonical table.
 
-## Claude driver credentials
-
-The local Claude Code driver accepts exactly one explicit representation:
-
-- `[anthropic] claude_credentials_json` is a TOML string containing the
-  renewable `.credentials.json` envelope (or its inner OAuth object). It must
-  include string `accessToken`, string `refreshToken`, and numeric `expiresAt`.
-- `[anthropic] claude_oauth_token` is a non-empty TOML string containing the
-  long-lived token produced by `claude setup-token`. It maps to Claude Code's
-  documented `CLAUDE_CODE_OAUTH_TOKEN`; it is not rewritten as credentials
-  JSON and is never logged.
-
-There is no legacy credential alias: `FAMILIAR_ANTHROPIC_OAUTH` is ignored and
-no longer treated as credential JSON. Raw strings are never guessed to be
-credentials. Ambiguous or invalid settings abort with the setting name and
-suppressed values.
-
-To cut over manually: run `claude setup-token` outside Familiar, replace the
-old JSON line with `claude_oauth_token = "..."` under `[anthropic]`, retain mode
-0600, remove any competing Claude credential variable from the ambient launch
-environment, and cold restart or `/refamiliarize`. Familiar never reads a host
-credential file or automatically rewrites the token. Confirm operation with a
-normal non-sensitive prompt, then separately delete the old JSON only from your
-private config/history as appropriate.
-
 A few upstream programs require established non-Familiar names. Familiar maps
 `FAMILIAR_PI_TELEMETRY`, `FAMILIAR_PI_OFFLINE`, and
 `FAMILIAR_PI_SKIP_VERSION_CHECK` and `FAMILIAR_PI_CODING_AGENT_DIR` to
 their `PI_*` counterparts, and maps `FAMILIAR_ANTHROPIC_BASE_URL`,
 `FAMILIAR_ANTHROPIC_API_KEY`, and `FAMILIAR_ANTHROPIC_AUTH_TOKEN` to
-`ANTHROPIC_*`. It also maps the explicit Claude token to
-`CLAUDE_CODE_OAUTH_TOKEN`, `[openai]` URL/key to `OPENAI_BASE_URL` and
+`ANTHROPIC_*`. It maps `[openai]` URL/key to `OPENAI_BASE_URL` and
 `OPENAI_API_KEY`, and covers `LLAMA_BASE_URL`, `HERDR_SESSION`, and
 `HERDR_CONFIG_PATH`. An upstream name that was explicitly ambient is preserved.
 Local configuration should always use the

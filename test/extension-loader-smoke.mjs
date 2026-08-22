@@ -18,9 +18,8 @@ try {
   assert.deepEqual(result.errors, [], `extension load errors: ${JSON.stringify(result.errors, null, 2)}`);
   const loaded = result.extensions.map((extension) => extension.resolvedPath).sort();
   const expected = [
-    "anthropic-gateway", "claude-driver", "handoff", "identity", "ratelimit",
-    "refamiliarize", "subagent", "subscriber", "telemetry", "timegap", "web",
-    "worklist", "zip",
+    "anthropic-gateway", "handoff", "identity", "ratelimit", "refamiliarize",
+    "subagent", "subscriber", "telemetry", "timegap", "web", "worklist", "zip",
   ].map((name) => join(repo, "extensions", name, "index.ts")).sort();
   assert.deepEqual(loaded, expected);
   assert.equal(typeof globalThis.Bun, "undefined", "smoke must run without Bun globals");

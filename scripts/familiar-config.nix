@@ -15,32 +15,15 @@ let
   envName = path:
     let flat = normalize (builtins.concatStringsSep "_" path);
     in if hasPrefix "FAMILIAR_" flat then flat else "FAMILIAR_${flat}";
-  credentialNames = [
-    "FAMILIAR_ANTHROPIC_CLAUDE_CREDENTIALS_JSON"
-    "FAMILIAR_ANTHROPIC_CLAUDE_OAUTH_TOKEN"
-  ];
-  isCredentialPath = path: builtins.elem (envName path) credentialNames;
   scalar = path: value:
-    let
-      kind = builtins.typeOf value;
-      joined = builtins.concatStringsSep "." path;
-    in if isCredentialPath path && kind != "string" then
-         throw "credential setting must be a TOML string"
-       else if kind == "string" then value
+    let kind = builtins.typeOf value;
+    in if kind == "string" then value
        else if kind == "bool" then (if value then "true" else "false")
        else if kind == "int" || kind == "float" then builtins.toJSON value
        else if kind == "list" then builtins.toJSON value
        else throw "unsupported value at ${builtins.concatStringsSep "." path}: ${kind}";
   flatten = path: value:
-    if isCredentialPath path then
-      # A credential leaf must be a properly-nested TOML string. Flat top-level
-      # spellings and non-string/table values are all rejected with the same
-      # contents-suppressed diagnostic, so no credential material can leak and
-      # legacy flat credential keys are refused like any other flat key.
-      (if builtins.length path < 2 || builtins.typeOf value != "string" then
-         throw "credential setting must be a TOML string"
-       else [ { name = envName path; value = value; } ])
-    else if builtins.isAttrs value then
+    if builtins.isAttrs value then
       builtins.concatLists (map (key: flatten (path ++ [ key ]) value.${key})
         (builtins.attrNames value))
     else if builtins.length path < 2 then

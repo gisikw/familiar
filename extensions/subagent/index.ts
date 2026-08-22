@@ -179,10 +179,9 @@ let artifactRootVerified = false;
 const NATIVE_KIND = "pi";
 
 // The child (pi) subagent's explicit extension set + argv lives in its own
-// dependency-free module so the exact SET and ORDER — which decides the child's
-// anthropic provider authority (claude-driver loopback over anthropic-gateway
-// fallback) — is a regression-testable value. See native-agent-args.ts for the
-// load-order / last-writer-wins rationale.
+// dependency-free module so the exact set is regression-testable. Anthropic
+// traffic routes through the dedicated external gateway; no in-process Claude
+// Code driver may seize provider authority.
 //
 // Import the LOCAL binding (a bare `export … from` re-export would NOT create a
 // local `nativeAgentArgs` to call below), then re-export it for consumers.

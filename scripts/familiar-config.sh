@@ -19,7 +19,7 @@ familiar_config_capture_explicit() {
     name=${name#declare -x }
     name=${name%%=*}
     case "$name" in
-      FAMILIAR_*|PI_TELEMETRY|PI_OFFLINE|PI_SKIP_VERSION_CHECK|PI_CODING_AGENT_DIR|ANTHROPIC_BASE_URL|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|OPENAI_BASE_URL|OPENAI_API_KEY|LLAMA_BASE_URL|HERDR_SESSION|HERDR_CONFIG_PATH)
+      FAMILIAR_*|PI_TELEMETRY|PI_OFFLINE|PI_SKIP_VERSION_CHECK|PI_CODING_AGENT_DIR|ANTHROPIC_BASE_URL|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|OPENAI_BASE_URL|OPENAI_API_KEY|LLAMA_BASE_URL|HERDR_SESSION|HERDR_CONFIG_PATH)
         names="${names:+$names:}$name" ;;
     esac
   done < <(export -p)
@@ -84,9 +84,7 @@ familiar_config_load() {
   errors=$(mktemp "${TMPDIR:-/tmp}/familiar-config-errors.XXXXXX") || { rm -f "$stream"; return 1; }
   if ! FAMILIAR_CONFIG_PATH="$config" nix eval --impure --raw --file \
       "$repo/scripts/familiar-config.nix" >"$stream" 2>"$errors"; then
-    if grep -q 'credential setting must be a TOML string' "$errors"; then
-      echo 'familiar: Claude credential settings must be TOML strings (contents suppressed)' >&2
-    elif grep -q 'top-level key must live under a canonical table' "$errors"; then
+    if grep -q 'top-level key must live under a canonical table' "$errors"; then
       echo 'familiar: every key must live under a canonical table (e.g. [pi], [anthropic]); flat top-level keys are no longer supported. See familiar.toml.example.' >&2
     else
       echo 'familiar: could not parse familiar.toml (contents suppressed)' >&2
@@ -127,7 +125,6 @@ familiar_config_load() {
   familiar_config_alias ANTHROPIC_BASE_URL FAMILIAR_ANTHROPIC_BASE_URL
   familiar_config_alias ANTHROPIC_API_KEY FAMILIAR_ANTHROPIC_API_KEY
   familiar_config_alias ANTHROPIC_AUTH_TOKEN FAMILIAR_ANTHROPIC_AUTH_TOKEN
-  familiar_config_alias CLAUDE_CODE_OAUTH_TOKEN FAMILIAR_ANTHROPIC_CLAUDE_OAUTH_TOKEN
   familiar_config_alias OPENAI_BASE_URL FAMILIAR_OPENAI_BASE_URL
   familiar_config_alias OPENAI_API_KEY FAMILIAR_OPENAI_API_KEY
   familiar_config_alias LLAMA_BASE_URL FAMILIAR_LLAMA_BASE_URL

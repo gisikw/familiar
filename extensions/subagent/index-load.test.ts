@@ -134,7 +134,6 @@ describe("subagent index.ts — real-runtime nativeAgentArgs binding", () => {
       }
       expect(loaded).toEqual([
         join(repo, "extensions", "anthropic-gateway", "index.ts"),
-        join(repo, "extensions", "claude-driver", "index.ts"),
         join(repo, "extensions", "web", "index.ts"),
       ]);
       // Stop the background poller started by monitor(id) so bun can exit.

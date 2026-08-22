@@ -51,14 +51,11 @@ skip_version_check = 1
 # model_file = "tts.gguf"
 # model_url = "https://models.example.invalid/tts.gguf"
 
-# Provider credentials are placeholders only. Choose exactly ONE Claude driver
-# credential form: renewable credentials JSON OR `claude setup-token` output.
+# Anthropic-compatible traffic belongs behind the dedicated external gateway.
 [anthropic]
 # base_url = "https://gateway.example.invalid"
 # api_key = "replace-locally"
 # auth_token = "replace-locally"
-# claude_credentials_json = '''{"claudeAiOauth":{"accessToken":"placeholder","refreshToken":"placeholder","expiresAt":0}}'''
-# claude_oauth_token = "setup-token-placeholder"
 
 [openai]
 # base_url = "https://api.openai.example.invalid/v1"
