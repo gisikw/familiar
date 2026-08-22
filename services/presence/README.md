@@ -81,3 +81,12 @@ The focused test uses only temporary private sockets and a fake worker. It
 covers config isolation, worker continuity/recovery, concurrency, path and stop
 isolation, idempotent Viewer creation, session-scoped options, the 28-column
 resize lock, nested attach command shape, and the Gateway entrypoint contract.
+
+## Known issue
+
+The sidebar's kitty-graphics mark does not yet render in the browser terminal
+(text fallback shows instead). Verified 2026-08-22: the APC transmission
+happens (55s screenshot byte-identical to 20s — repaint cycle covered), pi TUI
+renders correctly, so the loss is specific to the sidebar pane's passthrough
+path into restty. Candidates: passthrough replay semantics for non-active
+panes, or restty capability negotiation. Cosmetic; the mark is placeholder art.
