@@ -19,7 +19,7 @@
           installPhase = ''
             runHook preInstall
             mkdir -p $out/lib/familiar-gateway $out/bin
-            cp -R src vendor package.json node_modules $out/lib/familiar-gateway/
+            cp -R src web vendor package.json node_modules $out/lib/familiar-gateway/
             makeWrapper ${pkgs.nodejs_22}/bin/node $out/bin/familiar-gateway \
               --add-flags "--experimental-transform-types $out/lib/familiar-gateway/src/main.ts"
             runHook postInstall
