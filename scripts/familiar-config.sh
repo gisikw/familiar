@@ -13,8 +13,8 @@ familiar_config_name_is_explicit() {
 familiar_config_capture_explicit() {
   local name names=""
   # On the first entry, shell variables matching these names came from the
-  # process environment. Preserve that set through nix-develop/refamiliarize
-  # recursion; values loaded from TOML may then be refreshed on every entry.
+  # process environment. Preserve that set through nix-develop recursion;
+  # values loaded from TOML may then be refreshed on every entry.
   while IFS= read -r name; do
     name=${name#declare -x }
     name=${name%%=*}

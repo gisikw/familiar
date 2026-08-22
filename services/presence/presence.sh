@@ -50,7 +50,7 @@ server_up() { tmux_owned has-session -t "$SESSION" >/dev/null 2>&1; }
 viewer_up() { tmux_owned has-session -t "$VIEWER" >/dev/null 2>&1; }
 
 # Refresh variables consumed by a respawn. tmux's server may outlive the shell
-# which originally created it, so reload must not retain old Familiar config.
+# which originally created it, so a recovered worker must not retain old config.
 refresh_environment() {
   local name
   while IFS='=' read -r name _; do
@@ -65,18 +65,10 @@ worker_command() {
   if [ -n "${FAMILIAR_PRESENCE_COMMAND:-}" ]; then
     exec "$BASH_EXE" -lc "$FAMILIAR_PRESENCE_COMMAND"
   fi
-  local request=${FAMILIAR_RELOAD_REQUEST_PATH:-$REPO/state/run/reload-request}
-  local complete=${FAMILIAR_RELOAD_COMPLETE_PATH:-$REPO/state/run/reload-complete}
   while :; do
+    # familiar.sh always launches pi with --continue, so an unexpected exit
+    # preserves session continuity when this worker relaunches it.
     "$REPO/familiar.sh" pi || true
-    if [ -f "$request" ]; then
-      mkdir -p "$(dirname "$complete")"
-      mv -f "$request" "$complete"
-      # Re-enter through the current script/config/dev shell. familiar.sh pi
-      # always launches pi with --continue, preserving session continuity.
-      unset FAMILIAR_SHELL FAMILIAR_INTERACTIVE_SHELL
-      continue
-    fi
     sleep 1
   done
 }

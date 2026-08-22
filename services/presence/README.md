@@ -34,15 +34,12 @@ The server is selected exclusively with `tmux -S` and starts with the owned
 `tmux.conf`; system and user configs are not read. `ensure` is serialized with
 a bounded file lock and recovers only a missing/dead owned worker.
 
-## Worker and reload contract
+## Worker continuity contract
 
-The production worker runs `./familiar.sh pi`. It keeps pi alive after crashes
-and always launches it with `--continue`. `/refamiliarize` writes
-`state/run/reload-request` and gracefully exits pi; the worker atomically moves
-that marker to `state/run/reload-complete`, re-enters the current Familiar
-script/config/dev shell, and restarts pi with `--continue`. The extension
-consumes the completion marker and submits `Reload complete` to the resumed
-session. No viewer is involved in restart semantics.
+The production worker runs `./familiar.sh pi` in a simple respawn loop. If that
+command exits unexpectedly, the worker waits briefly and launches it again.
+Familiar always starts pi with `--continue`, so crash recovery resumes the most
+recent session. No viewer is involved in worker restart semantics.
 
 `./familiar.sh kill` explicitly stops this private tmux server. Viewer loss does
 not. Upload notifications use the server-to-extension relay and report
