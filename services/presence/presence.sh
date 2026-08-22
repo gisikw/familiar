@@ -101,6 +101,9 @@ ensure_locked() {
       fi
     fi
   fi
+  # The private server intentionally survives deployments, so apply the newly
+  # installed owned config even when this invocation did not create it.
+  tmux_owned source-file "$RUNTIME_CONFIG"
   refresh_environment
   local dead
   dead=$(tmux_owned display-message -p -t "$TARGET" '#{pane_dead}' 2>/dev/null) || {
@@ -156,15 +159,18 @@ configure_viewer() {
   tmux_owned set-option -t "$VIEWER" status off
   tmux_owned set-option -t "$VIEWER" mouse off
   tmux_owned set-option -t "$VIEWER" pane-border-status off
-  tmux_owned set-window-option -t "$VIEWER:0" allow-passthrough on
+  tmux_owned set-window-option -t "$VIEWER:0" allow-passthrough all
   tmux_owned set-hook -t "$VIEWER" after-split-window "resize-pane -t '$VIEWER_SIDEBAR' -x 28"
   tmux_owned set-hook -t "$VIEWER" client-resized "resize-pane -t '$VIEWER_SIDEBAR' -x 28"
   tmux_owned set-hook -t "$VIEWER" window-resized "resize-pane -t '$VIEWER_SIDEBAR' -x 28"
+  tmux_owned set-hook -t "$VIEWER" client-attached "select-pane -t '$VIEWER_MAIN'"
   # Hook commands inherit the dead pane as their target; omitting -t matters
   # because tmux does not expand #{pane_id} in a nested respawn-pane argument.
   tmux_owned set-hook -t "$VIEWER" pane-died \
     "if-shell -F '#{==:#{pane_index},0}' 'respawn-pane -k \"$sidebar_cmd\"'"
   tmux_owned resize-pane -t "$VIEWER_SIDEBAR" -x 28
+  tmux_owned select-pane -t "$VIEWER_MAIN"
+  tmux_owned select-pane -d -t "$VIEWER_SIDEBAR"
 }
 
 ensure_viewer_locked() {
