@@ -24,6 +24,34 @@ while :; do read -r -t 1 _ || true; done
 EOF
 chmod 700 "$FAKE"
 
+# The sidebar fetch hook permits deterministic formatting checks without an
+# HTTP daemon or a live agent service.
+command -v jq >/dev/null 2>&1 || fail "jq is required for sidebar registry test"
+fixture="$TMP/jobs.json"
+cat >"$fixture" <<'EOF'
+[
+  {"id":"job-active","cwd":"/work/alpha","prompt":"Fix\nsidebar","state":"running","updated_at":"2026-08-22T07:30:00Z"},
+  {"id":"job-blocked","cwd":"/work/alpha","prompt":"Need input","state":"blocked","updated_at":"2026-08-22T07:20:00Z"},
+  {"id":"job-abcdefgh","cwd":"/work/beta","prompt":"  ","state":"done","updated_at":"2026-08-22T07:40:00Z"},
+  {"id":"job-old","cwd":"/work/alpha","prompt":"Old task","state":"cancelled","updated_at":"2026-08-22T07:10:00Z"}
+]
+EOF
+sidebar_output=$(FAMILIAR_SIDEBAR_FORMAT_ONLY=1 FAMILIAR_AGENTS_JOBS_FIXTURE="$fixture" \
+  bash "$HERE/sidebar.sh")
+sidebar_plain=$(printf '%s\n' "$sidebar_output" | sed $'s/\033\\[[0-9;]*m//g')
+printf '%s\n' "$sidebar_plain" | grep -Fq 'agents' || fail "sidebar registry header missing"
+printf '%s\n' "$sidebar_plain" | grep -Fq 'alpha' || fail "sidebar workspace grouping missing"
+printf '%s\n' "$sidebar_plain" | grep -Fq '├─ ● Fix sidebar running' \
+  || fail "sidebar running job formatting missing"
+printf '%s\n' "$sidebar_plain" | grep -Fq '└─ ● Old task cancelled' \
+  || fail "sidebar group connector or terminal job missing"
+printf '%s\n' "$sidebar_plain" | grep -Fq '└─ ● abcdefgh done' \
+  || fail "sidebar id fallback missing"
+while IFS= read -r line; do
+  [ "${#line}" -eq 26 ] || fail "sidebar registry line is not 26 columns: $line"
+done <<< "$sidebar_plain"
+ok "sidebar fixture renders grouped, sanitized, fixed-width agent tree"
+
 state="$TMP/main"; socket="$state/tmux.sock"; pids="$state/pids"
 BASH_BIN=$(command -v bash)
 runp() { FAMILIAR_PRESENCE_STATE_DIR="$state" FAMILIAR_PRESENCE_SOCKET="$socket" FAMILIAR_PRESENCE_COMMAND="exec $BASH_BIN $FAKE" WORKER_PIDS="$pids" bash "$PRESENCE" "$@"; }
