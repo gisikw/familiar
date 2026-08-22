@@ -70,6 +70,48 @@ success_threshold = 3
 failure_threshold = 3
 
 [[children]]
+name = "agents-service"
+# --unix '' disables the unix socket (the env fallback cannot express "disabled").
+argv = ["nix", "run", ".#familiar-agents-service", "--", "--unix", "", "--db", "state/agents/service.db"]
+working_dir = "../.."
+required = false
+[children.probe]
+type = "http"
+url = "http://127.0.0.1:7337/ready"
+failure_threshold = 3
+[children.restart]
+policy = "on-failure"
+initial_backoff = "500ms"
+max_backoff = "30s"
+jitter = 0.2
+max_restarts = 5
+window = "1m"
+
+[[children]]
+# Worker host supervisor: reconciles delegated jobs into private tmux panes.
+# pi-coding-agent is composed onto PATH for the pi harness; tmux/git/bash are
+# wrapped into the supervisor package itself.
+name = "agents-supervisor"
+argv = ["nix", "run", ".#familiar-agents-supervisor"]
+working_dir = "../.."
+required = false
+depends_on = ["agents-service"]
+dependency_timeout = "30s"
+dependency_timeout_policy = "fail-child"
+[children.env]
+FAMILIAR_AGENTS_HOST = "local"
+# FAMILIAR_AGENTS_SUPERVISOR_STATE stays at its default
+# (~/.local/state/familiar/agents-supervisor): the supervisor requires an
+# absolute state path (tmux socket validation) and TOML cannot express $HOME.
+[children.restart]
+policy = "on-failure"
+initial_backoff = "500ms"
+max_backoff = "30s"
+jitter = 0.2
+max_restarts = 5
+window = "1m"
+
+[[children]]
 name = "gateway"
 argv = ["nix", "run", ".#familiar-gateway"]
 working_dir = "../.."

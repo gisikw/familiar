@@ -197,10 +197,9 @@ run_pi() {
         theme: "familiar",
         themes: [ ($dir + "/themes") ],
         compaction: { enabled: true, reserveTokens: 4096 },
-        # Keep the live extension set explicit. integrations/pi/extensions/agents
-        # is staged but deliberately not enabled until its rollout is approved.
+        # Keep the live extension set explicit.
         extensions: ([
-          "anthropic-gateway", "handoff", "identity",
+          "agents", "anthropic-gateway", "handoff", "identity",
           "ratelimit", "subscriber", "telemetry",
           "timegap", "web", "worklist", "zip"
         ] | map($ext + "/" + .))

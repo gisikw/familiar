@@ -68,6 +68,9 @@
         piShell = pkgs.mkShell (modelEnv // {
           FAMILIAR_SHELL = "pi";
           FAMILIAR_INTERACTIVE_SHELL = "${pkgs.bashInteractive}/bin/bash";
+          # Default worker host for the agents extension's dispatch tool; the
+          # supervisor child registers under this name.
+          FAMILIAR_AGENTS_HOST = "local";
           PI_PACKAGE_DIR = "${pkgs.pi-coding-agent}/lib/node_modules/pi-monorepo";
           packages = with pkgs; [ age curl jq sqlite pi-coding-agent librsvg ffmpeg tmux util-linux ]
             ++ [ agents.packages.${system}.cli ];
@@ -81,7 +84,13 @@
           familiar-gateway = gateway-module.packages.${system}.default;
           familiar-agents = agents.packages.${system}.cli;
           familiar-agents-service = agents.packages.${system}.service;
-          familiar-agents-supervisor = agents.packages.${system}.supervisor;
+          # The worker supervisor spawns pi-harness workers; compose pi onto its
+          # PATH here (the agents flake stays self-contained and pi-free).
+          familiar-agents-supervisor = agents.packages.${system}.supervisor.overrideAttrs (old: {
+            postInstall = (old.postInstall or "") + ''
+              wrapProgram $out/bin/familiar-agents-supervisor --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.pi-coding-agent ]}
+            '';
+          });
           default = familiar-server;
         } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           familiar-tts = tts.packages.${system}.default;
@@ -103,7 +112,7 @@
           familiar-gateway = flake-utils.lib.mkApp { drv = gateway-module.packages.${system}.default; };
           familiar-agents = flake-utils.lib.mkApp { drv = agents.packages.${system}.cli; };
           familiar-agents-service = flake-utils.lib.mkApp { drv = agents.packages.${system}.service; };
-          familiar-agents-supervisor = flake-utils.lib.mkApp { drv = agents.packages.${system}.supervisor; };
+          familiar-agents-supervisor = flake-utils.lib.mkApp { drv = self.packages.${system}.familiar-agents-supervisor; };
         } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           familiar-desktop = flake-utils.lib.mkApp { drv = desktop.packages.${system}.default; };
         };
