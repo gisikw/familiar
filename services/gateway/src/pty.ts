@@ -7,10 +7,10 @@ import { debugLog, errorLog } from "./debug.ts";
 /* --- Browser terminal PTY bridge ------------------------------------------
  *
  * Bridges restty's built-in WebSocket PTY transport to a node-pty child that
- * ATTACHES directly to the Presence Runtime's private tmux target.
- * FAMILIAR_ATTACH_CMD remains a test override;
- * otherwise FAMILIAR_PRESENCE_CTL (or the repository adapter) is invoked with
- * `attach`.
+ * ATTACHES to the Viewer session on the Presence Runtime's private tmux
+ * server. Viewer's main pane nests the resident Presence session.
+ * FAMILIAR_ATTACH_CMD remains a test override; otherwise
+ * FAMILIAR_PRESENCE_CTL (or the repository adapter) is invoked with `viewer`.
  *
  * restty PTY protocol (see restty dist/pty.d.ts):
  *   client → server : JSON text frames {type:"input",data} / {type:"resize",cols,rows}
@@ -47,7 +47,7 @@ export function attachCommand(): { file: string; args: string[] } {
   }
   const controller = process.env.FAMILIAR_PRESENCE_CTL
     || fileURLToPath(new URL("../../presence/presence.sh", import.meta.url));
-  return { file: controller, args: ["attach"] };
+  return { file: controller, args: ["viewer"] };
 }
 
 function startPty(cols: number, rows: number): IPty {

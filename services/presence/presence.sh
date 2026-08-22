@@ -8,7 +8,11 @@ REPO=${FAMILIAR_REPO:-$(CDPATH='' cd -- "$HERE/../.." && pwd -P)}
 STATE=${FAMILIAR_PRESENCE_STATE_DIR:-$REPO/state/presence}
 SOCKET=${FAMILIAR_PRESENCE_SOCKET:-$STATE/tmux.sock}
 SESSION=${FAMILIAR_PRESENCE_SESSION:-presence}
+VIEWER=${FAMILIAR_VIEWER_SESSION:-viewer}
 TARGET="$SESSION:0.0"
+VIEWER_SIDEBAR="$VIEWER:0.0"
+VIEWER_MAIN="$VIEWER:0.1"
+SIDEBAR=${FAMILIAR_SIDEBAR_SCRIPT:-$HERE/sidebar.sh}
 RUNTIME_CONFIG="$STATE/tmux.conf"
 CONFIG_SOURCE=${FAMILIAR_PRESENCE_CONFIG:-$HERE/tmux.conf}
 LOCK="$STATE/ensure.lock"
@@ -43,6 +47,7 @@ prepare() {
 tmux_owned() { tmux -S "$SOCKET" "$@"; }
 server_alive() { tmux_owned show-options -g status >/dev/null 2>&1; }
 server_up() { tmux_owned has-session -t "$SESSION" >/dev/null 2>&1; }
+viewer_up() { tmux_owned has-session -t "$VIEWER" >/dev/null 2>&1; }
 
 # Refresh variables consumed by a respawn. tmux's server may outlive the shell
 # which originally created it, so reload must not retain old Familiar config.
@@ -140,6 +145,59 @@ ensure() {
     || fail "ensure failed or timed out waiting for $LOCK"
 }
 
+sidebar_command() {
+  printf 'exec %q %q run-sidebar' "$BASH_EXE" "$SELF"
+}
+
+nested_command() {
+  # Clearing TMUX is what permits a client inside the outer viewer pane to
+  # attach to another session on this same private server.
+  printf 'TMUX= exec tmux -S %q attach-session -t %q' "$SOCKET" "$SESSION"
+}
+
+configure_viewer() {
+  local sidebar_cmd
+  sidebar_cmd=$(sidebar_command)
+  # All chrome policy is session-local: Presence retains its normal C-b prefix
+  # and mouse behavior while clients attached to Viewer cannot address it.
+  tmux_owned set-option -t "$VIEWER" prefix None
+  tmux_owned set-option -t "$VIEWER" status off
+  tmux_owned set-option -t "$VIEWER" mouse off
+  tmux_owned set-option -t "$VIEWER" pane-border-status off
+  tmux_owned set-window-option -t "$VIEWER:0" allow-passthrough on
+  tmux_owned set-hook -t "$VIEWER" after-split-window "resize-pane -t '$VIEWER_SIDEBAR' -x 28"
+  tmux_owned set-hook -t "$VIEWER" client-resized "resize-pane -t '$VIEWER_SIDEBAR' -x 28"
+  tmux_owned set-hook -t "$VIEWER" window-resized "resize-pane -t '$VIEWER_SIDEBAR' -x 28"
+  # Hook commands inherit the dead pane as their target; omitting -t matters
+  # because tmux does not expand #{pane_id} in a nested respawn-pane argument.
+  tmux_owned set-hook -t "$VIEWER" pane-died \
+    "if-shell -F '#{==:#{pane_index},0}' 'respawn-pane -k \"$sidebar_cmd\"'"
+  tmux_owned resize-pane -t "$VIEWER_SIDEBAR" -x 28
+}
+
+ensure_viewer_locked() {
+  local sidebar_cmd main_cmd panes dead
+  sidebar_cmd=$(sidebar_command)
+  main_cmd=$(nested_command)
+  if ! viewer_up; then
+    tmux_owned new-session -d -s "$VIEWER" -n viewer "$sidebar_cmd"
+    tmux_owned split-window -d -h -t "$VIEWER:0" "$main_cmd"
+  fi
+  panes=$(tmux_owned list-panes -t "$VIEWER:0" | wc -l)
+  [ "$panes" -eq 2 ] || fail "viewer session must contain exactly two panes (found $panes)"
+  configure_viewer
+  dead=$(tmux_owned display-message -p -t "$VIEWER_SIDEBAR" '#{pane_dead}')
+  [ "$dead" = 0 ] || tmux_owned respawn-pane -k -t "$VIEWER_SIDEBAR" "$sidebar_cmd"
+  dead=$(tmux_owned display-message -p -t "$VIEWER_MAIN" '#{pane_dead}')
+  [ "$dead" = 0 ] || tmux_owned respawn-pane -k -t "$VIEWER_MAIN" "$main_cmd"
+}
+
+ensure_viewer() {
+  ensure >/dev/null
+  flock -o -w 10 "$LOCK" "$BASH_EXE" "$SELF" ensure-viewer-locked \
+    || fail "viewer ensure failed or timed out waiting for $LOCK"
+}
+
 status() {
   check_path
   if server_up && [ "$(tmux_owned display-message -p -t "$TARGET" '#{pane_dead}' 2>/dev/null || echo 1)" = 0 ]; then
@@ -150,9 +208,23 @@ status() {
   return 1
 }
 
-attach() {
+attach_presence() {
   ensure >/dev/null
   exec tmux -S "$SOCKET" attach-session -t "$SESSION"
+}
+
+attach_viewer() {
+  ensure_viewer >/dev/null
+  exec tmux -S "$SOCKET" attach-session -t "$VIEWER"
+}
+
+run_sidebar() {
+  # Keep supervising the renderer in addition to the pane-died hook: a renderer
+  # error should never turn the fixed chrome pane into a dead pane.
+  while :; do
+    "$BASH_EXE" "$SIDEBAR" || true
+    sleep 1
+  done
 }
 
 stop() {
@@ -171,10 +243,14 @@ stop() {
 
 case ${1:-} in
   ensure|start) ensure ;;
-  attach) attach ;;
+  viewer|attach) attach_viewer ;;
+  attach-presence) attach_presence ;;
   status) status "$@" ;;
   stop) stop ;;
+  ensure-viewer) ensure_viewer ;;
   ensure-locked) ensure_locked ;; # internal child entered only through flock
+  ensure-viewer-locked) ensure_viewer_locked ;; # internal, under the same lock
   run-worker) worker_command ;;
-  *) fail "usage: $0 {ensure|start|attach|status [--quiet]|stop}" ;;
+  run-sidebar) run_sidebar ;;
+  *) fail "usage: $0 {ensure|start|ensure-viewer|viewer|attach|attach-presence|status [--quiet]|stop}" ;;
 esac
