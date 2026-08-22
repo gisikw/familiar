@@ -77,10 +77,11 @@ HOME="$home" runp ensure >/dev/null
 [ "$(tmux -S "$socket" show-options -gv prefix)" = C-b ] || fail "ordinary prefix unavailable"
 ok "explicit config excludes hostile user config and removes chrome"
 
-# Viewer creation is idempotent and its options do not alter Presence.
-runp ensure-viewer >/dev/null
+# Viewer creation is idempotent, consumes resolved theme overrides, and its
+# options do not alter Presence.
+FAMILIAR_THEME_BORDER='#123456' FAMILIAR_THEME_BORDER_MUTED='#654321' runp ensure-viewer >/dev/null
 pane_ids=$(tmux -S "$socket" list-panes -t viewer:0 -F '#{pane_id}' | sort)
-runp ensure-viewer >/dev/null
+FAMILIAR_THEME_BORDER='#123456' FAMILIAR_THEME_BORDER_MUTED='#654321' runp ensure-viewer >/dev/null
 [ "$(tmux -S "$socket" list-panes -t viewer:0 -F '#{pane_id}' | sort)" = "$pane_ids" ] \
   || fail "idempotent viewer ensure replaced panes"
 [ "$(tmux -S "$socket" list-panes -t viewer:0 | wc -l)" -eq 2 ] || fail "viewer does not have two panes"
@@ -91,13 +92,19 @@ runp ensure-viewer >/dev/null
   || fail "viewer passthrough is not enabled for every visibility state"
 [ "$(tmux -S "$socket" show-options -gv extended-keys)" = on ] \
   || fail "extended keys are not enabled"
+[ "$(tmux -S "$socket" show-options -gv extended-keys-format)" = csi-u ] \
+  || fail "extended keys do not use csi-u format"
+[ "$(tmux -S "$socket" show-window-options -v -t viewer:0 pane-border-style)" = 'fg=#654321' ] \
+  || fail "Viewer inactive border does not use resolved borderMuted role"
+[ "$(tmux -S "$socket" show-window-options -v -t viewer:0 pane-active-border-style)" = 'fg=#123456' ] \
+  || fail "Viewer active border does not use resolved border role"
 case $(tmux -S "$socket" show-options -gv terminal-features) in
   *tmux\*:extkeys*) ;; *) fail "nested tmux terminal lacks extkeys feature" ;; esac
 [ "$(tmux -S "$socket" display-message -p -t viewer:0.1 '#{pane_active}')" = 1 ] \
   || fail "viewer main pane did not receive focus after ensure"
 [ "$(tmux -S "$socket" display-message -p -t viewer:0.0 '#{pane_input_off}')" = 1 ] \
   || fail "sidebar pane input is enabled"
-ok "viewer creation sets passthrough, extended keys, main focus, and inert sidebar input"
+ok "viewer creation sets themed borders, passthrough, extended keys, main focus, and inert sidebar input"
 
 # The client-attached hook restores main focus even if chrome was selected.
 tmux -S "$socket" select-pane -e -t viewer:0.0

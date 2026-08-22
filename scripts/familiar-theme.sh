@@ -8,6 +8,7 @@
 #
 #   theme_pi_json          -> a pi theme JSON (themes/familiar.json)
 #   theme_ansi_env         -> FAMILIAR_ANSI_0..15 exports (pane palette handoff)
+#   theme_pane_borders     -> shell assignments for tmux pane border roles
 #
 # Env contract (matches services/gateway/src/theme/resolve.ts exactly):
 #   role  background   -> FAMILIAR_THEME_BACKGROUND
@@ -128,6 +129,14 @@ theme_sidebar_accent() {
   printf '%s' "$R_accent"
 }
 
+# --- consumer: tmux pane borders -------------------------------------------
+# Shell-escaped assignments are eval'd by presence.sh. This keeps both the
+# canonical defaults and FAMILIAR_THEME_* override resolution in one place.
+theme_pane_borders() {
+  local _resolved; _resolved="$(_theme_resolve_all)" || exit 3; eval "$_resolved"
+  printf 'border=%q\nborder_muted=%q\n' "$R_border" "$R_borderMuted"
+}
+
 # --- consumer: ANSI env for new panes --------------------------------------
 # Terminal consumers may inherit the palette through the environment. We export FAMILIAR_ANSI_0..15 so a
 # A shell or TUI can use these values to emit OSC 4 sequences if desired.
@@ -150,6 +159,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     pi)      theme_pi_json ;;
     accent)  theme_sidebar_accent ;;
     ansi)    theme_ansi_env ;;
-    *) echo "usage: familiar-theme.sh {pi|accent|ansi}" >&2; exit 2 ;;
+    pane-borders) theme_pane_borders ;;
+    *) echo "usage: familiar-theme.sh {pi|accent|ansi|pane-borders}" >&2; exit 2 ;;
   esac
 fi

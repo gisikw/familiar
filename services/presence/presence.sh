@@ -151,14 +151,20 @@ nested_command() {
 }
 
 configure_viewer() {
-  local sidebar_cmd
+  local sidebar_cmd border border_muted border_env
   sidebar_cmd=$(sidebar_command)
+  if ! border_env=$("$BASH_EXE" "$REPO/scripts/familiar-theme.sh" pane-borders); then
+    fail "could not resolve Viewer pane border colors"
+  fi
+  eval "$border_env"
   # All chrome policy is session-local: Presence retains its normal C-b prefix
   # and mouse behavior while clients attached to Viewer cannot address it.
   tmux_owned set-option -t "$VIEWER" prefix None
   tmux_owned set-option -t "$VIEWER" status off
   tmux_owned set-option -t "$VIEWER" mouse off
   tmux_owned set-option -t "$VIEWER" pane-border-status off
+  tmux_owned set-option -t "$VIEWER" pane-border-style "fg=$border_muted"
+  tmux_owned set-option -t "$VIEWER" pane-active-border-style "fg=$border"
   tmux_owned set-window-option -t "$VIEWER:0" allow-passthrough all
   tmux_owned set-hook -t "$VIEWER" after-split-window "resize-pane -t '$VIEWER_SIDEBAR' -x 28"
   tmux_owned set-hook -t "$VIEWER" client-resized "resize-pane -t '$VIEWER_SIDEBAR' -x 28"
