@@ -69,7 +69,7 @@ same-session JSON-to-setup-token cutover.
 
 Use tables whose names match the established environment prefix: `[pi]`,
 `[anthropic]`, `[openai]`, `[model]`, `[llama]`, `[stt]`, `[tts]`, `[herdr]`,
-`[searxng]`, `[brave]`, `[fetch]`, `[subagent]`, `[zip]`, and `[theme]`. Cross-cutting
+`[searxng]`, `[brave]`, `[fetch]`, `[zip]`, and `[theme]`. Cross-cutting
 paths and runtime policy live under `[familiar]`; the loader deliberately does
 not double that prefix. These are the mechanical moves from the retired flat
 spellings to the canonical tables (the effective export name is unchanged):

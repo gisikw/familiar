@@ -77,13 +77,6 @@ skip_version_check = 1
 [fetch]
 # allow_private = false
 
-[subagent]
-# mode = "herdr"
-# model = "anthropic/claude-haiku-4-5"
-# timeout = 1800
-# dir = "./state/subagents"
-# session_dir = "./state/pi/subagent-sessions"
-
 [zip]
 # model = "anthropic/claude-haiku-4-5"
 

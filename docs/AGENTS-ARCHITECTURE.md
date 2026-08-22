@@ -60,20 +60,22 @@ work, and dedicated worker machines while retaining one semantic job namespace.
 ## Familiar integration
 
 Familiar does **not** need a general plugin architecture for this integration.
-The existing pi extension is sufficient:
+The staged `agents` pi extension is sufficient once its separate rollout is
+approved:
 
 ```text
 Familiar Presence Runtime
-└── subagent pi extension
-    ├── dispatch
-    ├── subagent_await
-    ├── subagent_status
-    ├── subagent_respond
-    └── subagent_cancel
+└── agents pi extension
+    ├── agents_dispatch
+    ├── agents_await
+    ├── agents_status
+    ├── agents_respond
+    └── agents_cancel
 ```
 
-The extension may call an API, invoke a CLI, or write to a durable spool. Those
-are transport choices behind the tool contract.
+The extension invokes the Agent System CLI as a thin transport bridge to its
+API. The extension remains deliberately disabled in Familiar's live extension
+set until rollout.
 
 Optional first-class visualization also does not require a generic Familiar
 plugin system. The Familiar Interface Gateway or a Familiar client can consume the agent

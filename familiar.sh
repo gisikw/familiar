@@ -208,7 +208,7 @@ run_pi() {
         # is staged but deliberately not enabled until its rollout is approved.
         extensions: ([
           "anthropic-gateway", "handoff", "identity",
-          "ratelimit", "refamiliarize", "subagent", "subscriber", "telemetry",
+          "ratelimit", "refamiliarize", "subscriber", "telemetry",
           "timegap", "web", "worklist", "zip"
         ] | map($ext + "/" + .))
       }
