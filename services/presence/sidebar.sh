@@ -10,6 +10,92 @@ MARK_PNG=${FAMILIAR_SIDEBAR_MARK_PNG:-$REPO/assets/familiar-mark.png}
 ACCENT=${FAMILIAR_SIDEBAR_ACCENT:-#5ad4e6}
 TMP=''
 MODE=text
+TREE_ROW=13
+TREE_ROWS=22
+TREE_WIDTH=26
+
+fetch_agent_jobs() {
+  if [ -n "${FAMILIAR_AGENTS_JOBS_FIXTURE:-}" ]; then
+    [ -r "$FAMILIAR_AGENTS_JOBS_FIXTURE" ] || return 1
+    cat -- "$FAMILIAR_AGENTS_JOBS_FIXTURE"
+    return
+  fi
+  local endpoint=${FAMILIAR_AGENTS_ENDPOINT:-http://127.0.0.1:7337}
+  curl -sf --max-time 2 "${endpoint%/}/v1/jobs"
+}
+
+# Emit fixed-width display lines. Keeping data selection in jq makes malformed
+# or unreachable registry responses indistinguishable from an empty registry.
+format_agent_tree() {
+  local records workspace label state next connector color available padding text
+  local -a jobs=()
+  records=$(jq -r '
+    def terminal: . == "done" or . == "error" or . == "failed" or
+      . == "cancelled" or . == "timeout";
+    def clean: tostring | gsub("[[:space:]]+"; " ") | gsub("^ +| +$"; "");
+    def workspace: ((.cwd // "") | split("/") | map(select(length > 0)) |
+      (last // "unknown") | clean);
+    def joblabel: ((.prompt // "") | clean) as $p |
+      if ($p | length) > 0 then $p[0:16]
+      else ((.id // "job") | split("-") | last | .[-8:]) end;
+    if type != "array" then empty else
+      ([.[] | select((.state | terminal) | not)] | sort_by(.updated_at // "") | reverse) +
+      ([.[] | select(.state | terminal)] | sort_by(.updated_at // "") | reverse) |
+      .[0:10] | map({workspace: workspace, label: joblabel, state: (.state // "unknown")}) |
+      group_by(.workspace)[] | .[] | [.workspace, .label, .state] | @tsv
+    end
+  ' 2>/dev/null) || return 0
+  [ -n "$records" ] || return 0
+
+  padding=$(printf '%*s' $((TREE_WIDTH - 6)) '')
+  printf '\033[2magents%s\033[0m\n' "$padding"
+  mapfile -t jobs <<< "$records"
+  local i count=${#jobs[@]}
+  for ((i=0; i<count; i++)); do
+    IFS=$'\t' read -r workspace label state <<< "${jobs[i]}"
+    if [ "$i" -eq 0 ] || [ "$workspace" != "${jobs[i-1]%%$'\t'*}" ]; then
+      text=$workspace
+      if [ "${#text}" -gt "$TREE_WIDTH" ]; then text=${text:0:$((TREE_WIDTH - 1))}…; fi
+      printf '%s%*s\n' "$text" $((TREE_WIDTH - ${#text})) ''
+    fi
+    if [ "$i" -eq $((count - 1)) ]; then
+      connector='└─'
+    else
+      next=${jobs[i+1]%%$'\t'*}
+      if [ "$next" = "$workspace" ]; then connector='├─'; else connector='└─'; fi
+    fi
+    case "$state" in
+      running) color='\033[38;2;70;200;120m' ;;
+      done) color='\033[38;2;90;212;230m' ;;
+      error|failed|timeout) color='\033[38;2;235;90;90m' ;;
+      cancelled) color='\033[2m' ;;
+      *) color='\033[38;2;230;190;70m' ;;
+    esac
+    available=$((TREE_WIDTH - 6 - ${#state}))
+    [ "$available" -gt 0 ] || available=1
+    if [ "${#label}" -gt "$available" ]; then label=${label:0:$((available - 1))}…; fi
+    text="$connector  $label $state"
+    padding=$(printf '%*s' $((TREE_WIDTH - ${#text} - 1)) '')
+    printf '%s %b●\033[0m %s %s\n' "$connector" "$color" "$label" "$state$padding"
+  done
+}
+
+render_agent_tree() {
+  local i line row=$TREE_ROW
+  for ((i=0; i<TREE_ROWS; i++)); do
+    printf '\033[%d;1H%*s' $((row + i)) "$TREE_WIDTH" ''
+  done
+  i=0
+  while IFS= read -r line && [ "$i" -lt "$TREE_ROWS" ]; do
+    printf '\033[%d;1H%s' $((row + i)) "$line"
+    i=$((i + 1))
+  done < <(fetch_agent_jobs 2>/dev/null | format_agent_tree)
+}
+
+if [ "${FAMILIAR_SIDEBAR_FORMAT_ONLY:-}" = 1 ]; then
+  fetch_agent_jobs 2>/dev/null | format_agent_tree
+  exit 0
+fi
 
 cleanup() {
   printf '\033[?25h'
@@ -44,10 +130,10 @@ send_mark() {
     offset=$((offset + 4096))
     if [ "$offset" -lt "$total" ]; then more=1; else more=0; fi
     if [ "$first" -eq 1 ]; then
-      printf '\033_Gf=100,a=T,c=16,r=8,m=%d;%s\033\\' "$more" "$chunk"
+      printf "\\033_Gf=100,a=T,c=16,r=8,m=%d;%s\\033\\\\" "$more" "$chunk"
       first=0
     else
-      printf '\033_Gm=%d;%s\033\\' "$more" "$chunk"
+      printf "\\033_Gm=%d;%s\\033\\\\" "$more" "$chunk"
     fi
   done
   printf '\033[11;7H\033[1;38;2;90;212;230mF A M I L I A R\033[0m'
@@ -62,13 +148,14 @@ render() {
   if [ "$MODE" = kitty ]; then send_mark || { MODE=text; send_text; }
   else send_text
   fi
+  render_agent_tree
 }
 trap render WINCH
 render
 
-# A slow repaint also makes kitty images visible to clients which attach after
-# the original APC transmission. WINCH provides the immediate resize path.
+# Periodic repaint makes kitty images visible to clients which attach after the
+# original APC transmission and refreshes the registry. WINCH remains immediate.
 while :; do
-  sleep 45 & wait $! || true
+  sleep 10 & wait $! || true
   render
 done

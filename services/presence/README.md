@@ -56,6 +56,9 @@ script rasterizes `assets/familiar-mark.svg` with `rsvg-convert`, colors it with
 the Familiar accent, and transmits the PNG with chunked kitty graphics APC
 sequences. It redraws on `WINCH` and periodically for late clients. Missing
 assets, `rsvg-convert`, or `base64` degrade to a styled `familiar` label.
+Below the caption, a compact registry tree groups the ten most relevant agent
+jobs by workspace, prioritizes active work, and refreshes from the local agent
+service every ten seconds; an unavailable or empty registry leaves the area clean.
 
 Pane 1 runs the equivalent of:
 
