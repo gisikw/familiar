@@ -61,6 +61,25 @@ func (m *Manager) ready() bool {
 	defer m.mu.Unlock()
 	return m.serving
 }
+
+// state reports the lazy backend's lifecycle for readiness reporting:
+// "running" once the backend accepts connections, "starting" while a
+// single-flight start is in progress, "cold" when no backend is up but
+// one will be started lazily on first synthesis, "closed" on shutdown.
+func (m *Manager) state() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	switch {
+	case m.closed:
+		return "closed"
+	case m.serving:
+		return "running"
+	case m.starting != nil:
+		return "starting"
+	default:
+		return "cold"
+	}
+}
 func (m *Manager) Ensure(caller context.Context) error {
 	m.mu.Lock()
 	if m.closed {
@@ -627,8 +646,19 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("ok\n"))
 		return
 	case "/readyz":
-		if s.mgr != nil && !s.mgr.ready() {
-			http.Error(w, "not ready", 503)
+		// Cold-local readiness (same semantics as the LLM proxy): the
+		// backend is lazy, so "ready" means the proxy can accept a
+		// synthesis request and will start the backend on demand — not
+		// that the backend is already hot. Without this, a supervised
+		// idle TTS never reports ready and blocks dependents.
+		if s.mgr != nil {
+			state := s.mgr.state()
+			if state == "closed" {
+				http.Error(w, "shutting down", 503)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, "{\"status\":\"ready\",\"backend\":%q}\n", state)
 			return
 		}
 		w.WriteHeader(200)
