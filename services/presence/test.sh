@@ -52,6 +52,17 @@ while IFS= read -r line; do
 done <<< "$sidebar_plain"
 ok "sidebar fixture renders grouped, sanitized, fixed-width agent tree"
 
+# Kitty data may bypass tmux, but visible placement must remain normal grid
+# content. Cursor-positioned passthrough regresses to painting the active pane.
+grep -Fq "a=T,U=1,c=16,r=8,i=1" "$HERE/sidebar.sh" \
+  || fail "sidebar kitty transmission is not a virtual placement"
+grep -Fq "placeholder=\$'\\U0010eeee'" "$HERE/sidebar.sh" \
+  || fail "sidebar Unicode placeholder anchor is missing"
+if grep -Fq "\\033Ptmux;\\033\\033[2;7H" "$HERE/sidebar.sh"; then
+  fail "sidebar still moves the outer cursor through passthrough"
+fi
+ok "sidebar anchors a virtual kitty placement in the normal tmux grid"
+
 state="$TMP/main"; socket="$state/tmux.sock"; pids="$state/pids"
 BASH_BIN=$(command -v bash)
 runp() { FAMILIAR_PRESENCE_STATE_DIR="$state" FAMILIAR_PRESENCE_SOCKET="$socket" FAMILIAR_PRESENCE_COMMAND="exec $BASH_BIN $FAKE" WORKER_PIDS="$pids" bash "$PRESENCE" "$@"; }

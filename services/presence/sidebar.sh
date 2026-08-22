@@ -120,20 +120,22 @@ prepare_mark() {
 }
 
 send_mark() {
-  local data total offset=0 chunk first=1 more
+  local data total offset=0 chunk first=1 more row col placeholder
+  local -a diacritics=(
+    $'\u0305' $'\u030d' $'\u030e' $'\u0310'
+    $'\u0312' $'\u033d' $'\u033e' $'\u033f'
+    $'\u0346' $'\u034a' $'\u034b' $'\u034c'
+    $'\u0350' $'\u0351' $'\u0352' $'\u0357'
+  )
+  placeholder=$'\U0010eeee'
   data=$(base64 -w0 "$TMP/mark.png" 2>/dev/null || base64 "$TMP/mark.png" | tr -d '\n')
   [ -n "$data" ] || return 1
   total=${#data}
   printf '\033[2J\033[H'
-  # The passthrough APC bypasses tmux's grid, so the image lands wherever the
-  # OUTER terminal's cursor sits (often the focused main pane). The sidebar is
-  # the leftmost pane, so pane cell (2,7) IS outer cell (2,7): save the outer
-  # cursor, park it at the mark's absolute cell, draw, restore. All of it must
-  # ride the same passthrough envelope to reach the outer terminal.
-  printf '\033Ptmux;\033\0337\033\\'
-  printf '\033Ptmux;\033\033[2;7H\033\\'
-  # Stable image id + delete-before-transmit: repaints replace the placement
-  # instead of accumulating copies.
+  # APC passthrough reaches the outer terminal, but deliberately creates only
+  # a virtual placement. Its cursor position is irrelevant. The visible image
+  # is anchored by ordinary grid cells below, which tmux positions and replays.
+  # Stable image id + delete-before-transmit keeps repaints bounded.
   printf '\033Ptmux;\033\033_Ga=d,d=i,i=1,q=2\033\033\\\033\\'
   while [ "$offset" -lt "$total" ]; do
     chunk=${data:$offset:4096}
@@ -142,14 +144,23 @@ send_mark() {
     # tmux does not forward a raw kitty APC. Wrap each command in tmux's DCS
     # passthrough envelope and double ESC bytes in the enclosed APC.
     if [ "$first" -eq 1 ]; then
-      printf '\033Ptmux;\033\033_Gf=100,a=T,c=16,r=8,i=1,p=1,q=2,m=%d;%s\033\033\\\033\\' "$more" "$chunk"
+      printf '\033Ptmux;\033\033_Gf=100,a=T,U=1,c=16,r=8,i=1,p=1,q=2,m=%d;%s\033\033\\\033\\' "$more" "$chunk"
       first=0
     else
       printf '\033Ptmux;\033\033_Gm=%d;%s\033\033\\\033\\' "$more" "$chunk"
     fi
   done
-  printf '\033Ptmux;\033\0338\033\\'
-  printf '\033[11;7H\033[1;38;2;90;212;230mF A M I L I A R\033[0m'
+  # U+10EEEE plus canonical row/column diacritics are normal terminal text.
+  # Truecolor foreground 0x000001 selects image id 1; explicit coordinates
+  # remain correct under horizontal scrolling and nested tmux redraws.
+  printf '\033[38;2;0;0;1m'
+  for ((row=0; row<8; row++)); do
+    printf '\033[%d;7H' $((row + 2))
+    for ((col=0; col<16; col++)); do
+      printf '%s%s%s' "$placeholder" "${diacritics[row]}" "${diacritics[col]}"
+    done
+  done
+  printf '\033[0m\033[11;7H\033[1;38;2;90;212;230mF A M I L I A R\033[0m'
 }
 
 send_text() {

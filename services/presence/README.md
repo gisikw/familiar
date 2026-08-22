@@ -72,10 +72,30 @@ sequences pass to the inner client. Pane 1 is selected at creation and on each
 client attach, while pane 0 has input disabled. Presence retains its `C-b`
 prefix and ordinary behavior.
 
-The sidebar wraps each kitty APC in tmux's DCS passthrough envelope (including
-ESC doubling); raw kitty APCs are parsed and discarded by tmux rather than
-forwarded. `allow-passthrough all` is enabled globally and explicitly on the
-Viewer window so wrapped repaints can cross tmux regardless of visibility.
+The sidebar uses the kitty protocol's Unicode-placeholder mode, which restty
+renders. A passthrough-wrapped APC deletes image id 1 and retransmits the PNG as
+a 16-by-8 **virtual** placement (`U=1`); it never creates a cursor-positioned
+placement. The script then writes U+10EEEE cells with explicit canonical
+row/column diacritics and truecolor foreground `0x000001` through the normal
+terminal grid. tmux therefore positions, stores, clears, and replays the visible
+mark with the sidebar pane instead of relying on the outer terminal cursor.
+Periodic retransmission supplies image data to late-attaching clients while the
+replayed placeholder cells supply its location.
+
+Raw kitty APCs are parsed and discarded by tmux, so image-data commands remain
+inside tmux DCS passthrough envelopes (with ESC doubling). `allow-passthrough
+all` is enabled globally and explicitly on the Viewer window. Cursor movement
+must not be put in passthrough: tmux continually reasserts the active main
+pane's outer cursor, which previously caused duplicate/footer artifacts.
+
+Unicode placeholders are also the intended mechanism for future pi-frame
+images inside nested tmux: every tmux layer can treat their anchors as ordinary
+grid text while only the data transmission bypasses it. This depends on each
+layer preserving U+10EEEE, combining marks, and truecolor. The current
+outer-Viewer/inner-Presence path proves those properties for restty and tmux,
+but future pi-frame work must use distinct stable image ids and verify its
+additional nesting depth.
+
 Extended keys and `extkeys` terminal features are enabled for common direct and
 nested client TERM families.
 
@@ -89,5 +109,6 @@ nix flake check --no-build
 The focused test uses only temporary private sockets and a fake worker. It
 covers config isolation, worker continuity/recovery, concurrency, path and stop
 isolation, idempotent Viewer creation, passthrough and extended-key options,
-main-pane focus, disabled sidebar input, the 28-column resize lock, nested
-attach command shape, and the Gateway entrypoint contract.
+the virtual-placement/normal-grid anchor contract, main-pane focus, disabled
+sidebar input, the 28-column resize lock, nested attach command shape, and the
+Gateway entrypoint contract.
