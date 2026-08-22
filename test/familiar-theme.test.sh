@@ -50,7 +50,18 @@ ov="$(FAMILIAR_THEME_ACCENT='#abc' bash "$GEN" accent)"
 ovh="$(FAMILIAR_THEME_ANSI_RED='#00ff00' bash "$GEN" ansi | sed -n 's/^export FAMILIAR_ANSI_1=//p')"
 [ "$ovh" = "#00ff00" ] && ok "ansi override propagates" || bad "ansi override (got $ovh)"
 
-# 6. bad color fails clearly with exit 3 and a useful message.
+# 6. pane border consumer resolves defaults and role overrides.
+borders="$(bash "$GEN" pane-borders)"
+eval "$borders"
+[ "$border" = "$(jq -r '.roles.border' "$DEFAULTS")" ] \
+  && [ "$border_muted" = "$(jq -r '.roles.borderMuted' "$DEFAULTS")" ] \
+  && ok "pane borders match role defaults" || bad "pane border defaults"
+borders="$(FAMILIAR_THEME_BORDER='#abc' FAMILIAR_THEME_BORDER_MUTED='#123456' bash "$GEN" pane-borders)"
+eval "$borders"
+[ "$border" = "#aabbcc" ] && [ "$border_muted" = "#123456" ] \
+  && ok "pane border overrides propagate" || bad "pane border overrides"
+
+# 7. bad color fails clearly with exit 3 and a useful message.
 FAMILIAR_THEME_ACCENT='notacolor' bash "$GEN" pi >/dev/null 2>&1
 [ "$?" -eq 3 ] && ok "bad color exits 3" || bad "bad color exit code"
 msg="$({ FAMILIAR_THEME_ACCENT='notacolor' bash "$GEN" pi >/dev/null; } 2>&1)"
