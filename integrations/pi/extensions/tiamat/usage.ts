@@ -37,6 +37,13 @@ export function providerId(piProvider: string | undefined): string | undefined {
   try { return decodeURIComponent(match[1]); } catch { return match[1]; }
 }
 
+/* ProggyCleanNerdFontMono lacks plain-Unicode ↻/△/▲ but carries the nerd-font
+ * PUA set, and the browser viewer cannot font-fallback like a terminal can.
+ * Use PUA glyphs guaranteed present in the shipped webfont. */
+const GLYPH_REFRESH = "\u{F021B}"; // nf-md-refresh (circular arrow)
+const GLYPH_ALERT_OUTLINE = "\u{F002A}"; // nf-md-alert-outline (warning)
+const GLYPH_ALERT = "\u{F0026}"; // nf-md-alert (filled, error)
+
 const usedPercent = (used: string): number | undefined => {
   const parsed = Number.parseFloat(used.replace(/%\s*$/, ""));
   return Number.isFinite(parsed) ? parsed : undefined;
@@ -84,9 +91,9 @@ export function formatUsage(id: string, windows: TiamatUsageWindow[], stale: boo
     if (percent !== undefined) peak = Math.max(peak, percent);
     const reset = formatReset(window.resetsInSeconds, now, timeZone);
     const shown = percent === undefined ? window.used : `${Math.round(percent)}%`;
-    return `${windowLabel(window.name)} ${shown}${reset ? ` ↻${reset}` : ""}`;
+    return `${windowLabel(window.name)} ${shown}${reset ? ` ${GLYPH_REFRESH}${reset}` : ""}`;
   });
   const tone: UsageTone = peak >= 100 ? "error" : stale || peak >= 90 ? "warning" : "dim";
-  const glyph = tone === "error" ? "▲ " : tone === "warning" ? "△ " : "";
+  const glyph = tone === "error" ? `${GLYPH_ALERT} ` : tone === "warning" ? `${GLYPH_ALERT_OUTLINE} ` : "";
   return { text: `${glyph}${providerLabel(id)} ${parts.join(" · ")}${stale ? " · stale" : ""}`, tone };
 }
