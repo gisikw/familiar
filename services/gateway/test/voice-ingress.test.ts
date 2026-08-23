@@ -60,6 +60,7 @@ beforeAll(async () => {
   server = http.createServer((req, res) => {
     const { pathname } = new URL(req.url ?? "/", "http://localhost");
     if (pathname === "/relay") return relay.attach(req, res);
+    if (pathname === "/voice-status") return void ingress.handleVoiceStatus(req, res).catch(() => { res.statusCode = 500; res.end(); });
     if (pathname === "/submit") return void ingress.handleSubmit(req, res).catch(() => { res.statusCode = 500; res.end(); });
     res.statusCode = 404;
     res.end();
@@ -102,11 +103,11 @@ function openRelay(onCmd: (cmd: any) => void): Promise<() => void> {
   });
 }
 
-function postSubmit(body: unknown): Promise<{ status: number; text: string }> {
+function post(path: string, body: unknown): Promise<{ status: number; text: string }> {
   return new Promise((resolve, reject) => {
     const data = JSON.stringify(body);
     const req = http.request(
-      `${BASE}/submit`,
+      `${BASE}${path}`,
       { method: "POST", headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } },
       (res) => {
         let out = "";
@@ -118,6 +119,8 @@ function postSubmit(body: unknown): Promise<{ status: number; text: string }> {
     req.end(data);
   });
 }
+
+const postSubmit = (body: unknown) => post("/submit", body);
 
 describe("voice /submit → /relay protocol", () => {
   test("a single audio take produces exactly one 🗣 submit command with the take id", async () => {
@@ -136,6 +139,8 @@ describe("voice /submit → /relay protocol", () => {
 
     const submits = cmds.filter((c) => c.type === "submit");
     expect(submits.length).toBe(1);
+    expect(cmds.filter((c) => c.type === "voice-status").map((c) => c.phase))
+      .toEqual(["transcribing", "idle"]);
     const cmd = submits[0];
     expect(cmd.correlationId).toBe(takeId);
     // parts[0] is the transcript, marked 🗣 so the model prices in STT error.
@@ -147,6 +152,21 @@ describe("voice /submit → /relay protocol", () => {
     expect(lastSttPath).toBe("/v1/audio/transcriptions");
     expect(lastSttBody?.toString("utf8")).toBe("RIFFfake-wav-bytes");
 
+    close();
+  });
+
+  test("browser capture start is relayed immediately with ordering metadata", async () => {
+    const cmds: any[] = [];
+    const close = await openRelay((c) => cmds.push(c));
+    await new Promise((r) => setTimeout(r, 50));
+    const timestamp = Date.now() - 5;
+    const res = await post("/voice-status", { phase: "capturing", timestamp, takeId: 991 });
+    expect(res.status).toBe(204);
+    await new Promise((r) => setTimeout(r, 30));
+    const status = cmds.find((c) => c.type === "voice-status");
+    expect(status).toMatchObject({ phase: "capturing", takeId: 991 });
+    expect(status.timestamp).toBeGreaterThanOrEqual(timestamp);
+    expect(status.seq).toBeNumber();
     close();
   });
 

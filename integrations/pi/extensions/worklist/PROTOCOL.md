@@ -180,6 +180,21 @@ No import cycle. **This is fire-and-forget only** — `pi.events.emit` returns
 seam. The old `inbox:add` channel is kept as a bounded compatibility alias for
 one release.
 
+Subscriber also publishes the ephemeral voice-focus lifecycle on this bus:
+
+```ts
+pi.events.emit("voice:status", {
+  phase: "capturing" | "transcribing" | "idle",
+  timestamp: 1755680000000,
+  takeId: 42, // optional correlation only
+});
+```
+
+This event is advisory and fire-and-forget. Worklist treats either active phase
+as a focused lease for 30 seconds from receipt, refreshed by later active
+events; `idle` releases it immediately. The lease is deliberately volatile and
+time-bounded so a dropped relay/SSE terminal event cannot wedge attention.
+
 ### (b) Out-of-process — the drop-box (marker-file pattern)
 
 ```sh

@@ -1,7 +1,7 @@
 import type http from "http";
 import { errorLog } from "./debug.ts";
 import type { RelayBus } from "./relay.ts";
-import type { SubmitPayload } from "./protocol.ts";
+import type { SubmitPayload, VoiceStatusPayload } from "./protocol.ts";
 
 /* --- Ingress: text / chunked-audio takes → RelayCommand -------------------
  *
@@ -14,8 +14,25 @@ import type { SubmitPayload } from "./protocol.ts";
 
 export class Ingress {
   private audioSegmentBuffer: Record<number, Record<number, { data: string; transcription: Promise<string> }>> = {};
+  private voiceSeq = 0;
 
   constructor(private relay: RelayBus) { }
+
+  private emitVoice(phase: VoiceStatusPayload["phase"], takeId?: number) {
+    // Voice feedback is advisory: it must never make submit/cancel fail.
+    try { this.relay.send({ type: "voice-status", phase, timestamp: Date.now(), seq: ++this.voiceSeq, takeId }); }
+    catch (err) { errorLog("subscriber", { voiceStatusError: String(err) }); }
+  }
+
+  private parseVoiceStatus(raw: string): VoiceStatusPayload | null {
+    try {
+      const p = JSON.parse(raw);
+      if ((p?.phase === "capturing" || p?.phase === "transcribing" || p?.phase === "idle")
+        && typeof p.timestamp === "number" && Number.isFinite(p.timestamp)
+        && (p.takeId === undefined || typeof p.takeId === "number")) return p;
+    } catch { /* invalid */ }
+    return null;
+  }
 
   private parseSubmit(raw: string): SubmitPayload | null {
     try {
@@ -67,6 +84,16 @@ export class Ingress {
     });
   }
 
+  // POST /voice-status — browser-side capture begins before audio exists.
+  async handleVoiceStatus(req: http.IncomingMessage, res: http.ServerResponse) {
+    if (req.method !== "POST") { res.statusCode = 405; return res.end(); }
+    const payload = this.parseVoiceStatus(await this.readBody(req));
+    if (!payload) { res.statusCode = 400; return res.end(); }
+    this.emitVoice(payload.phase, payload.takeId);
+    res.statusCode = 204;
+    res.end();
+  }
+
   // POST /cancel — abort the in-flight turn. Idempotent, 204 always.
   handleCancel(req: http.IncomingMessage, res: http.ServerResponse) {
     if (req.method !== "POST") {
@@ -94,6 +121,7 @@ export class Ingress {
       this.dispatch(payload.id, payload.content);
     } else {
       const { id, seq, data, segments } = payload;
+      this.emitVoice("transcribing", id);
       const take = this.audioSegmentBuffer[id] = this.audioSegmentBuffer[id] || {};
       if (take[seq] === undefined) {
         take[seq] = { data, transcription: this.transcribeWithRetry(data) };
@@ -117,7 +145,10 @@ export class Ingress {
             .catch((err) => {
               errorLog("subscriber", { dispatchError: String(err), id });
             })
-            .finally(() => { delete this.audioSegmentBuffer[id]; });
+            .finally(() => {
+              this.emitVoice("idle", id);
+              delete this.audioSegmentBuffer[id];
+            });
         }
       }
     }

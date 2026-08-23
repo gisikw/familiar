@@ -7,6 +7,7 @@ import {
   type MessageEvent,
   type RelayCommand,
   type StreamEvent,
+  type VoiceStatusCommand,
 } from "./protocol.ts";
 import type { PendingEchoes } from "./echo.ts";
 
@@ -98,12 +99,59 @@ export class NoopAudio {
   register(_messageId: number, _index: number, _text: string, _synthesize: boolean) { /* server-side now */ }
 }
 
+export class VoiceStatusController {
+  ctx: ExtensionContext | null = null;
+  private latestTimestamp = -Infinity;
+  private latestSeq = -Infinity;
+  private timeout: ReturnType<typeof setTimeout> | null = null;
+
+  constructor(private pi: ExtensionAPI, private timeoutMs = 60_000) { }
+
+  enact(cmd: VoiceStatusCommand): boolean {
+    if (cmd.timestamp < this.latestTimestamp
+      || (cmd.timestamp === this.latestTimestamp && cmd.seq <= this.latestSeq)) return false;
+    this.latestTimestamp = cmd.timestamp;
+    this.latestSeq = cmd.seq;
+    this.apply(cmd.phase, cmd.timestamp, cmd.takeId);
+    return true;
+  }
+
+  clear() {
+    if (this.timeout) clearTimeout(this.timeout);
+    this.timeout = null;
+    if (this.ctx?.hasUI) this.ctx.ui.setWidget("voice-status", undefined);
+  }
+
+  private apply(phase: VoiceStatusCommand["phase"], timestamp: number, takeId?: number) {
+    this.clear();
+    if (phase !== "idle") {
+      if (this.ctx?.hasUI) {
+        const label = phase === "capturing" ? "🎙 Listening…" : "🎙 Transcribing…";
+        // A namespaced above-editor widget is independent of Pi's/shared
+        // working message, so voice feedback cannot stomp an agent turn.
+        this.ctx.ui.setWidget("voice-status", [label], { placement: "aboveEditor" });
+      }
+      this.timeout = setTimeout(() => {
+        const now = Date.now();
+        this.latestTimestamp = Math.max(this.latestTimestamp, now);
+        this.latestSeq = Number.MAX_SAFE_INTEGER;
+        this.apply("idle", now, takeId);
+      }, this.timeoutMs);
+    }
+    try { this.pi.events.emit("voice:status", { phase, timestamp, takeId }); }
+    catch (err) { errorLog("relay", { voiceEventError: String(err) }); }
+  }
+}
+
 export class RelayClient {
   ctx: ExtensionContext | null = null;
   private abort: AbortController | null = null;
   private closed = false;
+  readonly voice: VoiceStatusController;
 
-  constructor(private pi: ExtensionAPI, private echoes: PendingEchoes) { }
+  constructor(private pi: ExtensionAPI, private echoes: PendingEchoes) {
+    this.voice = new VoiceStatusController(pi);
+  }
 
   // Subscribe to the server's command bus. Reconnects with backoff; the server
   // may not be up yet at session_start.
@@ -116,6 +164,7 @@ export class RelayClient {
     this.closed = true;
     this.abort?.abort();
     this.abort = null;
+    this.voice.clear();
   }
 
   private async loop() {
@@ -161,6 +210,11 @@ export class RelayClient {
   }
 
   private enact(cmd: RelayCommand) {
+    if (cmd.type === "voice-status") {
+      this.voice.ctx = this.ctx;
+      this.voice.enact(cmd);
+      return;
+    }
     if (cmd.type === "cancel") {
       try { this.ctx?.abort?.(); } catch (err) { errorLog("relay", { cancelError: String(err) }); }
       return;

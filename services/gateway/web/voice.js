@@ -52,11 +52,12 @@ function pickMime() {
 const MAX_RECORD_MS = 90_000;
 
 export class VoiceCapture {
-  // deps: { onState(state, detail), submitUrl }
+  // deps: { onState(state, detail), submitUrl, statusUrl }
   constructor(deps = {}) {
     this.sm = new VoiceStateMachine();
     this.onState = deps.onState || (() => {});
     this.submitUrl = deps.submitUrl || "/submit";
+    this.statusUrl = deps.statusUrl || "/voice-status";
 
     this.stream = null;
     this.recorder = null;
@@ -66,6 +67,8 @@ export class VoiceCapture {
     this.uploadAbort = null;
     // Monotonic take id — correlation id echoed back on the pi user message.
     this.takeSeq = Date.now() % 1_000_000;
+    this.currentTakeId = null;
+    this.gatewayOwnsTerminalStatus = false;
   }
 
   // F8 tap. Fully synchronous entry; async work is kicked off by actions.
@@ -102,6 +105,8 @@ export class VoiceCapture {
           this._discard();
           break;
         case ACTIONS.NOTIFY:
+          if (action.state === STATES.REQUESTING) this.currentTakeId = ++this.takeSeq;
+          this._notifyGateway(action.state);
           this.onState(action.state, action.detail);
           break;
         default:
@@ -184,8 +189,34 @@ export class VoiceCapture {
     );
   }
 
+  _notifyGateway(state) {
+    const phase = state === STATES.REQUESTING || state === STATES.RECORDING
+      ? "capturing"
+      : state === STATES.FINALIZING
+        ? "transcribing"
+        : "idle";
+    // Once /submit accepts the take, the gateway owns STT and will emit idle
+    // only after transcript dispatch. Do not clear pi merely because upload ended.
+    if (phase === "idle" && this.gatewayOwnsTerminalStatus) {
+      this.gatewayOwnsTerminalStatus = false;
+      this.currentTakeId = null;
+      return;
+    }
+    const body = JSON.stringify({ phase, timestamp: Date.now(), takeId: this.currentTakeId ?? undefined });
+    // Advisory and deliberately unawaited: status can never delay/break voice submit.
+    try {
+      void fetch(this.statusUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+        keepalive: phase === "idle",
+      }).catch(() => {});
+    } catch (_) { /* feedback failure is harmless */ }
+    if (phase === "idle") this.currentTakeId = null;
+  }
+
   async _upload(take) {
-    const id = ++this.takeSeq;
+    const id = this.currentTakeId ?? ++this.takeSeq;
     this.uploadAbort = new AbortController();
     try {
       const b64 = await blobToBase64(take.blob);
@@ -206,6 +237,7 @@ export class VoiceCapture {
       // 200 = accepted+dispatched; 409 = server still missing a segment (should
       // not happen for a single-segment take) — treat non-2xx as failure.
       if (!res.ok) throw new Error(`submit ${res.status}`);
+      this.gatewayOwnsTerminalStatus = true;
       this._run(this.sm.dispatch(INTENTS.SUBMIT_DONE));
     } catch (err) {
       if (err && err.name === "AbortError") return; // cancelled; already idle
