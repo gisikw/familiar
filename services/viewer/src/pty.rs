@@ -47,7 +47,6 @@ pub fn child_command(config: &Config, target: &ViewerTarget) -> ChildCommand {
             config.agents_socket.as_os_str(),
             vec![
                 "attach-session".into(),
-                "-r".into(),
                 "-t".into(),
                 format!("worker-{}", sanitize_agent_id(id)).into(),
             ],
@@ -99,7 +98,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_is_read_only_and_sanitized_like_sidebar() {
+    fn agent_is_writable_and_sanitized_like_sidebar() {
         let command = child_command(&config(), &ViewerTarget::Agent("a b/c.é_$".into()));
         assert_eq!(
             command.args,
@@ -107,11 +106,12 @@ mod tests {
                 "-S",
                 "/run/a.sock",
                 "attach-session",
-                "-r",
                 "-t",
                 "worker-a-b-c--_-"
             ]
         );
+        // Agent workers are interactive TUIs; the read-only attach is gone.
+        assert!(!command.args.iter().any(|arg| arg == "-r"));
     }
 
     #[test]
