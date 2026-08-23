@@ -10,6 +10,7 @@ import {
   type ProviderGroup,
   type TiamatCatalogRecord,
 } from "./catalog.ts";
+import { formatUsage, isProviders, providerId, type TiamatProviders } from "./usage.ts";
 
 const LOG = "tiamat";
 const logError = (value: unknown) => process.env.FAMILIAR_LOG_PATH
@@ -17,7 +18,10 @@ const logError = (value: unknown) => process.env.FAMILIAR_LOG_PATH
   : console.error(`[tiamat] ${JSON.stringify(value)}`);
 const logDebug = (value: unknown) => { if (process.env.FAMILIAR_LOG_PATH) debugLog(LOG, value); };
 const CATALOG_PATH = "/tiamat/v1/models";
+const PROVIDERS_PATH = "/tiamat/v1/providers";
 const DEFAULT_POLL_SECONDS = 300;
+const USAGE_POLL_MS = 5 * 60_000;
+const USAGE_STALE_MS = 15 * 60_000;
 
 class CatalogAuthError extends Error {}
 interface CatalogResult { catalog: TiamatCatalogRecord[]; etag?: string }
@@ -50,6 +54,11 @@ export default async function tiamat(pi: ExtensionAPI) {
   let failureLogged = false;
   let authStopped = false;
   let pollInFlight = false;
+  let usageTimer: ReturnType<typeof setInterval> | undefined;
+  let usageInFlight = false;
+  let providers: TiamatProviders = {};
+  let usageRefreshedAt = 0;
+  let lastUsageStatus = "";
 
   const token = async () => (await readFile(tokenFile, "utf8")).trim();
   const request = async (method: "GET" | "HEAD", signal?: AbortSignal, etag?: string): Promise<Response> => {
@@ -67,6 +76,37 @@ export default async function tiamat(pi: ExtensionAPI) {
     const value: unknown = await response.json();
     if (!isCatalog(value)) throw new Error("Tiamat catalog response has an invalid shape");
     return { catalog: value, etag: response.headers.get("etag") ?? undefined };
+  };
+  const renderUsage = () => {
+    if (!context?.hasUI) return;
+    const id = providerId(context.model?.provider);
+    const windows = id && providers[id]?.usage?.windows;
+    const status = id && windows
+      ? formatUsage(id, windows, Date.now() - usageRefreshedAt > USAGE_STALE_MS)
+      : undefined;
+    const painted = status ? context.ui.theme.fg(status.tone, status.text) : "";
+    if (painted === lastUsageStatus) return;
+    lastUsageStatus = painted;
+    context.ui.setStatus("tiamat", painted || undefined);
+  };
+  const pollUsage = async () => {
+    if (!context?.hasUI || usageInFlight) return;
+    usageInFlight = true;
+    try {
+      const bearer = await token();
+      if (!bearer) return;
+      const response = await fetch(`${baseUrl}${PROVIDERS_PATH}`, {
+        headers: { Authorization: `Bearer ${bearer}` },
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok) return;
+      const value: unknown = await response.json();
+      if (!isProviders(value)) return;
+      providers = value;
+      usageRefreshedAt = Date.now();
+      renderUsage();
+    } catch { /* Usage display must never affect an agent turn or spam logs. */ }
+    finally { usageInFlight = false; }
   };
   const reportFailure = (error: unknown) => {
     if (error instanceof CatalogAuthError) authStopped = true;
@@ -175,10 +215,23 @@ export default async function tiamat(pi: ExtensionAPI) {
     return withoutMaxOutputTokens(event.payload);
   });
 
-  pi.on("session_start", async (_event, ctx) => { context = ctx; schedule(); });
+  pi.on("session_start", async (_event, ctx) => {
+    context = ctx;
+    schedule();
+    if (ctx.hasUI) {
+      renderUsage();
+      void pollUsage();
+      usageTimer ??= setInterval(() => { void pollUsage(); renderUsage(); }, USAGE_POLL_MS);
+      usageTimer.unref?.();
+    }
+  });
+  pi.on("model_select", async (_event, ctx) => { context = ctx; renderUsage(); });
+  pi.on("turn_end", async (_event, ctx) => { context = ctx; renderUsage(); });
   pi.on("session_shutdown", async () => {
     if (timer) clearTimeout(timer);
+    if (usageTimer) clearInterval(usageTimer);
     timer = undefined;
+    usageTimer = undefined;
     context = undefined;
   });
 }

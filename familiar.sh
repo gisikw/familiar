@@ -199,9 +199,8 @@ run_pi() {
         compaction: { enabled: true, reserveTokens: 4096 },
         # Keep the live extension set explicit.
         extensions: ([
-          "agents", "anthropic-gateway", "handoff", "identity",
-          "ratelimit", "subscriber", "telemetry", "tiamat",
-          "timegap", "web", "worklist", "zip"
+          "agents", "handoff", "identity", "subscriber", "telemetry",
+          "tiamat", "timegap", "web", "worklist", "zip"
         ] | map($ext + "/" + .))
       }
       | .defaultProvider //= $provider
