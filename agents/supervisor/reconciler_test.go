@@ -3,6 +3,8 @@ package supervisor
 import (
 	"context"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -29,6 +31,52 @@ func testSupervisor(t *testing.T, cwd, artifactRoot string) (*Supervisor, *servi
 	c := client.New(httpServer.URL)
 	s := &Supervisor{Host: "host", Client: c, Registry: registry, ArtifactRoot: artifactRoot, AllowedCWDRoots: []string{cwd}, Adapters: DefaultAdapters("", nil, nil), MaxStartAttempts: 2, StartBackoff: time.Nanosecond}
 	return s, store, c
+}
+
+func TestFakeWorkerOutputIsVisibleCapturedAndSettled(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux absent")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cwd := t.TempDir()
+	artifacts := t.TempDir()
+	s, store, c := testSupervisor(t, cwd, artifacts)
+	s.Tmux = Tmux{Socket: filepath.Join(t.TempDir(), "tmux.sock")}
+	if err := s.Tmux.Prepare(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = s.Tmux.run(context.Background(), "kill-server") })
+	job, err := c.Create(ctx, protocol.CreateJob{IdempotencyKey: "fake-live", Harness: "fake", Host: "host", Prompt: "go", CWD: cwd})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.reconcileStart(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	worker := s.Registry.Snapshot()[job.ID]
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		if err = s.observe(ctx); err != nil {
+			t.Fatal(err)
+		}
+		got, getErr := store.Get(ctx, job.ID)
+		if getErr == nil && got.State == protocol.Done && got.Settlement != nil {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	got, err := store.Get(ctx, job.ID)
+	if err != nil || got.State != protocol.Done || got.Settlement == nil {
+		t.Fatalf("fake worker did not settle from captured transcript: %#v %v", got, err)
+	}
+	pane, err := s.Tmux.run(ctx, "capture-pane", "-p", "-S", "-", "-t", worker.Target)
+	if err != nil || !strings.Contains(pane, "fake-worker-complete") {
+		t.Fatalf("fake worker output not visible in pane: %q %v", pane, err)
+	}
+	transcript, err := os.ReadFile(worker.Launch.Transcript)
+	if err != nil || string(transcript) != "fake-worker-complete\n" {
+		t.Fatalf("fake transcript was not captured exactly: %q %v", transcript, err)
+	}
 }
 
 func TestPermanentStartFailureSettlesImmediatelyAndRejectsCWD(t *testing.T) {

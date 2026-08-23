@@ -96,7 +96,11 @@ func (t Tmux) Start(ctx context.Context, id string, l harnesses.Launch) (string,
 	for _, v := range l.Argv {
 		parts = append(parts, quote(v))
 	}
-	cmd := "exec env " + strings.Join(parts, " ") + " >>" + quote(l.Transcript) + " 2>&1"
+	// Keep the harness off the PTY so its transcript bytes remain identical to
+	// direct file redirection, while tee mirrors those bytes into the pane.
+	// pipefail preserves the harness exit status instead of reporting tee's.
+	pipeline := "exec env " + strings.Join(parts, " ") + " 2>&1 | tee -a " + quote(l.Transcript)
+	cmd := "exec bash -o pipefail -c " + quote(pipeline)
 	args := []string{"new-session", "-d", "-s", session, "-n", "worker", "-c", l.Dir, cmd}
 	if !t.ServerAlive(ctx) {
 		if fi, err := os.Lstat(t.Socket); err == nil && fi.Mode()&os.ModeSocket != 0 {
