@@ -1,6 +1,6 @@
 use crate::app::{App, TargetRuntime, ViewerTarget};
 use crate::cli::Config;
-use crate::graphics::{probe_host, GraphicsMode, HostGraphics};
+use crate::graphics::{probe_host, CellAspect, GraphicsMode, HostGraphics};
 use crate::input::{route_mouse, target_for_sidebar_hit, MouseRoute};
 use crate::layout::{viewer_layout, ViewerLayout};
 use crate::pty::{child_command, pty_size};
@@ -15,7 +15,7 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    disable_raw_mode, enable_raw_mode, window_size, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use portable_pty::{native_pty_system, Child, MasterPty};
 use ratatui::backend::CrosstermBackend;
@@ -304,6 +304,61 @@ fn mapped_cursor(layout: ViewerLayout, cursor: crate::terminal::CursorState) -> 
         .then_some((layout.main.x + cursor.column, layout.main.y + cursor.row))
 }
 
+fn mark_image_area(mark: ratatui::layout::Rect) -> ratatui::layout::Rect {
+    ratatui::layout::Rect::new(
+        mark.x,
+        mark.y.saturating_add(1),
+        mark.width,
+        mark.height.saturating_sub(4),
+    )
+}
+
+fn render_mark_wordmark(
+    mode: GraphicsMode,
+    mark: ratatui::layout::Rect,
+    target: &ViewerTarget,
+    buffer: &mut ratatui::buffer::Buffer,
+) {
+    if mark.width == 0 || mark.height == 0 {
+        return;
+    }
+    let mut style = Style::default().bold();
+    let (text, area) = if mode == GraphicsMode::Kitty {
+        style = style.fg(Color::Rgb(90, 212, 230));
+        (
+            "F A M I L I A R",
+            ratatui::layout::Rect::new(
+                mark.x,
+                mark.y + mark.height.saturating_sub(2),
+                mark.width,
+                1,
+            ),
+        )
+    } else {
+        if matches!(target, ViewerTarget::Presence) {
+            style = style.add_modifier(Modifier::REVERSED);
+        }
+        ("FAMILIAR", mark)
+    };
+    Paragraph::new(text)
+        .alignment(Alignment::Center)
+        .style(style)
+        .render(area, buffer);
+}
+
+fn host_cell_aspect() -> CellAspect {
+    window_size()
+        .ok()
+        .filter(|size| size.width > 0 && size.height > 0 && size.columns > 0 && size.rows > 0)
+        .map(|size| CellAspect {
+            // These products preserve the ratio (pixel_width / columns) /
+            // (pixel_height / rows) without truncating each cell dimension.
+            width: u32::from(size.width) * u32::from(size.rows),
+            height: u32::from(size.height) * u32::from(size.columns),
+        })
+        .unwrap_or_default()
+}
+
 fn render_frame(
     frame: &mut ratatui::Frame<'_>,
     terminal: &GhosttyTerminal,
@@ -314,17 +369,8 @@ fn render_frame(
     graphics_mode: GraphicsMode,
 ) {
     let (child_notice, sidebar_notice) = notices;
-    if layout.sidebar.width > 0 && graphics_mode == GraphicsMode::Text {
-        let mut style = Style::default().bold();
-        if matches!(target, ViewerTarget::Presence) {
-            style = style.add_modifier(Modifier::REVERSED);
-        }
-        frame.render_widget(
-            Paragraph::new("FAMILIAR")
-                .alignment(Alignment::Center)
-                .style(style),
-            layout.mark,
-        );
+    if layout.sidebar.width > 0 {
+        render_mark_wordmark(graphics_mode, layout.mark, target, frame.buffer_mut());
     }
     render_sidebar(sidebar_rows, layout.job_rows, frame.buffer_mut());
     if let Some(notice) = sidebar_notice {
@@ -462,6 +508,7 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         child.write_all(&buffered_input)?;
     }
     let mut graphics = HostGraphics::new(graphics_mode);
+    let mut cell_aspect = host_cell_aspect();
     let mut damaged = true;
     let mut child_notice: Option<String> = None;
     let mut sidebar_notice: Option<(String, Instant)> = None;
@@ -552,6 +599,7 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                     let update = core.resize(size)?;
                     graphics.handle_events(update.graphics);
                     graphics.invalidate_host_images();
+                    cell_aspect = host_cell_aspect();
                     child.resize(size)?;
                     host.resize(ratatui::layout::Rect::new(0, 0, width, height))?;
                     sidebar_rows = rows_for(
@@ -629,7 +677,8 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                 // Save only after ratatui has positioned the mapped child
                 // cursor. Saving before draw restored a stale sidebar cursor.
                 host.backend_mut().write_all(b"\x1b7")?;
-                let bytes = graphics.emit(layout.main, layout.mark, true);
+                let bytes =
+                    graphics.emit(layout.main, mark_image_area(layout.mark), cell_aspect, true);
                 host.backend_mut().write_all(&bytes)?;
                 host.backend_mut().write_all(b"\x1b8\x1b[?2026l")?;
                 host.backend_mut().flush()?;
@@ -712,6 +761,23 @@ mod tests {
         // Graphics cursor save/restore is emitted after draw, so this mapped
         // position is the one restored after image placements.
         assert!(b"\x1b7".starts_with(b"\x1b"));
+    }
+
+    #[test]
+    fn kitty_mode_renders_the_spaced_wordmark_below_the_image() {
+        let mark = ratatui::layout::Rect::new(0, 0, 28, 12);
+        let mut buffer = Buffer::empty(mark);
+        render_mark_wordmark(
+            GraphicsMode::Kitty,
+            mark,
+            &ViewerTarget::Presence,
+            &mut buffer,
+        );
+        let row = (0..mark.width)
+            .map(|column| buffer.cell((column, 10)).unwrap().symbol())
+            .collect::<String>();
+        assert!(row.contains("F A M I L I A R"));
+        assert_eq!(buffer.cell((7, 10)).unwrap().fg, Color::Rgb(90, 212, 230));
     }
 
     #[test]

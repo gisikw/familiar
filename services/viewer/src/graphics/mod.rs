@@ -16,6 +16,22 @@ use std::time::{Duration, Instant};
 pub const MARK_IMAGE_ID: u32 = 4_000_000_000;
 pub const PROBE_IMAGE_ID: u32 = 4_000_000_001;
 const CHILD_HOST_ID_BASE: u32 = 1_000_000;
+
+/// Relative host-cell pixel dimensions. The fallback models cells as 1:2.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CellAspect {
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Default for CellAspect {
+    fn default() -> Self {
+        Self {
+            width: 1,
+            height: 2,
+        }
+    }
+}
 const KITTY_CHUNK: usize = 3072;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -248,12 +264,15 @@ pub struct HostGraphics {
     generation: u64,
     emitted_generation: u64,
     mark_png: Option<Vec<u8>>,
+    mark_dimensions: Option<(u32, u32)>,
     mark_uploaded: bool,
     pending_deletes: Vec<u32>,
 }
 
 impl HostGraphics {
     pub fn new(mode: GraphicsMode) -> Self {
+        let mark_png = (mode == GraphicsMode::Kitty).then(load_mark_png).flatten();
+        let mark_dimensions = mark_png.as_deref().and_then(png_dimensions);
         Self {
             mode,
             ids: HashMap::new(),
@@ -263,7 +282,8 @@ impl HostGraphics {
             next_id: CHILD_HOST_ID_BASE,
             generation: 1,
             emitted_generation: 0,
-            mark_png: (mode == GraphicsMode::Kitty).then(load_mark_png).flatten(),
+            mark_png,
+            mark_dimensions,
             mark_uploaded: false,
             pending_deletes: Vec::new(),
         }
@@ -389,7 +409,13 @@ impl HostGraphics {
         out
     }
 
-    pub fn emit(&mut self, main: Rect, mark: Rect, full_redraw: bool) -> Vec<u8> {
+    pub fn emit(
+        &mut self,
+        main: Rect,
+        mark: Rect,
+        cell_aspect: CellAspect,
+        full_redraw: bool,
+    ) -> Vec<u8> {
         if self.mode != GraphicsMode::Kitty {
             return Vec::new();
         }
@@ -411,15 +437,19 @@ impl HostGraphics {
             }
             self.mark_uploaded = self.mark_png.is_some();
         }
-        if self.mark_uploaded && mark.width > 0 && mark.height > 0 {
-            let _ = write!(
-                out,
-                "\x1b[{};{}H\x1b_Ga=p,i={MARK_IMAGE_ID},p=1,c={},r={},C=1,q=2;\x1b\\",
-                mark.y + 1,
-                mark.x + 1,
-                mark.width,
-                mark.height
-            );
+        if self.mark_uploaded {
+            if let Some(placement) =
+                mark_placement(mark, cell_aspect, self.mark_dimensions.unwrap_or((1, 1)))
+            {
+                let _ = write!(
+                    out,
+                    "\x1b[{};{}H\x1b_Ga=p,i={MARK_IMAGE_ID},p=1,c={},r={},C=1,q=2;\x1b\\",
+                    placement.y + 1,
+                    placement.x + 1,
+                    placement.width,
+                    placement.height
+                );
+            }
         }
         for placement in self.placements.clone() {
             let host_id = self.host_id(placement.child_image);
@@ -445,6 +475,38 @@ impl HostGraphics {
         self.emitted_generation = self.generation;
         out
     }
+}
+
+/// Fits an image into a cell rectangle without assuming square cells.
+pub fn mark_placement(area: Rect, cell: CellAspect, image: (u32, u32)) -> Option<Rect> {
+    if area.width == 0
+        || area.height == 0
+        || cell.width == 0
+        || cell.height == 0
+        || image.0 == 0
+        || image.1 == 0
+    {
+        return None;
+    }
+    let desired_columns = (f64::from(area.height) * f64::from(image.0) * f64::from(cell.height)
+        / (f64::from(image.1) * f64::from(cell.width)))
+    .round() as u32;
+    let (columns, rows) = if desired_columns <= u32::from(area.width) {
+        (desired_columns.max(1), u32::from(area.height))
+    } else {
+        let rows = (f64::from(area.width) * f64::from(cell.width) * f64::from(image.1)
+            / (f64::from(cell.height) * f64::from(image.0)))
+        .round() as u32;
+        (u32::from(area.width), rows.max(1))
+    };
+    let columns = columns.min(u32::from(area.width)) as u16;
+    let rows = rows.min(u32::from(area.height)) as u16;
+    Some(Rect::new(
+        area.x + (area.width - columns) / 2,
+        area.y + (area.height - rows) / 2,
+        columns,
+        rows,
+    ))
 }
 
 fn clip_placement(p: &Placement, area: Rect) -> Option<ClippedPlacement> {
@@ -503,6 +565,17 @@ fn encode_data(out: &mut Vec<u8>, control: &str, data: &[u8]) {
         out.extend_from_slice(chunk);
         out.extend_from_slice(b"\x1b\\");
     }
+}
+
+fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    (bytes.len() >= 24 && bytes.starts_with(b"\x89PNG\r\n\x1a\n"))
+        .then(|| {
+            (
+                u32::from_be_bytes(bytes[16..20].try_into().unwrap()),
+                u32::from_be_bytes(bytes[20..24].try_into().unwrap()),
+            )
+        })
+        .filter(|(width, height)| *width > 0 && *height > 0)
 }
 
 fn load_mark_png() -> Option<Vec<u8>> {
@@ -611,23 +684,61 @@ mod tests {
     }
 
     #[test]
+    fn mark_placement_honors_cell_aspect_and_centers() {
+        let area = Rect::new(0, 1, 28, 8);
+        assert_eq!(
+            mark_placement(area, CellAspect::default(), (256, 256)),
+            Some(Rect::new(6, 1, 16, 8))
+        );
+        assert_eq!(
+            mark_placement(
+                Rect::new(2, 3, 20, 10),
+                CellAspect {
+                    width: 8,
+                    height: 16,
+                },
+                (256, 256),
+            ),
+            Some(Rect::new(2, 3, 20, 10))
+        );
+    }
+
+    #[test]
+    fn mark_emission_uses_aspect_corrected_columns_and_rows() {
+        let mut h = HostGraphics::new(GraphicsMode::Kitty);
+        h.mark_png = Some(vec![1, 2, 3]);
+        let bytes = h.emit(
+            Rect::default(),
+            Rect::new(0, 1, 28, 8),
+            CellAspect::default(),
+            true,
+        );
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("\x1b[2;7H"));
+        assert!(text.contains("c=16,r=8"));
+    }
+
+    #[test]
     fn mark_data_is_retransmitted_after_switch_and_resize_invalidation() {
         let mut h = HostGraphics::new(GraphicsMode::Kitty);
         h.mark_png = Some(vec![1, 2, 3]);
         let main = Rect::new(28, 0, 72, 30);
         let mark = Rect::new(0, 0, 28, 12);
-        let first = String::from_utf8_lossy(&h.emit(main, mark, true)).into_owned();
+        let first =
+            String::from_utf8_lossy(&h.emit(main, mark, CellAspect::default(), true)).into_owned();
         assert!(first.contains(&format!("a=t,t=d,f=100,i={MARK_IMAGE_ID}")));
         assert!(first.contains(&format!("a=p,i={MARK_IMAGE_ID}")));
 
         h.clear_child_state();
         h.invalidate_host_images();
-        let switched = String::from_utf8_lossy(&h.emit(main, mark, true)).into_owned();
+        let switched =
+            String::from_utf8_lossy(&h.emit(main, mark, CellAspect::default(), true)).into_owned();
         assert!(switched.contains(&format!("a=t,t=d,f=100,i={MARK_IMAGE_ID}")));
         assert!(switched.contains(&format!("a=p,i={MARK_IMAGE_ID}")));
 
         h.invalidate_host_images();
-        let resized = String::from_utf8_lossy(&h.emit(main, mark, true)).into_owned();
+        let resized =
+            String::from_utf8_lossy(&h.emit(main, mark, CellAspect::default(), true)).into_owned();
         assert!(resized.contains(&format!("a=t,t=d,f=100,i={MARK_IMAGE_ID}")));
         assert!(resized.contains(&format!("a=p,i={MARK_IMAGE_ID}")));
     }
@@ -640,7 +751,12 @@ mod tests {
             event(KittyAction::Snapshot),
             event(KittyAction::TransmitAndDisplay),
         ]);
-        let bytes = h.emit(Rect::new(28, 0, 20, 10), Rect::default(), false);
+        let bytes = h.emit(
+            Rect::new(28, 0, 20, 10),
+            Rect::default(),
+            CellAspect::default(),
+            false,
+        );
         let text = String::from_utf8_lossy(&bytes);
         assert!(text.contains("i=1000000"));
         assert!(text.contains("\x1b[2;29H"));
@@ -648,7 +764,12 @@ mod tests {
         assert!(text.contains("x=1,y=0,w=3,h=3"));
 
         h.handle_events(vec![event(KittyAction::Snapshot)]);
-        let deleted = h.emit(Rect::new(28, 0, 20, 10), Rect::default(), false);
+        let deleted = h.emit(
+            Rect::new(28, 0, 20, 10),
+            Rect::default(),
+            CellAspect::default(),
+            false,
+        );
         assert!(String::from_utf8_lossy(&deleted).contains("a=d,d=I,i=1000000"));
     }
 }
