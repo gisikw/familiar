@@ -1,9 +1,12 @@
 use crate::app::{App, TargetRuntime, ViewerTarget};
 use crate::cli::Config;
 use crate::graphics::{probe_host, GraphicsMode, HostGraphics};
-use crate::input::{route_mouse, target_for_sidebar_hit, MouseRoute, SidebarHit};
+use crate::input::{route_mouse, target_for_sidebar_hit, MouseRoute};
 use crate::layout::{viewer_layout, ViewerLayout};
 use crate::pty::{child_command, pty_size};
+use crate::sidebar::{
+    has_live_session, render as render_sidebar, rows_for, spawn_poller, RowModel, SidebarModel,
+};
 use crate::terminal::ghostty::GhosttyTerminal;
 use crate::terminal::{CellAttributes, GridSize, TerminalCore, TerminalModes};
 use crossterm::event::{
@@ -294,20 +297,29 @@ fn render_frame(
     frame: &mut ratatui::Frame<'_>,
     terminal: &GhosttyTerminal,
     layout: ViewerLayout,
-    child_notice: Option<&str>,
-    sidebar_notice: Option<&str>,
+    notices: (Option<&str>, Option<&str>),
+    sidebar_rows: &RowModel,
+    target: &ViewerTarget,
     graphics_mode: GraphicsMode,
 ) {
+    let (child_notice, sidebar_notice) = notices;
     if layout.sidebar.width > 0 && graphics_mode == GraphicsMode::Text {
+        let mut style = Style::default().bold();
+        if matches!(target, ViewerTarget::Presence) {
+            style = style.add_modifier(Modifier::REVERSED);
+        }
         frame.render_widget(
             Paragraph::new("FAMILIAR")
                 .alignment(Alignment::Center)
-                .style(Style::default().bold()),
+                .style(style),
             layout.mark,
         );
     }
+    render_sidebar(sidebar_rows, layout.job_rows, frame.buffer_mut());
     if let Some(notice) = sidebar_notice {
-        Paragraph::new(notice).render(layout.job_rows, frame.buffer_mut());
+        Paragraph::new(notice)
+            .style(Style::default().fg(Color::Rgb(235, 90, 90)))
+            .render(layout.job_rows, frame.buffer_mut());
     }
     render_cells(terminal, layout.main, frame.buffer_mut());
     if let Some(notice) = child_notice {
@@ -417,6 +429,15 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let mut layout = viewer_layout(width, height);
     let mut core = GhosttyTerminal::new(dimensions(layout))?;
     let mut app = App::default();
+    let agents_socket = config.agents_socket.clone();
+    let sidebar_rx = spawn_poller(config.agents_endpoint.clone(), agents_socket.clone());
+    let mut sidebar_model = SidebarModel::default();
+    let mut sidebar_rows = rows_for(
+        &sidebar_model,
+        app.target(),
+        layout.job_rows.height,
+        layout.job_rows.width,
+    );
     let (tx, rx): (Sender<PtyMessage>, Receiver<PtyMessage>) = mpsc::channel();
     let mut child = ChildManager::new(config, tx, dimensions(layout))?;
     if !buffered_input.is_empty() {
@@ -453,19 +474,24 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 Event::Mouse(mouse) => {
-                    // Chunk 4 replaces this dead-row closure with the live row model.
-                    match route_mouse(mouse, layout, core.modes(), |_| SidebarHit::Dead) {
+                    match route_mouse(mouse, layout, core.modes(), |row| sidebar_rows.hit(row)) {
                         MouseRoute::Child(bytes) => {
                             let _ = child.write_all(&bytes);
                         }
                         MouseRoute::Sidebar(hit)
                             if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) =>
                         {
-                            // Chunk 4 replaces this resolver with the agent id
-                            // stored at the live model index.
-                            let target = target_for_sidebar_hit(hit, |_| None);
+                            let target =
+                                target_for_sidebar_hit(hit, |row| sidebar_rows.agent_for_row(row));
                             if let Some(target) = target {
                                 if target != *app.target() {
+                                    // Snapshot liveness avoids misleading clicks; this
+                                    // immediate check closes the poll-to-click race.
+                                    if let ViewerTarget::Agent(id) = &target {
+                                        if !has_live_session(&agents_socket, id) {
+                                            continue;
+                                        }
+                                    }
                                     match app.switch_target(target, &mut child) {
                                         Ok(()) => {
                                             // A fresh core cannot leak parser, modes, or screen
@@ -476,6 +502,12 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                                             host.clear()?;
                                             child_notice = None;
                                             sidebar_notice = None;
+                                            sidebar_rows = rows_for(
+                                                &sidebar_model,
+                                                app.target(),
+                                                layout.job_rows.height,
+                                                layout.job_rows.width,
+                                            );
                                             damaged = true;
                                         }
                                         Err(error) => {
@@ -499,9 +531,28 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                     graphics.handle_events(update.graphics);
                     child.resize(size)?;
                     host.resize(ratatui::layout::Rect::new(0, 0, width, height))?;
+                    sidebar_rows = rows_for(
+                        &sidebar_model,
+                        app.target(),
+                        layout.job_rows.height,
+                        layout.job_rows.width,
+                    );
                     damaged = true;
                 }
                 _ => {}
+            }
+        }
+
+        while let Ok(snapshot) = sidebar_rx.try_recv() {
+            if snapshot != sidebar_model {
+                sidebar_model = snapshot;
+                sidebar_rows = rows_for(
+                    &sidebar_model,
+                    app.target(),
+                    layout.job_rows.height,
+                    layout.job_rows.width,
+                );
+                damaged = true;
             }
         }
 
@@ -538,8 +589,12 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                     frame,
                     &core,
                     layout,
-                    child_notice.as_deref(),
-                    sidebar_notice.as_ref().map(|(notice, _)| notice.as_str()),
+                    (
+                        child_notice.as_deref(),
+                        sidebar_notice.as_ref().map(|(notice, _)| notice.as_str()),
+                    ),
+                    &sidebar_rows,
+                    app.target(),
                     graphics_mode,
                 )
             })?;
@@ -557,6 +612,7 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::SidebarHit;
     use crate::terminal::{CursorState, TerminalCell, TerminalUpdate};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
