@@ -19,11 +19,25 @@ import (
 	"familiar.dev/agents/protocol"
 )
 
+// Adapter runs pi as an interactive TUI. Lifecycle is reported out-of-band by
+// the agent-hooks pi extension (HookExtension) which appends durable records to
+// the job's side-channel events file; Observe advances a cursor over it. This
+// is the documented "hook/side-channel" pattern for harnesses without a
+// machine-readable stdout lifecycle stream.
 type Adapter struct {
-	Binary    string
+	Binary string
+	// Extension is an optional additional worker extension (e.g. tiamat model
+	// routing) loaded alongside the hook extension.
 	Extension string
-	Env       map[string]string
+	// HookExtension is the agent-hooks side-channel extension path. When empty
+	// no lifecycle is reported over the side channel and the worker settles only
+	// on process death (supervisor crash boundary).
+	HookExtension string
+	Env           map[string]string
 }
+
+// EventsEnv names the side-channel path the hook extension writes to.
+const EventsEnv = "FAMILIAR_AGENTS_EVENTS"
 
 func (a Adapter) bin() string {
 	if a.Binary != "" {
@@ -31,9 +45,34 @@ func (a Adapter) bin() string {
 	}
 	return "pi"
 }
-func paths(j protocol.Job) (string, string) {
-	return filepath.Join(j.Artifacts.Directory, "pi-session.jsonl"), filepath.Join(j.Artifacts.Directory, "pi-output.jsonl")
+
+// paths returns the session JSONL, pane transcript, and side-channel events
+// file beneath the job's artifact directory.
+func paths(j protocol.Job) (string, string, string) {
+	return filepath.Join(j.Artifacts.Directory, "pi-session.jsonl"),
+		filepath.Join(j.Artifacts.Directory, "pi-transcript.log"),
+		filepath.Join(j.Artifacts.Directory, "events.jsonl")
 }
+
+func (a Adapter) launchEnv(events string) map[string]string {
+	env := cloneEnv(a.Env)
+	if env == nil {
+		env = map[string]string{}
+	}
+	env[EventsEnv] = events
+	return env
+}
+
+func (a Adapter) extensions(v []string) []string {
+	if a.HookExtension != "" {
+		v = append(v, "--extension", a.HookExtension)
+	}
+	if a.Extension != "" {
+		v = append(v, "--extension", a.Extension)
+	}
+	return v
+}
+
 func (a Adapter) Start(_ context.Context, j protocol.Job) (harnesses.Launch, error) {
 	if j.Artifacts.Directory == "" {
 		return harnesses.Launch{}, errors.New("pi requires artifact directory")
@@ -41,30 +80,31 @@ func (a Adapter) Start(_ context.Context, j protocol.Job) (harnesses.Launch, err
 	if e := os.MkdirAll(j.Artifacts.Directory, 0700); e != nil {
 		return harnesses.Launch{}, e
 	}
-	s, t := paths(j)
-	v := []string{a.bin(), "--mode", "json", "--print", "--session", s}
-	if a.Extension != "" {
-		v = append(v, "--extension", a.Extension)
-	}
+	s, t, ev := paths(j)
+	// Interactive TUI: no --mode json --print. The positional prompt is
+	// delivered as pi's initial message so the agent starts immediately.
+	v := a.extensions([]string{a.bin(), "--session", s})
 	if j.Model != "" {
 		v = append(v, "--model", j.Model)
 	}
 	v = append(v, j.Prompt)
-	return harnesses.Launch{Argv: v, Dir: j.CWD, Env: cloneEnv(a.Env), Transcript: t, Session: s}, nil
+	return harnesses.Launch{Argv: v, Dir: j.CWD, Env: a.launchEnv(ev), Transcript: t, Session: s, Events: ev, Interactive: true}, nil
 }
+
 func (a Adapter) Resume(_ context.Context, j protocol.Job, l harnesses.Launch) (harnesses.Launch, error) {
 	if l.Session == "" {
 		return harnesses.Launch{}, errors.New("pi resume requires session")
 	}
-	l.Argv = []string{a.bin(), "--mode", "json", "--print", "--session", l.Session}
-	if a.Extension != "" {
-		l.Argv = append(l.Argv, "--extension", a.Extension)
+	if l.Events == "" {
+		_, _, l.Events = paths(j)
 	}
-	l.Env = cloneEnv(a.Env)
+	l.Argv = a.extensions([]string{a.bin(), "--session", l.Session})
 	if j.Model != "" {
 		l.Argv = append(l.Argv, "--model", j.Model)
 	}
 	l.Argv = append(l.Argv, "Continue the interrupted delegated task from the existing session.")
+	l.Env = a.launchEnv(l.Events)
+	l.Interactive = true
 	return l, nil
 }
 
@@ -97,6 +137,28 @@ func (Adapter) Cancel(ctx context.Context, r *harnesses.Runtime) error {
 	}
 	return r.Cancel(ctx)
 }
+
+// sideEvent is one line of the append-only events.jsonl side channel written by
+// the agent-hooks extension.
+type sideEvent struct {
+	Type    string     `json:"type"`
+	Ts      int64      `json:"ts"` // epoch millis
+	Turn    *int       `json:"turn,omitempty"`
+	Message string     `json:"message,omitempty"`
+	Summary string     `json:"summary,omitempty"`
+	Verdict string     `json:"verdict,omitempty"`
+	ID      string     `json:"id,omitempty"`
+	Prompt  string     `json:"prompt,omitempty"`
+	Usage   *sideUsage `json:"usage,omitempty"`
+}
+type sideUsage struct {
+	Input  int64   `json:"input"`
+	Output int64   `json:"output"`
+	Cost   float64 `json:"cost"`
+}
+
+// Observe advances a durable byte cursor over the side-channel events file. It
+// never parses pi TUI output. Process death is the supervisor's concern.
 func (Adapter) Observe(ctx context.Context, j protocol.Job, r *harnesses.Runtime) (harnesses.Observation, error) {
 	if r.Alive == nil {
 		return harnesses.Observation{}, harnesses.ErrUnsupported
@@ -106,7 +168,7 @@ func (Adapter) Observe(ctx context.Context, j protocol.Job, r *harnesses.Runtime
 		return harnesses.Observation{}, err
 	}
 	o := harnesses.Observation{State: protocol.Running, ExitCode: code, Cursor: r.ObservationCursor}
-	f, e := os.Open(r.Launch.Transcript)
+	f, e := os.Open(r.Launch.Events)
 	if e == nil {
 		defer f.Close()
 		if _, err = f.Seek(r.ObservationCursor, io.SeekStart); err != nil {
@@ -118,25 +180,42 @@ func (Adapter) Observe(ctx context.Context, j protocol.Job, r *harnesses.Runtime
 			if readErr != nil && !errors.Is(readErr, io.EOF) {
 				return o, readErr
 			}
-			// A writer may be in the middle of a JSON record. Do not advance the
-			// durable cursor until its newline makes the record complete.
+			// A writer may be mid-record; do not advance the durable cursor until
+			// its newline makes the JSON object complete.
 			if !strings.HasSuffix(line, "\n") {
 				break
 			}
 			lineOffset := o.Cursor
 			o.Cursor += int64(len(line))
 			b := []byte(strings.TrimSuffix(line, "\n"))
-			var header struct {
-				Type      string    `json:"type"`
-				Timestamp time.Time `json:"timestamp"`
-			}
-			if json.Unmarshal(b, &header) == nil && recognizedEvent(header.Type) {
-				h := sha256.Sum256(b)
-				at := header.Timestamp
-				if at.IsZero() {
-					at = time.Now().UTC()
+			var ev sideEvent
+			if json.Unmarshal(b, &ev) != nil || ev.Type == "" {
+				if errors.Is(readErr, io.EOF) {
+					break
 				}
-				o.Progresses = append(o.Progresses, &protocol.Progress{ID: fmt.Sprintf("%s-pi-%d-%s", j.ID, lineOffset, hex.EncodeToString(h[:8])), JobID: j.ID, At: at, Message: "pi " + header.Type, Detail: json.RawMessage(append([]byte(nil), b...))})
+				continue
+			}
+			at := time.UnixMilli(ev.Ts).UTC()
+			if ev.Ts == 0 {
+				at = time.Now().UTC()
+			}
+			switch ev.Type {
+			case "settled":
+				o.Settled = true
+				o.Verdict = mapVerdict(ev.Verdict)
+				o.Summary = ev.Summary
+				if ev.Usage != nil {
+					o.Usage = &protocol.Usage{InputTokens: ev.Usage.Input, OutputTokens: ev.Usage.Output, CostMicros: int64(math.Round(ev.Usage.Cost * 1_000_000))}
+				}
+			case "blocked":
+				o.Question = &protocol.BlockedQuestion{ID: ev.ID, Prompt: ev.Prompt, At: at, Detail: json.RawMessage(append([]byte(nil), b...))}
+			default:
+				h := sha256.Sum256(b)
+				msg := ev.Message
+				if msg == "" {
+					msg = "pi " + ev.Type
+				}
+				o.Progresses = append(o.Progresses, &protocol.Progress{ID: fmt.Sprintf("%s-pi-%d-%s", j.ID, lineOffset, hex.EncodeToString(h[:8])), JobID: j.ID, At: at, Message: msg, Detail: json.RawMessage(append([]byte(nil), b...))})
 			}
 			if errors.Is(readErr, io.EOF) {
 				break
@@ -153,17 +232,48 @@ func (Adapter) Observe(ctx context.Context, j protocol.Job, r *harnesses.Runtime
 	}
 	return o, nil
 }
+
+func mapVerdict(v string) protocol.State {
+	switch protocol.State(v) {
+	case protocol.Done, protocol.Failed, protocol.Cancelled, protocol.Timeout:
+		return protocol.State(v)
+	default:
+		return protocol.Done
+	}
+}
+
+// CollectSettlement builds the settlement. A side-channel "settled" event
+// carries the verdict, final assistant message, and usage directly; otherwise
+// (e.g. a crash boundary) BasicSettlement infers the verdict from process exit.
+// In both cases usage is reconciled against the pi session JSONL, whose
+// per-operation records are the authoritative cumulative total.
 func (Adapter) CollectSettlement(_ context.Context, j protocol.Job, l harnesses.Launch, o harnesses.Observation) (*protocol.Settlement, error) {
-	s, err := harnesses.BasicSettlement(j, l, o)
-	if err != nil {
-		return nil, err
+	var s *protocol.Settlement
+	if o.Settled {
+		s = harnesses.SideChannelSettlement(j, l, o)
+	} else {
+		var err error
+		if s, err = harnesses.BasicSettlement(j, l, o); err != nil {
+			return nil, err
+		}
 	}
-	f, err := os.Open(l.Session)
+	// Reconcile usage from the session JSONL when the side channel did not
+	// report it (the cumulative-usage logic is the authoritative source).
+	if o.Usage == nil {
+		if err := sessionUsage(l.Session, &s.Usage); err != nil {
+			return nil, err
+		}
+	}
+	return s, nil
+}
+
+func sessionUsage(session string, u *protocol.Usage) error {
+	f, err := os.Open(session)
 	if os.IsNotExist(err) {
-		return s, nil
+		return nil
 	}
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer f.Close()
 	scan := bufio.NewScanner(f)
@@ -171,22 +281,10 @@ func (Adapter) CollectSettlement(_ context.Context, j protocol.Job, l harnesses.
 	for scan.Scan() {
 		var v any
 		if json.Unmarshal(scan.Bytes(), &v) == nil {
-			collectUsage(v, &s.Usage)
+			collectUsage(v, u)
 		}
 	}
-	return s, scan.Err()
-}
-
-// JSON mode emits these documented lifecycle records. Session headers and
-// arbitrary extension payloads are intentionally not projected as progress.
-func recognizedEvent(kind string) bool {
-	switch kind {
-	case "agent_start", "agent_end", "turn_start", "turn_end", "message_start", "message_update", "message_end",
-		"tool_execution_start", "tool_execution_update", "tool_execution_end", "queue_update", "compaction_start", "compaction_end", "auto_retry_start", "auto_retry_end":
-		return true
-	default:
-		return false
-	}
+	return scan.Err()
 }
 
 type piUsage struct {
