@@ -69,7 +69,39 @@ grep -Fq "placeholder=\$'\\U0010eeee'" "$HERE/sidebar.sh" \
 if grep -Fq "\\033Ptmux;\\033\\033[2;7H" "$HERE/sidebar.sh"; then
   fail "sidebar still moves the outer cursor through passthrough"
 fi
+if grep -Fq "\\033[2J" "$HERE/sidebar.sh" || grep -Fq 'a=d,d=i' "$HERE/sidebar.sh"; then
+  fail "sidebar still clears the screen or deletes the mark during repaint"
+fi
+grep -Fq "printf '\\033[?2026h'" "$HERE/sidebar.sh" \
+  || fail "sidebar paints are not synchronized"
 ok "sidebar anchors a virtual kitty placement in the normal tmux grid"
+
+# Pure renderer decisions: identical frames are silent, attach identity (not
+# merely count) defines an epoch, and only changed rows receive CUP + EL.
+if FAMILIAR_SIDEBAR_TEST_FRAME_CHANGED=1 FAMILIAR_SIDEBAR_OLD='same' \
+  FAMILIAR_SIDEBAR_NEW='same' bash "$HERE/sidebar.sh"; then
+  fail "identical sidebar frame requested a repaint"
+fi
+FAMILIAR_SIDEBAR_TEST_FRAME_CHANGED=1 FAMILIAR_SIDEBAR_OLD='old' \
+  FAMILIAR_SIDEBAR_NEW='new' bash "$HERE/sidebar.sh" \
+  || fail "changed sidebar frame was skipped"
+if FAMILIAR_SIDEBAR_TEST_ATTACH_CHANGED=1 FAMILIAR_SIDEBAR_OLD='c1 tty 10' \
+  FAMILIAR_SIDEBAR_NEW='c1 tty 10' bash "$HERE/sidebar.sh"; then
+  fail "stable client fingerprint created a new attach epoch"
+fi
+FAMILIAR_SIDEBAR_TEST_ATTACH_CHANGED=1 FAMILIAR_SIDEBAR_OLD='c1 tty 10' \
+  FAMILIAR_SIDEBAR_NEW='c1 tty 11' bash "$HERE/sidebar.sh" \
+  || fail "reattach with unchanged client count was not detected"
+if FAMILIAR_SIDEBAR_TEST_ATTACH_CHANGED=1 FAMILIAR_SIDEBAR_OLD='c1 tty 10' \
+  FAMILIAR_SIDEBAR_NEW='' bash "$HERE/sidebar.sh"; then
+  fail "detach attempted an image transmission"
+fi
+diff_output=$(FAMILIAR_SIDEBAR_TEST_CHANGED_LINES=1 \
+  FAMILIAR_SIDEBAR_OLD=$'alpha\nsame\nold' FAMILIAR_SIDEBAR_NEW=$'alpha\nsame\nnew' \
+  bash "$HERE/sidebar.sh")
+[ "$diff_output" = $'\033[15;1Hnew\033[K' ] \
+  || fail "changed-line painter did not address exactly the changed row"
+ok "sidebar frame diff, attach epoch, and changed-line addressing are stable"
 
 state="$TMP/main"; socket="$state/tmux.sock"; pids="$state/pids"
 agents_state="$TMP/agents-supervisor"; agents_socket="$agents_state/tmux.sock"
@@ -109,6 +141,8 @@ FAMILIAR_THEME_BORDER='#123456' FAMILIAR_THEME_BORDER_MUTED='#654321' runp ensur
   || fail "Viewer active border does not use resolved border role"
 case $(tmux -S "$socket" show-options -gv terminal-features) in
   *tmux\*:extkeys*) ;; *) fail "nested tmux terminal lacks extkeys feature" ;; esac
+case $(tmux -S "$socket" show-options -gv terminal-features) in
+  *ghostty\*:clipboard:ccolour:cstyle:focus:title:extkeys*) ;; *) fail "Ghostty terminal lacks explicit feature entry" ;; esac
 [ "$(tmux -S "$socket" display-message -p -t viewer:0.1 '#{pane_active}')" = 1 ] \
   || fail "viewer main pane did not receive focus after ensure"
 [ "$(tmux -S "$socket" display-message -p -t viewer:0.0 '#{pane_input_off}')" = 0 ] \
