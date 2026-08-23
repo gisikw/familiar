@@ -36,6 +36,17 @@ Node 22 runs the TypeScript directly. `--experimental-transform-types` (not
 plain strip-only mode) is required because the code uses TS parameter
 properties; no separate build step.
 
+### Webfont
+
+The Nix package generates a double-patched ProggyClean Nerd Font Mono: FontForge
+copies missing glyphs in selected BMP text/symbol ranges from DejaVu Sans,
+fits every imported outline to the ProggyClean cell, and preserves its mono
+advance. The package installs that output over the base font asset. Repository
+dev mode serves source assets, so run it through the top-level gateway shell
+(`nix develop .#gateway -c npm --prefix services/gateway start`); the shell sets
+`FAMILIAR_GATEWAY_PATCHED_FONT` to the same generated Nix output. Running npm
+outside that shell deliberately falls back to the vendored base font.
+
 ### Environment
 
 | var | default | meaning |
