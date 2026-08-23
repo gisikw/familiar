@@ -725,6 +725,7 @@ ssh_connect() {
 # normal launch skips it. bash 3.2 compatible: no associative arrays, and the
 # staleness test is a plain `-nt`.
 viewer_connect() {
+  ensure_devshell connect "$@"
   local executable="${FAMILIAR_VIEWER_BIN:-}"
   if [ -z "$executable" ] && command -v nix >/dev/null 2>&1; then
     local output
