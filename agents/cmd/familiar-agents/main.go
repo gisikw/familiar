@@ -40,7 +40,7 @@ func main() {
 	root.Parse(os.Args[1:])
 	args := root.Args()
 	if len(args) == 0 {
-		fatal(fmt.Errorf("usage: familiar-agents [--service URL] [--json] {dispatch|status|list|await|attach-hint|cancel|answer|gc}"))
+		fatal(fmt.Errorf("usage: familiar-agents [--service URL] [--json] {dispatch|status|list|await|attach-hint|cancel|reap|answer|gc}"))
 	}
 	ctx := context.Background()
 	c := client.New(*endpoint)
@@ -111,6 +111,13 @@ func main() {
 	case "cancel":
 		need(args, 2)
 		j, e := c.Cancel(ctx, args[1])
+		if e != nil {
+			fatal(e)
+		}
+		print(j)
+	case "reap":
+		need(args, 2)
+		j, e := c.Reap(ctx, args[1])
 		if e != nil {
 			fatal(e)
 		}

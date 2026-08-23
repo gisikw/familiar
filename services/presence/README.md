@@ -37,8 +37,9 @@ rejected.
 
 The server is selected exclusively with `tmux -S` and starts with the owned
 `tmux.conf`; system and user configs are not read. `ensure` is serialized with
-a bounded file lock and recovers only a missing/dead owned worker. It does not
-create presentation processes.
+a bounded file lock and recreates a missing owned session. Dead panes do not
+linger: when the sole worker pane exits, tmux removes the session, and the next
+ensure creates it afresh. It does not create presentation processes.
 
 ## Worker continuity contract
 
@@ -57,7 +58,7 @@ no pi subscriber is connected; uploaded bytes remain saved.
 
 `tmux.conf` configures the inner Presence session. It retains ordinary `C-b`
 behavior, mouse defaults, `allow-passthrough all`, extended keys, and explicit
-terminal features. These are needed by pi and by Kitty graphics crossing the
+terminal features, while leaving `remain-on-exit` disabled so dead panes vanish. These are needed by pi and by Kitty graphics crossing the
 native viewer's embedded PTY. Viewer chrome, native sidebar layout, job
 navigation, Kitty graphics, and target switching are implemented by
 `services/viewer`, not this adapter.
@@ -71,5 +72,5 @@ bash services/presence/test.sh
 The focused test uses temporary private sockets and a fake worker. It covers
 config isolation, one-session ownership, native-viewer exec resolution and
 environment, attach/detach continuity, concurrent viewers and ensures,
-missing/dead worker recovery, socket safety, scoped stop behavior, and the
+missing-session and worker-death recovery, socket safety, scoped stop behavior, and the
 Gateway browser-entrypoint contract.

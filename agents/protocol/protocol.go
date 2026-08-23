@@ -126,6 +126,7 @@ type Job struct {
 	Host            string            `json:"host"`
 	State           State             `json:"state"`
 	CancelRequested bool              `json:"cancel_requested,omitempty"`
+	ReapRequested   bool              `json:"reap_requested,omitempty"`
 	Question        *BlockedQuestion  `json:"question,omitempty"`
 	LastProgress    *Progress         `json:"last_progress,omitempty"`
 	Settlement      *Settlement       `json:"settlement,omitempty"`

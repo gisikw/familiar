@@ -98,6 +98,7 @@ struct ChildSession {
     child: Box<dyn Child + Send + Sync>,
     writer: Box<dyn Write + Send>,
     reaped: bool,
+    exit_success: Option<bool>,
 }
 
 impl ChildSession {
@@ -169,6 +170,7 @@ impl ChildManager {
             child,
             writer,
             reaped: false,
+            exit_success: None,
         })
     }
 
@@ -184,18 +186,19 @@ impl ChildManager {
         Ok(())
     }
 
-    fn poll_exit(&mut self) -> io::Result<bool> {
+    fn poll_exit(&mut self) -> io::Result<Option<bool>> {
         let Some(session) = &mut self.session else {
-            return Ok(false);
+            return Ok(None);
         };
         if session.reaped {
-            return Ok(true);
+            return Ok(session.exit_success);
         }
-        if session.child.try_wait()?.is_some() {
+        if let Some(status) = session.child.try_wait()? {
             session.reaped = true;
-            return Ok(true);
+            session.exit_success = Some(status.success());
+            return Ok(session.exit_success);
         }
-        Ok(false)
+        Ok(None)
     }
 
     fn resize(&mut self, size: GridSize) -> io::Result<()> {
@@ -333,8 +336,14 @@ fn render_frame(
     }
 }
 
+pub fn is_quit_key(key: KeyEvent) -> bool {
+    !matches!(key.kind, KeyEventKind::Release)
+        && key.code == KeyCode::Char('\\')
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+}
+
 pub fn encode_key(key: KeyEvent, modes: TerminalModes) -> Vec<u8> {
-    if matches!(key.kind, KeyEventKind::Release) {
+    if matches!(key.kind, KeyEventKind::Release) || is_quit_key(key) {
         return Vec::new();
     }
     let application = modes.application_cursor;
@@ -459,6 +468,9 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         if event::poll(Duration::from_millis(10))? {
             match event::read()? {
                 Event::Key(key) => {
+                    if is_quit_key(key) {
+                        return Ok(());
+                    }
                     if child.write_all(&encode_key(key, core.modes())).is_err() {
                         child_notice = Some("tmux session ended — waiting for a new target".into());
                         damaged = true;
@@ -574,9 +586,13 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        if child.poll_exit()? && child_notice.is_none() {
-            child_notice = Some("tmux session ended — waiting for a new target".into());
-            damaged = true;
+        match child.poll_exit()? {
+            Some(true) => return Ok(()),
+            Some(false) if child_notice.is_none() => {
+                child_notice = Some("tmux session ended — waiting for a new target".into());
+                damaged = true;
+            }
+            _ => {}
         }
 
         // Mode 2026 is only a render-coalescing hint here; parser state remains live.
@@ -616,6 +632,17 @@ mod tests {
     use crate::terminal::{CursorState, TerminalCell, TerminalUpdate};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
+
+    #[test]
+    fn viewer_quit_is_intercepted_but_other_control_keys_pass_through() {
+        let quit = KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::CONTROL);
+        assert!(is_quit_key(quit));
+        assert!(encode_key(quit, TerminalModes::default()).is_empty());
+
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(!is_quit_key(ctrl_c));
+        assert_eq!(encode_key(ctrl_c, TerminalModes::default()), b"\x03");
+    }
 
     #[test]
     fn arrows_follow_application_cursor_mode() {

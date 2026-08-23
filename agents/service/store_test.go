@@ -94,6 +94,36 @@ func TestAnswerIdempotencyConflict(t *testing.T) {
 	}
 }
 
+func TestReapRefusesRunningAndPollsSettledRequest(t *testing.T) {
+	s, e := Open(filepath.Join(t.TempDir(), "db"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	j := create(t, s)
+	if _, e = s.Reap(ctx, j.ID); e == nil {
+		t.Fatal("running job was accepted for reap")
+	}
+	for i, st := range []protocol.State{protocol.Starting, protocol.Running} {
+		if e = s.Record(ctx, protocol.EventBatch{Host: "host", Events: []protocol.ObservedEvent{{ID: string(rune('r' + i)), JobID: j.ID, State: st}}}); e != nil {
+			t.Fatal(e)
+		}
+	}
+	set := &protocol.Settlement{ID: "reap-settle", JobID: j.ID, Verdict: protocol.Done, At: time.Now()}
+	if e = s.Record(ctx, protocol.EventBatch{Host: "host", Events: []protocol.ObservedEvent{{ID: "reap-terminal", JobID: j.ID, Settlement: set}}}); e != nil {
+		t.Fatal(e)
+	}
+	got, e := s.Reap(ctx, j.ID)
+	if e != nil || !got.ReapRequested {
+		t.Fatalf("settled reap request: %#v %v", got, e)
+	}
+	poll, e := s.Poll(ctx, "host")
+	if e != nil || len(poll.Assignments) != 1 || !poll.Assignments[0].Job.ReapRequested {
+		t.Fatalf("reap request not delivered to supervisor: %#v %v", poll, e)
+	}
+}
+
 func TestServiceAssignsLogicalArtifactID(t *testing.T) {
 	s, _ := Open(filepath.Join(t.TempDir(), "db"))
 	defer s.Close()

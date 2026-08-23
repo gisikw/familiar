@@ -1,6 +1,37 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+usage() {
+  cat <<'EOF'
+Usage: ./familiar.sh <command> [arguments]
+
+Commands:
+  server          Run the complete Familiar service stack.
+  connect         Ensure Presence and open the native viewer (first run builds it).
+  agents          Run the Familiar agents CLI.
+  client          Run the Electron desktop client.
+  pi              Run the resident pi agent with continuity.
+  llama           Run the local LLM backend.
+  stt             Run the local speech-to-text backend.
+  tts             Run the local text-to-speech backend.
+  kill            Stop the private Presence runtime.
+  age TARGET      Edit or create an age-encrypted file.
+  ssh HOST [...]  Open SSH with Familiar image-drop transport.
+  drop-serve PATH Run the image-drop socket server (transport helper).
+  drop-fetch PATH Fetch a file from a connected client.
+  worklist-add    Add an item to the durable worklist.
+  inbox-enqueue   Compatibility alias for worklist-add.
+  config-check    Validate familiar.toml.
+  help            Print this usage.
+EOF
+}
+
+# Help must be available even when optional configuration is invalid, and a
+# bare invocation must never recurse into a dev shell or start services.
+case ${1:-} in
+  ""|-h|--help|help) usage; exit 0 ;;
+esac
+
 SELF="$(realpath "$0" 2>/dev/null || { cd "$(dirname "$0")" && printf '%s/%s' "$(pwd -P)" "$(basename "$0")"; })"
 REPO="$(dirname "$SELF")"
 STATE_DIR="$REPO/state"
@@ -295,8 +326,8 @@ handle_age() {
 #
 # Dragging a file onto a terminal types its *path* into the tty. Over ssh that
 # path names a file on the machine holding the mouse, not the one running the
-# agent, so the bytes never cross. These verbs carry them: `connect` opens a
-# session with a reverse socket wired back to a small file server, `drop-serve`
+# agent, so the bytes never cross. These verbs carry them: `ssh` opens a session
+# with a reverse socket wired back to a small file server, `drop-serve`
 # is that server, and `drop-fetch` pulls a path across it.
 #
 # The client half runs on a stock machine — no nix, no jq, no bun. It needs only
@@ -623,11 +654,11 @@ drop_fetch() {
 # Open an ssh session with the drop server wired back through it. The server
 # lives and dies with this command: no stray daemon outlives the session that
 # needed it.
-connect() {
+ssh_connect() {
   shift 2>/dev/null || true
   local target=${1:-} client_id local_sock remote_dir daemon status waited
   if [ -z "$target" ]; then
-    echo "Usage: ./familiar.sh connect <[user@]host> [command...]" >&2
+    echo "Usage: ./familiar.sh ssh <[user@]host> [command...]" >&2
     return 1
   fi
   shift
@@ -684,6 +715,25 @@ connect() {
 # is missing or package-lock.json is newer than it (cheap staleness check), so a
 # normal launch skips it. bash 3.2 compatible: no associative arrays, and the
 # staleness test is a plain `-nt`.
+viewer_connect() {
+  local executable="${FAMILIAR_VIEWER_BIN:-}"
+  if [ -z "$executable" ] && command -v nix >/dev/null 2>&1; then
+    local output
+    if output=$(cd "$REPO" && nix build .#familiar-viewer --print-out-paths --no-link); then
+      executable="${output##*$'\n'}/bin/familiar-viewer"
+    fi
+  fi
+  if [ -z "$executable" ]; then
+    executable=$(command -v familiar-viewer 2>/dev/null || true)
+  fi
+  if [ -z "$executable" ]; then
+    echo "familiar: could not build or find familiar-viewer on PATH" >&2
+    return 1
+  fi
+  export FAMILIAR_VIEWER_BIN="$executable"
+  exec "$FAMILIAR_PRESENCE_CTL" viewer
+}
+
 client() {
   ensure_devshell client "$@"
   local dir="$REPO/apps/desktop"
@@ -841,9 +891,9 @@ case ${1:-} in
   agents)     agents "$@" ;;
   client)     client "$@" ;;
   age)        handle_age "$@" ;;
-  connect)    connect "$@" ;;
+  connect)    viewer_connect "$@" ;;
+  ssh)        ssh_connect "$@" ;;
   drop-serve) drop_serve "$@" ;;
   drop-fetch) drop_fetch "$@" ;;
-  "")         server "$@" ;;
-  *)          echo "usage: $0 {server|agents|client|pi|llama|stt|tts|kill|age|connect|drop-serve|drop-fetch|worklist-add|config-check}" >&2; exit 2 ;;
+  *)          usage >&2; exit 2 ;;
 esac

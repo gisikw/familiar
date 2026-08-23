@@ -32,6 +32,7 @@ func (a API) Handler() http.Handler {
 	m.HandleFunc("GET /v1/jobs", a.list)
 	m.HandleFunc("GET /v1/jobs/{id}", a.get)
 	m.HandleFunc("POST /v1/jobs/{id}/cancel", a.cancel)
+	m.HandleFunc("POST /v1/jobs/{id}/reap", a.reap)
 	m.HandleFunc("POST /v1/jobs/{id}/answer", a.answer)
 	m.HandleFunc("POST /v1/hosts/{host}/poll", a.poll)
 	m.HandleFunc("POST /v1/events", a.events)
@@ -95,6 +96,14 @@ func (a API) get(w http.ResponseWriter, r *http.Request) {
 }
 func (a API) cancel(w http.ResponseWriter, r *http.Request) {
 	j, err := a.Store.Cancel(r.Context(), r.PathValue("id"))
+	if err != nil {
+		failure(w, err, 400)
+		return
+	}
+	output(w, 200, j)
+}
+func (a API) reap(w http.ResponseWriter, r *http.Request) {
+	j, err := a.Store.Reap(r.Context(), r.PathValue("id"))
 	if err != nil {
 		failure(w, err, 400)
 		return

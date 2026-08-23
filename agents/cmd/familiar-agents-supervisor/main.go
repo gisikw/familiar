@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -21,6 +22,18 @@ func env(k, d string) string {
 		return v
 	}
 	return d
+}
+func secondsEnv(k string, fallback time.Duration) time.Duration {
+	v := os.Getenv(k)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n < 0 {
+		slog.Error("seconds environment must be a non-negative integer", "key", k)
+		os.Exit(2)
+	}
+	return time.Duration(n) * time.Second
 }
 func argvEnv(k string, fallback []string) []string {
 	v := os.Getenv(k)
@@ -44,9 +57,10 @@ func main() {
 	allowedRoots := flag.String("allowed-cwd-roots", env("FAMILIAR_AGENTS_ALLOWED_CWD_ROOTS", home), "allowed CWD roots separated by the OS path-list separator")
 	interval := flag.Duration("poll", 5*time.Second, "reconcile interval")
 	offline := flag.Duration("offline-restart-window", 30*time.Minute, "maximum disconnected recreation window")
+	linger := flag.Duration("linger", secondsEnv("FAMILIAR_AGENTS_LINGER_SECONDS", time.Hour), "settled worker tmux retention")
 	pi := flag.String("pi", env("FAMILIAR_AGENTS_PI", "pi"), "pi executable")
 	flag.Parse()
-	if *host == "" || *offline < 0 || *allowedRoots == "" {
+	if *host == "" || *offline < 0 || *linger < 0 || *allowedRoots == "" {
 		slog.Error("invalid supervisor configuration")
 		os.Exit(2)
 	}
@@ -75,7 +89,7 @@ func main() {
 		}
 	}
 	piAdapter := piadapter.Adapter{Binary: *pi, Extension: os.Getenv("FAMILIAR_AGENTS_TIAMAT_EXTENSION"), Env: workerEnv}
-	s := &supervisor.Supervisor{Host: *host, Client: client.New(*endpoint), Registry: reg, Tmux: tm, OfflineWindow: *offline, ArtifactRoot: *artifactRoot, AllowedCWDRoots: roots, Adapters: supervisor.ConfiguredAdapters(piAdapter, argvEnv("FAMILIAR_AGENTS_CLAUDE_ARGV", []string{"claude", "{prompt}"}), argvEnv("FAMILIAR_AGENTS_CODEX_ARGV", []string{"codex", "{prompt}"}))}
+	s := &supervisor.Supervisor{Host: *host, Client: client.New(*endpoint), Registry: reg, Tmux: tm, OfflineWindow: *offline, Linger: *linger, ArtifactRoot: *artifactRoot, AllowedCWDRoots: roots, Adapters: supervisor.ConfiguredAdapters(piAdapter, argvEnv("FAMILIAR_AGENTS_CLAUDE_ARGV", []string{"claude", "{prompt}"}), argvEnv("FAMILIAR_AGENTS_CODEX_ARGV", []string{"codex", "{prompt}"}))}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	// Reconcile with global truth before any reboot recreation. Only when the

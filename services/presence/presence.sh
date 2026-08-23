@@ -104,15 +104,13 @@ ensure_locked() {
   fi
   tmux_owned source-file "$RUNTIME_CONFIG"
   refresh_environment
-  local dead
-  dead=$(tmux_owned display-message -p -t "$TARGET" '#{pane_dead}' 2>/dev/null) || {
+  # With remain-on-exit disabled a worker exit destroys the sole pane and its
+  # session. Recovery therefore recreates the owned session; it never depends
+  # on an addressable dead pane or respawn-pane.
+  if ! tmux_owned display-message -p -t "$TARGET" '#{pane_pid}' >/dev/null 2>&1; then
     tmux_owned kill-session -t "$SESSION" >/dev/null 2>&1 || true
     start_session
     refresh_environment
-    dead=$(tmux_owned display-message -p -t "$TARGET" '#{pane_dead}')
-  }
-  if [ "$dead" = 1 ]; then
-    tmux_owned respawn-pane -k -t "$TARGET" "exec $(printf %q "$BASH_EXE") $(printf %q "$SELF") run-worker"
   fi
   local tries=0 pid
   while [ "$tries" -lt 50 ]; do
