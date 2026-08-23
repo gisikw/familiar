@@ -1,6 +1,6 @@
 # Familiar viewer
 
-The viewer is a Rust TUI that embeds one `tmux attach` PTY per client. It is not wired to production callers yet.
+The viewer is a Rust TUI that embeds one `tmux attach` PTY per client. The gateway's browser WebSocket PTY is a production caller and runs one viewer process per connection; direct CLI use remains supported.
 
 ## Nix build and packaging
 

@@ -37,7 +37,8 @@
     "root": {
       "inputs": {
         "flake-utils": "flake-utils",
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs",
+        "viewer": "viewer"
       }
     },
     "systems": {
@@ -54,6 +55,25 @@
         "repo": "default",
         "type": "github"
       }
+    },
+    "viewer": {
+      "inputs": {
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "../viewer",
+        "type": "path"
+      },
+      "original": {
+        "path": "../viewer",
+        "type": "path"
+      },
+      "parent": []
     }
   },
   "root": "root",

@@ -21,10 +21,12 @@ Binds `127.0.0.1:1692`. See `DESIGN.md` for the full protocol rationale.
   extension subscribes to and enacts against the pi API.
 - **Segment audio** (`GET /segments/:mid/:idx/audio`) — synthesized wav.
 - **Browser terminal** (`GET /terminal`, `GET /`) — the restty WASM terminal
-  bridged over a `/pty` WebSocket to a `node-pty` child that ATTACHES directly
-  to the private Presence Runtime tmux target (`FAMILIAR_ATTACH_CMD` remains a
-  test override). Replaces the Electron client's local-shell
-  dance. Fonts + mouse + emoji-completer ported from the client renderer.
+  bridged over a `/pty` WebSocket to a `node-pty` child running
+  `familiar-viewer` directly. The native viewer embeds the private Presence
+  Runtime tmux target; the legacy outer viewer tmux session is not used
+  (`FAMILIAR_ATTACH_CMD` remains a test override). Replaces the Electron
+  client's local-shell dance. Fonts + mouse + emoji-completer ported from the
+  client renderer.
 
 ## Run
 
@@ -35,6 +37,20 @@ Binds `127.0.0.1:1692`. See `DESIGN.md` for the full protocol rationale.
 Node 22 runs the TypeScript directly. `--experimental-transform-types` (not
 plain strip-only mode) is required because the code uses TS parameter
 properties; no separate build step.
+
+### Browser attach lifecycle and geometry
+
+At boot the gateway runs `presence.sh ensure` once (unless the test override is
+active), because `familiar-viewer` deliberately does not create the resident
+Presence session. A synchronous PTY spawn failure triggers one more ensure and
+one retry. `familiar.sh` already exports `FAMILIAR_PRESENCE_SOCKET`; it currently
+exports the agents state directory rather than `FAMILIAR_AGENTS_SOCKET`, so the
+gateway derives the latter as `<state>/tmux.sock`, matching `presence.sh`, and
+puts both absolute paths in the viewer child environment.
+
+The first restty resize supplies node-pty's initial `cols`/`rows`. Later
+WebSocket resize messages call `node-pty.resize`; the resulting SIGWINCH is read
+by crossterm as `Resize`, and the viewer resizes its embedded portable-pty.
 
 ### Webfont
 
@@ -55,9 +71,13 @@ outside that shell deliberately falls back to the vendored base font.
 | `FAMILIAR_SERVER_HOST` | `127.0.0.1` | listen host; non-loopback values are rejected by default |
 | `FAMILIAR_GATEWAY_ALLOW_NONLOOPBACK` | — | Set exactly `1` to permit an unauthenticated non-loopback bind; startup emits a security warning. |
 | `FAMILIAR_DROPS_DIR` | `${dirname(FAMILIAR_LOG_PATH)}/uploads`, otherwise a per-user temporary directory | Private upload storage. The gateway requires user ownership, refuses a symlink, and enforces directory/file modes `0700`/`0600`. |
-| `FAMILIAR_ATTACH_CMD` | Presence controller `attach` | Test override for the browser PTY child. Set to `bash -l` to smoke-test without tmux. |
-| `FAMILIAR_PRESENCE_CTL` | repository `services/presence/presence.sh` | Presence lifecycle controller path. |
+| `FAMILIAR_VIEWER_BIN` | `familiar-viewer` from `PATH` (Nix wrapper: packaged viewer store path) | Native browser PTY child executable. |
+| `FAMILIAR_ATTACH_CMD` | — | Highest-priority test override for the browser PTY child. Set to `bash -l` to smoke-test without tmux. |
+| `FAMILIAR_PRESENCE_CTL` | repository `services/presence/presence.sh` | Presence lifecycle controller used for `ensure`, not browser attachment. |
 | `FAMILIAR_ATTACH_CWD` | gateway cwd | working dir for the attach child |
+| `FAMILIAR_PRESENCE_SOCKET` | `${FAMILIAR_PRESENCE_STATE_DIR:-<repo>/state/presence}/tmux.sock` | Inner Presence tmux socket passed through to the viewer. |
+| `FAMILIAR_AGENTS_SOCKET` | `${FAMILIAR_AGENTS_SUPERVISOR_STATE:-<repo>/state/agents-supervisor}/tmux.sock` | Agents tmux socket passed through to the viewer. |
+| `FAMILIAR_AGENTS_ENDPOINT` | viewer default (`http://127.0.0.1:7337`) | Jobs API base URL passed through to the viewer. |
 | `FAMILIAR_STT_URL` / `FAMILIAR_TTS_URL` | — | HTTP model base URLs; gateway calls `/v1/audio/transcriptions` and `/v1/audio/speech` respectively |
 | `FAMILIAR_TTS_VOICE` | — | optional TTS voice selection |
 | `FAMILIAR_LOG_PATH` | stderr | JSONL sidecar log base (`${path}.${suffix}`) |

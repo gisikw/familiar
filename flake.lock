@@ -63,7 +63,8 @@
         ],
         "nixpkgs": [
           "nixpkgs"
-        ]
+        ],
+        "viewer": "viewer"
       },
       "locked": {
         "path": "./services/gateway",
@@ -121,7 +122,7 @@
         "server": "server",
         "stt": "stt",
         "tts": "tts",
-        "viewer": "viewer"
+        "viewer": "viewer_2"
       }
     },
     "server": {
@@ -194,6 +195,29 @@
       "parent": []
     },
     "viewer": {
+      "inputs": {
+        "flake-utils": [
+          "gateway-module",
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "gateway-module",
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "../viewer",
+        "type": "path"
+      },
+      "original": {
+        "path": "../viewer",
+        "type": "path"
+      },
+      "parent": [
+        "gateway-module"
+      ]
+    },
+    "viewer_2": {
       "inputs": {
         "flake-utils": [
           "flake-utils"
