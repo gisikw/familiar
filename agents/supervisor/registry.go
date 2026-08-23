@@ -23,6 +23,7 @@ type Worker struct {
 	AnsweredKey       string           `json:"answered_key,omitempty"`
 	ObservationCursor int64            `json:"observation_cursor,omitempty"`
 	StartedAt         time.Time        `json:"started_at"`
+	SettledAt         time.Time        `json:"settled_at,omitempty"`
 }
 
 type StartAttempt struct {

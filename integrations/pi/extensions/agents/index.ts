@@ -122,6 +122,17 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerTool({
+    name: "agents_reap",
+    label: "Reap Agent Session",
+    description: "Explicitly remove a settled agent job's lingering tmux session. Running jobs are refused.",
+    promptSnippet: "Remove retained terminal scrollback for a settled agent job",
+    parameters: Type.Object({ id: Type.String({ description: "Settled job id" }) }),
+    async execute(_id, p: { id: string }, signal) {
+      return invoke(["reap", p.id], signal);
+    },
+  });
+
+  pi.registerTool({
     name: "agents_cancel",
     label: "Cancel Agent",
     description: "Request durable cancellation of a delegated job.",

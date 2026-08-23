@@ -113,6 +113,10 @@ func (t Tmux) Kill(ctx context.Context, session string) error {
 	_, err := t.run(ctx, "kill-session", "-t", session)
 	return err
 }
+func (t Tmux) Interrupt(ctx context.Context, target string) error {
+	_, err := t.run(ctx, "send-keys", "-t", target, "C-c")
+	return err
+}
 func (t Tmux) Send(ctx context.Context, target, text string) error {
 	_, err := t.run(ctx, "send-keys", "-t", target, "-l", text)
 	if err == nil {

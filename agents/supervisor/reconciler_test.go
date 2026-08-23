@@ -93,6 +93,15 @@ func TestUnknownHarnessSettlesWithoutRetry(t *testing.T) {
 	}
 }
 
+func TestDiffDoesNotRestartOrForgetSettledWorkers(t *testing.T) {
+	now := time.Now()
+	desired := []protocol.Assignment{{Job: protocol.Job{ID: "historical", State: protocol.Done}, DesiredState: protocol.Done}}
+	local := map[string]Worker{"lingering": {Job: protocol.Job{ID: "lingering"}, SettledAt: now}}
+	if actions := Diff(desired, local); len(actions) != 0 {
+		t.Fatalf("settled jobs produced actions: %#v", actions)
+	}
+}
+
 func TestDiff(t *testing.T) {
 	desired := []protocol.Assignment{{Job: protocol.Job{ID: "new", State: protocol.Assigned}}, {Job: protocol.Job{ID: "stop", State: protocol.Cancelling, CancelRequested: true}, DesiredState: protocol.Cancelling}}
 	local := map[string]Worker{"stop": {Job: protocol.Job{ID: "stop"}}, "revoked": {Job: protocol.Job{ID: "revoked"}}}

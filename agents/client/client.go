@@ -78,6 +78,11 @@ func (c *Client) Cancel(ctx context.Context, id string) (protocol.Job, error) {
 	e := c.do(ctx, "POST", "/v1/jobs/"+url.PathEscape(id)+"/cancel", struct{}{}, &j)
 	return j, e
 }
+func (c *Client) Reap(ctx context.Context, id string) (protocol.Job, error) {
+	var j protocol.Job
+	e := c.do(ctx, "POST", "/v1/jobs/"+url.PathEscape(id)+"/reap", struct{}{}, &j)
+	return j, e
+}
 func (c *Client) Answer(ctx context.Context, id string, a protocol.Answer) (protocol.Job, error) {
 	var j protocol.Job
 	e := c.do(ctx, "POST", "/v1/jobs/"+url.PathEscape(id)+"/answer", a, &j)

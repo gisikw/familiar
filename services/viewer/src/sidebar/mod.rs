@@ -44,7 +44,7 @@ impl Job {
     }
 
     pub fn clickable(&self) -> bool {
-        self.live && !self.terminal()
+        self.live
     }
 }
 
@@ -354,8 +354,13 @@ pub fn rows_for(model: &SidebarModel, target: &ViewerTarget, height: u16, width:
         },
         style: dim,
     }];
+    let visible: Vec<_> = model
+        .jobs
+        .iter()
+        .filter(|job| !job.terminal() || job.live)
+        .collect();
     let mut previous = None;
-    for (index, job) in model.jobs.iter().enumerate() {
+    for (index, job) in visible.iter().enumerate() {
         if previous != Some(job.workspace.as_str()) {
             rows.push(FrameRow {
                 kind: FrameRowKind::Workspace,
@@ -364,8 +369,7 @@ pub fn rows_for(model: &SidebarModel, target: &ViewerTarget, height: u16, width:
             });
             previous = Some(&job.workspace);
         }
-        let last_in_group = model
-            .jobs
+        let last_in_group = visible
             .get(index + 1)
             .is_none_or(|next| next.workspace != job.workspace);
         let connector = if last_in_group { "└─" } else { "├─" };
@@ -527,6 +531,7 @@ mod tests {
         let mut jobs = parse_jobs(FIXTURE.as_bytes()).unwrap();
         jobs[0].live = true;
         jobs[1].live = false;
+        jobs[3].live = true;
         let rows = rows_for(
             &SidebarModel {
                 jobs,
@@ -540,5 +545,9 @@ mod tests {
         assert_eq!(rows.agent_for_row(2).as_deref(), Some("job-active"));
         assert_eq!(rows.hit(3), SidebarHit::Dead);
         assert_eq!(rows.agent_for_row(3), None);
+        // The dead cancelled row is absent; the live terminal row remains and
+        // is clickable after its beta workspace heading.
+        assert_eq!(rows.agent_for_row(5).as_deref(), Some("job-abcdefgh"));
+        assert!(rows.rows.iter().all(|row| !row.text.contains("cancelled")));
     }
 }

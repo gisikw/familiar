@@ -40,14 +40,14 @@ func Diff(desired []protocol.Assignment, local map[string]Worker) []Action {
 	for _, d := range desired {
 		seen[d.Job.ID] = true
 		_, ok := local[d.Job.ID]
-		if !ok && !d.Job.CancelRequested && d.DesiredState != protocol.Cancelling {
+		if !ok && !d.Job.State.Terminal() && !d.Job.CancelRequested && d.DesiredState != protocol.Cancelling {
 			out = append(out, Action{Kind: Start, Assignment: d, JobID: d.Job.ID})
 		} else if ok && (d.Job.CancelRequested || d.DesiredState == protocol.Cancelling) {
 			out = append(out, Action{Kind: Cancel, Assignment: d, JobID: d.Job.ID})
 		}
 	}
-	for id := range local {
-		if !seen[id] {
+	for id, worker := range local {
+		if !seen[id] && worker.SettledAt.IsZero() {
 			out = append(out, Action{Kind: Forget, JobID: id})
 		}
 	}
@@ -64,6 +64,7 @@ type Supervisor struct {
 	AllowedCWDRoots  []string
 	MaxStartAttempts int
 	StartBackoff     time.Duration
+	Linger           time.Duration
 	Adapters         map[string]harnesses.Adapter
 	Logger           *slog.Logger
 }
@@ -93,6 +94,9 @@ func ConfiguredAdapters(pi piadapter.Adapter, claudeArgv, codexArgv []string) ma
 // adapter) is recreated while disconnected, and never after RestartUntil.
 func (s *Supervisor) Recover(ctx context.Context) {
 	for _, w := range s.Registry.Snapshot() {
+		if !w.SettledAt.IsZero() {
+			continue
+		}
 		if s.Tmux.Has(ctx, w.Session) {
 			continue
 		}
@@ -136,10 +140,16 @@ func (s *Supervisor) Tick(ctx context.Context) error {
 	// disconnected deadline; the adapter must still provide honest resume.
 	local := s.Registry.Snapshot()
 	for _, d := range poll.Assignments {
-		if w, ok := local[d.Job.ID]; ok && !s.Tmux.Has(ctx, w.Session) && d.DesiredState != protocol.Cancelling {
+		if w, ok := local[d.Job.ID]; ok && d.Job.ReapRequested && !w.SettledAt.IsZero() {
+			_ = s.Tmux.Kill(ctx, w.Session)
+			_ = s.Registry.Delete(d.Job.ID)
+			continue
+		}
+		if w, ok := local[d.Job.ID]; ok && w.SettledAt.IsZero() && !s.Tmux.Has(ctx, w.Session) && d.DesiredState != protocol.Cancelling {
 			s.resumeWorker(ctx, w, "confirmed")
 		}
 	}
+	s.reapExpired(ctx, time.Now())
 	for _, a := range Diff(poll.Assignments, s.Registry.Snapshot()) {
 		switch a.Kind {
 		case Start:
@@ -299,15 +309,36 @@ func (s *Supervisor) publishState(ctx context.Context, w *Worker, state protocol
 func (s *Supervisor) runtime(w Worker) harnesses.Runtime {
 	return harnesses.Runtime{Launch: w.Launch, ObservationCursor: w.ObservationCursor, SendText: func(ctx context.Context, text string) error { return s.Tmux.Send(ctx, w.Target, text) }, Cancel: func(ctx context.Context) error { return s.Tmux.Kill(ctx, w.Session) }, Alive: func(ctx context.Context) (bool, *int, error) { return s.Tmux.Pane(ctx, w.Target) }}
 }
+func (s *Supervisor) reapExpired(ctx context.Context, now time.Time) {
+	linger := s.Linger
+	if linger < 0 {
+		linger = time.Hour
+	}
+	for id, w := range s.Registry.Snapshot() {
+		if !w.SettledAt.IsZero() && now.Sub(w.SettledAt) >= linger {
+			_ = s.Tmux.Kill(ctx, w.Session)
+			_ = s.Registry.Delete(id)
+		}
+	}
+}
+
+func (s *Supervisor) settleWorker(w Worker, at time.Time, state protocol.State) {
+	w.LastState = state
+	w.SettledAt = at.UTC()
+	_ = s.Registry.Put(w)
+}
+
 func (s *Supervisor) cancel(ctx context.Context, id string) {
 	w, ok := s.Registry.Snapshot()[id]
 	if !ok {
 		return
 	}
-	_ = s.Tmux.Kill(ctx, w.Session)
+	// Ctrl-C lets the worker pane become a retained dead pane under the owned
+	// tmux policy, preserving its output for the linger window.
+	_ = s.Tmux.Interrupt(ctx, w.Target)
 	set := protocol.Settlement{ID: id + "-cancelled", JobID: id, Verdict: protocol.Cancelled, Summary: "cancelled by requested state", At: time.Now().UTC()}
 	if err := s.Client.Events(ctx, protocol.EventBatch{Host: s.Host, Events: []protocol.ObservedEvent{{ID: id + "-cancel-settlement", JobID: id, Settlement: &set}}}); err == nil {
-		_ = s.Registry.Delete(id)
+		s.settleWorker(w, set.At, set.Verdict)
 	}
 }
 func (s *Supervisor) forget(ctx context.Context, id string) {
@@ -318,6 +349,9 @@ func (s *Supervisor) forget(ctx context.Context, id string) {
 }
 func (s *Supervisor) observe(ctx context.Context) error {
 	for id, w := range s.Registry.Snapshot() {
+		if !w.SettledAt.IsZero() {
+			continue
+		}
 		a, err := s.adapter(w.Job.Harness)
 		if err != nil {
 			return err
@@ -379,7 +413,7 @@ func (s *Supervisor) observe(ctx context.Context) error {
 		if err = s.Client.Events(ctx, protocol.EventBatch{Host: s.Host, Events: []protocol.ObservedEvent{event}}); err != nil {
 			return err
 		}
-		_ = s.Registry.Delete(id)
+		s.settleWorker(w, settlement.At, settlement.Verdict)
 	}
 	return nil
 }

@@ -156,6 +156,16 @@ func (s *Store) Cancel(ctx context.Context, id string) (protocol.Job, error) {
 	})
 }
 
+func (s *Store) Reap(ctx context.Context, id string) (protocol.Job, error) {
+	return s.update(ctx, id, func(j *protocol.Job) error {
+		if !j.State.Terminal() {
+			return errors.New("only settled jobs can be reaped")
+		}
+		j.ReapRequested = true
+		return nil
+	})
+}
+
 func (s *Store) Answer(ctx context.Context, id string, a protocol.Answer) (protocol.Job, error) {
 	if a.IdempotencyKey == "" || a.Text == "" {
 		return protocol.Job{}, errors.New("idempotency_key and text are required")
@@ -204,7 +214,10 @@ func (s *Store) Answer(ctx context.Context, id string, a protocol.Answer) (proto
 }
 
 func (s *Store) Poll(ctx context.Context, host string) (protocol.PollResponse, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT body FROM jobs WHERE host=? AND state NOT IN ('done','failed','cancelled','timeout') ORDER BY created`, host)
+	// Terminal jobs normally disappear from desired assignments. An explicit
+	// reap request is retained just long enough for the owning supervisor to
+	// destroy its host-local lingering tmux session.
+	rows, err := s.db.QueryContext(ctx, `SELECT body FROM jobs WHERE host=? AND (state NOT IN ('done','failed','cancelled','timeout') OR json_extract(body, '$.reap_requested')=1) ORDER BY created`, host)
 	if err != nil {
 		return protocol.PollResponse{}, err
 	}
