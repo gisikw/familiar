@@ -1,6 +1,24 @@
 # Familiar viewer
 
-The viewer is a Rust TUI that will embed one `tmux attach` PTY per client. It is not wired to production callers yet.
+The viewer is a Rust TUI that embeds one `tmux attach` PTY per client. It is not wired to production callers yet.
+
+## Run
+
+The native VT library requires Zig 0.15. From the repository root:
+
+```sh
+nix shell nixpkgs#zig_0_15 -c cargo run --manifest-path services/viewer/Cargo.toml -- \
+  --presence-socket /absolute/path/to/presence.sock \
+  --agents-socket /absolute/path/to/agents.sock
+```
+
+The viewer owns the host alternate screen and raw mode, draws placeholder `FAMILIAR` chrome, and starts a writable presence-session attach in the main rectangle. A vanished tmux session is nonfatal: the viewer keeps its chrome and displays a notice. There is intentionally no viewer-local quit key; disconnect the client or signal the process.
+
+## Input and rendering limitations
+
+Keyboard input uses plain xterm sequences. Application-cursor mode, arrows/navigation keys, F1–F12, basic Ctrl/Alt combinations, and bracketed paste are supported. Modified navigation/function-key variants, application-keypad mappings, the Kitty keyboard protocol, compose/IME subtleties, and viewer-local shortcuts are not yet encoded. Mouse capture and forwarding are deferred to Chunk 3.
+
+The cursor position and DECTCEM visibility are read from libghostty-vt and mapped into the host frame. Synchronized-output mode is treated as a frame-coalescing hint. Graphics are deferred to Chunk 2, and the real jobs/sidebar UI is deferred to Chunk 4.
 
 ## Terminal core support
 

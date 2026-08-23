@@ -11,7 +11,10 @@ pub const OPT_USERDATA: c_int = 0;
 pub const OPT_WRITE_PTY: c_int = 1;
 pub const OPT_DEVICE_ATTRIBUTES: c_int = 8;
 
+pub const DATA_CURSOR_X: c_int = 3;
+pub const DATA_CURSOR_Y: c_int = 4;
 pub const DATA_ACTIVE_SCREEN: c_int = 6;
+pub const DATA_CURSOR_VISIBLE: c_int = 7;
 pub const SCREEN_ALTERNATE: c_int = 1;
 
 pub const CELL_DATA_WIDE: c_int = 3;

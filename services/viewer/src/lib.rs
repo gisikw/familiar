@@ -5,5 +5,6 @@ pub mod cli;
 pub mod graphics;
 pub mod layout;
 pub mod pty;
+pub mod runtime;
 pub mod sidebar;
 pub mod terminal;

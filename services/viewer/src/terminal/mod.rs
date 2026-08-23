@@ -43,6 +43,13 @@ pub struct TerminalCell {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CursorState {
+    pub column: u16,
+    pub row: u16,
+    pub visible: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TerminalModes {
     pub mouse_tracking: MouseTracking,
     pub mouse_encoding: MouseEncoding,
@@ -87,6 +94,9 @@ pub trait TerminalCore {
     fn resize(&mut self, size: GridSize) -> Result<TerminalUpdate, Self::Error>;
     fn grid_size(&self) -> GridSize;
     fn cell(&self, column: u16, row: u16) -> Option<TerminalCell>;
+    fn cursor(&self) -> Option<CursorState> {
+        None
+    }
     fn modes(&self) -> TerminalModes;
 }
 
