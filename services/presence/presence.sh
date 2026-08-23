@@ -13,6 +13,8 @@ TARGET="$SESSION:0.0"
 VIEWER_SIDEBAR="$VIEWER:0.0"
 VIEWER_MAIN="$VIEWER:0.1"
 SIDEBAR=${FAMILIAR_SIDEBAR_SCRIPT:-$HERE/sidebar.sh}
+AGENTS_STATE=${FAMILIAR_AGENTS_SUPERVISOR_STATE:-$REPO/state/agents-supervisor}
+AGENTS_SOCKET=${FAMILIAR_AGENTS_SOCKET:-$AGENTS_STATE/tmux.sock}
 RUNTIME_CONFIG="$STATE/tmux.conf"
 CONFIG_SOURCE=${FAMILIAR_PRESENCE_CONFIG:-$HERE/tmux.conf}
 LOCK="$STATE/ensure.lock"
@@ -145,9 +147,39 @@ sidebar_command() {
 }
 
 nested_command() {
-  # Clearing TMUX is what permits a client inside the outer viewer pane to
-  # attach to another session on this same private server.
+  # Clearing TMUX permits this outer pane to host a client from any tmux server.
   printf 'TMUX= exec tmux -S %q attach-session -t %q' "$SOCKET" "$SESSION"
+}
+
+agent_command() {
+  local session=$1
+  # Worker views are deliberately read-only: sidebar navigation must not route
+  # browser keystrokes into a delegated process.
+  printf 'TMUX= exec tmux -S %q attach-session -r -t %q' "$AGENTS_SOCKET" "$session"
+}
+
+show_presence() {
+  viewer_up || fail "viewer is not running"
+  local cmd; cmd=$(nested_command)
+  tmux_owned respawn-pane -k -t "$VIEWER_MAIN" "$cmd"
+  tmux_owned set-option -p -t "$VIEWER_MAIN" @familiar_target presence
+  tmux_owned select-pane -t "$VIEWER_MAIN"
+}
+
+show_agent() {
+  local id=${1:-} safe session cmd dead
+  [ -n "$id" ] || fail "agent job id is required"
+  safe=$(printf '%s' "$id" | sed 's/[^A-Za-z0-9_-]/-/g')
+  session="worker-$safe"
+  if [ ! -S "$AGENTS_SOCKET" ] || ! tmux -S "$AGENTS_SOCKET" has-session -t "$session" 2>/dev/null; then
+    fail "agent session is no longer available: $id"
+  fi
+  dead=$(tmux -S "$AGENTS_SOCKET" display-message -p -t "$session:0.0" '#{pane_dead}' 2>/dev/null) || dead=1
+  [ "$dead" = 0 ] || fail "agent session has exited: $id"
+  cmd=$(agent_command "$session")
+  tmux_owned respawn-pane -k -t "$VIEWER_MAIN" "$cmd"
+  tmux_owned set-option -p -t "$VIEWER_MAIN" @familiar_target "agent:$id"
+  tmux_owned select-pane -t "$VIEWER_MAIN"
 }
 
 configure_viewer() {
@@ -161,7 +193,9 @@ configure_viewer() {
   # and mouse behavior while clients attached to Viewer cannot address it.
   tmux_owned set-option -t "$VIEWER" prefix None
   tmux_owned set-option -t "$VIEWER" status off
-  tmux_owned set-option -t "$VIEWER" mouse off
+  # Mouse mode lets applications opt in per pane. The sidebar requests SGR
+  # clicks; nested tmux continues to receive mouse reports in the main pane.
+  tmux_owned set-option -t "$VIEWER" mouse on
   tmux_owned set-option -t "$VIEWER" pane-border-status off
   tmux_owned set-option -t "$VIEWER" pane-border-style "fg=$border_muted"
   tmux_owned set-option -t "$VIEWER" pane-active-border-style "fg=$border"
@@ -176,7 +210,10 @@ configure_viewer() {
     "if-shell -F '#{==:#{pane_index},0}' 'respawn-pane -k \"$sidebar_cmd\"'"
   tmux_owned resize-pane -t "$VIEWER_SIDEBAR" -x 28
   tmux_owned select-pane -t "$VIEWER_MAIN"
-  tmux_owned select-pane -d -t "$VIEWER_SIDEBAR"
+  tmux_owned select-pane -e -t "$VIEWER_SIDEBAR"
+  if [ -z "$(tmux_owned show-option -pqv -t "$VIEWER_MAIN" @familiar_target 2>/dev/null || true)" ]; then
+    tmux_owned set-option -p -t "$VIEWER_MAIN" @familiar_target presence
+  fi
 }
 
 ensure_viewer_locked() {
@@ -265,5 +302,7 @@ case ${1:-} in
   ensure-viewer-locked) ensure_viewer_locked ;; # internal, under the same lock
   run-worker) worker_command ;;
   run-sidebar) run_sidebar ;;
-  *) fail "usage: $0 {ensure|start|ensure-viewer|viewer|attach|attach-presence|status [--quiet]|stop}" ;;
+  show-presence) show_presence ;;
+  show-agent) show_agent "${2:-}" ;;
+  *) fail "usage: $0 {ensure|start|ensure-viewer|viewer|attach|attach-presence|show-presence|show-agent ID|status [--quiet]|stop}" ;;
 esac
