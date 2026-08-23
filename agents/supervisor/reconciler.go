@@ -66,7 +66,10 @@ type Supervisor struct {
 	StartBackoff     time.Duration
 	Linger           time.Duration
 	Adapters         map[string]harnesses.Adapter
-	Logger           *slog.Logger
+	// Notify, when non-nil, is invoked after a durable settlement to promptly
+	// wake the Familiar presence. It must never block or fail the settlement.
+	Notify Notifier
+	Logger *slog.Logger
 }
 
 func (s *Supervisor) log() *slog.Logger {
@@ -306,6 +309,17 @@ func (s *Supervisor) publishState(ctx context.Context, w *Worker, state protocol
 	w.LastState = state
 	return s.Registry.Put(*w)
 }
+
+// publishBlocked reports a side-channel blocked question and moves the worker to
+// the Blocked state. Delivery of the eventual answer is handled in Tick.
+func (s *Supervisor) publishBlocked(ctx context.Context, w *Worker, q *protocol.BlockedQuestion) error {
+	event := protocol.ObservedEvent{ID: w.Job.ID + "-blocked-" + q.ID, JobID: w.Job.ID, State: protocol.Blocked, Question: q, ObservedAt: time.Now().UTC()}
+	if err := s.Client.Events(ctx, protocol.EventBatch{Host: s.Host, Events: []protocol.ObservedEvent{event}}); err != nil {
+		return err
+	}
+	w.LastState = protocol.Blocked
+	return s.Registry.Put(*w)
+}
 func (s *Supervisor) runtime(w Worker) harnesses.Runtime {
 	return harnesses.Runtime{Launch: w.Launch, ObservationCursor: w.ObservationCursor, SendText: func(ctx context.Context, text string) error { return s.Tmux.Send(ctx, w.Target, text) }, Cancel: func(ctx context.Context) error { return s.Tmux.Kill(ctx, w.Session) }, Alive: func(ctx context.Context) (bool, *int, error) { return s.Tmux.Pane(ctx, w.Target) }}
 }
@@ -376,7 +390,12 @@ func (s *Supervisor) observe(ctx context.Context) error {
 				}
 			}
 		}
-		if observeErr == nil && obs.State == protocol.Running {
+		// A worker keeps running when the adapter reports it alive (State Running)
+		// and has not settled over the side channel. Interactive workers settle via
+		// obs.Settled while their TUI stays alive; minimal adapters settle when the
+		// process exits (State != Running). A dead pane is the supervisor's own
+		// crash boundary handled below.
+		if observeErr == nil && !obs.Settled && obs.State == protocol.Running {
 			if w.LastState == protocol.Starting {
 				// Retry the idempotent starting event first: its original response may
 				// have been lost even though the worker was successfully created.
@@ -387,7 +406,25 @@ func (s *Supervisor) observe(ctx context.Context) error {
 					return err
 				}
 			}
+			// Blocked questions are reported over the side channel; project them so
+			// the operator/presence can answer. Answer delivery happens in Tick.
+			if obs.Question != nil && w.LastState != protocol.Blocked {
+				if err = s.publishBlocked(ctx, &w, obs.Question); err != nil {
+					return err
+				}
+			} else if obs.Question == nil && w.LastState == protocol.Blocked {
+				if err = s.publishState(ctx, &w, protocol.Running); err != nil {
+					return err
+				}
+			}
 			continue
+		}
+		// A side-channel settlement is still preceded by Running so the lifecycle
+		// is honest (Starting -> Running -> terminal).
+		if observeErr == nil && obs.Settled && w.LastState == protocol.Starting {
+			if err = s.publishState(ctx, &w, protocol.Running); err != nil {
+				return err
+			}
 		}
 		if observeErr != nil {
 			if ctx.Err() != nil {
@@ -414,6 +451,9 @@ func (s *Supervisor) observe(ctx context.Context) error {
 			return err
 		}
 		s.settleWorker(w, settlement.At, settlement.Verdict)
+		// Settlement is durable; notification is a best-effort courtesy that must
+		// never fail or delay the settlement itself.
+		s.notifySettlement(ctx, w.Job, settlement)
 	}
 	return nil
 }
