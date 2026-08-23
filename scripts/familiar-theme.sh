@@ -20,6 +20,14 @@
 
 set -euo pipefail
 
+# jq is a hard dependency for palette resolution. Fail fast and clearly —
+# without this guard a missing jq surfaces as unbound-variable noise deep in
+# eval'd resolution instead of an actionable message.
+command -v jq >/dev/null 2>&1 || {
+  echo "familiar-theme: jq is required but not on PATH" >&2
+  exit 4
+}
+
 _theme_defaults_path() {
   local here; here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   echo "$here/../services/gateway/src/theme/defaults.json"

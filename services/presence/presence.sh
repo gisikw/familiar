@@ -90,9 +90,15 @@ ensure_locked() {
   install -m 600 "$CONFIG_SOURCE" "$RUNTIME_CONFIG"
   # Generate copy-mode selection and position styles from the canonical palette
   # on every ensure, so environment overrides also update a surviving server.
-  bash "$REPO/scripts/familiar-theme.sh" tmux > "$THEME_CONFIG"
-  chmod 600 "$THEME_CONFIG"
-  cat "$THEME_CONFIG" >> "$RUNTIME_CONFIG"
+  # Styling is cosmetic: a failed generation (e.g. jq absent in a bare SSH
+  # shell) warns and continues rather than blocking Presence.
+  if bash "$REPO/scripts/familiar-theme.sh" tmux > "$THEME_CONFIG" 2>/dev/null; then
+    chmod 600 "$THEME_CONFIG"
+    cat "$THEME_CONFIG" >> "$RUNTIME_CONFIG"
+  else
+    rm -f "$THEME_CONFIG"
+    printf 'familiar presence: theme styling skipped (familiar-theme.sh failed; is jq installed?)\n' >&2
+  fi
   # Avoid tmux's compiled /bin/sh default (absent in pure Nix builds) while
   # retaining the explicit static policy above.
   case "$BASH_EXE" in *\"*) fail "unsupported quote in bash path" ;; esac
