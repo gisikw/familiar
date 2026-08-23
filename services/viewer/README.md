@@ -2,7 +2,21 @@
 
 The viewer is a Rust TUI that embeds one `tmux attach` PTY per client. It is not wired to production callers yet.
 
-## Run
+## Nix build and packaging
+
+The reproducible package supports x86_64 Linux and aarch64 Linux:
+
+```sh
+nix build ./services/viewer
+nix run ./services/viewer -- --help
+# The root flake exposes the same package and app:
+nix build .#familiar-viewer
+nix run .#familiar-viewer -- --help
+```
+
+The installed launcher appends packaged `tmux` to `PATH`, allowing a system `tmux` to win while ensuring one is available. It also defaults `FAMILIAR_MARK_PNG` to the mark installed under `$out/share/familiar`; an explicitly user-set `FAMILIAR_MARK_PNG` still wins. The Nix build seeds Zig's sole eager package dependency in its writable sandbox cache and does not access the network. `nix flake check ./services/viewer` builds the package (including its non-live Rust unit tests) and checks Rust formatting.
+
+## Run from a development checkout
 
 The native VT library requires Zig 0.15. From the repository root:
 
@@ -48,7 +62,7 @@ Each successful snapshot checks the agents tmux socket once and marks matching s
 
 At startup the viewer sends the host a 1x1 Kitty query followed by DA1 and waits up to 200ms. A matching Kitty `OK` before DA1 enables graphics; DA1-first or timeout selects text mode. `TERM_PROGRAM=ghostty` and `KITTY_WINDOW_ID` are strong positive shortcuts. Input observed during the probe is buffered and replayed. Set `FAMILIAR_VIEWER_DEBUG_LOG` to a file path for probe diagnostics; diagnostics are never printed over the TUI. `FAMILIAR_GRAPHICS_MODE=kitty|text` is an explicit test/debug override.
 
-In Kitty mode child images come from the vendored VT core (including tmux DCS passthrough), are assigned viewer-owned host IDs, clipped to the embedded main rectangle, and placed after ratatui text. The native `assets/familiar-mark.png` is transmitted once and placed in the mark rectangle. `FAMILIAR_MARK_PNG` overrides its path; otherwise the viewer searches upward from its current directory. Store-safe asset lookup remains Chunk 5 work. Text mode renders `FAMILIAR` and emits no child graphics. Images are deleted on replacement and terminal teardown.
+In Kitty mode child images come from the vendored VT core (including tmux DCS passthrough), are assigned viewer-owned host IDs, clipped to the embedded main rectangle, and placed after ratatui text. The native `assets/familiar-mark.png` is transmitted once and placed in the mark rectangle. `FAMILIAR_MARK_PNG` overrides its path; otherwise a development build searches upward from its current directory. The Nix wrapper defaults that variable to the store-installed mark while preserving an explicit user override. Text mode renders `FAMILIAR` and emits no child graphics. Images are deleted on replacement and terminal teardown.
 
 The Rust boundary remains `terminal::TerminalCore`. Chunk 1 did not change that trait. `GhosttyTerminal` is the FFI-backed implementation.
 
@@ -56,7 +70,7 @@ The Rust boundary remains `terminal::TerminalCore`. Chunk 1 did not change that 
 
 `vendor/libghostty-vt` is the MIT-licensed Ghostty source distribution (its `LICENSE` is included), pinned in `vendor/libghostty-vt.vendor.json` to Ghostty commit `c5a21edfcbc2d5b46540ad91b7980aca31f5f1f3` (`libghostty-vt-1.3.2-HEAD-+c5a21edfc.tar.gz`).
 
-The build requires Zig 0.15. Cargo's `build.rs` invokes `${ZIG:-zig} build -Demit-lib-vt -Doptimize=ReleaseFast` and currently supports Linux x86_64/aarch64 GNU targets. If Zig is not installed, run Cargo in `nix shell nixpkgs#zig_0_15 -c ...`. Nix packaging and Zig availability in release builds are intentionally deferred to Chunk 5.
+The build requires Zig 0.15. Cargo's `build.rs` invokes `${ZIG:-zig} build -Demit-lib-vt -Doptimize=ReleaseFast` and currently supports Linux x86_64/aarch64 GNU targets. If Zig is not installed, run Cargo in `nix shell nixpkgs#zig_0_15 -c ...`. The Nix package pins Zig 0.15 explicitly and provides its required package cache offline.
 
 To refresh from a clean Ghostty checkout at the intended commit:
 
