@@ -32,9 +32,12 @@ export interface ProviderGroup {
 }
 
 const WIRES = {
-  "/anthropic/v1/messages": { api: "anthropic-messages", family: "anthropic" },
-  "/openai/v1/chat/completions": { api: "openai-completions", family: "openai" },
-  "/responses/v1/responses": { api: "openai-responses", family: "responses" },
+  // Pi's Anthropic SDK appends /v1/messages, while its OpenAI SDK appends
+  // /chat/completions or /responses. Include /v1 in only the latter bases so
+  // all three resolve to Tiamat's wire-native paths.
+  "/anthropic/v1/messages": { api: "anthropic-messages", family: "anthropic", baseSuffix: "" },
+  "/openai/v1/chat/completions": { api: "openai-completions", family: "openai", baseSuffix: "/v1" },
+  "/responses/v1/responses": { api: "openai-responses", family: "responses", baseSuffix: "/v1" },
 } as const;
 
 export function normalizeBaseUrl(value: string): string {
@@ -65,7 +68,7 @@ export function catalogToProviderGroups(catalog: TiamatCatalogRecord[], rawBaseU
     const id = `tiamat-${wire.family}-${encodeURIComponent(record.provider)}`;
     let group = groups.get(id);
     if (!group) {
-      const scopedBase = `${base}/${wire.family}/${encodeURIComponent(record.provider)}`;
+      const scopedBase = `${base}/${wire.family}/${encodeURIComponent(record.provider)}${wire.baseSuffix}`;
       group = {
         id,
         name: `Tiamat ${wire.family} (${record.provider})`,

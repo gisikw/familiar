@@ -18,7 +18,22 @@ describe("Tiamat catalog mapping", () => {
     ]);
     expect(groups[0].models[0].id).toBe("claude-sonnet");
     expect(groups[0].models[0].baseUrl).toBe("https://router.example/anthropic/personal");
-    expect(groups[2].baseUrl).toBe("https://router.example/responses/codex%2Fpersonal");
+    expect(groups[2].baseUrl).toBe("https://router.example/responses/codex%2Fpersonal/v1");
+  });
+
+  test("shapes each base URL for the path appended by its pi API client", () => {
+    const allWires: TiamatCatalogRecord[] = [
+      { model: "claude", api: "/anthropic/v1/messages", provider: "account", fidelity: "native", availability: "available" },
+      { model: "chat", api: "/openai/v1/chat/completions", provider: "account", fidelity: "native", availability: "available" },
+      { model: "response", api: "/responses/v1/responses", provider: "account", fidelity: "native", availability: "available" },
+    ];
+    const byFamily = new Map(catalogToProviderGroups(allWires, "https://router.example/")
+      .map((group) => [group.family, group.baseUrl]));
+
+    // Anthropic appends /v1/messages; OpenAI appends /chat/completions or /responses.
+    expect(byFamily.get("anthropic")).toBe("https://router.example/anthropic/account");
+    expect(byFamily.get("openai")).toBe("https://router.example/openai/account/v1");
+    expect(byFamily.get("responses")).toBe("https://router.example/responses/account/v1");
   });
 
   test("filters unavailable and labels degraded records", () => {
