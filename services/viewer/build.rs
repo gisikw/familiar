@@ -24,6 +24,9 @@ fn main() {
     let vendor = root.join("vendor/libghostty-vt");
     let target = env::var("TARGET").unwrap();
     let zig = env::var_os("ZIG").unwrap_or_else(|| "zig".into());
+    // Install into OUT_DIR so the artifact participates in Cargo's normal
+    // invalidation and the vendor tree stays pristine.
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     let status = Command::new(zig)
         .current_dir(&vendor)
         .args([
@@ -32,14 +35,18 @@ fn main() {
             "-Doptimize=ReleaseFast",
             "-Demit-xcframework=false",
             &format!("-Dtarget={}", zig_target(&target)),
+            "-p",
         ])
+        .arg(&out_dir)
+        .arg("--cache-dir")
+        .arg(out_dir.join("zig-cache"))
         .status()
         .expect("failed to run Zig 0.15; install zig or set ZIG");
     assert!(status.success(), "vendored libghostty-vt Zig build failed");
 
     println!(
         "cargo:rustc-link-search=native={}",
-        vendor.join("zig-out/lib").display()
+        out_dir.join("lib").display()
     );
     println!("cargo:rustc-link-lib=static=ghostty-vt");
 }
