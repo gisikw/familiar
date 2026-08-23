@@ -130,7 +130,7 @@ theme_sidebar_accent() {
 }
 
 # --- consumer: tmux pane borders -------------------------------------------
-# Shell-escaped assignments are eval'd by presence.sh. This keeps both the
+# Shell-escaped assignments retained for legacy theme consumers. This keeps
 # canonical defaults and FAMILIAR_THEME_* override resolution in one place.
 theme_pane_borders() {
   local _resolved; _resolved="$(_theme_resolve_all)" || exit 3; eval "$_resolved"

@@ -24,242 +24,162 @@ while :; do read -r -t 1 _ || true; done
 EOF
 chmod 700 "$FAKE"
 
-# The sidebar fetch hook permits deterministic formatting checks without an
-# HTTP daemon or a live agent service.
-command -v jq >/dev/null 2>&1 || fail "jq is required for sidebar registry test"
-fixture="$TMP/jobs.json"
-cat >"$fixture" <<'EOF'
-[
-  {"id":"job-active","cwd":"/work/alpha","prompt":"Fix\nsidebar","state":"running","updated_at":"2026-08-22T07:30:00Z"},
-  {"id":"job-blocked","cwd":"/work/alpha","prompt":"Need input","state":"blocked","updated_at":"2026-08-22T07:20:00Z"},
-  {"id":"job-abcdefgh","cwd":"/work/beta","prompt":"  ","state":"done","updated_at":"2026-08-22T07:40:00Z"},
-  {"id":"job-old","cwd":"/work/alpha","prompt":"Old task","state":"cancelled","updated_at":"2026-08-22T07:10:00Z"}
-]
-EOF
-sidebar_output=$(FAMILIAR_SIDEBAR_FORMAT_ONLY=1 FAMILIAR_AGENTS_JOBS_FIXTURE="$fixture" \
-  bash "$HERE/sidebar.sh")
-sidebar_plain=$(printf '%s\n' "$sidebar_output" | sed $'s/\033\\[[0-9;]*m//g')
-printf '%s\n' "$sidebar_plain" | grep -Fq 'agents' || fail "sidebar registry header missing"
-printf '%s\n' "$sidebar_plain" | grep -Fq 'alpha' || fail "sidebar workspace grouping missing"
-printf '%s\n' "$sidebar_plain" | grep -Fq '├─ ● Fix sidebar running' \
-  || fail "sidebar running job formatting missing"
-printf '%s\n' "$sidebar_plain" | grep -Fq '└─ ● Old task cancelled' \
-  || fail "sidebar group connector or terminal job missing"
-printf '%s\n' "$sidebar_plain" | grep -Fq '└─ ● abcdefgh done' \
-  || fail "sidebar id fallback missing"
-while IFS= read -r line; do
-  [ "${#line}" -eq 26 ] || fail "sidebar registry line is not 26 columns: $line"
-done <<< "$sidebar_plain"
-[ "$(FAMILIAR_SIDEBAR_MOUSE_SEQUENCE='[<0;7;15' bash "$HERE/sidebar.sh")" = 15 ] \
-  || fail "SGR mouse press parser did not return its row"
-[ "$(FAMILIAR_SIDEBAR_JOB_AT_ROW=15 FAMILIAR_AGENTS_JOBS_FIXTURE="$fixture" bash "$HERE/sidebar.sh")" = job-active ] \
-  || fail "first rendered job row does not map to active job"
-[ "$(FAMILIAR_SIDEBAR_JOB_AT_ROW=16 FAMILIAR_AGENTS_JOBS_FIXTURE="$fixture" bash "$HERE/sidebar.sh")" = job-blocked ] \
-  || fail "second rendered job row does not map to blocked job"
-[ "$(FAMILIAR_SIDEBAR_JOB_AT_ROW=19 FAMILIAR_AGENTS_JOBS_FIXTURE="$fixture" bash "$HERE/sidebar.sh")" = job-abcdefgh ] \
-  || fail "workspace row was not included in click mapping"
-ok "sidebar fixture renders grouped fixed-width tree with deterministic row mapping"
-
-# Kitty data may bypass tmux, but visible placement must remain normal grid
-# content. Cursor-positioned passthrough regresses to painting the active pane.
-grep -Fq "a=T,U=1,c=16,r=8,i=1" "$HERE/sidebar.sh" \
-  || fail "sidebar kitty transmission is not a virtual placement"
-grep -Fq "placeholder=\$'\\U0010eeee'" "$HERE/sidebar.sh" \
-  || fail "sidebar Unicode placeholder anchor is missing"
-if grep -Fq "\\033Ptmux;\\033\\033[2;7H" "$HERE/sidebar.sh"; then
-  fail "sidebar still moves the outer cursor through passthrough"
-fi
-if grep -Fq "\\033[2J" "$HERE/sidebar.sh" || grep -Fq 'a=d,d=i' "$HERE/sidebar.sh"; then
-  fail "sidebar still clears the screen or deletes the mark during repaint"
-fi
-grep -Fq "printf '\\033[?2026h'" "$HERE/sidebar.sh" \
-  || fail "sidebar paints are not synchronized"
-ok "sidebar anchors a virtual kitty placement in the normal tmux grid"
-
-# Pure renderer decisions: identical frames are silent, attach identity (not
-# merely count) defines an epoch, and only changed rows receive CUP + EL.
-if FAMILIAR_SIDEBAR_TEST_FRAME_CHANGED=1 FAMILIAR_SIDEBAR_OLD='same' \
-  FAMILIAR_SIDEBAR_NEW='same' bash "$HERE/sidebar.sh"; then
-  fail "identical sidebar frame requested a repaint"
-fi
-FAMILIAR_SIDEBAR_TEST_FRAME_CHANGED=1 FAMILIAR_SIDEBAR_OLD='old' \
-  FAMILIAR_SIDEBAR_NEW='new' bash "$HERE/sidebar.sh" \
-  || fail "changed sidebar frame was skipped"
-if FAMILIAR_SIDEBAR_TEST_ATTACH_CHANGED=1 FAMILIAR_SIDEBAR_OLD='c1 tty 10' \
-  FAMILIAR_SIDEBAR_NEW='c1 tty 10' bash "$HERE/sidebar.sh"; then
-  fail "stable client fingerprint created a new attach epoch"
-fi
-FAMILIAR_SIDEBAR_TEST_ATTACH_CHANGED=1 FAMILIAR_SIDEBAR_OLD='c1 tty 10' \
-  FAMILIAR_SIDEBAR_NEW='c1 tty 11' bash "$HERE/sidebar.sh" \
-  || fail "reattach with unchanged client count was not detected"
-if FAMILIAR_SIDEBAR_TEST_ATTACH_CHANGED=1 FAMILIAR_SIDEBAR_OLD='c1 tty 10' \
-  FAMILIAR_SIDEBAR_NEW='' bash "$HERE/sidebar.sh"; then
-  fail "detach attempted an image transmission"
-fi
-diff_output=$(FAMILIAR_SIDEBAR_TEST_CHANGED_LINES=1 \
-  FAMILIAR_SIDEBAR_OLD=$'alpha\nsame\nold' FAMILIAR_SIDEBAR_NEW=$'alpha\nsame\nnew' \
-  bash "$HERE/sidebar.sh")
-[ "$diff_output" = $'\033[15;1Hnew\033[K' ] \
-  || fail "changed-line painter did not address exactly the changed row"
-ok "sidebar frame diff, attach epoch, and changed-line addressing are stable"
-
 state="$TMP/main"; socket="$state/tmux.sock"; pids="$state/pids"
 agents_state="$TMP/agents-supervisor"; agents_socket="$agents_state/tmux.sock"
 BASH_BIN=$(command -v bash)
 runp() { FAMILIAR_PRESENCE_STATE_DIR="$state" FAMILIAR_PRESENCE_SOCKET="$socket" FAMILIAR_AGENTS_SUPERVISOR_STATE="$agents_state" FAMILIAR_PRESENCE_COMMAND="exec $BASH_BIN $FAKE" WORKER_PIDS="$pids" bash "$PRESENCE" "$@"; }
 
-# A hostile default config would create this file if inherited.
+# An owned config is the entire inner-session policy; user config cannot leak.
 home="$TMP/home"; mkdir -m 700 "$home"
 printf 'run-shell "touch %s"\nset -g status on\n' "$TMP/hostile-loaded" > "$home/.tmux.conf"
 HOME="$home" runp ensure >/dev/null
 [ ! -e "$TMP/hostile-loaded" ] || fail "user config leaked"
-[ "$(tmux -S "$socket" show-options -gv status)" = off ] || fail "status chrome enabled"
-[ "$(tmux -S "$socket" show-options -gv pane-border-status)" = off ] || fail "pane border chrome enabled"
-[ "$(tmux -S "$socket" show-options -gv prefix)" = C-b ] || fail "ordinary prefix unavailable"
-ok "explicit config excludes hostile user config and removes chrome"
-
-# Viewer creation is idempotent, consumes resolved theme overrides, and its
-# options do not alter Presence.
-FAMILIAR_THEME_BORDER='#123456' FAMILIAR_THEME_BORDER_MUTED='#654321' runp ensure-viewer >/dev/null
-pane_ids=$(tmux -S "$socket" list-panes -t viewer:0 -F '#{pane_id}' | sort)
-FAMILIAR_THEME_BORDER='#123456' FAMILIAR_THEME_BORDER_MUTED='#654321' runp ensure-viewer >/dev/null
-[ "$(tmux -S "$socket" list-panes -t viewer:0 -F '#{pane_id}' | sort)" = "$pane_ids" ] \
-  || fail "idempotent viewer ensure replaced panes"
-[ "$(tmux -S "$socket" list-panes -t viewer:0 | wc -l)" -eq 2 ] || fail "viewer does not have two panes"
-[ "$(tmux -S "$socket" show-options -v -t viewer prefix)" = None ] || fail "viewer prefix enabled"
-[ "$(tmux -S "$socket" show-options -v -t viewer mouse)" = on ] || fail "viewer does not route mouse reports"
-[ "$(tmux -S "$socket" show-options -Av -t presence prefix)" = C-b ] || fail "viewer policy changed Presence prefix"
-[ "$(tmux -S "$socket" show-window-options -v -t viewer:0 allow-passthrough)" = all ] \
-  || fail "viewer passthrough is not enabled for every visibility state"
-[ "$(tmux -S "$socket" show-options -gv extended-keys)" = on ] \
-  || fail "extended keys are not enabled"
-[ "$(tmux -S "$socket" show-options -gv extended-keys-format)" = csi-u ] \
-  || fail "extended keys do not use csi-u format"
-[ "$(tmux -S "$socket" show-window-options -v -t viewer:0 pane-border-style)" = 'fg=#654321' ] \
-  || fail "Viewer inactive border does not use resolved borderMuted role"
-[ "$(tmux -S "$socket" show-window-options -v -t viewer:0 pane-active-border-style)" = 'fg=#654321' ] \
-  || fail "Viewer active border is not flattened to the muted role (focus must be invisible)"
+[ "$(tmux -S "$socket" list-sessions -F '#{session_name}')" = presence ] \
+  || fail "ensure created a session other than presence"
+[ "$(tmux -S "$socket" show-options -gv status)" = off ] || fail "inner status chrome enabled"
+[ "$(tmux -S "$socket" show-options -gv prefix)" = C-b ] || fail "inner prefix unavailable"
+[ "$(tmux -S "$socket" show-window-options -gv allow-passthrough)" = all ] \
+  || fail "inner passthrough is not enabled"
+[ "$(tmux -S "$socket" show-options -gv extended-keys)" = on ] || fail "extended keys disabled"
 case $(tmux -S "$socket" show-options -gv terminal-features) in
-  *tmux\*:extkeys*) ;; *) fail "nested tmux terminal lacks extkeys feature" ;; esac
-case $(tmux -S "$socket" show-options -gv terminal-features) in
-  *ghostty\*:clipboard:ccolour:cstyle:focus:title:extkeys*) ;; *) fail "Ghostty terminal lacks explicit feature entry" ;; esac
-[ "$(tmux -S "$socket" display-message -p -t viewer:0.1 '#{pane_active}')" = 1 ] \
-  || fail "viewer main pane did not receive focus after ensure"
-[ "$(tmux -S "$socket" display-message -p -t viewer:0.0 '#{pane_input_off}')" = 0 ] \
-  || fail "sidebar pane input is disabled"
-ok "viewer creation sets themed borders, passthrough, extended keys, main focus, and mouse-enabled sidebar input"
-
-# The client-attached hook restores main focus even if chrome was selected.
-tmux -S "$socket" select-pane -e -t viewer:0.0
-tmux -S "$socket" select-pane -t viewer:0.0
-set +e
-timeout 0.5 script -qec "tmux -S '$socket' attach-session -t viewer" /dev/null >/dev/null 2>&1
-set -e
-[ "$(tmux -S "$socket" display-message -p -t viewer:0.1 '#{pane_active}')" = 1 ] \
-  || fail "viewer attach did not restore main-pane focus"
-runp ensure-viewer >/dev/null
-[ "$(tmux -S "$socket" display-message -p -t viewer:0.0 '#{pane_input_off}')" = 0 ] \
-  || fail "re-ensure disabled sidebar input"
-ok "client attach restores main focus without disabling sidebar input"
-
-# A headless window resize fires the lock hook and restores a disturbed width.
-tmux -S "$socket" resize-pane -t viewer:0.0 -x 40
-tmux -S "$socket" resize-window -t viewer:0 -x 121 -y 30
-for _ in $(seq 1 20); do
-  [ "$(tmux -S "$socket" display-message -p -t viewer:0.0 '#{pane_width}')" = 28 ] && break
-  sleep .05
-done
-[ "$(tmux -S "$socket" display-message -p -t viewer:0.0 '#{pane_width}')" = 28 ] \
-  || fail "sidebar width was not restored after resize"
-ok "viewer resize hook pins sidebar at 28 columns"
-
-# A failed renderer supervisor leaves a dead pane, then the session hook
-# respawns the sidebar command without needing another viewer attach.
-tmux -S "$socket" respawn-pane -k -t viewer:0.0 'exit 7'
-for _ in $(seq 1 20); do
-  sidebar_state=$(tmux -S "$socket" display-message -p -t viewer:0.0 '#{pane_dead}:#{pane_start_command}')
-  case "$sidebar_state" in 0:*run-sidebar*) break ;; esac
-  sleep .05
-done
-case "$sidebar_state" in 0:*run-sidebar*) ;; *) fail "sidebar was not respawned: $sidebar_state" ;; esac
-[ "$(tmux -S "$socket" display-message -p -t viewer:0.0 '#{pane_input_off}')" = 0 ] \
-  || fail "respawn disabled sidebar input"
-ok "dead sidebar command is respawned with input enabled"
-
-main_start=$(tmux -S "$socket" display-message -p -t viewer:0.1 '#{pane_start_command}')
-case "$main_start" in
-  *'TMUX='*'tmux -S '*'attach-session -t presence'*) ;;
-  *) fail "unexpected nested attach command: $main_start" ;;
+  *tmux\*:extkeys*ghostty\*:clipboard:ccolour:cstyle:focus:title:extkeys*) ;;
+  *) fail "inner nested/direct terminal features missing" ;;
 esac
-ok "viewer main pane clears TMUX and attaches to Presence"
-
-# The outer Viewer can retarget its main pane across private tmux sockets.
-mkdir -p "$agents_state"
-tmux -S "$agents_socket" -f /dev/null new-session -d -s worker-job-active 'while :; do echo agent-visible; sleep 1; done'
-runp show-agent job-active
-agent_start=$(tmux -S "$socket" display-message -p -t viewer:0.1 '#{pane_start_command}')
-case "$agent_start" in *"$agents_socket"*'attach-session -r -t worker-job-active'*) ;; *) fail "agent navigation did not use read-only cross-socket attach: $agent_start" ;; esac
-[ "$(tmux -S "$socket" show-option -pqv -t viewer:0.1 @familiar_target)" = agent:job-active ] || fail "active agent target missing"
-tmux -S "$agents_socket" respawn-pane -k -t worker-job-active:0.0 'exit 0'
-sleep .1
-if runp show-agent job-active >/dev/null 2>&1; then fail "dead agent session accepted"; fi
-runp show-presence
-case $(tmux -S "$socket" display-message -p -t viewer:0.1 '#{pane_start_command}') in *'attach-session -t presence'*) ;; *) fail "mark navigation did not restore Presence" ;; esac
-ok "cross-socket agent navigation is read-only, rejects dead panes, and returns to Presence"
+ok "ensure creates only the isolated presence session with inner terminal policy"
 
 pid=$(tail -1 "$pids")
 kill -0 "$pid"
-# Attach under a disposable pseudo-terminal; timeout kills only the client.
-set +e
-timeout 0.5 script -qec "tmux -S '$socket' attach-session -t presence" /dev/null >/dev/null 2>&1
-set -e
-kill -0 "$pid" || fail "viewer detach killed worker"
-set +e
-timeout 0.5 script -qec "tmux -S '$socket' attach-session -t presence" /dev/null >/dev/null 2>&1
-set -e
-[ "$(tail -1 "$pids")" = "$pid" ] || fail "reattach replaced worker"
-ok "viewer detach and reattach preserve exact worker pid"
 
-# Concurrent ensure is serialized and does not duplicate the worker.
-for _ in 1 2 3 4 5 6; do runp ensure >/dev/null & done
+# The public viewer command must ensure Presence and then exec exactly the
+# configured native binary, without manufacturing viewer argv.
+record="$TMP/viewer-record"
+viewer_stub="$TMP/viewer-stub.sh"
+cat >"$viewer_stub" <<'EOF'
+#!/usr/bin/env bash
+{
+  printf 'argc=%s\n' "$#"
+  printf 'socket=%s\n' "${FAMILIAR_PRESENCE_SOCKET:-}"
+  printf 'state=%s\n' "${FAMILIAR_PRESENCE_STATE_DIR:-}"
+  printf 'agents_socket=%s\n' "${FAMILIAR_AGENTS_SOCKET:-}"
+} > "$VIEWER_RECORD"
+exit 23
+EOF
+chmod 700 "$viewer_stub"
+set +e
+VIEWER_RECORD="$record" FAMILIAR_VIEWER_BIN="$viewer_stub" runp viewer
+viewer_status=$?
+set -e
+[ "$viewer_status" -eq 23 ] || fail "viewer did not preserve native binary exit status"
+grep -Fxq 'argc=0' "$record" || fail "viewer passed arguments"
+grep -Fxq "socket=$socket" "$record" || fail "viewer dropped Presence socket env"
+grep -Fxq "state=$state" "$record" || fail "viewer dropped Presence state env"
+grep -Fxq "agents_socket=$agents_socket" "$record" || fail "viewer did not derive agents socket env"
+[ "$(tmux -S "$socket" list-sessions -F '#{session_name}')" = presence ] || fail "viewer created an outer session"
+ok "viewer execs FAMILIAR_VIEWER_BIN with no args and inherited runtime env"
+
+stub_bin="$TMP/bin"; mkdir "$stub_bin"
+cp "$viewer_stub" "$stub_bin/familiar-viewer"
+rm -f "$record"
+set +e
+PATH="$stub_bin:$PATH" VIEWER_RECORD="$record" runp viewer
+path_status=$?
+set -e
+if [ "$path_status" -ne 23 ] || ! grep -Fxq 'argc=0' "$record"; then
+  fail "viewer did not resolve familiar-viewer from PATH"
+fi
+ok "viewer falls back to familiar-viewer on PATH"
+
+missing_err="$TMP/missing-viewer.err"
+if FAMILIAR_VIEWER_BIN="$TMP/absent-viewer" runp viewer 2>"$missing_err"; then
+  fail "missing native viewer was accepted"
+fi
+if ! grep -Fq 'FAMILIAR_VIEWER_BIN' "$missing_err" \
+  || ! grep -Fq 'familiar-viewer' "$missing_err"; then
+  fail "missing-viewer error does not name both resolution choices"
+fi
+ok "viewer reports both native binary resolution choices"
+
+# Exercise the SSH-facing command through a viewer process whose only job is
+# to attach its child PTY to the inner session. Killing each disposable viewer
+# must reap its tmux client, not its worker.
+attach_stub="$TMP/attach-viewer.sh"
+cat >"$attach_stub" <<'EOF'
+#!/usr/bin/env bash
+exec tmux -S "$FAMILIAR_PRESENCE_SOCKET" attach-session -t presence
+EOF
+chmod 700 "$attach_stub"
+viewer_command="env FAMILIAR_PRESENCE_STATE_DIR='$state' FAMILIAR_PRESENCE_SOCKET='$socket' FAMILIAR_PRESENCE_COMMAND='exec $BASH_BIN $FAKE' WORKER_PIDS='$pids' FAMILIAR_VIEWER_BIN='$attach_stub' bash '$PRESENCE' viewer"
+for _ in 1 2; do
+  set +e
+  timeout 0.5 script -qec "$viewer_command" /dev/null >/dev/null 2>&1
+  set -e
+  kill -0 "$pid" || fail "viewer cleanup killed worker"
+done
+[ "$(tail -1 "$pids")" = "$pid" ] || fail "viewer detach replaced worker"
+[ -z "$(tmux -S "$socket" list-clients -F '#{client_name}' 2>/dev/null)" ] || fail "attach client survived viewer cleanup"
+[ "$(tmux -S "$socket" list-sessions -F '#{session_name}')" = presence ] || fail "viewer attach created outer session"
+ok "viewer attach/detach reaps only clients and preserves exact worker pid"
+
+# Concurrent viewer processes independently consume the same resident session.
+concurrent_stub="$TMP/concurrent-viewer.sh"; concurrent_log="$TMP/concurrent.log"
+cat >"$concurrent_stub" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$$" >> "$VIEWER_LOG"
+sleep .2
+EOF
+chmod 700 "$concurrent_stub"
+for _ in 1 2 3 4; do VIEWER_LOG="$concurrent_log" FAMILIAR_VIEWER_BIN="$concurrent_stub" runp viewer & done
 wait
-[ "$(sort -u "$pids" | wc -l)" -eq 1 ] || fail "concurrent ensure duplicated worker"
-ok "concurrent ensure yields one worker"
+[ "$(sort -u "$concurrent_log" | wc -l)" -eq 4 ] || fail "concurrent viewers interfered"
+[ "$(sort -u "$pids" | wc -l)" -eq 1 ] || fail "concurrent viewers duplicated worker"
+[ "$(tmux -S "$socket" list-sessions -F '#{session_name}')" = presence ] || fail "concurrent viewers created outer session"
+ok "concurrent viewer processes do not interfere or duplicate Presence"
 
-# A dead pane remains, then ensure safely respawns exactly once.
+# A dead pane remains addressable and ensure respawns it exactly once.
 kill -TERM "$pid"
 for _ in $(seq 1 50); do [ "$(tmux -S "$socket" display -pt presence:0.0 '#{pane_dead}')" = 1 ] && break; sleep .05; done
 runp ensure >/dev/null
 newpid=$pid
 for _ in $(seq 1 50); do newpid=$(tail -1 "$pids"); [ "$newpid" != "$pid" ] && break; sleep .05; done
-if [ "$newpid" = "$pid" ] || ! kill -0 "$newpid"; then fail "dead pane not recovered"; fi
-ok "dead pane is recovered"
+if [ "$newpid" = "$pid" ] || ! kill -0 "$newpid"; then
+  fail "dead pane not recovered"
+fi
+ok "dead inner worker is recovered"
 
-# Missing session on the still-owned server is recovered without disturbing a
-# diagnostic session which happens to share this owned server.
+# A missing owned session is recreated without treating other sessions as ours.
 tmux -S "$socket" new-session -d -s diagnostic 'read -r -t 30 _ || true'
 tmux -S "$socket" kill-session -t presence
 runp ensure >/dev/null
 kill -0 "$(tail -1 "$pids")" || fail "missing session not recovered"
 tmux -S "$socket" has-session -t diagnostic || fail "diagnostic session was disturbed"
-ok "stale/missing session is recovered"
+[ -z "$(tmux -S "$socket" list-sessions -F '#{session_name}' | grep -Fx viewer || true)" ] || fail "recovery created viewer session"
+ok "missing inner session is recovered without disturbing unrelated sessions"
 
-# Neither default socket nor another explicit server is touched.
+# Concurrent lifecycle ensures remain serialized.
+current_pid=$(tail -1 "$pids")
+for _ in 1 2 3 4 5 6; do runp ensure >/dev/null & done
+wait
+[ "$(tail -1 "$pids")" = "$current_pid" ] || fail "concurrent ensure replaced worker"
+kill -0 "$current_pid" || fail "concurrent ensure killed worker"
+ok "concurrent ensure is serialized"
+
+# Stop is socket-scoped.
 other="$TMP/other.sock"
 tmux -S "$other" -f /dev/null new-session -d -s unrelated 'sleep 30'
 runp stop
 tmux -S "$other" has-session -t unrelated
 [ ! -S "$socket" ] || fail "owned socket survived stop"
 tmux -S "$other" kill-server
-ok "explicit stop kills only owned server"
+ok "stop kills only the owned server"
 
-# Unsafe path handling.
+# State and socket path safety remains strict.
 unsafe="$TMP/unsafe"; mkdir "$unsafe.real"; ln -s "$unsafe.real" "$unsafe"
 if FAMILIAR_PRESENCE_STATE_DIR="$unsafe" FAMILIAR_PRESENCE_SOCKET="$unsafe/tmux.sock" bash "$PRESENCE" ensure >/dev/null 2>&1; then fail "symlink state accepted"; fi
-ok "symlink state is rejected"
+safe="$TMP/safe"; mkdir "$safe"; ln -s "$TMP/not-a-socket" "$safe/tmux.sock"
+if FAMILIAR_PRESENCE_STATE_DIR="$safe" FAMILIAR_PRESENCE_SOCKET="$safe/tmux.sock" bash "$PRESENCE" ensure >/dev/null 2>&1; then fail "symlink socket accepted"; fi
+ok "symlink state and socket paths are rejected"
 
-# Server source contract: default browser PTY runs the native Viewer and keeps
-# FAMILIAR_ATTACH_CMD only as an override. Presence remains the ensure adapter.
+# Chunk 6 browser contracts remain fixed.
 if [ -z "${SKIP_BROWSER_CONTRACT:-}" ]; then
   grep -q 'FAMILIAR_VIEWER_BIN || "familiar-viewer"' "$HERE/../gateway/src/attach.ts" \
     || fail "browser default is not native familiar-viewer"

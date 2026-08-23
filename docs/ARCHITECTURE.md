@@ -114,9 +114,10 @@ voice input
 → client delivery
 ```
 
-For now, terminal interfaces attach directly rather than introducing a new
+For now, terminal interfaces use the native Familiar viewer, which embeds a
+direct attach to the Presence tmux session rather than introducing a new
 terminal protocol. A future HTML/canvas/chat presentation may project the same
-session without replacing the direct terminal path.
+session without replacing this terminal path.
 
 ### Familiar Server
 
@@ -176,14 +177,15 @@ Presence Runtime adapter
   future: persistent pi session server
 
 Session presentation adapter
-  now:    direct tmux attachment / existing terminal projection
+  now:    native viewer embedding a direct tmux attachment
   future: detachable pi remote client and TUI
 ```
 
 The private tmux server keeps the complete pi process alive when no presentation
-is attached. Closing a terminal or Interface Gateway attachment kills only the
-attach client. Existing web/extension ingress continues to handle non-terminal
-interactions during this phase.
+is attached. The native viewer owns chrome and target switching, but not a tmux
+session or worker lifecycle. Closing a terminal or Interface Gateway viewer
+kills only its attach client. Existing web/extension ingress continues to handle
+non-terminal interactions during this phase.
 
 The adapter contract, not tmux, is architectural. tmux session names, pane IDs,
 and terminal-detection behavior must not leak into clients or the wider server.
