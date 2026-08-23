@@ -43,6 +43,9 @@ const ROOT = path.resolve(HERE, "..");
 const WEB = path.join(ROOT, "web");
 const VENDOR = path.join(ROOT, "vendor");
 const FONTS = path.join(ROOT, "fonts");
+// Nix dev shells point this at the generated double-patched font. Installed
+// packages already replace the repository base font during their build.
+const PATCHED_FONT = process.env.FAMILIAR_GATEWAY_PATCHED_FONT;
 
 const hub = new StreamHub();
 const audio = new AudioCache(hub);
@@ -146,6 +149,9 @@ function handle(req: http.IncomingMessage, res: http.ServerResponse) {
     // Static assets for the browser terminal.
     if (pathname.startsWith("/app/")) return serveFile(res, WEB, pathname.slice("/app/".length));
     if (pathname.startsWith("/vendor/")) return serveFile(res, VENDOR, pathname.slice("/vendor/".length));
+    if (pathname === "/fonts/ProggyCleanNerdFontMono-Regular.ttf" && PATCHED_FONT) {
+      return serveFile(res, path.dirname(PATCHED_FONT), path.basename(PATCHED_FONT));
+    }
     if (pathname.startsWith("/fonts/")) return serveFile(res, FONTS, pathname.slice("/fonts/".length));
 
     res.statusCode = 404;

@@ -137,6 +137,9 @@
           # toolchain. The services pane invokes `npm start` here directly.
           gateway = pkgs.mkShell {
             FAMILIAR_SHELL = "gateway";
+            # Dev mode serves source assets directly; override only ProggyClean
+            # with the same generated font installed by the gateway package.
+            FAMILIAR_GATEWAY_PATCHED_FONT = "${gateway-module.packages.${system}.patched-font}/share/fonts/truetype/ProggyCleanNerdFontMono-Regular.ttf";
             packages = with pkgs; [ nodejs_22 python3 gnumake gcc curl ];
           };
           # The Electron chrome shell under apps/desktop/. It is a DUMB CLIENT: a

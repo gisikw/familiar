@@ -37,12 +37,11 @@ export function providerId(piProvider: string | undefined): string | undefined {
   try { return decodeURIComponent(match[1]); } catch { return match[1]; }
 }
 
-/* ProggyCleanNerdFontMono lacks plain-Unicode ↻/△/▲ but carries the nerd-font
- * PUA set, and the browser viewer cannot font-fallback like a terminal can.
- * Use PUA glyphs guaranteed present in the shipped webfont. */
-const GLYPH_REFRESH = "\u{F021B}"; // nf-md-refresh (circular arrow)
-const GLYPH_ALERT_OUTLINE = "\u{F002A}"; // nf-md-alert-outline (warning)
-const GLYPH_ALERT = "\u{F0026}"; // nf-md-alert (filled, error)
+/* The browser webfont is double-patched with full plain-Unicode symbol
+ * coverage for the selected terminal ranges, including these glyphs. */
+const GLYPH_REFRESH = "↻";
+const GLYPH_ALERT_OUTLINE = "△";
+const GLYPH_ALERT = "▲";
 
 const usedPercent = (used: string): number | undefined => {
   const parsed = Number.parseFloat(used.replace(/%\s*$/, ""));

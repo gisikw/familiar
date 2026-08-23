@@ -15,10 +15,10 @@ describe("Tiamat provider usage", () => {
   test("formats compact windows and tones constrained or stale usage", () => {
     const now = Date.UTC(2026, 7, 23, 4, 0, 0);
     expect(formatUsage("claude-code-personal", windows, false, now, "UTC")).toEqual({
-      text: "claude 5h 33% \u{F021B}3h · 7d 27% \u{F021B}Fri 4:00am", tone: "dim",
+      text: "claude 5h 33% ↻3h · 7d 27% ↻Fri 4:00am", tone: "dim",
     });
     expect(formatUsage("codex-personal", [{ ...windows[0], used: "90%" }], false, now, "UTC"))
-      .toEqual({ text: "\u{F002A} codex 5h 90% \u{F021B}3h", tone: "warning" });
+      .toEqual({ text: "△ codex 5h 90% ↻3h", tone: "warning" });
     expect(formatUsage("codex-personal", [{ ...windows[0], used: "100%" }], false, now, "UTC")?.tone).toBe("error");
     expect(formatUsage("claude-code-personal", windows, true, now, "UTC")?.text).toEndWith(" · stale");
   });
