@@ -1,6 +1,6 @@
 use crate::app::{App, TargetRuntime, ViewerTarget};
 use crate::cli::Config;
-use crate::graphics::{probe_host, GraphicsMode, HostGraphics};
+use crate::graphics::{probe_host, CellAspect, GraphicsMode, HostGraphics};
 use crate::input::{route_mouse, target_for_sidebar_hit, MouseRoute};
 use crate::layout::{viewer_layout, ViewerLayout};
 use crate::pty::{child_command, pty_size};
@@ -15,7 +15,7 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    disable_raw_mode, enable_raw_mode, window_size, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use portable_pty::{native_pty_system, Child, MasterPty};
 use ratatui::backend::CrosstermBackend;
@@ -26,7 +26,6 @@ use ratatui::Terminal;
 use signal_hook::consts::signal::{SIGHUP, SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
 use std::io::{self, Read, Write};
-use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
@@ -117,16 +116,7 @@ pub struct ChildManager {
     tx: Sender<PtyMessage>,
     next_id: u64,
     session: Option<ChildSession>,
-    target: ViewerTarget,
     size: GridSize,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TmuxScroll {
-    LineUp,
-    LineDown,
-    PageUp,
-    PageDown,
 }
 
 impl ChildManager {
@@ -136,7 +126,6 @@ impl ChildManager {
             tx,
             next_id: 0,
             session: None,
-            target: ViewerTarget::Presence,
             size,
         };
         manager.replace(&ViewerTarget::Presence)?;
@@ -222,66 +211,6 @@ impl ChildManager {
         }
         Ok(())
     }
-
-    fn tmux_target(&self) -> (&std::path::Path, String) {
-        match &self.target {
-            ViewerTarget::Presence => (
-                &self.config.presence_socket,
-                self.config.presence_session.clone(),
-            ),
-            ViewerTarget::Agent(id) => (
-                &self.config.agents_socket,
-                format!("worker-{}", crate::pty::sanitize_agent_id(id)),
-            ),
-        }
-    }
-
-    /// Spawn before returning so command ordering precedes subsequent PTY
-    /// writes, but reap on a worker without waiting on tmux server I/O.
-    fn spawn_tmux_control(&self, args: &[&str]) {
-        let (socket, _) = self.tmux_target();
-        let child = Command::new("tmux")
-            .arg("-S")
-            .arg(socket)
-            .args(args)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
-        if let Ok(mut child) = child {
-            thread::spawn(move || {
-                let _ = child.wait();
-            });
-        }
-    }
-
-    /// The command chain enters copy-mode and scrolls atomically from one
-    /// tmux client.
-    fn scroll_copy_mode(&self, scroll: TmuxScroll) {
-        let (_, target) = self.tmux_target();
-        let command = match scroll {
-            TmuxScroll::LineUp => "scroll-up",
-            TmuxScroll::LineDown => "scroll-down",
-            TmuxScroll::PageUp => "page-up",
-            TmuxScroll::PageDown => "page-down",
-        };
-        self.spawn_tmux_control(&[
-            "copy-mode",
-            "-e",
-            "-t",
-            &target,
-            ";",
-            "send-keys",
-            "-X",
-            "-t",
-            &target,
-            command,
-        ]);
-    }
-
-    fn cancel_copy_mode(&self) {
-        let (_, target) = self.tmux_target();
-        self.spawn_tmux_control(&["send-keys", "-X", "-t", &target, "cancel"]);
-    }
 }
 
 impl TargetRuntime for ChildManager {
@@ -291,7 +220,6 @@ impl TargetRuntime for ChildManager {
     fn replace(&mut self, target: &ViewerTarget) -> Result<(), Self::Error> {
         let replacement = self.spawn(target)?;
         let old = self.session.replace(replacement);
-        self.target = target.clone();
         if let Some(mut old) = old {
             old.stop();
         }
@@ -376,6 +304,61 @@ fn mapped_cursor(layout: ViewerLayout, cursor: crate::terminal::CursorState) -> 
         .then_some((layout.main.x + cursor.column, layout.main.y + cursor.row))
 }
 
+fn mark_image_area(mark: ratatui::layout::Rect) -> ratatui::layout::Rect {
+    ratatui::layout::Rect::new(
+        mark.x,
+        mark.y.saturating_add(1),
+        mark.width,
+        mark.height.saturating_sub(4),
+    )
+}
+
+fn render_mark_wordmark(
+    mode: GraphicsMode,
+    mark: ratatui::layout::Rect,
+    target: &ViewerTarget,
+    buffer: &mut ratatui::buffer::Buffer,
+) {
+    if mark.width == 0 || mark.height == 0 {
+        return;
+    }
+    let mut style = Style::default().bold();
+    let (text, area) = if mode == GraphicsMode::Kitty {
+        style = style.fg(Color::Rgb(90, 212, 230));
+        (
+            "F A M I L I A R",
+            ratatui::layout::Rect::new(
+                mark.x,
+                mark.y + mark.height.saturating_sub(2),
+                mark.width,
+                1,
+            ),
+        )
+    } else {
+        if matches!(target, ViewerTarget::Presence) {
+            style = style.add_modifier(Modifier::REVERSED);
+        }
+        ("FAMILIAR", mark)
+    };
+    Paragraph::new(text)
+        .alignment(Alignment::Center)
+        .style(style)
+        .render(area, buffer);
+}
+
+fn host_cell_aspect() -> CellAspect {
+    window_size()
+        .ok()
+        .filter(|size| size.width > 0 && size.height > 0 && size.columns > 0 && size.rows > 0)
+        .map(|size| CellAspect {
+            // These products preserve the ratio (pixel_width / columns) /
+            // (pixel_height / rows) without truncating each cell dimension.
+            width: u32::from(size.width) * u32::from(size.rows),
+            height: u32::from(size.height) * u32::from(size.columns),
+        })
+        .unwrap_or_default()
+}
+
 fn render_frame(
     frame: &mut ratatui::Frame<'_>,
     terminal: &GhosttyTerminal,
@@ -386,17 +369,8 @@ fn render_frame(
     graphics_mode: GraphicsMode,
 ) {
     let (child_notice, sidebar_notice) = notices;
-    if layout.sidebar.width > 0 && graphics_mode == GraphicsMode::Text {
-        let mut style = Style::default().bold();
-        if matches!(target, ViewerTarget::Presence) {
-            style = style.add_modifier(Modifier::REVERSED);
-        }
-        frame.render_widget(
-            Paragraph::new("FAMILIAR")
-                .alignment(Alignment::Center)
-                .style(style),
-            layout.mark,
-        );
+    if layout.sidebar.width > 0 {
+        render_mark_wordmark(graphics_mode, layout.mark, target, frame.buffer_mut());
     }
     render_sidebar(sidebar_rows, layout.job_rows, frame.buffer_mut());
     if let Some(notice) = sidebar_notice {
@@ -536,10 +510,10 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         child.write_all(&buffered_input)?;
     }
     let mut graphics = HostGraphics::new(graphics_mode);
+    let mut cell_aspect = host_cell_aspect();
     let mut damaged = true;
     let mut child_notice: Option<String> = None;
     let mut sidebar_notice: Option<(String, Instant)> = None;
-    let mut copy_mode_active = false;
 
     loop {
         if sidebar_notice
@@ -555,39 +529,12 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                     if is_quit_key(key) {
                         return Ok(());
                     }
-                    let modes = core.modes();
-                    let scroll = if !matches!(key.kind, KeyEventKind::Release)
-                        && modes.mouse_tracking == crate::terminal::MouseTracking::None
-                        && !modes.alternate_screen
-                    {
-                        match key.code {
-                            KeyCode::PageUp => Some(TmuxScroll::PageUp),
-                            KeyCode::PageDown => Some(TmuxScroll::PageDown),
-                            _ => None,
-                        }
-                    } else {
-                        None
-                    };
-                    if let Some(scroll) = scroll {
-                        child.scroll_copy_mode(scroll);
-                        copy_mode_active = true;
-                    } else {
-                        if copy_mode_active && !matches!(key.kind, KeyEventKind::Release) {
-                            child.cancel_copy_mode();
-                            copy_mode_active = false;
-                        }
-                        if child.write_all(&encode_key(key, modes)).is_err() {
-                            child_notice =
-                                Some("tmux session ended — waiting for a new target".into());
-                            damaged = true;
-                        }
+                    if child.write_all(&encode_key(key, core.modes())).is_err() {
+                        child_notice = Some("tmux session ended — waiting for a new target".into());
+                        damaged = true;
                     }
                 }
                 Event::Paste(text) => {
-                    if copy_mode_active {
-                        child.cancel_copy_mode();
-                        copy_mode_active = false;
-                    }
                     if child
                         .write_all(&encode_paste(&text, core.modes().bracketed_paste))
                         .is_err()
@@ -624,7 +571,6 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                                             host.backend_mut().write_all(&deletes)?;
                                             host.clear()?;
                                             graphics.invalidate_host_images();
-                                            copy_mode_active = false;
                                             child_notice = None;
                                             sidebar_notice = None;
                                             sidebar_rows = rows_for(
@@ -646,26 +592,6 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                         }
-                        MouseRoute::Swallowed
-                            if mouse.column >= layout.main.x
-                                && mouse.column
-                                    < layout.main.x.saturating_add(layout.main.width)
-                                && mouse.row >= layout.main.y
-                                && mouse.row < layout.main.y.saturating_add(layout.main.height)
-                                && core.modes().mouse_tracking
-                                    == crate::terminal::MouseTracking::None
-                                && !core.modes().alternate_screen =>
-                        {
-                            let scroll = match mouse.kind {
-                                MouseEventKind::ScrollUp => Some(TmuxScroll::LineUp),
-                                MouseEventKind::ScrollDown => Some(TmuxScroll::LineDown),
-                                _ => None,
-                            };
-                            if let Some(scroll) = scroll {
-                                child.scroll_copy_mode(scroll);
-                                copy_mode_active = true;
-                            }
-                        }
                         MouseRoute::Sidebar(_) | MouseRoute::Swallowed => {}
                     }
                 }
@@ -675,6 +601,7 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                     let update = core.resize(size)?;
                     graphics.handle_events(update.graphics);
                     graphics.invalidate_host_images();
+                    cell_aspect = host_cell_aspect();
                     child.resize(size)?;
                     host.resize(ratatui::layout::Rect::new(0, 0, width, height))?;
                     sidebar_rows = rows_for(
@@ -752,7 +679,8 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                 // Save only after ratatui has positioned the mapped child
                 // cursor. Saving before draw restored a stale sidebar cursor.
                 host.backend_mut().write_all(b"\x1b7")?;
-                let bytes = graphics.emit(layout.main, layout.mark, true);
+                let bytes =
+                    graphics.emit(layout.main, mark_image_area(layout.mark), cell_aspect, true);
                 host.backend_mut().write_all(&bytes)?;
                 host.backend_mut().write_all(b"\x1b8\x1b[?2026l")?;
                 host.backend_mut().flush()?;
@@ -841,6 +769,23 @@ mod tests {
         // Graphics cursor save/restore is emitted after draw, so this mapped
         // position is the one restored after image placements.
         assert!(b"\x1b7".starts_with(b"\x1b"));
+    }
+
+    #[test]
+    fn kitty_mode_renders_the_spaced_wordmark_below_the_image() {
+        let mark = ratatui::layout::Rect::new(0, 0, 28, 12);
+        let mut buffer = Buffer::empty(mark);
+        render_mark_wordmark(
+            GraphicsMode::Kitty,
+            mark,
+            &ViewerTarget::Presence,
+            &mut buffer,
+        );
+        let row = (0..mark.width)
+            .map(|column| buffer.cell((column, 10)).unwrap().symbol())
+            .collect::<String>();
+        assert!(row.contains("F A M I L I A R"));
+        assert_eq!(buffer.cell((7, 10)).unwrap().fg, Color::Rgb(90, 212, 230));
     }
 
     #[test]

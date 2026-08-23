@@ -42,6 +42,9 @@ HOME="$home" runp ensure >/dev/null
 [ "$(tmux -S "$socket" show-window-options -gv allow-passthrough)" = all ] \
   || fail "inner passthrough is not enabled"
 [ "$(tmux -S "$socket" show-options -gv extended-keys)" = on ] || fail "extended keys disabled"
+[ "$(tmux -S "$socket" show-options -gv mouse)" = on ] || fail "inner mouse arbitration disabled"
+tmux -S "$socket" list-keys -T root PageUp | grep -Fq '#{alternate_on}' \
+  || fail "PageUp alternate-screen arbitration missing"
 case $(tmux -S "$socket" show-options -gv terminal-features) in
   *tmux\*:extkeys*ghostty\*:clipboard:ccolour:cstyle:focus:title:extkeys*) ;;
   *) fail "inner nested/direct terminal features missing" ;;
