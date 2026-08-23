@@ -14,9 +14,13 @@ nix shell nixpkgs#zig_0_15 -c cargo run --manifest-path services/viewer/Cargo.to
 
 The viewer owns the host alternate screen and raw mode, draws Familiar chrome, and starts a writable presence-session attach in the main rectangle. A vanished tmux session is nonfatal: the viewer keeps its chrome and displays a notice. There is intentionally no viewer-local quit key; disconnect the client or signal the process.
 
-## Input and rendering limitations
+## Input, mouse routing, and focus
 
-Keyboard input uses plain xterm sequences. Application-cursor mode, arrows/navigation keys, F1–F12, basic Ctrl/Alt combinations, and bracketed paste are supported. Modified navigation/function-key variants, application-keypad mappings, the Kitty keyboard protocol, compose/IME subtleties, and viewer-local shortcuts are not yet encoded. Mouse capture and forwarding are deferred to Chunk 3.
+Keyboard focus permanently belongs to the main child PTY; the sidebar never captures focus, so clicking chrome does not consume the following keystroke. Keyboard input uses plain xterm sequences. Application-cursor mode, arrows/navigation keys, F1–F12, basic Ctrl/Alt combinations, and bracketed paste are supported. Modified navigation/function-key variants, application-keypad mappings, the Kitty keyboard protocol, compose/IME subtleties, and viewer-local shortcuts are not yet encoded.
+
+The viewer enables host mouse capture for its entire guarded terminal lifetime and restores it on normal exit, panic, and handled termination signals. Canonical layout geometry routes all events. Mark and job-row regions consume press, release, drag, motion, and wheel events without forwarding bytes. The mark selects Presence. The job-row hit seam currently reports dead rows until Chunk 4 supplies its model; dead and stale rows are no-ops. A target is spawned before the old child is stopped. After a successful switch the VT core is recreated at current main dimensions, old child graphics are deleted, and a full redraw is forced. A failed spawn leaves the old child and keyboard route intact and shows a nonfatal three-second notice in the sidebar.
+
+Main-region coordinates are translated to zero-based child-local cells. With no child mouse tracking, events are swallowed except vertical wheel events on the alternate screen, which emit three ordinary up/down arrow sequences per notch. X10 tracking accepts presses and wheel buttons; ButtonEvent adds release and drag; AnyEvent adds unbuttoned motion. X10, UTF-8, SGR, and SGR-pixels encodings include xterm Shift/Alt/Ctrl bits and wheel buttons 64/65. Legacy X10 cell coordinates clamp at 223 (encoded byte 255). Since crossterm does not expose host cell pixel dimensions here, SGR-pixels intentionally approximates each cell as 1x1 pixel and therefore emits one-based cell coordinates as pixel coordinates.
 
 The cursor position and DECTCEM visibility are read from libghostty-vt and mapped into the host frame. Synchronized-output mode is treated as a frame-coalescing hint. Text and Kitty placements are emitted in a host synchronized-output transaction. The real jobs/sidebar UI is deferred to Chunk 4.
 

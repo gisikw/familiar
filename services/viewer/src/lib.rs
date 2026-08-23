@@ -3,6 +3,7 @@
 pub mod app;
 pub mod cli;
 pub mod graphics;
+pub mod input;
 pub mod layout;
 pub mod pty;
 pub mod runtime;
