@@ -12,7 +12,7 @@ go run ./cmd/familiar-agents --service unix:///tmp/fa/service.sock dispatch --ho
 go run ./cmd/familiar-agents --service unix:///tmp/fa/service.sock list
 ```
 
-Production workers require `tmux`. The supervisor creates a dedicated socket and complete minimal config (`allow-passthrough on` included); it never uses user/system tmux configuration. `attach-hint JOB` prints the same-host direct attach command. Closing that viewer never affects the worker.
+Production workers require `tmux` and `bash`. The supervisor creates a dedicated socket and complete minimal config (`allow-passthrough on` included); it never uses user/system tmux configuration. Harness output passes through `tee` so it remains visible in the worker pane while being appended byte-for-byte to the observation transcript; Bash `pipefail` preserves harness exit status. `attach-hint JOB` prints the same-host direct attach command. Closing that viewer never affects the worker.
 
 Configuration is available as flags; service defaults can also use `FAMILIAR_AGENTS_DB`, `FAMILIAR_AGENTS_SOCKET`, and `FAMILIAR_AGENTS_LISTEN`; supervisor uses `FAMILIAR_AGENTS_ENDPOINT`, `FAMILIAR_AGENTS_HOST`, `FAMILIAR_AGENTS_SUPERVISOR_STATE`, `FAMILIAR_AGENTS_ARTIFACT_ROOT`, `FAMILIAR_AGENTS_ALLOWED_CWD_ROOTS` (OS path-list-separated), and `FAMILIAR_AGENTS_LINGER_SECONDS` (default 3600). The artifact root defaults beneath supervisor state and allowed CWD roots default to the user's home.
 
