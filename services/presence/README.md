@@ -37,8 +37,8 @@ rejected.
 
 The server is selected exclusively with `tmux -S` and starts with the owned
 `tmux.conf`; system and user configs are not read. `ensure` is serialized with
-a bounded file lock and recovers only a missing/dead owned worker. It never
-creates a viewer session.
+a bounded file lock and recovers only a missing/dead owned worker. It does not
+create presentation processes.
 
 ## Worker continuity contract
 
@@ -58,11 +58,9 @@ no pi subscriber is connected; uploaded bytes remain saved.
 `tmux.conf` configures the inner Presence session. It retains ordinary `C-b`
 behavior, mouse defaults, `allow-passthrough all`, extended keys, and explicit
 terminal features. These are needed by pi and by Kitty graphics crossing the
-native viewer's embedded PTY. Viewer chrome, sidebar layout, job navigation,
-and target switching are implemented by `services/viewer`, not this adapter.
-
-`services/presence/sidebar.sh` remains in the tree temporarily for later cleanup
-but is not launched by Presence.
+native viewer's embedded PTY. Viewer chrome, native sidebar layout, job
+navigation, Kitty graphics, and target switching are implemented by
+`services/viewer`, not this adapter.
 
 ## Tests
 
