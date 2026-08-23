@@ -3,8 +3,10 @@
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::fs;
 use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::process::Command;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -38,6 +40,7 @@ fn embeds_tmux_and_tracks_outer_resize() {
     ));
     fs::create_dir_all(&directory).unwrap();
     let socket = directory.join("sock");
+    let agents_socket = directory.join("agents.sock");
     let started = Command::new("tmux")
         .args([
             "-S",
@@ -57,6 +60,50 @@ fn embeds_tmux_and_tracks_outer_resize() {
         .status()
         .unwrap();
     assert!(started.success());
+    assert!(Command::new("tmux")
+        .args([
+            "-S",
+            agents_socket.to_str().unwrap(),
+            "new-session",
+            "-d",
+            "-s",
+            "worker-job-active",
+            "sh",
+            "-c",
+            "while :; do printf agent-visible; sleep 1; done",
+        ])
+        .status()
+        .unwrap()
+        .success());
+
+    let fixture = br#"[{"id":"job-active","cwd":"/work/alpha","prompt":"Fix sidebar","state":"running","updated_at":"2026-08-22T07:30:00Z"}]"#.to_vec();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    listener.set_nonblocking(true).unwrap();
+    let serving = Arc::new(AtomicBool::new(true));
+    let server_flag = Arc::clone(&serving);
+    let server = thread::spawn(move || {
+        while server_flag.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
+                    let mut request = [0_u8; 1024];
+                    let _ = stream.read(&mut request);
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        fixture.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                    let _ = stream.write_all(&fixture);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
     let mouse_marker = directory.join("mouse-clicked");
     assert!(Command::new("tmux")
         .args(["-S", socket.to_str().unwrap(), "set", "-g", "mouse", "on"])
@@ -102,7 +149,9 @@ fn embeds_tmux_and_tracks_outer_resize() {
         "--presence-socket",
         socket.to_str().unwrap(),
         "--agents-socket",
-        socket.to_str().unwrap(),
+        agents_socket.to_str().unwrap(),
+        "--agents-endpoint",
+        &endpoint,
     ]);
     command.env("TERM", "xterm-256color");
     command.env("FAMILIAR_GRAPHICS_MODE", "text");
@@ -121,6 +170,31 @@ fn embeds_tmux_and_tracks_outer_resize() {
     assert!(
         wait_for(&rx, &mut output, b"smoketext"),
         "child terminal was not rendered: {:?}",
+        String::from_utf8_lossy(&output)
+    );
+    assert!(
+        wait_for(&rx, &mut output, b"Fix sidebar"),
+        "jobs sidebar was not rendered: {:?}",
+        String::from_utf8_lossy(&output)
+    );
+
+    // The fixture renders heading, workspace, then its live job at sidebar
+    // relative row 2 (host one-based row 15). It switches to a read-only attach.
+    output.clear();
+    writer.write_all(b"\x1b[<0;5;15M\x1b[1;1R").unwrap();
+    writer.flush().unwrap();
+    assert!(
+        wait_for(&rx, &mut output, b"agent-visible"),
+        "live sidebar click did not switch to worker: {:?}",
+        String::from_utf8_lossy(&output)
+    );
+    // Clicking the mark returns to Presence.
+    output.clear();
+    writer.write_all(b"\x1b[<0;5;2M\x1b[1;1R").unwrap();
+    writer.flush().unwrap();
+    assert!(
+        wait_for(&rx, &mut output, b"smoketext"),
+        "mark click did not return to Presence: {:?}",
         String::from_utf8_lossy(&output)
     );
 
@@ -172,6 +246,9 @@ fn embeds_tmux_and_tracks_outer_resize() {
     );
 
     let _ = Command::new("tmux")
+        .args(["-S", agents_socket.to_str().unwrap(), "kill-server"])
+        .status();
+    let _ = Command::new("tmux")
         .args(["-S", socket.to_str().unwrap(), "kill-server"])
         .status();
     assert!(
@@ -187,5 +264,7 @@ fn embeds_tmux_and_tracks_outer_resize() {
 
     let _ = viewer.kill();
     let _ = viewer.wait();
+    serving.store(false, Ordering::Relaxed);
+    server.join().unwrap();
     let _ = fs::remove_dir_all(directory);
 }
