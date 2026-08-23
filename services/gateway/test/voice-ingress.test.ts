@@ -31,6 +31,7 @@ const BASE = `http://127.0.0.1:${SERVER_PORT}`;
 
 // --- mock STT: echoes a deterministic transcript, records that it was hit. ---
 let sttHits = 0;
+let lastSttPath: string | undefined;
 let lastSttBody: Buffer | null = null;
 let stt: http.Server;
 let server: http.Server;
@@ -41,6 +42,7 @@ beforeAll(async () => {
     req.on("data", (c) => chunks.push(c));
     req.on("end", () => {
       sttHits++;
+      lastSttPath = req.url;
       lastSttBody = Buffer.concat(chunks);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ text: "hello from the microphone" }));
@@ -48,7 +50,8 @@ beforeAll(async () => {
   });
   await new Promise<void>((r) => stt.listen(STT_PORT, "127.0.0.1", r));
 
-  process.env.FAMILIAR_STT_URL = `http://127.0.0.1:${STT_PORT}`;
+  // Base URLs may carry a trailing slash; ingress must still call the canonical path.
+  process.env.FAMILIAR_STT_URL = `http://127.0.0.1:${STT_PORT}/`;
   process.env.FAMILIAR_LOG_PATH = "/tmp/familiar-voice-test-log";
 
   // Same objects, same routes as main.ts's /submit and /relay branches.
@@ -139,8 +142,9 @@ describe("voice /submit → /relay protocol", () => {
     expect(cmd.parts[0]).toContain("hello from the microphone");
     expect(cmd.parts[0].startsWith("🗣")).toBe(true);
 
-    // STT actually received the decoded audio bytes.
+    // STT actually received the decoded audio bytes at its canonical endpoint.
     expect(sttHits).toBeGreaterThanOrEqual(1);
+    expect(lastSttPath).toBe("/v1/audio/transcriptions");
     expect(lastSttBody?.toString("utf8")).toBe("RIFFfake-wav-bytes");
 
     close();

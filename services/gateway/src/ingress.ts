@@ -28,8 +28,9 @@ export class Ingress {
   }
 
   private transcribe(data: string): Promise<string> {
-    const url = process.env.FAMILIAR_STT_URL;
-    if (!url) return Promise.reject(new Error("FAMILIAR_STT_URL not set"));
+    const baseUrl = process.env.FAMILIAR_STT_URL;
+    if (!baseUrl) return Promise.reject(new Error("FAMILIAR_STT_URL not set"));
+    const url = `${baseUrl.replace(/\/+$/, "")}/v1/audio/transcriptions`;
     return fetch(url, { method: "POST", body: Buffer.from(data, "base64") })
       .then(async (res) => {
         if (!res.ok) throw new Error(`stt ${res.status}: ${(await res.text()).slice(0, 200)}`);
