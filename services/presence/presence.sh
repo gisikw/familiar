@@ -197,8 +197,17 @@ configure_viewer() {
   # clicks; nested tmux continues to receive mouse reports in the main pane.
   tmux_owned set-option -t "$VIEWER" mouse on
   tmux_owned set-option -t "$VIEWER" pane-border-status off
+  # One border color regardless of focus: the viewer is chrome, not a
+  # user-managed split, so "which pane is active" must not be visible.
   tmux_owned set-option -t "$VIEWER" pane-border-style "fg=$border_muted"
-  tmux_owned set-option -t "$VIEWER" pane-active-border-style "fg=$border"
+  tmux_owned set-option -t "$VIEWER" pane-active-border-style "fg=$border_muted"
+  # Chrome policy for the mouse: clicks in the sidebar reach the sidebar app
+  # (SGR reporting), but focus snaps straight back to the main pane so the
+  # keyboard never strands in chrome. Border dragging is disabled entirely.
+  tmux_owned unbind-key -T root MouseDrag1Border 2>/dev/null || true
+  tmux_owned unbind-key -T root MouseDown1Border 2>/dev/null || true
+  tmux_owned set-hook -t "$VIEWER" pane-focus-in \
+    "if-shell -F '#{==:#{pane_index},0}' 'select-pane -t $VIEWER_MAIN'"
   tmux_owned set-window-option -t "$VIEWER:0" allow-passthrough all
   tmux_owned set-hook -t "$VIEWER" after-split-window "resize-pane -t '$VIEWER_SIDEBAR' -x 28"
   tmux_owned set-hook -t "$VIEWER" client-resized "resize-pane -t '$VIEWER_SIDEBAR' -x 28"
