@@ -22,6 +22,9 @@ export type {
   IngestEnvelope,
   SubmitCommand,
   CancelCommand,
+  VoicePhase,
+  VoiceStatusCommand,
   RelayCommand,
+  VoiceStatusPayload,
   SubmitPayload,
 } from "../../../../services/gateway/src/protocol.ts";

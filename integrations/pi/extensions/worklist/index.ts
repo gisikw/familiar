@@ -7,6 +7,7 @@ import {
   DEFAULT_CONFIG,
   decideAction,
   resolveAttention,
+  applyVoiceHold,
   makeOverride,
   overrideExpired,
   parseWhen,
@@ -84,6 +85,7 @@ const WORKLIST_ROOT =
 const LEGACY_ROOT = path.join(REPO, "state", "inbox");
 
 const TICK_MS = 15_000;
+const VOICE_HOLD_MS = 30_000;
 const CFG = DEFAULT_CONFIG;
 
 const PRI_LABEL = (p: Priority) => `P${p}`;
@@ -121,6 +123,7 @@ export default function (pi: ExtensionAPI) {
   let lastActivity = Date.now();
   let agentBusy = false;
   let idleSince = Date.now();
+  let voiceHoldUntil = 0;
   let ctxRef: ExtensionContext | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
   let sinkDisposer: (() => void) | undefined;
@@ -150,7 +153,7 @@ export default function (pi: ExtensionAPI) {
   };
 
   const currentAttention = (now = Date.now()): Attention =>
-    resolveAttention({ override, lastActivity, agentBusy, now }, CFG);
+    applyVoiceHold(resolveAttention({ override, lastActivity, agentBusy, now }, CFG), voiceHoldUntil, now);
 
   const idleForMs = (): number => (agentBusy ? 0 : Date.now() - idleSince);
 
@@ -379,6 +382,19 @@ export default function (pi: ExtensionAPI) {
   // Bounded compat: keep the old channel for one release so mid-flight senders
   // (familiar.sh, cron) don't silently drop items.
   pi.events.on("inbox:add", (env: unknown) => guard(() => enqueue(env as EnqueueEnvelope)));
+
+  // Process-local, fire-and-forget focus signal from subscriber. Active voice
+  // gets a short lease; idle releases immediately. A lost terminal event can
+  // therefore suppress ordinary work for at most VOICE_HOLD_MS.
+  pi.events.on("voice:status", (event: unknown) => guard(() => {
+    const phase = (event as { phase?: unknown })?.phase;
+    if (phase === "capturing" || phase === "transcribing") {
+      voiceHoldUntil = Date.now() + VOICE_HOLD_MS;
+    } else if (phase === "idle") {
+      voiceHoldUntil = 0;
+    } else return;
+    refreshSurfaces();
+  }));
 
   /* --- attention control (one code path for command, tool, restart) ------ */
 
@@ -754,6 +770,7 @@ export default function (pi: ExtensionAPI) {
       lastActivity = Date.now();
       idleSince = Date.now();
       agentBusy = false;
+      voiceHoldUntil = 0;
       refreshSurfaces();
 
       // Factory initialization normally registered the sink before lifecycle

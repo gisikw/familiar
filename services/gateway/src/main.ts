@@ -133,6 +133,10 @@ function handle(req: http.IncomingMessage, res: http.ServerResponse) {
     if (pathname === "/health") { res.writeHead(200, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ ok: true, session: hub.session })); }
     if (pathname === "/stream") return hub.attach(req, res, searchParams.get("audio") === "1");
     if (pathname === "/relay") return relay.attach(req, res);
+    if (pathname === "/voice-status") return void ingress.handleVoiceStatus(req, res).catch((err) => {
+      errorLog("subscriber", { voiceStatusError: String(err) });
+      res.statusCode = 500; res.end();
+    });
     if (pathname === "/submit") return void ingress.handleSubmit(req, res).catch((err) => {
       errorLog("subscriber", { submitError: String(err) });
       res.statusCode = 500; res.end();

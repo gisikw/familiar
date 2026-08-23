@@ -233,6 +233,12 @@ export interface AttentionInput {
  * not honoured, so correctness never depends on a timer firing. On expiry the
  * level returns DIRECTLY to inference — no staged decay.
  */
+export function applyVoiceHold(attention: Attention, holdUntil: number, now: number): Attention {
+  if (now >= holdUntil) return attention;
+  // Preserve an explicit stronger DND, otherwise voice means focused.
+  return attention === "protected" ? "protected" : "focused";
+}
+
 export function resolveAttention(
   input: AttentionInput,
   cfg: AttentionConfig = DEFAULT_CONFIG,

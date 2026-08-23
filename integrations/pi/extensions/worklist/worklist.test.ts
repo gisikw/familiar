@@ -14,6 +14,7 @@ import {
   demote,
   promote,
   resolveAttention,
+  applyVoiceHold,
   resolveTier,
   shouldEscalate,
   clampDuration,
@@ -132,6 +133,16 @@ describe("resolveAttention: inference + override", () => {
       const a = resolveAttention({ lastActivity: now - t, agentBusy: false, now }, CFG);
       expect(valid).toContain(a);
     }
+  });
+});
+
+describe("voice focus lease", () => {
+  test("forces focused only until expiry and preserves protected", () => {
+    const now = 10_000;
+    expect(applyVoiceHold("open", now + 30_000, now)).toBe("focused");
+    expect(applyVoiceHold("protected", now + 30_000, now)).toBe("protected");
+    expect(applyVoiceHold("open", now, now)).toBe("open");
+    expect(applyVoiceHold("available", now - 1, now)).toBe("available");
   });
 });
 

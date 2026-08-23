@@ -18,10 +18,11 @@
  *                                   listener (drives proactive synthesis).
  *   POST /ingest                    Egress from the extension (IngestEnvelope).
  *   POST /submit                    Ingress (text or chunked audio takes).
+ *   POST /voice-status              Browser capture lifecycle before audio exists.
  *   POST /cancel                    Abort the in-flight turn. Idempotent,
  *                                   fire-and-forget, 204 always.
  *   GET  /relay                     SSE command bus, server → extension
- *                                   (RelayCommand: submit / cancel). The
+ *                                   (RelayCommand: submit / cancel / voice-status). The
  *                                   extension is the only subscriber; it owns
  *                                   the pi API (sendUserMessage / abort).
  *   GET  /segments/:mid/:idx/audio  Synthesized wav for a segment.
@@ -125,7 +126,23 @@ export interface SubmitCommand {
   parts: string[];
 }
 export interface CancelCommand { type: "cancel"; }
-export type RelayCommand = SubmitCommand | CancelCommand;
+export type VoicePhase = "capturing" | "transcribing" | "idle";
+export interface VoiceStatusCommand {
+  type: "voice-status";
+  phase: VoicePhase;
+  /** Gateway emission time; consumers use this (then seq) to reject stale delivery. */
+  timestamp: number;
+  /** Gateway receive-order tie breaker. */
+  seq: number;
+  takeId?: number;
+}
+export type RelayCommand = SubmitCommand | CancelCommand | VoiceStatusCommand;
+
+export type VoiceStatusPayload = {
+  phase: VoicePhase;
+  timestamp: number;
+  takeId?: number;
+};
 
 export type SubmitPayload =
   | { type: "text"; content: string; id?: number }
