@@ -49,6 +49,30 @@ fn chunked_transmission_is_completed_before_placement() {
 }
 
 #[test]
+fn unicode_placeholder_virtual_placement_is_extracted() {
+    // One magenta RGBA pixel, transmitted as a virtual 1x1 placement, followed
+    // by kitten's placeholder encoding: image id in foreground RGB and row/col
+    // zero as the first Kitty diacritic (U+0305).
+    let fixture = concat!(
+        "\x1b_Ga=T,f=32,s=1,v=1,i=42,U=1,c=1,r=1,q=2;/wD//w==\x1b\\",
+        "\x1b[38;2;0;0;42m\u{10eeee}\u{0305}\u{0305}\x1b[39m"
+    );
+    let mut terminal = GhosttyTerminal::new(SIZE).unwrap();
+    let update = terminal.feed(fixture.as_bytes()).unwrap();
+    let image = update
+        .graphics
+        .iter()
+        .find(|event| event.action == KittyAction::TransmitAndDisplay)
+        .expect("virtual placeholder placement was not surfaced");
+    assert_eq!(image.image_id, Some(42));
+    assert_eq!((image.column, image.row), (0, 0));
+    assert_eq!((image.columns, image.rows), (Some(1), Some(1)));
+    assert_eq!((image.source_width, image.source_height), (1, 1));
+    assert_eq!(image.payload, [255, 0, 255, 255]);
+    assert_eq!(terminal.cell(0, 0).unwrap().text, "");
+}
+
+#[test]
 fn kitty_capability_query_is_answered_across_every_split() {
     let query = b"\x1b_Ga=q,f=24,s=1,v=1,i=77;AAAA\x1b\\";
     for_every_split(

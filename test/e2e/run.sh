@@ -67,6 +67,6 @@ playwright test --config "$HERE/playwright.config.mjs" "$HERE/terminal.spec.mjs"
 status=$?
 set -e
 if [ -f "$ARTIFACTS/kitty-result.json" ]; then
-  node -e 'const r=require(process.argv[1]); console.log(`KITTY REGRESSION: ${r.pixels ? "PASS (bug did not reproduce)" : "XFAIL known issue"}; translated APC bytes=${r.bytes}; magenta pixels=${r.magentaPixels}`)' "$ARTIFACTS/kitty-result.json"
+  node -e 'const r=require(process.argv[1]); console.log(`KITTY REGRESSION: ${r.pixels && r.bytes ? "PASS" : "FAIL"}; translated APC bytes=${r.bytes}; magenta pixels=${r.magentaPixels}`)' "$ARTIFACTS/kitty-result.json"
 fi
 exit "$status"
