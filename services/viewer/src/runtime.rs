@@ -418,8 +418,10 @@ fn render_frame(
 }
 
 pub fn is_quit_key(key: KeyEvent) -> bool {
+    // Legacy terminals encode Ctrl-\ as 0x1C, which is also Ctrl-4; crossterm
+    // reports that byte as Char('4')+CONTROL, so both spellings mean quit.
     !matches!(key.kind, KeyEventKind::Release)
-        && key.code == KeyCode::Char('\\')
+        && matches!(key.code, KeyCode::Char('\\') | KeyCode::Char('4'))
         && key.modifiers.contains(KeyModifiers::CONTROL)
 }
 
@@ -773,6 +775,12 @@ mod tests {
         let quit = KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::CONTROL);
         assert!(is_quit_key(quit));
         assert!(encode_key(quit, TerminalModes::default()).is_empty());
+
+        // Legacy 0x1C arrives from real terminals as Ctrl-4; it must quit,
+        // not leak a literal '4' into the child.
+        let quit_legacy = KeyEvent::new(KeyCode::Char('4'), KeyModifiers::CONTROL);
+        assert!(is_quit_key(quit_legacy));
+        assert!(encode_key(quit_legacy, TerminalModes::default()).is_empty());
 
         let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert!(!is_quit_key(ctrl_c));
