@@ -58,21 +58,28 @@ func (t Tmux) Prepare() error {
 		return errors.New("refusing symlink tmux config")
 	}
 	policy := "# Familiar Agent Supervisor complete private tmux policy.\nset-option -g status off\nset-option -g pane-border-status off\nset-option -g remain-on-exit on\nset-option -g exit-empty off\nset-option -g destroy-unattached off\nset-option -g allow-rename off\nset-option -g prefix C-b\nunbind-key C-b\nbind-key C-b send-prefix\nset-option -g mouse on\nbind-key -n PageUp if-shell -F '#{alternate_on}' 'send-keys PageUp' 'copy-mode -eu'\nset-option -g allow-passthrough on\nset-option -g extended-keys on\nset-option -g extended-keys-format csi-u\nset-option -g terminal-features 'xterm*:extkeys,screen*:extkeys,tmux*:extkeys,kitty*:extkeys,ghostty*:extkeys,xterm-ghostty:extkeys'\n"
+	// Familiar theming is COSMETIC AND NON-BLOCKING: a missing, symlinked,
+	// irregular, or unreadable theme artifact is skipped so workers still start
+	// on the plain policy config. Never hardcode palette values here; the styles
+	// come from familiar-theme.sh via FAMILIAR_TMUX_THEME_CONFIG.
 	if theme := os.Getenv("FAMILIAR_TMUX_THEME_CONFIG"); theme != "" {
-		fi, err := os.Lstat(theme)
-		if err != nil {
-			return fmt.Errorf("tmux theme config: %w", err)
+		if styles, ok := readThemeStyles(theme); ok {
+			policy += "# Generated from the canonical Familiar palette.\n" + styles
 		}
-		if fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() {
-			return errors.New("tmux theme config must be a regular non-symlink file")
-		}
-		styles, err := os.ReadFile(theme)
-		if err != nil {
-			return fmt.Errorf("tmux theme config: %w", err)
-		}
-		policy += "# Generated from the canonical Familiar palette.\n" + string(styles)
 	}
 	return os.WriteFile(cfg, []byte(policy), 0o600)
+}
+
+func readThemeStyles(theme string) (string, bool) {
+	fi, err := os.Lstat(theme)
+	if err != nil || fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() {
+		return "", false
+	}
+	styles, err := os.ReadFile(theme)
+	if err != nil {
+		return "", false
+	}
+	return string(styles), true
 }
 func (t Tmux) run(ctx context.Context, args ...string) (string, error) {
 	a := append([]string{"-S", t.Socket}, args...)
@@ -110,11 +117,19 @@ func (t Tmux) Start(ctx context.Context, id string, l harnesses.Launch) (string,
 	for _, v := range l.Argv {
 		parts = append(parts, quote(v))
 	}
-	// Keep the harness off the PTY so its transcript bytes remain identical to
-	// direct file redirection, while tee mirrors those bytes into the pane.
-	// pipefail preserves the harness exit status instead of reporting tee's.
-	pipeline := "exec env " + strings.Join(parts, " ") + " 2>&1 | tee -a " + quote(l.Transcript)
-	cmd := "exec bash -o pipefail -c " + quote(pipeline)
+	var cmd string
+	if l.Interactive {
+		// An interactive TUI owns the pane PTY directly. Its scrollback is the
+		// human record; semantics arrive over the side channel, so there is no
+		// tee-to-file pipeline (raw escape soup is not a useful transcript).
+		cmd = "exec env " + strings.Join(parts, " ")
+	} else {
+		// Keep the harness off the PTY so its transcript bytes remain identical to
+		// direct file redirection, while tee mirrors those bytes into the pane.
+		// pipefail preserves the harness exit status instead of reporting tee's.
+		pipeline := "exec env " + strings.Join(parts, " ") + " 2>&1 | tee -a " + quote(l.Transcript)
+		cmd = "exec bash -o pipefail -c " + quote(pipeline)
+	}
 	args := []string{"new-session", "-d", "-s", session, "-n", "worker", "-c", l.Dir, cmd}
 	if !t.ServerAlive(ctx) {
 		if fi, err := os.Lstat(t.Socket); err == nil && fi.Mode()&os.ModeSocket != 0 {
@@ -135,11 +150,15 @@ func (t Tmux) Interrupt(ctx context.Context, target string) error {
 	_, err := t.run(ctx, "send-keys", "-t", target, "C-c")
 	return err
 }
+
+// Send injects text into an interactive TUI as a bracketed paste followed by
+// Enter. Bracketed paste keeps multi-line text a single atomic paste in pi's
+// input box instead of submitting a turn on every embedded newline.
 func (t Tmux) Send(ctx context.Context, target, text string) error {
-	_, err := t.run(ctx, "send-keys", "-t", target, "-l", text)
-	if err == nil {
-		_, err = t.run(ctx, "send-keys", "-t", target, "Enter")
+	if _, err := t.run(ctx, "send-keys", "-t", target, "-l", "\x1b[200~"+text+"\x1b[201~"); err != nil {
+		return err
 	}
+	_, err := t.run(ctx, "send-keys", "-t", target, "Enter")
 	return err
 }
 func (t Tmux) Pane(ctx context.Context, target string) (bool, *int, error) {
