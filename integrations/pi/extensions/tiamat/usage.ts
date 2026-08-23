@@ -55,13 +55,36 @@ function windowLabel(name: string): string {
   return name;
 }
 
-export function formatUsage(id: string, windows: TiamatUsageWindow[], stale: boolean): { text: string; tone: UsageTone } | undefined {
+const RELATIVE_CUTOFF_SECONDS = 12 * 3600;
+
+/** Claude-desktop style: relative under 12h ("2h 29m"), absolute weekday+time beyond. */
+export function formatReset(resetsInSeconds: number, now = Date.now(), timeZone?: string): string | undefined {
+  if (!Number.isFinite(resetsInSeconds) || resetsInSeconds <= 0) return undefined;
+  if (resetsInSeconds < RELATIVE_CUTOFF_SECONDS) {
+    const hours = Math.floor(resetsInSeconds / 3600);
+    const minutes = Math.round((resetsInSeconds % 3600) / 60);
+    if (hours === 0) return `${Math.max(minutes, 1)}m`;
+    return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
+  }
+  try {
+    const reset = new Date(now + resetsInSeconds * 1000);
+    const zone = timeZone || process.env.FAMILIAR_TIAMAT_DISPLAY_TZ || undefined;
+    const text = new Intl.DateTimeFormat("en-US", {
+      weekday: "short", hour: "numeric", minute: "2-digit", hour12: true, timeZone: zone,
+    }).format(reset);
+    return text.replace(", ", " ").replaceAll(" AM", "am").replaceAll(" PM", "pm");
+  } catch { return undefined; }
+}
+
+export function formatUsage(id: string, windows: TiamatUsageWindow[], stale: boolean, now = Date.now(), timeZone?: string): { text: string; tone: UsageTone } | undefined {
   if (!windows.length) return undefined;
   let peak = 0;
   const parts = windows.map((window) => {
     const percent = usedPercent(window.used);
     if (percent !== undefined) peak = Math.max(peak, percent);
-    return `${windowLabel(window.name)} ${percent === undefined ? window.used : `${Math.round(percent)}%`}`;
+    const reset = formatReset(window.resetsInSeconds, now, timeZone);
+    const shown = percent === undefined ? window.used : `${Math.round(percent)}%`;
+    return `${windowLabel(window.name)} ${shown}${reset ? ` ↻${reset}` : ""}`;
   });
   const tone: UsageTone = peak >= 100 ? "error" : stale || peak >= 90 ? "warning" : "dim";
   const glyph = tone === "error" ? "▲ " : tone === "warning" ? "△ " : "";
