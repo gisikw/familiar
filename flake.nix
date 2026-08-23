@@ -7,11 +7,12 @@
     stt = { url = "path:./services/stt"; inputs.nixpkgs.follows = "nixpkgs"; inputs.flake-utils.follows = "flake-utils"; };
     tts = { url = "path:./services/tts"; inputs.nixpkgs.follows = "nixpkgs"; };
     gateway-module = { url = "path:./services/gateway"; inputs.nixpkgs.follows = "nixpkgs"; inputs.flake-utils.follows = "flake-utils"; };
+    viewer = { url = "path:./services/viewer"; inputs.nixpkgs.follows = "nixpkgs"; inputs.flake-utils.follows = "flake-utils"; };
     desktop = { url = "path:./apps/desktop"; inputs.nixpkgs.follows = "nixpkgs"; inputs.flake-utils.follows = "flake-utils"; };
     agents = { url = "path:./agents"; inputs.nixpkgs.follows = "nixpkgs"; inputs.flake-utils.follows = "flake-utils"; };
   };
 
-  outputs = { self, nixpkgs, flake-utils, server, llm, stt, tts, gateway-module, desktop, agents }:
+  outputs = { self, nixpkgs, flake-utils, server, llm, stt, tts, gateway-module, viewer, desktop, agents }:
     flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ] (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
@@ -94,6 +95,7 @@
           default = familiar-server;
         } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           familiar-tts = tts.packages.${system}.default;
+          familiar-viewer = viewer.packages.${system}.default;
           familiar-desktop = desktop.packages.${system}.default;
         };
         checks = pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
@@ -114,6 +116,7 @@
           familiar-agents-service = flake-utils.lib.mkApp { drv = agents.packages.${system}.service; };
           familiar-agents-supervisor = flake-utils.lib.mkApp { drv = self.packages.${system}.familiar-agents-supervisor; };
         } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          familiar-viewer = flake-utils.lib.mkApp { drv = viewer.packages.${system}.default; };
           familiar-desktop = flake-utils.lib.mkApp { drv = desktop.packages.${system}.default; };
         };
         devShells = {
@@ -151,6 +154,12 @@
           client = pkgs.mkShell {
             FAMILIAR_SHELL = "client";
             packages = with pkgs; [ nodejs_22 ];
+          };
+        } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          viewer = pkgs.mkShell {
+            FAMILIAR_SHELL = "viewer";
+            ZIG = "${pkgs.zig_0_15}/bin/zig";
+            packages = with pkgs; [ zig_0_15 cargo rustc rustfmt clippy tmux ];
           };
         };
       }

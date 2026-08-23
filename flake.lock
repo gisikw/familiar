@@ -120,7 +120,8 @@
         "nixpkgs": "nixpkgs",
         "server": "server",
         "stt": "stt",
-        "tts": "tts"
+        "tts": "tts",
+        "viewer": "viewer"
       }
     },
     "server": {
@@ -188,6 +189,25 @@
       },
       "original": {
         "path": "./services/tts",
+        "type": "path"
+      },
+      "parent": []
+    },
+    "viewer": {
+      "inputs": {
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./services/viewer",
+        "type": "path"
+      },
+      "original": {
+        "path": "./services/viewer",
         "type": "path"
       },
       "parent": []
