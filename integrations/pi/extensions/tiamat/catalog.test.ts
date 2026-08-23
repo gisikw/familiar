@@ -47,6 +47,15 @@ describe("Tiamat catalog mapping", () => {
     expect(groups.find((group) => group.id === "tiamat-anthropic-work")?.models[0].name)
       .toBe("claude-sonnet via work (degraded)");
   });
+
+  test("uses optional catalog token limits while retaining defaults", () => {
+    const catalog: TiamatCatalogRecord[] = [{
+      ...records[0], context_window: 200_000, max_output_tokens: 32_000,
+    }, { ...records[1], model: "defaulted" }];
+    const models = catalogToProviderGroups(catalog, "https://router.example").flatMap((group) => group.models);
+    expect(models.find((model) => model.id === "claude-sonnet")).toMatchObject({ contextWindow: 200_000, maxTokens: 32_000 });
+    expect(models.find((model) => model.id === "defaulted")).toMatchObject({ contextWindow: 128_000, maxTokens: 16_384 });
+  });
 });
 
 describe("Responses compatibility", () => {
