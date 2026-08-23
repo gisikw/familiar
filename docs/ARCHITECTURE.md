@@ -1,8 +1,9 @@
 # Familiar Architecture
 
-> **Status:** proposed target architecture. This document describes Familiar
-> itself. The separately deployable agent-dispatch system is deliberately
-> excluded; see [Familiar Agents Architecture](AGENTS-ARCHITECTURE.md).
+> **Status:** current architecture, with planned adapter evolution called out
+> explicitly. This document describes Familiar itself. The separately deployable
+> agent-dispatch system is deliberately excluded; see
+> [Familiar Agents Architecture](AGENTS-ARCHITECTURE.md).
 
 Familiar is a persistent presence with disposable interfaces. The runtime owns
 identity, continuity, sessions, and service supervision. Desktop, mobile,
@@ -12,7 +13,7 @@ terminal, and web surfaces may come and go without ending the primary session.
 
 ```mermaid
 flowchart TB
-    desktop["Familiar Desktop Client<br/>Electron"]
+    desktop["Familiar Desktop Client<br/>Electron / browser terminal"]
     mobile["Familiar Mobile Client<br/>iOS native"]
     ssh["Terminal Client<br/>SSH / local console"]
 
@@ -20,9 +21,10 @@ flowchart TB
         direction LR
         ingress["Familiar client endpoint<br/>HTTP / WebSocket / local IPC"]
         interaction["Interaction orchestration<br/>text, voice, delivery"]
-        sessionView["Session presentation adapter<br/>temporary: tmux attach<br/>future: pi remote client"]
-        terminal["Direct terminal / TUI projection"]
+        browserViewer["Per-WebSocket familiar-viewer<br/>node-pty child"]
     end
+
+    sshEntry["presence.sh viewer<br/>execs familiar-viewer"]
 
     subgraph server["Familiar Server"]
         direction TB
@@ -30,7 +32,7 @@ flowchart TB
 
         subgraph services["Local supervised service boundaries — one-for-one restart"]
             direction LR
-            presence["Familiar Presence Runtime<br/>temporary: full pi in private tmux<br/>future: pi session server"]
+            presence["Familiar Presence Runtime<br/>full pi in private inner tmux"]
             llm["Familiar LLM proxy<br/>configured upstream or<br/>lazy local llama.cpp"]
             stt["Familiar STT proxy<br/>configured upstream or<br/>lazy local backend"]
             tts["Familiar TTS proxy<br/>configured upstream or<br/>lazy local backend"]
@@ -39,12 +41,12 @@ flowchart TB
 
     desktop <--> ingress
     mobile <--> ingress
-    ssh <--> terminal
+    ssh --> sshEntry
 
     ingress <--> interaction
-    terminal <--> sessionView
-    interaction <--> sessionView
-    sessionView <-->|"temporary: PTY attach<br/>future: internal pi-protocol"| presence
+    ingress <--> browserViewer
+    browserViewer <-->|"embedded PTY tmux attach"| presence
+    sshEntry <-->|"embedded PTY tmux attach"| presence
     interaction --> stt
     interaction --> tts
     presence --> llm
@@ -114,10 +116,14 @@ voice input
 → client delivery
 ```
 
-For now, terminal interfaces use the native Familiar viewer, which embeds a
-direct attach to the Presence tmux session rather than introducing a new
-terminal protocol. A future HTML/canvas/chat presentation may project the same
-session without replacing this terminal path.
+Terminal interfaces use one native Rust `familiar-viewer` process per connected
+client. The viewer owns its native sidebar, Kitty graphics, job list, target
+switching, and an embedded PTY that attaches to the private inner Presence tmux
+session. For browser clients, the Gateway creates that process as a `node-pty`
+child for each `/pty` WebSocket and reaps it when the socket closes. For SSH or
+a local console, `services/presence/presence.sh viewer` ensures Presence and
+execs the same binary. A future HTML/canvas/chat presentation may project the
+same session without replacing this terminal path.
 
 ### Familiar Server
 
@@ -181,11 +187,13 @@ Session presentation adapter
   future: detachable pi remote client and TUI
 ```
 
-The private tmux server keeps the complete pi process alive when no presentation
-is attached. The native viewer owns chrome and target switching, but not a tmux
-session or worker lifecycle. Closing a terminal or Interface Gateway viewer
-kills only its attach client. Existing web/extension ingress continues to handle
-non-terminal interactions during this phase.
+The private inner tmux server keeps the complete pi process alive when no
+presentation is attached. Every client has an independent Rust viewer process;
+the viewer owns native chrome, sidebar rendering, Kitty graphics, job
+navigation, and target switching, but no persistent session or worker lifecycle.
+Closing an SSH viewer or browser WebSocket reaps that viewer and its attach
+client without affecting Presence or delegated workers. Existing web/extension
+ingress continues to handle non-terminal interactions during this phase.
 
 The adapter contract, not tmux, is architectural. tmux session names, pane IDs,
 and terminal-detection behavior must not leak into clients or the wider server.
@@ -195,7 +203,7 @@ identity.
 
 A stable RPC relay remains an available intermediate implementation if semantic
 session access becomes necessary before pi's detachable TUI is ready; it is not
-required for the initial tmux-backed migration.
+required by the current tmux-backed adapter.
 
 ### Model and voice services
 

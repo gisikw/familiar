@@ -12,8 +12,8 @@ export { attachCommand } from "./attach.ts";
 /* --- Browser terminal PTY bridge ------------------------------------------
  *
  * Bridges restty's built-in WebSocket PTY transport to a node-pty child that
- * runs the native Familiar viewer. The viewer embeds a direct attach to the
- * resident Presence session; there is no outer Viewer tmux session.
+ * runs one native Familiar viewer per WebSocket. The viewer embeds a direct
+ * attach to the resident Presence session and is disposable client state.
  * FAMILIAR_ATTACH_CMD remains a test override.
  *
  * restty PTY protocol (see restty dist/pty.d.ts):

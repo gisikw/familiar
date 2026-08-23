@@ -21,12 +21,13 @@ Binds `127.0.0.1:1692`. See `DESIGN.md` for the full protocol rationale.
   extension subscribes to and enacts against the pi API.
 - **Segment audio** (`GET /segments/:mid/:idx/audio`) — synthesized wav.
 - **Browser terminal** (`GET /terminal`, `GET /`) — the restty WASM terminal
-  bridged over a `/pty` WebSocket to a `node-pty` child running
-  `familiar-viewer` directly. The native viewer embeds the private Presence
-  Runtime tmux target; the legacy outer viewer tmux session is not used
-  (`FAMILIAR_ATTACH_CMD` remains a test override). Replaces the Electron
-  client's local-shell dance. Fonts + mouse + emoji-completer ported from the
-  client renderer.
+  bridged over a `/pty` WebSocket to a per-client `node-pty` child running
+  `familiar-viewer` directly. Each native viewer embeds the private Presence
+  Runtime tmux target and owns its sidebar and target switching
+  (`FAMILIAR_ATTACH_CMD` remains a test override). Closing the WebSocket reaps
+  that viewer process without affecting Presence or workers. Replaces the
+  Electron client's local-shell dance. Fonts + mouse + emoji-completer ported
+  from the client renderer.
 
 ## Run
 
