@@ -60,7 +60,7 @@ where
     let column = event.column.saturating_sub(layout.main.x);
     let row = event.row.saturating_sub(layout.main.y);
     if modes.mouse_tracking == MouseTracking::None {
-        return alternate_scroll(event.kind, modes.alternate_screen);
+        return MouseRoute::Swallowed;
     }
     let Some(report) = report_for(event.kind, modes.mouse_tracking) else {
         return MouseRoute::Swallowed;
@@ -79,18 +79,6 @@ fn contains(rect: ratatui::layout::Rect, column: u16, row: u16) -> bool {
         && column < rect.x.saturating_add(rect.width)
         && row >= rect.y
         && row < rect.y.saturating_add(rect.height)
-}
-
-fn alternate_scroll(kind: MouseEventKind, alternate_screen: bool) -> MouseRoute {
-    if !alternate_screen {
-        return MouseRoute::Swallowed;
-    }
-    let sequence = match kind {
-        MouseEventKind::ScrollUp => b"\x1b[A".as_slice(),
-        MouseEventKind::ScrollDown => b"\x1b[B".as_slice(),
-        _ => return MouseRoute::Swallowed,
-    };
-    MouseRoute::Child(sequence.repeat(3))
 }
 
 #[derive(Clone, Copy)]
@@ -283,19 +271,11 @@ mod tests {
     }
 
     #[test]
-    fn tracking_modes_filter_event_types_and_alternate_scrolls() {
+    fn tracking_modes_filter_event_types() {
         let press = mouse(MouseEventKind::Down(MouseButton::Left), 30, 2);
         assert_eq!(
             route(press, TerminalModes::default()),
             MouseRoute::Swallowed
-        );
-        let alt = TerminalModes {
-            alternate_screen: true,
-            ..Default::default()
-        };
-        assert_eq!(
-            route(mouse(MouseEventKind::ScrollUp, 30, 2), alt),
-            MouseRoute::Child(b"\x1b[A\x1b[A\x1b[A".to_vec())
         );
         assert_eq!(
             route(

@@ -57,7 +57,7 @@ func (t Tmux) Prepare() error {
 	if fi, err := os.Lstat(cfg); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 		return errors.New("refusing symlink tmux config")
 	}
-	policy := "# Familiar Agent Supervisor complete private tmux policy.\nset-option -g status off\nset-option -g pane-border-status off\nset-option -g remain-on-exit on\nset-option -g exit-empty off\nset-option -g destroy-unattached off\nset-option -g allow-rename off\nset-option -g prefix C-b\nunbind-key C-b\nbind-key C-b send-prefix\nset-option -g allow-passthrough on\n"
+	policy := "# Familiar Agent Supervisor complete private tmux policy.\nset-option -g status off\nset-option -g pane-border-status off\nset-option -g remain-on-exit on\nset-option -g exit-empty off\nset-option -g destroy-unattached off\nset-option -g allow-rename off\nset-option -g prefix C-b\nunbind-key C-b\nbind-key C-b send-prefix\nset-option -g mouse on\nbind-key -n PageUp if-shell -F '#{alternate_on}' 'send-keys PageUp' 'copy-mode -eu'\nset-option -g allow-passthrough on\nset-option -g extended-keys on\nset-option -g extended-keys-format csi-u\nset-option -g terminal-features 'xterm*:extkeys,screen*:extkeys,tmux*:extkeys,kitty*:extkeys,ghostty*:extkeys,xterm-ghostty:extkeys'\n"
 	return os.WriteFile(cfg, []byte(policy), 0o600)
 }
 func (t Tmux) run(ctx context.Context, args ...string) (string, error) {

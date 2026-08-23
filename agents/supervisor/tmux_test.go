@@ -36,6 +36,12 @@ func TestPrivateTmuxLifecycle(t *testing.T) {
 	if out, e := tm.run(ctx, "show-options", "-gv", "allow-passthrough"); e != nil || out != "on" {
 		t.Fatalf("explicit config missing: %q %v", out, e)
 	}
+	if out, e := tm.run(ctx, "show-options", "-gv", "mouse"); e != nil || out != "on" {
+		t.Fatalf("mouse arbitration missing: %q %v", out, e)
+	}
+	if out, e := tm.run(ctx, "list-keys", "-T", "root", "PageUp"); e != nil || !strings.Contains(out, "#{alternate_on}") {
+		t.Fatalf("PageUp arbitration missing: %q %v", out, e)
+	}
 	var exit *int
 	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); {
 		alive, code, paneErr := tm.Pane(ctx, target)

@@ -41,10 +41,14 @@ fn embeds_tmux_and_tracks_outer_resize() {
     fs::create_dir_all(&directory).unwrap();
     let socket = directory.join("sock");
     let agents_socket = directory.join("agents.sock");
+    let presence_config =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../presence/tmux.conf");
     let started = Command::new("tmux")
         .args([
             "-S",
             socket.to_str().unwrap(),
+            "-f",
+            presence_config.to_str().unwrap(),
             "new-session",
             "-d",
             "-s",
@@ -55,7 +59,7 @@ fn embeds_tmux_and_tracks_outer_resize() {
             "24",
             "sh",
             "-c",
-            "printf smoketext; sleep 30",
+            "for i in $(seq 1 100); do printf 'history-%03d\\n' \"$i\"; done; printf smoketext; exec bash --noprofile --norc",
         ])
         .status()
         .unwrap();
@@ -212,6 +216,138 @@ fn embeds_tmux_and_tracks_outer_resize() {
         "inner tmux did not receive mouse press"
     );
 
+    let termfeatures = Command::new("tmux")
+        .args([
+            "-S",
+            socket.to_str().unwrap(),
+            "display-message",
+            "-p",
+            "-t",
+            "presence",
+            "#{client_termfeatures}",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&termfeatures.stdout).contains("extkeys"),
+        "viewer tmux client did not negotiate extkeys: {:?}",
+        String::from_utf8_lossy(&termfeatures.stdout)
+    );
+
+    // tmux mouse mode, not viewer-side socket injection, owns history. Wheel
+    // reports forwarded through the viewer enter copy mode on this bash pane.
+    output.clear();
+    for _ in 0..12 {
+        writer.write_all(b"\x1b[<64;30;5M").unwrap();
+    }
+    writer.flush().unwrap();
+    assert!(
+        wait_for(&rx, &mut output, b"history-0"),
+        "wheel copy mode did not render earlier history: {:?}",
+        String::from_utf8_lossy(&output)
+    );
+    let mode_deadline = Instant::now() + Duration::from_secs(8);
+    while Instant::now() < mode_deadline {
+        let mode = Command::new("tmux")
+            .args([
+                "-S",
+                socket.to_str().unwrap(),
+                "display-message",
+                "-p",
+                "-t",
+                "presence",
+                "#{pane_in_mode}",
+            ])
+            .output()
+            .unwrap();
+        if mode.stdout.starts_with(b"1") {
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    let mode = Command::new("tmux")
+        .args([
+            "-S",
+            socket.to_str().unwrap(),
+            "display-message",
+            "-p",
+            "-t",
+            "presence",
+            "#{pane_in_mode}",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        mode.stdout.starts_with(b"1"),
+        "wheel did not enter copy mode"
+    );
+
+    // Actual tmux behavior is that a copy-mode-bound printable key remains in
+    // copy mode; the viewer no longer races a control-client cancellation.
+    writer.write_all(b"z").unwrap();
+    writer.flush().unwrap();
+    thread::sleep(Duration::from_millis(100));
+    let mode = Command::new("tmux")
+        .args([
+            "-S",
+            socket.to_str().unwrap(),
+            "display-message",
+            "-p",
+            "-t",
+            "presence",
+            "#{pane_in_mode}",
+        ])
+        .output()
+        .unwrap();
+    assert!(mode.stdout.starts_with(b"1"));
+    assert!(Command::new("tmux")
+        .args([
+            "-S",
+            socket.to_str().unwrap(),
+            "send-keys",
+            "-X",
+            "-t",
+            "presence",
+            "cancel",
+        ])
+        .status()
+        .unwrap()
+        .success());
+
+    // The config-level PageUp binding sees the inner pane's primary screen.
+    writer.write_all(b"\x1b[5~").unwrap();
+    writer.flush().unwrap();
+    thread::sleep(Duration::from_millis(100));
+    let mode = Command::new("tmux")
+        .args([
+            "-S",
+            socket.to_str().unwrap(),
+            "display-message",
+            "-p",
+            "-t",
+            "presence",
+            "#{pane_in_mode}",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        mode.stdout.starts_with(b"1"),
+        "PageUp did not enter copy mode"
+    );
+    assert!(Command::new("tmux")
+        .args([
+            "-S",
+            socket.to_str().unwrap(),
+            "send-keys",
+            "-X",
+            "-t",
+            "presence",
+            "cancel",
+        ])
+        .status()
+        .unwrap()
+        .success());
+
     pair.master
         .resize(PtySize {
             rows: 26,
@@ -243,6 +379,59 @@ fn embeds_tmux_and_tracks_outer_resize() {
     assert!(
         resized,
         "inner tmux client did not follow the 90x26 outer resize"
+    );
+
+    // An alternate-screen raw observer proves PageUp bytes are not swallowed:
+    // tmux's root binding passes them through to the pane program.
+    let pageup_bytes = directory.join("pageup-bytes");
+    let observer = format!(
+        "printf '\\033[?1049h'; stty raw -echo; dd bs=1 count=4 2>/dev/null | od -An -tx1 > {}; sleep 30",
+        pageup_bytes.display()
+    );
+    assert!(Command::new("tmux")
+        .args([
+            "-S",
+            socket.to_str().unwrap(),
+            "respawn-pane",
+            "-k",
+            "-t",
+            "presence",
+            &observer,
+        ])
+        .status()
+        .unwrap()
+        .success());
+    let alternate_deadline = Instant::now() + Duration::from_secs(8);
+    while Instant::now() < alternate_deadline {
+        let alternate = Command::new("tmux")
+            .args([
+                "-S",
+                socket.to_str().unwrap(),
+                "display-message",
+                "-p",
+                "-t",
+                "presence",
+                "#{alternate_on}",
+            ])
+            .output()
+            .unwrap();
+        if alternate.stdout.starts_with(b"1") {
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    writer.write_all(b"\x1b[5~").unwrap();
+    writer.flush().unwrap();
+    let bytes_deadline = Instant::now() + Duration::from_secs(8);
+    while fs::metadata(&pageup_bytes).map_or(0, |metadata| metadata.len()) == 0
+        && Instant::now() < bytes_deadline
+    {
+        thread::sleep(Duration::from_millis(50));
+    }
+    let observed = fs::read_to_string(&pageup_bytes).unwrap_or_default();
+    assert!(
+        observed.contains("1b 5b 35 7e"),
+        "alternate-screen PageUp bytes were not delivered: {observed:?}"
     );
 
     assert!(Command::new("tmux")
