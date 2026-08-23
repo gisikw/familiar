@@ -13,6 +13,15 @@ import (
 // TemplateAdapter is the honest minimum used by harnesses without a stable
 // machine-readable lifecycle API. It launches configured argv and observes only
 // process exit plus an optional transcript.
+//
+// The documented path for a harness that CAN report lifecycle is the
+// hook/side-channel pattern (see harnesses/pi): the adapter instruments its
+// harness with a sibling "hook adapter" that appends durable JSON records to
+// Launch.Events, and Observe advances a durable cursor over that file instead
+// of parsing harness stdout. A crash boundary (pane death) is always the
+// supervisor's concern and needs no side-channel coverage. TemplateAdapter
+// deliberately does neither: it claims no steering, blocked-question, usage, or
+// resume semantics, returning ErrUnsupported for operations it cannot honor.
 type TemplateAdapter struct {
 	Kind         string
 	ArgvTemplate []string
