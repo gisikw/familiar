@@ -6,6 +6,9 @@
 
 use crate::graphics::KittyGraphicsEvent;
 
+mod ffi;
+pub mod ghostty;
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct GridSize {
     pub columns: u16,
