@@ -8,7 +8,7 @@ use crate::sidebar::{
     has_live_session, render as render_sidebar, rows_for, spawn_poller, RowModel, SidebarModel,
 };
 use crate::terminal::ghostty::GhosttyTerminal;
-use crate::terminal::{CellAttributes, GridSize, TerminalCore, TerminalModes};
+use crate::terminal::{CellAttributes, GridSize, TerminalColor, TerminalCore, TerminalModes};
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
     KeyModifiers, MouseButton, MouseEventKind,
@@ -26,6 +26,7 @@ use ratatui::Terminal;
 use signal_hook::consts::signal::{SIGHUP, SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
 use std::io::{self, Read, Write};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
@@ -116,7 +117,16 @@ pub struct ChildManager {
     tx: Sender<PtyMessage>,
     next_id: u64,
     session: Option<ChildSession>,
+    target: ViewerTarget,
     size: GridSize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TmuxScroll {
+    LineUp,
+    LineDown,
+    PageUp,
+    PageDown,
 }
 
 impl ChildManager {
@@ -126,6 +136,7 @@ impl ChildManager {
             tx,
             next_id: 0,
             session: None,
+            target: ViewerTarget::Presence,
             size,
         };
         manager.replace(&ViewerTarget::Presence)?;
@@ -211,6 +222,66 @@ impl ChildManager {
         }
         Ok(())
     }
+
+    fn tmux_target(&self) -> (&std::path::Path, String) {
+        match &self.target {
+            ViewerTarget::Presence => (
+                &self.config.presence_socket,
+                self.config.presence_session.clone(),
+            ),
+            ViewerTarget::Agent(id) => (
+                &self.config.agents_socket,
+                format!("worker-{}", crate::pty::sanitize_agent_id(id)),
+            ),
+        }
+    }
+
+    /// Spawn before returning so command ordering precedes subsequent PTY
+    /// writes, but reap on a worker without waiting on tmux server I/O.
+    fn spawn_tmux_control(&self, args: &[&str]) {
+        let (socket, _) = self.tmux_target();
+        let child = Command::new("tmux")
+            .arg("-S")
+            .arg(socket)
+            .args(args)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        if let Ok(mut child) = child {
+            thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
+    }
+
+    /// The command chain enters copy-mode and scrolls atomically from one
+    /// tmux client.
+    fn scroll_copy_mode(&self, scroll: TmuxScroll) {
+        let (_, target) = self.tmux_target();
+        let command = match scroll {
+            TmuxScroll::LineUp => "scroll-up",
+            TmuxScroll::LineDown => "scroll-down",
+            TmuxScroll::PageUp => "page-up",
+            TmuxScroll::PageDown => "page-down",
+        };
+        self.spawn_tmux_control(&[
+            "copy-mode",
+            "-e",
+            "-t",
+            &target,
+            ";",
+            "send-keys",
+            "-X",
+            "-t",
+            &target,
+            command,
+        ]);
+    }
+
+    fn cancel_copy_mode(&self) {
+        let (_, target) = self.tmux_target();
+        self.spawn_tmux_control(&["send-keys", "-X", "-t", &target, "cancel"]);
+    }
 }
 
 impl TargetRuntime for ChildManager {
@@ -220,6 +291,7 @@ impl TargetRuntime for ChildManager {
     fn replace(&mut self, target: &ViewerTarget) -> Result<(), Self::Error> {
         let replacement = self.spawn(target)?;
         let old = self.session.replace(replacement);
+        self.target = target.clone();
         if let Some(mut old) = old {
             old.stop();
         }
@@ -235,14 +307,17 @@ impl Drop for ChildManager {
     }
 }
 
-fn color(rgb: Option<[u8; 3]>) -> Option<Color> {
-    rgb.map(|[r, g, b]| Color::Rgb(r, g, b))
+fn color(color: Option<TerminalColor>) -> Option<Color> {
+    color.map(|color| match color {
+        TerminalColor::Indexed(index) => Color::Indexed(index),
+        TerminalColor::Rgb(r, g, b) => Color::Rgb(r, g, b),
+    })
 }
 
 pub fn cell_style(
     attributes: CellAttributes,
-    foreground: Option<[u8; 3]>,
-    background: Option<[u8; 3]>,
+    foreground: Option<TerminalColor>,
+    background: Option<TerminalColor>,
 ) -> Style {
     let mut style = Style::default();
     if let Some(foreground) = color(foreground) {
@@ -288,12 +363,17 @@ pub fn render_cells<T: TerminalCore>(
             if let Some(output) = buffer.cell_mut((area.x + column, area.y + row)) {
                 output.set_symbol(symbol).set_style(cell_style(
                     cell.attributes,
-                    cell.foreground_rgb,
-                    cell.background_rgb,
+                    cell.foreground,
+                    cell.background,
                 ));
             }
         }
     }
+}
+
+fn mapped_cursor(layout: ViewerLayout, cursor: crate::terminal::CursorState) -> Option<(u16, u16)> {
+    (cursor.visible && cursor.column < layout.main.width && cursor.row < layout.main.height)
+        .then_some((layout.main.x + cursor.column, layout.main.y + cursor.row))
 }
 
 fn render_frame(
@@ -321,7 +401,7 @@ fn render_frame(
     render_sidebar(sidebar_rows, layout.job_rows, frame.buffer_mut());
     if let Some(notice) = sidebar_notice {
         Paragraph::new(notice)
-            .style(Style::default().fg(Color::Rgb(235, 90, 90)))
+            .style(Style::default().fg(Color::Indexed(1)))
             .render(layout.job_rows, frame.buffer_mut());
     }
     render_cells(terminal, layout.main, frame.buffer_mut());
@@ -329,10 +409,11 @@ fn render_frame(
         Paragraph::new(notice)
             .alignment(Alignment::Center)
             .render(layout.main, frame.buffer_mut());
-    } else if let Some(cursor) = terminal.cursor() {
-        if cursor.visible && cursor.column < layout.main.width && cursor.row < layout.main.height {
-            frame.set_cursor_position((layout.main.x + cursor.column, layout.main.y + cursor.row));
-        }
+    } else if let Some(position) = terminal
+        .cursor()
+        .and_then(|cursor| mapped_cursor(layout, cursor))
+    {
+        frame.set_cursor_position(position);
     }
 }
 
@@ -456,6 +537,7 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let mut damaged = true;
     let mut child_notice: Option<String> = None;
     let mut sidebar_notice: Option<(String, Instant)> = None;
+    let mut copy_mode_active = false;
 
     loop {
         if sidebar_notice
@@ -471,12 +553,39 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                     if is_quit_key(key) {
                         return Ok(());
                     }
-                    if child.write_all(&encode_key(key, core.modes())).is_err() {
-                        child_notice = Some("tmux session ended — waiting for a new target".into());
-                        damaged = true;
+                    let modes = core.modes();
+                    let scroll = if !matches!(key.kind, KeyEventKind::Release)
+                        && modes.mouse_tracking == crate::terminal::MouseTracking::None
+                        && !modes.alternate_screen
+                    {
+                        match key.code {
+                            KeyCode::PageUp => Some(TmuxScroll::PageUp),
+                            KeyCode::PageDown => Some(TmuxScroll::PageDown),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                    if let Some(scroll) = scroll {
+                        child.scroll_copy_mode(scroll);
+                        copy_mode_active = true;
+                    } else {
+                        if copy_mode_active && !matches!(key.kind, KeyEventKind::Release) {
+                            child.cancel_copy_mode();
+                            copy_mode_active = false;
+                        }
+                        if child.write_all(&encode_key(key, modes)).is_err() {
+                            child_notice =
+                                Some("tmux session ended — waiting for a new target".into());
+                            damaged = true;
+                        }
                     }
                 }
                 Event::Paste(text) => {
+                    if copy_mode_active {
+                        child.cancel_copy_mode();
+                        copy_mode_active = false;
+                    }
                     if child
                         .write_all(&encode_paste(&text, core.modes().bracketed_paste))
                         .is_err()
@@ -512,6 +621,8 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                                             let deletes = graphics.clear_child_state();
                                             host.backend_mut().write_all(&deletes)?;
                                             host.clear()?;
+                                            graphics.invalidate_host_images();
+                                            copy_mode_active = false;
                                             child_notice = None;
                                             sidebar_notice = None;
                                             sidebar_rows = rows_for(
@@ -533,6 +644,26 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                         }
+                        MouseRoute::Swallowed
+                            if mouse.column >= layout.main.x
+                                && mouse.column
+                                    < layout.main.x.saturating_add(layout.main.width)
+                                && mouse.row >= layout.main.y
+                                && mouse.row < layout.main.y.saturating_add(layout.main.height)
+                                && core.modes().mouse_tracking
+                                    == crate::terminal::MouseTracking::None
+                                && !core.modes().alternate_screen =>
+                        {
+                            let scroll = match mouse.kind {
+                                MouseEventKind::ScrollUp => Some(TmuxScroll::LineUp),
+                                MouseEventKind::ScrollDown => Some(TmuxScroll::LineDown),
+                                _ => None,
+                            };
+                            if let Some(scroll) = scroll {
+                                child.scroll_copy_mode(scroll);
+                                copy_mode_active = true;
+                            }
+                        }
                         MouseRoute::Sidebar(_) | MouseRoute::Swallowed => {}
                     }
                 }
@@ -541,6 +672,7 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                     let size = dimensions(layout);
                     let update = core.resize(size)?;
                     graphics.handle_events(update.graphics);
+                    graphics.invalidate_host_images();
                     child.resize(size)?;
                     host.resize(ratatui::layout::Rect::new(0, 0, width, height))?;
                     sidebar_rows = rows_for(
@@ -598,7 +730,7 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         // Mode 2026 is only a render-coalescing hint here; parser state remains live.
         if damaged && !core.modes().synchronized_output {
             if graphics_mode == GraphicsMode::Kitty {
-                host.backend_mut().write_all(b"\x1b[?2026h\x1b7")?;
+                host.backend_mut().write_all(b"\x1b[?2026h")?;
             }
             host.draw(|frame| {
                 render_frame(
@@ -615,6 +747,9 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                 )
             })?;
             if graphics_mode == GraphicsMode::Kitty {
+                // Save only after ratatui has positioned the mapped child
+                // cursor. Saving before draw restored a stale sidebar cursor.
+                host.backend_mut().write_all(b"\x1b7")?;
                 let bytes = graphics.emit(layout.main, layout.mark, true);
                 host.backend_mut().write_all(&bytes)?;
                 host.backend_mut().write_all(b"\x1b8\x1b[?2026l")?;
@@ -682,6 +817,25 @@ mod tests {
     }
 
     #[test]
+    fn child_cursor_is_always_mapped_past_the_sidebar() {
+        let layout = viewer_layout(100, 30);
+        assert_eq!(
+            mapped_cursor(
+                layout,
+                CursorState {
+                    column: 2,
+                    row: 7,
+                    visible: true,
+                },
+            ),
+            Some((30, 7))
+        );
+        // Graphics cursor save/restore is emitted after draw, so this mapped
+        // position is the one restored after image placements.
+        assert!(b"\x1b7".starts_with(b"\x1b"));
+    }
+
+    #[test]
     fn paste_wraps_only_in_bracketed_mode() {
         assert_eq!(encode_paste("hello", false), b"hello");
         assert_eq!(encode_paste("hello", true), b"\x1b[200~hello\x1b[201~");
@@ -725,8 +879,8 @@ mod tests {
                     underlined: true,
                     inverse: true,
                 },
-                foreground_rgb: Some([1, 2, 3]),
-                background_rgb: Some([4, 5, 6]),
+                foreground: Some(TerminalColor::Indexed(2)),
+                background: Some(TerminalColor::Rgb(4, 5, 6)),
             },
             TerminalCell {
                 text: "ignored".into(),
@@ -738,7 +892,7 @@ mod tests {
         render_cells(&core, Rect::new(0, 0, 2, 1), &mut buffer);
         let first = buffer.cell((0, 0)).unwrap();
         assert_eq!(first.symbol(), "界");
-        assert_eq!(first.fg, Color::Rgb(1, 2, 3));
+        assert_eq!(first.fg, Color::Indexed(2));
         assert_eq!(first.bg, Color::Rgb(4, 5, 6));
         assert!(first.modifier.contains(
             Modifier::BOLD | Modifier::ITALIC | Modifier::UNDERLINED | Modifier::REVERSED

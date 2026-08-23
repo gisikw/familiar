@@ -1,6 +1,6 @@
 use familiar_viewer::terminal::ghostty::GhosttyTerminal;
 use familiar_viewer::terminal::{
-    for_every_split, GridSize, MouseEncoding, MouseTracking, TerminalCore,
+    for_every_split, GridSize, MouseEncoding, MouseTracking, TerminalColor, TerminalCore,
 };
 
 const SIZE: GridSize = GridSize {
@@ -47,11 +47,18 @@ fn every_split_preserves_streaming_parser_state() {
 
             let red = core.cell(0, 1).unwrap();
             assert!(red.attributes.bold, "split at {split}");
-            assert!(red.foreground_rgb.is_some(), "split at {split}");
-            assert_eq!(core.cell(1, 1).unwrap().foreground_rgb, Some([255, 0, 0]));
+            assert_eq!(
+                red.foreground,
+                Some(TerminalColor::Indexed(1)),
+                "split at {split}"
+            );
+            assert_eq!(
+                core.cell(1, 1).unwrap().foreground,
+                Some(TerminalColor::Indexed(196))
+            );
             let truecolor = core.cell(2, 1).unwrap();
-            assert_eq!(truecolor.foreground_rgb, Some([1, 2, 3]));
-            assert_eq!(truecolor.background_rgb, Some([4, 5, 6]));
+            assert_eq!(truecolor.foreground, Some(TerminalColor::Rgb(1, 2, 3)));
+            assert_eq!(truecolor.background, Some(TerminalColor::Rgb(4, 5, 6)));
 
             let modes = core.modes();
             assert_eq!(modes.mouse_tracking, MouseTracking::AnyEvent);

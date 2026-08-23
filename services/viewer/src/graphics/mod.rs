@@ -368,6 +368,14 @@ impl HostGraphics {
         self.generation = self.generation.wrapping_add(1);
     }
 
+    /// The host may discard image storage on alternate-screen clears, zooms,
+    /// or resizes. Force data upload (not merely placement replay) next frame.
+    pub fn invalidate_host_images(&mut self) {
+        self.mark_uploaded = false;
+        self.uploaded.clear();
+        self.generation = self.generation.wrapping_add(1);
+    }
+
     pub fn clear_child_state(&mut self) -> Vec<u8> {
         let mut out = Vec::new();
         for id in self.ids.values() {
@@ -600,6 +608,28 @@ mod tests {
         h.ids.insert(10, a + 1);
         let bytes = h.clear_child_state();
         assert!(String::from_utf8_lossy(&bytes).contains(&format!("i={a}")));
+    }
+
+    #[test]
+    fn mark_data_is_retransmitted_after_switch_and_resize_invalidation() {
+        let mut h = HostGraphics::new(GraphicsMode::Kitty);
+        h.mark_png = Some(vec![1, 2, 3]);
+        let main = Rect::new(28, 0, 72, 30);
+        let mark = Rect::new(0, 0, 28, 12);
+        let first = String::from_utf8_lossy(&h.emit(main, mark, true)).into_owned();
+        assert!(first.contains(&format!("a=t,t=d,f=100,i={MARK_IMAGE_ID}")));
+        assert!(first.contains(&format!("a=p,i={MARK_IMAGE_ID}")));
+
+        h.clear_child_state();
+        h.invalidate_host_images();
+        let switched = String::from_utf8_lossy(&h.emit(main, mark, true)).into_owned();
+        assert!(switched.contains(&format!("a=t,t=d,f=100,i={MARK_IMAGE_ID}")));
+        assert!(switched.contains(&format!("a=p,i={MARK_IMAGE_ID}")));
+
+        h.invalidate_host_images();
+        let resized = String::from_utf8_lossy(&h.emit(main, mark, true)).into_owned();
+        assert!(resized.contains(&format!("a=t,t=d,f=100,i={MARK_IMAGE_ID}")));
+        assert!(resized.contains(&format!("a=p,i={MARK_IMAGE_ID}")));
     }
 
     #[test]

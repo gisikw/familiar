@@ -21,12 +21,12 @@ pub const POLL_INTERVAL: Duration = Duration::from_secs(10);
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_JOBS: usize = 10;
 
-// Kept together to mirror services/presence/sidebar.sh. Gateway theme-role
-// parity should replace these literal colors in a future theme integration.
-const RUNNING: Color = Color::Rgb(70, 200, 120);
-const DONE: Color = Color::Rgb(90, 212, 230);
-const FAILED: Color = Color::Rgb(235, 90, 90);
-const UNKNOWN: Color = Color::Rgb(230, 190, 70);
+// Theme roles use ANSI palette slots so the host terminal, rather than a
+// stock RGB approximation, controls their saturation and contrast.
+const RUNNING: Color = Color::Indexed(2);
+const DONE: Color = Color::Indexed(6);
+const FAILED: Color = Color::Indexed(1);
+const UNKNOWN: Color = Color::Indexed(3);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Job {

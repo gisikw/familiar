@@ -33,12 +33,19 @@ pub struct CellAttributes {
 
 /// A renderer-oriented cell view. An FFI adapter may copy only requested cells
 /// across the boundary after `feed` reports damage.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TerminalColor {
+    Indexed(u8),
+    Rgb(u8, u8, u8),
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TerminalCell {
     pub text: String,
     pub attributes: CellAttributes,
-    pub foreground_rgb: Option<[u8; 3]>,
-    pub background_rgb: Option<[u8; 3]>,
+    /// None means the host terminal's default color, not Ghostty's built-in theme.
+    pub foreground: Option<TerminalColor>,
+    pub background: Option<TerminalColor>,
     pub width: u8,
 }
 

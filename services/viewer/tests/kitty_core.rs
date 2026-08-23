@@ -49,6 +49,37 @@ fn chunked_transmission_is_completed_before_placement() {
 }
 
 #[test]
+fn kitty_capability_query_is_answered_across_every_split() {
+    let query = b"\x1b_Ga=q,f=24,s=1,v=1,i=77;AAAA\x1b\\";
+    for_every_split(
+        query,
+        || GhosttyTerminal::new(SIZE).unwrap(),
+        |_, _, updates| {
+            let replies = updates
+                .iter()
+                .flat_map(|update| &update.replies)
+                .collect::<Vec<_>>();
+            assert_eq!(replies, [b"\x1b_Gi=77;OK\x1b\\"]);
+        },
+    );
+}
+
+#[test]
+fn tmux_wrapped_kitty_query_is_answered() {
+    let mut wrapped = b"\x1bPtmux;".to_vec();
+    for byte in b"\x1b_Ga=q,f=24,s=1,v=1,i=78;AAAA\x1b\\" {
+        if *byte == 0x1b {
+            wrapped.push(0x1b);
+        }
+        wrapped.push(*byte);
+    }
+    wrapped.extend_from_slice(b"\x1b\\");
+    let mut terminal = GhosttyTerminal::new(SIZE).unwrap();
+    let update = terminal.feed(&wrapped).unwrap();
+    assert_eq!(update.replies, [b"\x1b_Gi=78;OK\x1b\\"]);
+}
+
+#[test]
 fn tmux_dcs_wrapped_kitty_image_is_extracted() {
     let mut wrapped = b"\x1bPtmux;".to_vec();
     for byte in RAW {
