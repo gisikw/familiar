@@ -51,7 +51,12 @@ agent_records() {
 
 session_alive() {
   local id=$1 safe session dead
-  [ -S "$AGENTS_SOCKET" ] || return 0 # formatting fixtures have no worker server
+  if [ ! -S "$AGENTS_SOCKET" ]; then
+    # Formatting fixtures have no worker server; in production a missing
+    # socket means no worker sessions exist, so the job is dead.
+    [ -n "${FAMILIAR_AGENTS_JOBS_FIXTURE:-}" ] && return 0
+    return 1
+  fi
   safe=$(printf '%s' "$id" | sed 's/[^A-Za-z0-9_-]/-/g')
   session="worker-$safe"
   tmux -S "$AGENTS_SOCKET" has-session -t "$session" 2>/dev/null || return 1
@@ -150,6 +155,7 @@ fi
 
 cleanup() {
   printf '\033[?1000l\033[?1006l\033[?25h'
+  stty echo 2>/dev/null || true
   [ -z "$TMP" ] || rm -rf -- "$TMP"
 }
 trap cleanup EXIT
@@ -157,6 +163,10 @@ trap 'exit 0' INT TERM
 # Button-event + SGR-coordinate reporting. tmux routes these reports only to
 # this opted-in pane; the main nested client keeps its own mouse semantics.
 printf '\033[?25l\033[?1000h\033[?1006h'
+# read -s only silences bytes consumed by read itself. Anything arriving while
+# a click handler or render is busy would be tty-echoed into the pane (the
+# leaked "^[[<0;14;5m" release events). Silence the tty for our lifetime.
+stty -echo 2>/dev/null || true
 
 prepare_mark() {
   command -v base64 >/dev/null 2>&1 || return 1
