@@ -54,11 +54,13 @@ Viewer has exactly two panes. Pane 0 is resized to 28 columns at creation and by
 `sidebar.sh` under a resident supervisor, with a `pane-died` respawn hook. The
 script rasterizes `assets/familiar-mark.svg` with `rsvg-convert`, colors it with
 the Familiar accent, and transmits the PNG with chunked kitty graphics APC
-sequences. It redraws on `WINCH` and periodically for late clients. Missing
-assets, `rsvg-convert`, or `base64` degrade to a styled `familiar` label.
-Below the caption, a compact registry tree groups the ten most relevant agent
-jobs by workspace, prioritizes active work, and refreshes from the local agent
-service every ten seconds; an unavailable or empty registry leaves the area clean.
+sequences. Missing assets, `rsvg-convert`, or `base64` degrade to a styled
+`familiar` label. Below the caption, a compact registry tree groups the ten
+most relevant agent jobs by workspace, prioritizes active work, and checks the
+local agent service every ten seconds; an unavailable or empty registry leaves
+the area clean. A canonical frame diff makes an unchanged check emit no terminal
+bytes. Changed tree rows use cursor addressing plus erase-to-end-of-line, and
+each paint is enclosed in synchronized-output brackets.
 
 Pane 1 runs the equivalent of:
 
@@ -73,14 +75,19 @@ client attach, while pane 0 has input disabled. Presence retains its `C-b`
 prefix and ordinary behavior.
 
 The sidebar uses the kitty protocol's Unicode-placeholder mode, which restty
-renders. A passthrough-wrapped APC deletes image id 1 and retransmits the PNG as
-a 16-by-8 **virtual** placement (`U=1`); it never creates a cursor-positioned
-placement. The script then writes U+10EEEE cells with explicit canonical
-row/column diacritics and truecolor foreground `0x000001` through the normal
-terminal grid. tmux therefore positions, stores, clears, and replays the visible
-mark with the sidebar pane instead of relying on the outer terminal cursor.
-Periodic retransmission supplies image data to late-attaching clients while the
-replayed placeholder cells supply its location.
+and Ghostty render. A passthrough-wrapped APC transmits image id 1 as a 16-by-8
+**virtual** placement (`U=1`); it never creates a cursor-positioned placement.
+The script then writes U+10EEEE cells with explicit canonical row/column
+diacritics and truecolor foreground `0x000001` through the normal terminal grid.
+tmux therefore positions, stores, clears, and replays the visible mark with the
+sidebar pane instead of relying on the outer terminal cursor.
+
+Because tmux replays grid cells but not passthrough APC data, the sidebar polls
+`tmux list-clients` every two seconds. A sorted fingerprint including client
+identity, tty, creation time, and session detects count changes and same-count
+reattaches. Each new nonempty attach epoch retransmits under the same image id
+without first deleting it; placeholder cells remain untouched, avoiding a
+blink. `WINCH` also performs this check.
 
 Raw kitty APCs are parsed and discarded by tmux, so image-data commands remain
 inside tmux DCS passthrough envelopes (with ESC doubling). `allow-passthrough
@@ -97,7 +104,17 @@ but future pi-frame work must use distinct stable image ids and verify its
 additional nesting depth.
 
 Extended keys and `extkeys` terminal features are enabled for common direct and
-nested client TERM families.
+nested client TERM families, including explicit `ghostty*` and `xterm-ghostty`
+entries.
+
+A direct Ghostty attach is supported. An additional user-owned tmux between the
+Familiar Viewer and Ghostty is not transparent by default: Familiar's tmux
+consumes its own DCS envelope and sends a raw kitty APC onward, which that outer
+tmux will discard. There is no reliable in-band success probe from the sidebar,
+so it cannot automatically substitute text in this case. Configure the user's
+tmux with `set -g allow-passthrough all` (and use a tmux version that forwards
+kitty graphics), or attach outside that extra tmux. The text fallback only
+covers failures detectable in the Familiar sidebar process.
 
 ## Tests
 
