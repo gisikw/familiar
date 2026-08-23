@@ -6,6 +6,7 @@ import {
   etagRequiresFetch,
   isCatalog,
   normalizeBaseUrl,
+  withoutMaxOutputTokens,
   type ProviderGroup,
   type TiamatCatalogRecord,
 } from "./catalog.ts";
@@ -100,11 +101,16 @@ export default async function tiamat(pi: ExtensionAPI) {
           try {
             const fresh = await fetchCatalog(signal);
             reportSuccess();
-            // Reconcile all provider permutations after this refresh callback returns.
-            queueMicrotask(() => reconcile(fresh));
+            // A refresh callback must only refresh its own model list. Mutating the
+            // registry here makes registerProvider trigger another refresh, creating
+            // an unbounded refresh/re-register loop; it can also outlive the session
+            // and use a stale extension context. ETag polling owns provider topology.
             return catalogToProviderGroups(fresh.catalog, baseUrl)
               .find((candidate) => candidate.id === group.id)?.models ?? [];
           } catch (error) {
+            // Pi cancels startup refreshes during short-lived print sessions.
+            // Preserve the registered snapshot without logging a false outage.
+            if (signal.aborted) return group.models;
             reportFailure(error);
             throw error;
           }
@@ -159,6 +165,15 @@ export default async function tiamat(pi: ExtensionAPI) {
       pollInFlight = false;
     }
   };
+
+  // The router's Codex-backed Responses adapter requires Codex request
+  // semantics but advertises the standard /v1/responses wire path. Pi's
+  // standard Responses client always adds max_output_tokens, which this
+  // adapter rejects. The payload hook has no model field, so scope via ctx.
+  pi.on("before_provider_request", (event, ctx) => {
+    if (!ctx.model?.provider.startsWith("tiamat-responses-")) return;
+    return withoutMaxOutputTokens(event.payload);
+  });
 
   pi.on("session_start", async (_event, ctx) => { context = ctx; schedule(); });
   pi.on("session_shutdown", async () => {

@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { catalogToProviderGroups, etagRequiresFetch, type TiamatCatalogRecord } from "./catalog.ts";
+import {
+  catalogToProviderGroups,
+  etagRequiresFetch,
+  withoutMaxOutputTokens,
+  type TiamatCatalogRecord,
+} from "./catalog.ts";
 
 const records: TiamatCatalogRecord[] = [
   { model: "claude-sonnet", api: "/anthropic/v1/messages", provider: "personal", fidelity: "native", availability: "available" },
@@ -41,6 +46,19 @@ describe("Tiamat catalog mapping", () => {
     expect(groups.flatMap((group) => group.models).some((model) => model.id === "gone")).toBe(false);
     expect(groups.find((group) => group.id === "tiamat-anthropic-work")?.models[0].name)
       .toBe("claude-sonnet via work (degraded)");
+  });
+});
+
+describe("Responses compatibility", () => {
+  test("removes max_output_tokens without mutating the request payload", () => {
+    const payload = { model: "gpt-next", max_output_tokens: 16_384, stream: true };
+    expect(withoutMaxOutputTokens(payload)).toEqual({ model: "gpt-next", stream: true });
+    expect(payload.max_output_tokens).toBe(16_384);
+  });
+
+  test("leaves unrelated payloads untouched", () => {
+    const payload = { model: "gpt-next", stream: true };
+    expect(withoutMaxOutputTokens(payload)).toBe(payload);
   });
 });
 

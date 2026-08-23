@@ -103,3 +103,10 @@ export function etagRequiresFetch(status: number, previousEtag: string | undefin
   if (status !== 200) return false;
   return !nextEtag || !previousEtag || nextEtag !== previousEtag;
 }
+
+/** Tiamat's Codex-backed Responses route rejects this standard Responses field. */
+export function withoutMaxOutputTokens(payload: unknown): unknown {
+  if (!payload || typeof payload !== "object" || !("max_output_tokens" in payload)) return payload;
+  const { max_output_tokens: _unsupported, ...rest } = payload as Record<string, unknown>;
+  return rest;
+}
