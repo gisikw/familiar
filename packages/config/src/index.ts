@@ -2,7 +2,7 @@ import { TOML } from "bun";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
-export const CANONICAL_TABLES = ["pi","familiar","server","agents","model","llama","stt","tts","anthropic","openai","searxng","brave","fetch","zip","theme"] as const;
+export const CANONICAL_TABLES = ["pi","familiar","server","agents","model","llama","stt","tts","anthropic","openai","tiamat","searxng","brave","fetch","zip","theme"] as const;
 export type Scalar = string | number | boolean;
 export interface FamiliarConfig {
   pi?: { telemetry?: number; offline?: number; skip_version_check?: number; coding_agent_dir?: string };
@@ -15,6 +15,7 @@ export interface FamiliarConfig {
   tts?: { url?: string; voice?: string; model_file?: string; model_url?: string };
   anthropic?: { base_url?: string; api_key?: string; auth_token?: string };
   openai?: { base_url?: string; api_key?: string };
+  tiamat?: { url?: string; token_file?: string; poll_seconds?: number };
   searxng?: { url?: string };
   brave?: { api_key?: string; url?: string };
   fetch?: { allow_private?: boolean };
@@ -31,7 +32,7 @@ export const DEFAULT_CONFIG: FamiliarConfig = {
 };
 
 const schema: Record<string, Record<string, "string"|"number"|"boolean"|"table">> = {
-  pi:{telemetry:"number",offline:"number",skip_version_check:"number",coding_agent_dir:"string"}, familiar:{identity_path:"string",age_key:"string",handoff_path:"string",handoff_prompt_path:"string",worklist_dir:"string",inbox_dir:"string",log_path:"string",model_dir:"string",default_provider:"string",default_model:"string",artifact_dir:"string",subscriber_port:"number",tz:"string",debug_level:"string"}, server:{config:"string",listen:"string"}, agents:{endpoint:"string",host:"string"}, model:{file:"string",url:"string"}, llama:{base_url:"string"}, stt:{url:"string",model_file:"string",model_url:"string"}, tts:{url:"string",voice:"string",model_file:"string",model_url:"string"}, anthropic:{base_url:"string",api_key:"string",auth_token:"string"}, openai:{base_url:"string",api_key:"string"}, searxng:{url:"string"}, brave:{api_key:"string",url:"string"}, fetch:{allow_private:"boolean"}, zip:{model:"string"},
+  pi:{telemetry:"number",offline:"number",skip_version_check:"number",coding_agent_dir:"string"}, familiar:{identity_path:"string",age_key:"string",handoff_path:"string",handoff_prompt_path:"string",worklist_dir:"string",inbox_dir:"string",log_path:"string",model_dir:"string",default_provider:"string",default_model:"string",artifact_dir:"string",subscriber_port:"number",tz:"string",debug_level:"string"}, server:{config:"string",listen:"string"}, agents:{endpoint:"string",host:"string"}, model:{file:"string",url:"string"}, llama:{base_url:"string"}, stt:{url:"string",model_file:"string",model_url:"string"}, tts:{url:"string",voice:"string",model_file:"string",model_url:"string"}, anthropic:{base_url:"string",api_key:"string",auth_token:"string"}, openai:{base_url:"string",api_key:"string"}, tiamat:{url:"string",token_file:"string",poll_seconds:"number"}, searxng:{url:"string"}, brave:{api_key:"string",url:"string"}, fetch:{allow_private:"boolean"}, zip:{model:"string"},
   theme:{name:"string",background:"string",surface:"string",surface_dim:"string",overlay:"string",text:"string",muted:"string",accent:"string",success:"string",warning:"string",error:"string",border:"string",border_muted:"string",selection_bg:"string",cursor:"string",cursor_text:"string",ansi:"table"},
 };
 const ansiKeys = ["black","red","green","yellow","blue","magenta","cyan","white","bright_black","bright_red","bright_green","bright_yellow","bright_blue","bright_magenta","bright_cyan","bright_white"];

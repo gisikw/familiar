@@ -9,9 +9,9 @@ let dirs:string[]=[]; afterEach(()=>{for(const d of dirs)rmSync(d,{recursive:tru
 describe("configuration",()=>{
   test("loads TOML, defaults, nested theme, and environment overrides",async()=>{
     const d=mkdtempSync(join(tmpdir(),"familiar-config-"));dirs.push(d);const p=join(d,"familiar.toml");
-    writeFileSync(p,`[familiar]\ndebug_level="off"\n[fetch]\nallow_private=true\n[theme.ansi]\nbright_blue="#abcdef"\n`);chmodSync(p,0o600);
+    writeFileSync(p,`[familiar]\ndebug_level="off"\n[fetch]\nallow_private=true\n[tiamat]\nurl="https://router.example"\ntoken_file="/run/secrets/tiamat"\npoll_seconds=300\n[theme.ansi]\nbright_blue="#abcdef"\n`);chmodSync(p,0o600);
     const loaded=await loadConfig(p,{env:{FAMILIAR_SUBSCRIBER_PORT:"4321"}});
-    expect(loaded.config.familiar?.subscriber_port).toBe(4321);expect(loaded.config.fetch?.allow_private).toBe(true);expect(loaded.config.theme?.ansi?.bright_blue).toBe("#abcdef");expect(loaded.environment.FAMILIAR_SUBSCRIBER_PORT).toBe("4321");
+    expect(loaded.config.familiar?.subscriber_port).toBe(4321);expect(loaded.config.fetch?.allow_private).toBe(true);expect(loaded.config.theme?.ansi?.bright_blue).toBe("#abcdef");expect(loaded.environment.FAMILIAR_SUBSCRIBER_PORT).toBe("4321");expect(loaded.environment.FAMILIAR_TIAMAT_TOKEN_FILE).toBe("/run/secrets/tiamat");
   });
   test("loads the repository example with every canonical table",async()=>{
     const repo=join(dirname(fileURLToPath(import.meta.url)),"../../..");

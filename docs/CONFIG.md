@@ -68,7 +68,7 @@ same-session JSON-to-setup-token cutover.
 ## Canonical groups and migration
 
 Use tables whose names match the established environment prefix: `[pi]`,
-`[anthropic]`, `[openai]`, `[server]`, `[agents]`, `[model]`, `[llama]`,
+`[anthropic]`, `[openai]`, `[tiamat]`, `[server]`, `[agents]`, `[model]`, `[llama]`,
 `[stt]`, `[tts]`, `[searxng]`, `[brave]`, `[fetch]`, `[zip]`, and `[theme]`.
 Cross-cutting
 paths and runtime policy live under `[familiar]`; the loader deliberately does

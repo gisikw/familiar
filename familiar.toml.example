@@ -65,6 +65,14 @@ skip_version_check = 1
 # base_url = "https://api.openai.example.invalid/v1"
 # api_key = "replace-locally"
 
+# Tiamat inference gateway. Keep the bearer token in a mode-0600 file; Familiar
+# exports only its path, never the token value. Set poll_seconds = 0 to disable
+# background HEAD/ETag polling (pi-initiated model refresh remains available).
+[tiamat]
+# url = "https://tiamat-router.gisi.network"
+# token_file = "/run/secrets/tiamat-router-token"
+# poll_seconds = 300
+
 [searxng]
 # url = "https://search.example.invalid"
 [brave]
