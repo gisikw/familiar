@@ -216,7 +216,6 @@ unsafe extern "C" {
     pub fn ghostty_grid_ref_style(grid_ref: *const GridRef, out: *mut Style) -> ResultCode;
     pub fn ghostty_grid_ref_cell(grid_ref: *const GridRef, out: *mut u64) -> ResultCode;
     pub fn ghostty_cell_get(cell: u64, data: c_int, out: *mut c_void) -> ResultCode;
-    pub fn ghostty_color_palette_default(out: *mut ColorRgb);
     pub fn ghostty_sys_set(option: c_int, value: *const c_void) -> ResultCode;
     pub fn ghostty_alloc(allocator: *const c_void, len: usize) -> *mut u8;
     pub fn ghostty_kitty_graphics_get(

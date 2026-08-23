@@ -3,7 +3,7 @@
 use super::ffi;
 use super::{
     CellAttributes, CursorState, DirtyRegion, GridSize, MouseEncoding, MouseTracking, TerminalCell,
-    TerminalCore, TerminalModes, TerminalUpdate,
+    TerminalColor, TerminalCore, TerminalModes, TerminalUpdate,
 };
 use crate::graphics::{KittyAction, KittyGraphicsEvent};
 use std::ffi::c_void;
@@ -154,7 +154,6 @@ pub struct GhosttyTerminal {
     raw: ffi::Terminal,
     size: GridSize,
     callbacks: Box<CallbackState>,
-    palette: [ffi::ColorRgb; 256],
 }
 
 impl GhosttyTerminal {
@@ -180,13 +179,10 @@ impl GhosttyTerminal {
             raw,
             size,
             callbacks: Box::default(),
-            palette: [ffi::ColorRgb::default(); 256],
         };
         INSTALL_PNG_DECODER.call_once(|| unsafe {
             let _ = ffi::ghostty_sys_set(1, (decode_png as *const ()).cast());
         });
-        // SAFETY: the palette has exactly the 256 entries required by the API.
-        unsafe { ffi::ghostty_color_palette_default(terminal.palette.as_mut_ptr()) };
         let userdata = (&mut *terminal.callbacks as *mut CallbackState).cast();
         // SAFETY: callback state is boxed (stable address) and outlives the C terminal.
         let setup = unsafe {
@@ -251,13 +247,17 @@ impl GhosttyTerminal {
             && enabled
     }
 
-    fn color(&self, color: ffi::StyleColor) -> Option<[u8; 3]> {
-        let rgb = match color.tag {
-            ffi::STYLE_COLOR_PALETTE => self.palette[unsafe { color.value.palette } as usize],
-            ffi::STYLE_COLOR_RGB => unsafe { color.value.rgb },
-            _ => return None,
-        };
-        Some([rgb.r, rgb.g, rgb.b])
+    fn color(&self, color: ffi::StyleColor) -> Option<TerminalColor> {
+        match color.tag {
+            ffi::STYLE_COLOR_PALETTE => {
+                Some(TerminalColor::Indexed(unsafe { color.value.palette }))
+            }
+            ffi::STYLE_COLOR_RGB => {
+                let rgb = unsafe { color.value.rgb };
+                Some(TerminalColor::Rgb(rgb.r, rgb.g, rgb.b))
+            }
+            _ => None,
+        }
     }
 
     fn graphics_snapshot(&self) -> Result<Vec<KittyGraphicsEvent>, GhosttyError> {
@@ -497,8 +497,8 @@ impl GhosttyTerminal {
                 underlined: style.underline != 0,
                 inverse: style.inverse,
             },
-            foreground_rgb: self.color(style.fg_color),
-            background_rgb: self.color(style.bg_color),
+            foreground: self.color(style.fg_color),
+            background: self.color(style.bg_color),
             width,
         })
     }
@@ -517,13 +517,14 @@ impl TerminalCore for GhosttyTerminal {
     fn feed(&mut self, bytes: &[u8]) -> Result<TerminalUpdate, Self::Error> {
         // SAFETY: bytes remains live for the synchronous parser call.
         unsafe { ffi::ghostty_terminal_vt_write(self.raw, bytes.as_ptr(), bytes.len()) };
+        let replies = mem::take(&mut self.callbacks.replies);
         Ok(TerminalUpdate {
             dirty: if bytes.is_empty() {
                 Vec::new()
             } else {
                 self.full_damage()
             },
-            replies: mem::take(&mut self.callbacks.replies),
+            replies,
             graphics: self.graphics_snapshot()?,
         })
     }
