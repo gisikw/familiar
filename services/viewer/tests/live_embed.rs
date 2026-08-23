@@ -86,6 +86,7 @@ fn embeds_tmux_and_tracks_outer_resize() {
         socket.to_str().unwrap(),
     ]);
     command.env("TERM", "xterm-256color");
+    command.env("FAMILIAR_GRAPHICS_MODE", "text");
     let mut viewer = pair.slave.spawn_command(command).unwrap();
     drop(pair.slave);
     // Crossterm asks the host terminal for its cursor position during ratatui setup.
@@ -144,6 +145,11 @@ fn embeds_tmux_and_tracks_outer_resize() {
         wait_for(&rx, &mut output, b"tmux session ended"),
         "child-death notice was not rendered: {:?}",
         String::from_utf8_lossy(&output)
+    );
+
+    assert!(
+        !output.windows(3).any(|window| window == b"\x1b_G"),
+        "text mode leaked Kitty APC bytes"
     );
 
     let _ = viewer.kill();

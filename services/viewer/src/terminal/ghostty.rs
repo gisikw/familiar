@@ -5,11 +5,74 @@ use super::{
     CellAttributes, CursorState, DirtyRegion, GridSize, MouseEncoding, MouseTracking, TerminalCell,
     TerminalCore, TerminalModes, TerminalUpdate,
 };
+use crate::graphics::{KittyAction, KittyGraphicsEvent};
 use std::ffi::c_void;
 use std::fmt;
 use std::mem;
 use std::ptr;
 use std::slice;
+use std::sync::Once;
+
+static INSTALL_PNG_DECODER: Once = Once::new();
+const KITTY_STORAGE_LIMIT: u64 = 64 * 1024 * 1024;
+const APC_LIMIT: usize = 16 * 1024 * 1024;
+
+unsafe extern "C" fn decode_png(
+    _userdata: *mut c_void,
+    allocator: *const c_void,
+    data: *const u8,
+    data_len: usize,
+    out: *mut ffi::SysImage,
+) -> bool {
+    if data.is_null() || out.is_null() {
+        return false;
+    }
+    let bytes = unsafe { slice::from_raw_parts(data, data_len) };
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let Ok(mut reader) = decoder.read_info() else {
+        return false;
+    };
+    let mut buffer = vec![0; reader.output_buffer_size()];
+    let Ok(info) = reader.next_frame(&mut buffer) else {
+        return false;
+    };
+    let frame = &buffer[..info.buffer_size()];
+    let mut rgba = Vec::with_capacity(info.width as usize * info.height as usize * 4);
+    match info.color_type {
+        png::ColorType::Rgba => rgba.extend_from_slice(frame),
+        png::ColorType::Rgb => {
+            for p in frame.chunks_exact(3) {
+                rgba.extend_from_slice(&[p[0], p[1], p[2], 255]);
+            }
+        }
+        png::ColorType::Grayscale => {
+            for p in frame {
+                rgba.extend_from_slice(&[*p, *p, *p, 255]);
+            }
+        }
+        png::ColorType::GrayscaleAlpha => {
+            for p in frame.chunks_exact(2) {
+                rgba.extend_from_slice(&[p[0], p[0], p[0], p[1]]);
+            }
+        }
+        png::ColorType::Indexed => return false,
+    }
+    let ptr = unsafe { ffi::ghostty_alloc(allocator, rgba.len()) };
+    if ptr.is_null() {
+        return false;
+    }
+    unsafe {
+        ptr::copy_nonoverlapping(rgba.as_ptr(), ptr, rgba.len());
+        out.write(ffi::SysImage {
+            width: info.width,
+            height: info.height,
+            data: ptr,
+            data_len: rgba.len(),
+        });
+    }
+    true
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GhosttyError(ffi::ResultCode);
@@ -119,6 +182,9 @@ impl GhosttyTerminal {
             callbacks: Box::default(),
             palette: [ffi::ColorRgb::default(); 256],
         };
+        INSTALL_PNG_DECODER.call_once(|| unsafe {
+            let _ = ffi::ghostty_sys_set(1, (decode_png as *const ()).cast());
+        });
         // SAFETY: the palette has exactly the 256 entries required by the API.
         unsafe { ffi::ghostty_color_palette_default(terminal.palette.as_mut_ptr()) };
         let userdata = (&mut *terminal.callbacks as *mut CallbackState).cast();
@@ -137,6 +203,27 @@ impl GhosttyTerminal {
                         raw,
                         ffi::OPT_DEVICE_ATTRIBUTES,
                         (device_attributes as *const ()).cast(),
+                    ))
+                })
+                .and_then(|()| {
+                    checked(ffi::ghostty_terminal_set(
+                        raw,
+                        ffi::OPT_KITTY_IMAGE_STORAGE_LIMIT,
+                        (&KITTY_STORAGE_LIMIT as *const u64).cast(),
+                    ))
+                })
+                .and_then(|()| {
+                    checked(ffi::ghostty_terminal_set(
+                        raw,
+                        ffi::OPT_APC_MAX_BYTES,
+                        (&APC_LIMIT as *const usize).cast(),
+                    ))
+                })
+                .and_then(|()| {
+                    checked(ffi::ghostty_terminal_set(
+                        raw,
+                        ffi::OPT_APC_MAX_BYTES_KITTY,
+                        (&APC_LIMIT as *const usize).cast(),
                     ))
                 })
         };
@@ -171,6 +258,171 @@ impl GhosttyTerminal {
             _ => return None,
         };
         Some([rgb.r, rgb.g, rgb.b])
+    }
+
+    fn graphics_snapshot(&self) -> Result<Vec<KittyGraphicsEvent>, GhosttyError> {
+        let mut events = vec![KittyGraphicsEvent {
+            action: KittyAction::Snapshot,
+            image_id: None,
+            placement_id: None,
+            columns: None,
+            rows: None,
+            payload: Vec::new(),
+            image_width: 0,
+            image_height: 0,
+            format: 0,
+            column: 0,
+            row: 0,
+            source_x: 0,
+            source_y: 0,
+            source_width: 0,
+            source_height: 0,
+            z: 0,
+        }];
+        let mut graphics: ffi::KittyGraphics = ptr::null_mut();
+        checked(unsafe {
+            ffi::ghostty_terminal_get(
+                self.raw,
+                ffi::DATA_KITTY_GRAPHICS,
+                (&mut graphics as *mut ffi::KittyGraphics).cast(),
+            )
+        })?;
+        if graphics.is_null() {
+            return Ok(events);
+        }
+        let mut iterator: ffi::KittyPlacementIterator = ptr::null_mut();
+        checked(unsafe {
+            ffi::ghostty_kitty_graphics_placement_iterator_new(ptr::null(), &mut iterator)
+        })?;
+        let result = checked(unsafe {
+            ffi::ghostty_kitty_graphics_get(
+                graphics,
+                ffi::KITTY_GRAPHICS_PLACEMENT_ITERATOR,
+                (&mut iterator as *mut ffi::KittyPlacementIterator).cast(),
+            )
+        });
+        if let Err(error) = result {
+            unsafe { ffi::ghostty_kitty_graphics_placement_iterator_free(iterator) };
+            return Err(error);
+        }
+        while unsafe { ffi::ghostty_kitty_graphics_placement_next(iterator) } {
+            let mut image_id = 0_u32;
+            let mut placement_id = 0_u32;
+            let mut virtual_placement = false;
+            let mut z = 0_i32;
+            checked(unsafe {
+                ffi::ghostty_kitty_graphics_placement_get(
+                    iterator,
+                    ffi::KITTY_PLACEMENT_IMAGE_ID,
+                    (&mut image_id as *mut u32).cast(),
+                )
+            })?;
+            checked(unsafe {
+                ffi::ghostty_kitty_graphics_placement_get(
+                    iterator,
+                    ffi::KITTY_PLACEMENT_ID,
+                    (&mut placement_id as *mut u32).cast(),
+                )
+            })?;
+            checked(unsafe {
+                ffi::ghostty_kitty_graphics_placement_get(
+                    iterator,
+                    ffi::KITTY_PLACEMENT_VIRTUAL,
+                    (&mut virtual_placement as *mut bool).cast(),
+                )
+            })?;
+            checked(unsafe {
+                ffi::ghostty_kitty_graphics_placement_get(
+                    iterator,
+                    ffi::KITTY_PLACEMENT_Z,
+                    (&mut z as *mut i32).cast(),
+                )
+            })?;
+            if virtual_placement {
+                continue;
+            }
+            let image = unsafe { ffi::ghostty_kitty_graphics_image(graphics, image_id) };
+            if image.is_null() {
+                continue;
+            }
+            let mut width = 0_u32;
+            let mut height = 0_u32;
+            let mut format = 0_i32;
+            let mut data_ptr: *const u8 = ptr::null();
+            let mut data_len = 0_usize;
+            checked(unsafe {
+                ffi::ghostty_kitty_graphics_image_get(
+                    image,
+                    ffi::KITTY_IMAGE_WIDTH,
+                    (&mut width as *mut u32).cast(),
+                )
+            })?;
+            checked(unsafe {
+                ffi::ghostty_kitty_graphics_image_get(
+                    image,
+                    ffi::KITTY_IMAGE_HEIGHT,
+                    (&mut height as *mut u32).cast(),
+                )
+            })?;
+            checked(unsafe {
+                ffi::ghostty_kitty_graphics_image_get(
+                    image,
+                    ffi::KITTY_IMAGE_FORMAT,
+                    (&mut format as *mut i32).cast(),
+                )
+            })?;
+            checked(unsafe {
+                ffi::ghostty_kitty_graphics_image_get(
+                    image,
+                    ffi::KITTY_IMAGE_DATA_PTR,
+                    (&mut data_ptr as *mut *const u8).cast(),
+                )
+            })?;
+            checked(unsafe {
+                ffi::ghostty_kitty_graphics_image_get(
+                    image,
+                    ffi::KITTY_IMAGE_DATA_LEN,
+                    (&mut data_len as *mut usize).cast(),
+                )
+            })?;
+            let mut info = ffi::KittyRenderInfo {
+                size: mem::size_of::<ffi::KittyRenderInfo>(),
+                ..Default::default()
+            };
+            checked(unsafe {
+                ffi::ghostty_kitty_graphics_placement_render_info(
+                    iterator, image, self.raw, &mut info,
+                )
+            })?;
+            if !info.viewport_visible {
+                continue;
+            }
+            let payload = if data_len == 0 {
+                Vec::new()
+            } else {
+                unsafe { slice::from_raw_parts(data_ptr, data_len) }.to_vec()
+            };
+            events.push(KittyGraphicsEvent {
+                action: KittyAction::TransmitAndDisplay,
+                image_id: Some(image_id),
+                placement_id: Some(placement_id),
+                columns: u16::try_from(info.grid_cols).ok(),
+                rows: u16::try_from(info.grid_rows).ok(),
+                payload,
+                image_width: width,
+                image_height: height,
+                format: format as u8,
+                column: info.viewport_col,
+                row: info.viewport_row,
+                source_x: info.source_x,
+                source_y: info.source_y,
+                source_width: info.source_width,
+                source_height: info.source_height,
+                z,
+            });
+        }
+        unsafe { ffi::ghostty_kitty_graphics_placement_iterator_free(iterator) };
+        Ok(events)
     }
 
     fn get_cell(&self, column: u16, row: u16) -> Result<TerminalCell, GhosttyError> {
@@ -272,7 +524,7 @@ impl TerminalCore for GhosttyTerminal {
                 self.full_damage()
             },
             replies: mem::take(&mut self.callbacks.replies),
-            graphics: Vec::new(),
+            graphics: self.graphics_snapshot()?,
         })
     }
 
@@ -285,7 +537,7 @@ impl TerminalCore for GhosttyTerminal {
         Ok(TerminalUpdate {
             dirty: self.full_damage(),
             replies: mem::take(&mut self.callbacks.replies),
-            graphics: Vec::new(),
+            graphics: self.graphics_snapshot()?,
         })
     }
 
