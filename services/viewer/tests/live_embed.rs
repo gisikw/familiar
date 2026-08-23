@@ -245,16 +245,33 @@ fn embeds_tmux_and_tracks_outer_resize() {
         "inner tmux client did not follow the 90x26 outer resize"
     );
 
-    let _ = Command::new("tmux")
-        .args(["-S", agents_socket.to_str().unwrap(), "kill-server"])
-        .status();
-    let _ = Command::new("tmux")
-        .args(["-S", socket.to_str().unwrap(), "kill-server"])
-        .status();
+    assert!(Command::new("tmux")
+        .args([
+            "-S",
+            socket.to_str().unwrap(),
+            "detach-client",
+            "-s",
+            "presence"
+        ])
+        .status()
+        .unwrap()
+        .success());
+    // An explicit inner detach makes tmux attach return 0, so the viewer's
+    // clean-child policy exits rather than rendering the death notice.
+    let exit_deadline = Instant::now() + Duration::from_secs(8);
+    let status = loop {
+        if let Some(status) = viewer.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            Instant::now() < exit_deadline,
+            "viewer did not exit after clean tmux attach completion"
+        );
+        thread::sleep(Duration::from_millis(50));
+    };
     assert!(
-        wait_for(&rx, &mut output, b"tmux session ended"),
-        "child-death notice was not rendered: {:?}",
-        String::from_utf8_lossy(&output)
+        status.success(),
+        "viewer clean-child exit was not successful: {status:?}"
     );
 
     assert!(
@@ -262,8 +279,12 @@ fn embeds_tmux_and_tracks_outer_resize() {
         "text mode leaked Kitty APC bytes"
     );
 
-    let _ = viewer.kill();
-    let _ = viewer.wait();
+    let _ = Command::new("tmux")
+        .args(["-S", agents_socket.to_str().unwrap(), "kill-server"])
+        .status();
+    let _ = Command::new("tmux")
+        .args(["-S", socket.to_str().unwrap(), "kill-server"])
+        .status();
     serving.store(false, Ordering::Relaxed);
     server.join().unwrap();
     let _ = fs::remove_dir_all(directory);

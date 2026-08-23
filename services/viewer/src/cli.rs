@@ -18,6 +18,10 @@ OPTIONS:
     -h, --help
         Print help.
 
+VIEWER KEY:
+    Ctrl-\\
+        Quit the viewer. All other keys are forwarded to the embedded child.
+
 PATH AND ENV CONTRACT:
     Socket paths must be absolute whether supplied by a flag or environment.
     The viewer attaches to presence with: tmux -S SOCKET attach-session -t SESSION.
