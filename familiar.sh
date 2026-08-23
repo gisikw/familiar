@@ -38,6 +38,11 @@ export FAMILIAR_SUBSCRIBER_PORT="${FAMILIAR_SUBSCRIBER_PORT:-1692}"
 export FAMILIAR_PRESENCE_STATE_DIR="${FAMILIAR_PRESENCE_STATE_DIR:-$STATE_DIR/presence}"
 export FAMILIAR_PRESENCE_SOCKET="${FAMILIAR_PRESENCE_SOCKET:-$FAMILIAR_PRESENCE_STATE_DIR/tmux.sock}"
 export FAMILIAR_PRESENCE_CTL="${FAMILIAR_PRESENCE_CTL:-$REPO/services/presence/presence.sh}"
+# Agent workers share the stack configuration but have their own pi process and
+# settings. Give the supervisor an explicit extension entrypoint rather than
+# depending on a user's PI_CODING_AGENT_DIR discovery.
+export FAMILIAR_AGENTS_SUPERVISOR_STATE="${FAMILIAR_AGENTS_SUPERVISOR_STATE:-$STATE_DIR/agents-supervisor}"
+export FAMILIAR_AGENTS_TIAMAT_EXTENSION="${FAMILIAR_AGENTS_TIAMAT_EXTENSION:-$REPO/integrations/pi/extensions/tiamat}"
 # Session storage. Overriding this is the deliberate escape hatch for a wedged
 # session: point it at a clean-room dir to bail out without touching the main
 # continuity line. Not a first-class verb on purpose — forking continuity
