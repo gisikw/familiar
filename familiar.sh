@@ -22,6 +22,7 @@ Commands:
   worklist-add    Add an item to the durable worklist.
   inbox-enqueue   Compatibility alias for worklist-add.
   config-check    Validate familiar.toml.
+  test [--all]    Run e2e tests, or every suite with --all.
   help            Print this usage.
 EOF
 }
@@ -879,6 +880,48 @@ inbox_enqueue() {
   echo "$id"
 }
 
+run_tests() {
+  shift || true
+  if [ $# -eq 0 ]; then
+    exec nix develop "$REPO#e2e" -c "$REPO/test/e2e/run.sh"
+  fi
+  if [ "$1" != --all ] || [ $# -ne 1 ]; then
+    echo 'usage: ./familiar.sh test [--all]' >&2
+    return 2
+  fi
+
+  local failed=() name
+  run_suite() {
+    name=$1; shift
+    printf '\n========== %s ==========' "$name"
+    printf '\n'
+    if "$@"; then
+      printf '%s: PASS\n' "$name"
+    else
+      failed+=("$name")
+      printf '%s: FAIL\n' "$name"
+    fi
+  }
+
+  run_suite viewer nix shell nixpkgs#zig_0_15 -c cargo test \
+    --manifest-path "$REPO/services/viewer/Cargo.toml" --all-targets
+  run_suite gateway bash -c 'cd "$1" && exec nix shell nixpkgs#bun -c bun test' _ \
+    "$REPO/services/gateway"
+  run_suite presence bash "$REPO/services/presence/test.sh"
+  run_suite agents bash -c 'cd "$1" && exec go test ./...' _ "$REPO/agents"
+  run_suite e2e nix develop "$REPO#e2e" -c "$REPO/test/e2e/run.sh"
+
+  printf '\n========== SUMMARY ==========\n'
+  if [ "${#failed[@]}" -eq 0 ]; then
+    echo 'All suites passed: viewer gateway presence agents e2e'
+    return 0
+  fi
+  printf 'Failed suites:'
+  printf ' %s' "${failed[@]}"
+  printf '\n'
+  return 1
+}
+
 config_check() {
   if [ "$CONFIG_LOAD_FAILED" -ne 0 ]; then
     echo 'familiar: familiar.toml validation failed (contents suppressed)' >&2
@@ -889,6 +932,7 @@ config_check() {
 
 case ${1:-} in
   config-check) config_check ;;
+  test)       run_tests "$@" ;;
   pi)         run_pi "$@" ;;
   llama)      run_llama "$@" ;;
   stt)        run_stt "$@" ;;
