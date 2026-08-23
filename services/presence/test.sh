@@ -137,8 +137,8 @@ FAMILIAR_THEME_BORDER='#123456' FAMILIAR_THEME_BORDER_MUTED='#654321' runp ensur
   || fail "extended keys do not use csi-u format"
 [ "$(tmux -S "$socket" show-window-options -v -t viewer:0 pane-border-style)" = 'fg=#654321' ] \
   || fail "Viewer inactive border does not use resolved borderMuted role"
-[ "$(tmux -S "$socket" show-window-options -v -t viewer:0 pane-active-border-style)" = 'fg=#123456' ] \
-  || fail "Viewer active border does not use resolved border role"
+[ "$(tmux -S "$socket" show-window-options -v -t viewer:0 pane-active-border-style)" = 'fg=#654321' ] \
+  || fail "Viewer active border is not flattened to the muted role (focus must be invisible)"
 case $(tmux -S "$socket" show-options -gv terminal-features) in
   *tmux\*:extkeys*) ;; *) fail "nested tmux terminal lacks extkeys feature" ;; esac
 case $(tmux -S "$socket" show-options -gv terminal-features) in
