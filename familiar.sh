@@ -200,7 +200,7 @@ run_pi() {
         # Keep the live extension set explicit.
         extensions: ([
           "agents", "anthropic-gateway", "handoff", "identity",
-          "ratelimit", "subscriber", "telemetry",
+          "ratelimit", "subscriber", "telemetry", "tiamat",
           "timegap", "web", "worklist", "zip"
         ] | map($ext + "/" + .))
       }
