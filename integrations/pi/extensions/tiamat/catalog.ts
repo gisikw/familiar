@@ -8,6 +8,8 @@ export interface TiamatCatalogRecord {
   availability: TiamatAvailability;
   reason?: string;
   resetsIn?: string;
+  context_window?: number;
+  max_output_tokens?: number;
 }
 
 export interface PiModelDefinition {
@@ -51,7 +53,9 @@ export function isCatalog(value: unknown): value is TiamatCatalogRecord[] {
     const item = record as Record<string, unknown>;
     return typeof item.model === "string" && typeof item.provider === "string" &&
       typeof item.fidelity === "string" && item.api in WIRES &&
-      ["available", "degraded", "unavailable"].includes(String(item.availability));
+      ["available", "degraded", "unavailable"].includes(String(item.availability)) &&
+      (item.context_window === undefined || (Number.isInteger(item.context_window) && Number(item.context_window) > 0)) &&
+      (item.max_output_tokens === undefined || (Number.isInteger(item.max_output_tokens) && Number(item.max_output_tokens) > 0));
   });
 }
 
@@ -87,8 +91,8 @@ export function catalogToProviderGroups(catalog: TiamatCatalogRecord[], rawBaseU
       reasoning: false,
       input: ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 128_000,
-      maxTokens: 16_384,
+      contextWindow: record.context_window ?? 128_000,
+      maxTokens: record.max_output_tokens ?? 16_384,
     });
   }
   return [...groups.values()].sort((a, b) => a.id.localeCompare(b.id)).map((group) => ({
