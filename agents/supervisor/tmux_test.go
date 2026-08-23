@@ -11,6 +11,23 @@ import (
 	"time"
 )
 
+func TestGeneratedTmuxThemeIsComposed(t *testing.T) {
+	dir := t.TempDir()
+	theme := filepath.Join(dir, "theme.conf")
+	if err := os.WriteFile(theme, []byte("set-option -g mode-style 'fg=colour1,bg=colour2'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAMILIAR_TMUX_THEME_CONFIG", theme)
+	tm := Tmux{Socket: filepath.Join(dir, "tmux.sock")}
+	if err := tm.Prepare(); err != nil {
+		t.Fatal(err)
+	}
+	config, err := os.ReadFile(tm.config())
+	if err != nil || !strings.Contains(string(config), "mode-style 'fg=colour1,bg=colour2'") {
+		t.Fatalf("generated theme not composed: %q %v", config, err)
+	}
+}
+
 func TestPrivateTmuxLifecycle(t *testing.T) {
 	if _, e := exec.LookPath("tmux"); e != nil {
 		t.Skip("tmux absent")

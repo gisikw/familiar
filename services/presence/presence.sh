@@ -12,6 +12,7 @@ TARGET="$SESSION:0.0"
 AGENTS_STATE=${FAMILIAR_AGENTS_SUPERVISOR_STATE:-$REPO/state/agents-supervisor}
 AGENTS_SOCKET=${FAMILIAR_AGENTS_SOCKET:-$AGENTS_STATE/tmux.sock}
 RUNTIME_CONFIG="$STATE/tmux.conf"
+THEME_CONFIG=${FAMILIAR_TMUX_THEME_CONFIG:-$STATE/tmux-theme.conf}
 CONFIG_SOURCE=${FAMILIAR_PRESENCE_CONFIG:-$HERE/tmux.conf}
 LOCK="$STATE/ensure.lock"
 BASH_EXE=${FAMILIAR_PRESENCE_BASH:-$(command -v bash)}
@@ -33,6 +34,7 @@ check_path() {
   [ ! -L "$STATE" ] || fail "refusing symlink state directory: $STATE"
   [ ! -L "$SOCKET" ] || fail "refusing symlink socket: $SOCKET"
   [ ! -L "$RUNTIME_CONFIG" ] || fail "refusing symlink config: $RUNTIME_CONFIG"
+  [ ! -L "$THEME_CONFIG" ] || fail "refusing symlink theme config: $THEME_CONFIG"
   [ ! -L "$LOCK" ] || fail "refusing symlink lock: $LOCK"
   [ ! -e "$LOCK" ] || [ -f "$LOCK" ] || fail "lock path is not a regular file: $LOCK"
 }
@@ -86,6 +88,11 @@ start_session() {
 
 ensure_locked() {
   install -m 600 "$CONFIG_SOURCE" "$RUNTIME_CONFIG"
+  # Generate copy-mode selection and position styles from the canonical palette
+  # on every ensure, so environment overrides also update a surviving server.
+  bash "$REPO/scripts/familiar-theme.sh" tmux > "$THEME_CONFIG"
+  chmod 600 "$THEME_CONFIG"
+  cat "$THEME_CONFIG" >> "$RUNTIME_CONFIG"
   # Avoid tmux's compiled /bin/sh default (absent in pure Nix builds) while
   # retaining the explicit static policy above.
   case "$BASH_EXE" in *\"*) fail "unsupported quote in bash path" ;; esac

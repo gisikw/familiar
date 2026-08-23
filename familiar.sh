@@ -82,6 +82,14 @@ export PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR:-$STATE_DIR/pi}"
 
 MODEL_DIR="${FAMILIAR_MODEL_DIR:-$REPO/models}"
 
+prepare_tmux_theme() {
+  local theme_dir="$STATE_DIR/theme"
+  install -d -m 700 "$theme_dir"
+  export FAMILIAR_TMUX_THEME_CONFIG="$theme_dir/tmux.conf"
+  bash "$REPO/scripts/familiar-theme.sh" tmux > "$FAMILIAR_TMUX_THEME_CONFIG"
+  chmod 600 "$FAMILIAR_TMUX_THEME_CONFIG"
+}
+
 ensure_devshell() {
   local shell=$1; shift
   if [ "${FAMILIAR_SHELL:-}" != "$shell" ]; then
@@ -776,6 +784,7 @@ server() {
   # The pi shell supplies pinned model defaults and download tooling. Re-entry
   # retains familiar.toml/ambient overrides loaded above.
   ensure_devshell pi server "$@"
+  prepare_tmux_theme
   export FAMILIAR_MODEL_DIR="$MODEL_DIR"
 
   # User-facing endpoint settings describe backends. Children always consume

@@ -61,7 +61,15 @@ eval "$borders"
 [ "$border" = "#aabbcc" ] && [ "$border_muted" = "#123456" ] \
   && ok "pane border overrides propagate" || bad "pane border overrides"
 
-# 7. bad color fails clearly with exit 3 and a useful message.
+# 7. tmux copy-mode styles use semantic palette roles and honor overrides.
+tmux_style="$(FAMILIAR_THEME_ACCENT='#abc' bash "$GEN" tmux)"
+case "$tmux_style" in
+  *"mode-style 'fg=#f7f1ff,bg=#525053'"*"copy-mode-position-style 'fg=#aabbcc,bg=#222222'"*)
+    ok "tmux copy-mode roles and overrides" ;;
+  *) bad "tmux copy-mode roles (got $tmux_style)" ;;
+esac
+
+# 8. bad color fails clearly with exit 3 and a useful message.
 FAMILIAR_THEME_ACCENT='notacolor' bash "$GEN" pi >/dev/null 2>&1
 [ "$?" -eq 3 ] && ok "bad color exits 3" || bad "bad color exit code"
 msg="$({ FAMILIAR_THEME_ACCENT='notacolor' bash "$GEN" pi >/dev/null; } 2>&1)"
