@@ -86,7 +86,7 @@ test.describe.serial('real browser terminal', () => {
     expect(await pixels(after, 'diff', before), 'changed pixels in main terminal region').toBeGreaterThan(300);
   });
 
-  test('in-session Kitty image pixel regression (known issue)', async () => {
+  test('in-session Kitty image renders', async () => {
     tmuxCommand("printf '\\033[2J\\033[H'");
     await page.waitForTimeout(500);
     browserFrames = [];
@@ -117,10 +117,9 @@ test.describe.serial('real browser terminal', () => {
     const record = { pixels: result.count >= 100, magentaPixels: result.count, bytes: translated,
       icatCompleted: /ICAT-DONE:0/.test(paneText), tapBytes: tapped.length, browserBytes: browserBytes.length };
     fs.writeFileSync(path.join(artifacts, 'kitty-result.json'), JSON.stringify(record, null, 2) + '\n');
-    if (record.pixels) console.log('KITTY PASS: bug did not reproduce; magenta image rendered');
-    else console.log(`KITTY XFAIL (known issue): no magenta pixels; translated APC bytes=${translated}`);
-    // Deliberately non-fatal while documenting the live known issue. Byte and
-    // pixel assertions are represented in kitty-result.json and runner output.
-    expect(record.tapBytes + record.browserBytes).toBeGreaterThan(0);
+    console.log(`KITTY PASS: magenta image rendered (${record.magentaPixels} pixels)`);
+    expect(record.icatCompleted, 'kitten icat completed successfully').toBeTruthy();
+    expect(record.bytes, 'viewer emitted translated child image bytes').toBeTruthy();
+    expect(record.magentaPixels, 'magenta pixels in the main terminal region').toBeGreaterThanOrEqual(100);
   });
 });

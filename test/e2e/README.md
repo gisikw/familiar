@@ -23,7 +23,7 @@ using `kitten icat --transfer-mode=stream`, saves both a screenshot and raw
 WebSocket streams, and identifies viewer-translated child APCs by their raw
 `f=24`/`f=32` upload header (the sidebar mark is an `f=100` PNG).
 
-The Kitty pixel failure is currently a **non-fatal known issue**. `run.sh`
-prints `XFAIL` when pixels are absent and loudly prints `PASS (bug did not
-reproduce)` if they appear. See `artifacts/kitty-result.json` for byte-vs-pixel
-localization.
+The Kitty image is a required pixel assertion. The test fails unless `icat`
+completes, the viewer emits translated child APC bytes, and at least 100
+magenta pixels appear in the main region. See `artifacts/kitty-result.json` for
+byte-vs-pixel diagnostics.
