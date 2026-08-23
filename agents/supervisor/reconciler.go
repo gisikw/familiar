@@ -82,7 +82,11 @@ func (s *Supervisor) adapter(kind protocol.HarnessKind) (harnesses.Adapter, erro
 	return a, nil
 }
 func DefaultAdapters(piBinary string, claudeArgv, codexArgv []string) map[string]harnesses.Adapter {
-	return map[string]harnesses.Adapter{"pi": piadapter.Adapter{Binary: piBinary}, "claude": claude.Adapter{ArgvTemplate: claudeArgv}, "codex": codex.Adapter{ArgvTemplate: codexArgv}, "fake": claude.Adapter{ArgvTemplate: []string{"sh", "-c", "printf '%s\\n' fake-worker-complete; sleep 1"}}}
+	return ConfiguredAdapters(piadapter.Adapter{Binary: piBinary}, claudeArgv, codexArgv)
+}
+
+func ConfiguredAdapters(pi piadapter.Adapter, claudeArgv, codexArgv []string) map[string]harnesses.Adapter {
+	return map[string]harnesses.Adapter{"pi": pi, "claude": claude.Adapter{ArgvTemplate: claudeArgv}, "codex": codex.Adapter{ArgvTemplate: codexArgv}, "fake": claude.Adapter{ArgvTemplate: []string{"sh", "-c", "printf '%s\\n' fake-worker-complete; sleep 1"}}}
 }
 
 // Recover adopts surviving sessions. Only pi (currently the only resumable

@@ -19,7 +19,11 @@ import (
 	"familiar.dev/agents/protocol"
 )
 
-type Adapter struct{ Binary string }
+type Adapter struct {
+	Binary    string
+	Extension string
+	Env       map[string]string
+}
 
 func (a Adapter) bin() string {
 	if a.Binary != "" {
@@ -39,23 +43,42 @@ func (a Adapter) Start(_ context.Context, j protocol.Job) (harnesses.Launch, err
 	}
 	s, t := paths(j)
 	v := []string{a.bin(), "--mode", "json", "--print", "--session", s}
+	if a.Extension != "" {
+		v = append(v, "--extension", a.Extension)
+	}
 	if j.Model != "" {
 		v = append(v, "--model", j.Model)
 	}
 	v = append(v, j.Prompt)
-	return harnesses.Launch{Argv: v, Dir: j.CWD, Transcript: t, Session: s}, nil
+	return harnesses.Launch{Argv: v, Dir: j.CWD, Env: cloneEnv(a.Env), Transcript: t, Session: s}, nil
 }
 func (a Adapter) Resume(_ context.Context, j protocol.Job, l harnesses.Launch) (harnesses.Launch, error) {
 	if l.Session == "" {
 		return harnesses.Launch{}, errors.New("pi resume requires session")
 	}
 	l.Argv = []string{a.bin(), "--mode", "json", "--print", "--session", l.Session}
+	if a.Extension != "" {
+		l.Argv = append(l.Argv, "--extension", a.Extension)
+	}
+	l.Env = cloneEnv(a.Env)
 	if j.Model != "" {
 		l.Argv = append(l.Argv, "--model", j.Model)
 	}
 	l.Argv = append(l.Argv, "Continue the interrupted delegated task from the existing session.")
 	return l, nil
 }
+
+func cloneEnv(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
 func (Adapter) Prompt(ctx context.Context, r *harnesses.Runtime, p string) error {
 	if r.SendText == nil {
 		return harnesses.ErrUnsupported

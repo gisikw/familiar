@@ -6,8 +6,30 @@ import (
 	"familiar.dev/agents/protocol"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestStartProjectsTiamatExtensionAndEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	adapter := Adapter{Binary: "fake-pi", Extension: "/extensions/tiamat", Env: map[string]string{
+		"FAMILIAR_TIAMAT_URL":        "http://router",
+		"FAMILIAR_TIAMAT_TOKEN_FILE": "/run/secrets/token",
+	}}
+	j := protocol.Job{ID: "j", CWD: dir, Prompt: "p", Artifacts: protocol.ArtifactMetadata{Directory: dir}}
+	launch, err := adapter.Start(context.Background(), j)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(launch.Argv, " ")
+	if !strings.Contains(joined, "--extension /extensions/tiamat") || launch.Env["FAMILIAR_TIAMAT_TOKEN_FILE"] != "/run/secrets/token" {
+		t.Fatalf("tiamat worker configuration absent: %#v", launch)
+	}
+	launch.Env["FAMILIAR_TIAMAT_URL"] = "mutated"
+	if adapter.Env["FAMILIAR_TIAMAT_URL"] != "http://router" {
+		t.Fatal("launch mutated adapter environment")
+	}
+}
 
 func TestObserveUsesCursorAndProjectsIntermediateEvents(t *testing.T) {
 	dir := t.TempDir()

@@ -50,7 +50,15 @@ printf '%s\n' "$sidebar_plain" | grep -Fq '└─ ● abcdefgh done' \
 while IFS= read -r line; do
   [ "${#line}" -eq 26 ] || fail "sidebar registry line is not 26 columns: $line"
 done <<< "$sidebar_plain"
-ok "sidebar fixture renders grouped, sanitized, fixed-width agent tree"
+[ "$(FAMILIAR_SIDEBAR_MOUSE_SEQUENCE='[<0;7;15' bash "$HERE/sidebar.sh")" = 15 ] \
+  || fail "SGR mouse press parser did not return its row"
+[ "$(FAMILIAR_SIDEBAR_JOB_AT_ROW=15 FAMILIAR_AGENTS_JOBS_FIXTURE="$fixture" bash "$HERE/sidebar.sh")" = job-active ] \
+  || fail "first rendered job row does not map to active job"
+[ "$(FAMILIAR_SIDEBAR_JOB_AT_ROW=16 FAMILIAR_AGENTS_JOBS_FIXTURE="$fixture" bash "$HERE/sidebar.sh")" = job-blocked ] \
+  || fail "second rendered job row does not map to blocked job"
+[ "$(FAMILIAR_SIDEBAR_JOB_AT_ROW=19 FAMILIAR_AGENTS_JOBS_FIXTURE="$fixture" bash "$HERE/sidebar.sh")" = job-abcdefgh ] \
+  || fail "workspace row was not included in click mapping"
+ok "sidebar fixture renders grouped fixed-width tree with deterministic row mapping"
 
 # Kitty data may bypass tmux, but visible placement must remain normal grid
 # content. Cursor-positioned passthrough regresses to painting the active pane.
@@ -64,8 +72,9 @@ fi
 ok "sidebar anchors a virtual kitty placement in the normal tmux grid"
 
 state="$TMP/main"; socket="$state/tmux.sock"; pids="$state/pids"
+agents_state="$TMP/agents-supervisor"; agents_socket="$agents_state/tmux.sock"
 BASH_BIN=$(command -v bash)
-runp() { FAMILIAR_PRESENCE_STATE_DIR="$state" FAMILIAR_PRESENCE_SOCKET="$socket" FAMILIAR_PRESENCE_COMMAND="exec $BASH_BIN $FAKE" WORKER_PIDS="$pids" bash "$PRESENCE" "$@"; }
+runp() { FAMILIAR_PRESENCE_STATE_DIR="$state" FAMILIAR_PRESENCE_SOCKET="$socket" FAMILIAR_AGENTS_SUPERVISOR_STATE="$agents_state" FAMILIAR_PRESENCE_COMMAND="exec $BASH_BIN $FAKE" WORKER_PIDS="$pids" bash "$PRESENCE" "$@"; }
 
 # A hostile default config would create this file if inherited.
 home="$TMP/home"; mkdir -m 700 "$home"
@@ -86,7 +95,7 @@ FAMILIAR_THEME_BORDER='#123456' FAMILIAR_THEME_BORDER_MUTED='#654321' runp ensur
   || fail "idempotent viewer ensure replaced panes"
 [ "$(tmux -S "$socket" list-panes -t viewer:0 | wc -l)" -eq 2 ] || fail "viewer does not have two panes"
 [ "$(tmux -S "$socket" show-options -v -t viewer prefix)" = None ] || fail "viewer prefix enabled"
-[ "$(tmux -S "$socket" show-options -v -t viewer mouse)" = off ] || fail "viewer captures mouse"
+[ "$(tmux -S "$socket" show-options -v -t viewer mouse)" = on ] || fail "viewer does not route mouse reports"
 [ "$(tmux -S "$socket" show-options -Av -t presence prefix)" = C-b ] || fail "viewer policy changed Presence prefix"
 [ "$(tmux -S "$socket" show-window-options -v -t viewer:0 allow-passthrough)" = all ] \
   || fail "viewer passthrough is not enabled for every visibility state"
@@ -102,9 +111,9 @@ case $(tmux -S "$socket" show-options -gv terminal-features) in
   *tmux\*:extkeys*) ;; *) fail "nested tmux terminal lacks extkeys feature" ;; esac
 [ "$(tmux -S "$socket" display-message -p -t viewer:0.1 '#{pane_active}')" = 1 ] \
   || fail "viewer main pane did not receive focus after ensure"
-[ "$(tmux -S "$socket" display-message -p -t viewer:0.0 '#{pane_input_off}')" = 1 ] \
-  || fail "sidebar pane input is enabled"
-ok "viewer creation sets themed borders, passthrough, extended keys, main focus, and inert sidebar input"
+[ "$(tmux -S "$socket" display-message -p -t viewer:0.0 '#{pane_input_off}')" = 0 ] \
+  || fail "sidebar pane input is disabled"
+ok "viewer creation sets themed borders, passthrough, extended keys, main focus, and mouse-enabled sidebar input"
 
 # The client-attached hook restores main focus even if chrome was selected.
 tmux -S "$socket" select-pane -e -t viewer:0.0
@@ -115,9 +124,9 @@ set -e
 [ "$(tmux -S "$socket" display-message -p -t viewer:0.1 '#{pane_active}')" = 1 ] \
   || fail "viewer attach did not restore main-pane focus"
 runp ensure-viewer >/dev/null
-[ "$(tmux -S "$socket" display-message -p -t viewer:0.0 '#{pane_input_off}')" = 1 ] \
-  || fail "re-ensure did not disable sidebar input"
-ok "client attach restores main focus and ensure disables sidebar input"
+[ "$(tmux -S "$socket" display-message -p -t viewer:0.0 '#{pane_input_off}')" = 0 ] \
+  || fail "re-ensure disabled sidebar input"
+ok "client attach restores main focus without disabling sidebar input"
 
 # A headless window resize fires the lock hook and restores a disturbed width.
 tmux -S "$socket" resize-pane -t viewer:0.0 -x 40
@@ -139,9 +148,9 @@ for _ in $(seq 1 20); do
   sleep .05
 done
 case "$sidebar_state" in 0:*run-sidebar*) ;; *) fail "sidebar was not respawned: $sidebar_state" ;; esac
-[ "$(tmux -S "$socket" display-message -p -t viewer:0.0 '#{pane_input_off}')" = 1 ] \
-  || fail "respawn re-enabled sidebar input"
-ok "dead sidebar command is respawned with input still disabled"
+[ "$(tmux -S "$socket" display-message -p -t viewer:0.0 '#{pane_input_off}')" = 0 ] \
+  || fail "respawn disabled sidebar input"
+ok "dead sidebar command is respawned with input enabled"
 
 main_start=$(tmux -S "$socket" display-message -p -t viewer:0.1 '#{pane_start_command}')
 case "$main_start" in
@@ -149,6 +158,20 @@ case "$main_start" in
   *) fail "unexpected nested attach command: $main_start" ;;
 esac
 ok "viewer main pane clears TMUX and attaches to Presence"
+
+# The outer Viewer can retarget its main pane across private tmux sockets.
+mkdir -p "$agents_state"
+tmux -S "$agents_socket" -f /dev/null new-session -d -s worker-job-active 'while :; do echo agent-visible; sleep 1; done'
+runp show-agent job-active
+agent_start=$(tmux -S "$socket" display-message -p -t viewer:0.1 '#{pane_start_command}')
+case "$agent_start" in *"$agents_socket"*'attach-session -r -t worker-job-active'*) ;; *) fail "agent navigation did not use read-only cross-socket attach: $agent_start" ;; esac
+[ "$(tmux -S "$socket" show-option -pqv -t viewer:0.1 @familiar_target)" = agent:job-active ] || fail "active agent target missing"
+tmux -S "$agents_socket" respawn-pane -k -t worker-job-active:0.0 'exit 0'
+sleep .1
+if runp show-agent job-active >/dev/null 2>&1; then fail "dead agent session accepted"; fi
+runp show-presence
+case $(tmux -S "$socket" display-message -p -t viewer:0.1 '#{pane_start_command}') in *'attach-session -t presence'*) ;; *) fail "mark navigation did not restore Presence" ;; esac
+ok "cross-socket agent navigation is read-only, rejects dead panes, and returns to Presence"
 
 pid=$(tail -1 "$pids")
 kill -0 "$pid"

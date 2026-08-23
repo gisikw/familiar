@@ -13,6 +13,10 @@ MODE=text
 TREE_ROW=13
 TREE_ROWS=22
 TREE_WIDTH=26
+PRESENCE_CTL=${FAMILIAR_PRESENCE_CTL:-$HERE/presence.sh}
+AGENTS_STATE=${FAMILIAR_AGENTS_SUPERVISOR_STATE:-$REPO/state/agents-supervisor}
+AGENTS_SOCKET=${FAMILIAR_AGENTS_SOCKET:-$AGENTS_STATE/tmux.sock}
+ACTIVE_JOB=''
 
 fetch_agent_jobs() {
   if [ -n "${FAMILIAR_AGENTS_JOBS_FIXTURE:-}" ]; then
@@ -24,12 +28,10 @@ fetch_agent_jobs() {
   curl -sf --max-time 2 "${endpoint%/}/v1/jobs"
 }
 
-# Emit fixed-width display lines. Keeping data selection in jq makes malformed
-# or unreachable registry responses indistinguishable from an empty registry.
-format_agent_tree() {
-  local records workspace label state next connector color available padding text
-  local -a jobs=()
-  records=$(jq -r '
+# Produce the one canonical ordered record stream used by both rendering and
+# click hit-testing. Malformed registries simply produce no records.
+agent_records() {
+  jq -r '
     def terminal: . == "done" or . == "error" or . == "failed" or
       . == "cancelled" or . == "timeout";
     def clean: tostring | gsub("[[:space:]]+"; " ") | gsub("^ +| +$"; "");
@@ -41,10 +43,27 @@ format_agent_tree() {
     if type != "array" then empty else
       ([.[] | select((.state | terminal) | not)] | sort_by(.updated_at // "") | reverse) +
       ([.[] | select(.state | terminal)] | sort_by(.updated_at // "") | reverse) |
-      .[0:10] | map({workspace: workspace, label: joblabel, state: (.state // "unknown")}) |
-      group_by(.workspace)[] | .[] | [.workspace, .label, .state] | @tsv
+      .[0:10] | map({id: (.id // ""), workspace: workspace, label: joblabel, state: (.state // "unknown")}) |
+      group_by(.workspace)[] | .[] | [.workspace, .label, .state, .id] | @tsv
     end
-  ' 2>/dev/null) || return 0
+  ' 2>/dev/null || true
+}
+
+session_alive() {
+  local id=$1 safe session dead
+  [ -S "$AGENTS_SOCKET" ] || return 0 # formatting fixtures have no worker server
+  safe=$(printf '%s' "$id" | sed 's/[^A-Za-z0-9_-]/-/g')
+  session="worker-$safe"
+  tmux -S "$AGENTS_SOCKET" has-session -t "$session" 2>/dev/null || return 1
+  dead=$(tmux -S "$AGENTS_SOCKET" display-message -p -t "$session:0.0" '#{pane_dead}' 2>/dev/null) || return 1
+  [ "$dead" = 0 ]
+}
+
+# Emit fixed-width display lines.
+format_agent_tree() {
+  local records workspace label state id next connector color available padding text marker
+  local -a jobs=()
+  records=$(agent_records) || return 0
   [ -n "$records" ] || return 0
 
   padding=$(printf '%*s' $((TREE_WIDTH - 6)) '')
@@ -52,7 +71,8 @@ format_agent_tree() {
   mapfile -t jobs <<< "$records"
   local i count=${#jobs[@]}
   for ((i=0; i<count; i++)); do
-    IFS=$'\t' read -r workspace label state <<< "${jobs[i]}"
+    IFS=$'\t' read -r workspace label state id <<< "${jobs[i]}"
+    if ! session_alive "$id"; then state=dead; fi
     if [ "$i" -eq 0 ] || [ "$workspace" != "${jobs[i-1]%%$'\t'*}" ]; then
       text=$workspace
       if [ "${#text}" -gt "$TREE_WIDTH" ]; then text=${text:0:$((TREE_WIDTH - 1))}…; fi
@@ -74,10 +94,33 @@ format_agent_tree() {
     available=$((TREE_WIDTH - 6 - ${#state}))
     [ "$available" -gt 0 ] || available=1
     if [ "${#label}" -gt "$available" ]; then label=${label:0:$((available - 1))}…; fi
+    marker=●
+    [ "$ACTIVE_JOB" != "$id" ] || marker=◉
     text="$connector  $label $state"
     padding=$(printf '%*s' $((TREE_WIDTH - ${#text} - 1)) '')
-    printf '%s %b●\033[0m %s %s\n' "$connector" "$color" "$label" "$state$padding"
+    printf '%s %b%s\033[0m %s %s\n' "$connector" "$color" "$marker" "$label" "$state$padding"
   done
+}
+
+mouse_row() {
+  local sequence=$1
+  if [[ "$sequence" =~ ^\[\<0\;[0-9]+\;([0-9]+)$ ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  return 1
+}
+
+job_id_for_row() {
+  local wanted=$1 records workspace label state id previous='' row=$TREE_ROW
+  records=$(fetch_agent_jobs 2>/dev/null | agent_records) || return 1
+  while IFS=$'\t' read -r workspace label state id; do
+    [ -n "$id" ] || continue
+    if [ "$workspace" != "$previous" ]; then row=$((row + 1)); previous=$workspace; fi
+    row=$((row + 1))
+    if [ "$row" -eq "$wanted" ]; then printf '%s\n' "$id"; return 0; fi
+  done <<< "$records"
+  return 1
 }
 
 render_agent_tree() {
@@ -92,18 +135,28 @@ render_agent_tree() {
   done < <(fetch_agent_jobs 2>/dev/null | format_agent_tree)
 }
 
+if [ -n "${FAMILIAR_SIDEBAR_MOUSE_SEQUENCE:-}" ]; then
+  mouse_row "$FAMILIAR_SIDEBAR_MOUSE_SEQUENCE"
+  exit $?
+fi
+if [ -n "${FAMILIAR_SIDEBAR_JOB_AT_ROW:-}" ]; then
+  job_id_for_row "$FAMILIAR_SIDEBAR_JOB_AT_ROW"
+  exit $?
+fi
 if [ "${FAMILIAR_SIDEBAR_FORMAT_ONLY:-}" = 1 ]; then
   fetch_agent_jobs 2>/dev/null | format_agent_tree
   exit 0
 fi
 
 cleanup() {
-  printf '\033[?25h'
+  printf '\033[?1000l\033[?1006l\033[?25h'
   [ -z "$TMP" ] || rm -rf -- "$TMP"
 }
 trap cleanup EXIT
 trap 'exit 0' INT TERM
-printf '\033[?25l'
+# Button-event + SGR-coordinate reporting. tmux routes these reports only to
+# this opted-in pane; the main nested client keeps its own mouse semantics.
+printf '\033[?25l\033[?1000h\033[?1006h'
 
 prepare_mark() {
   command -v base64 >/dev/null 2>&1 || return 1
@@ -169,17 +222,40 @@ send_text() {
 
 if prepare_mark; then MODE=kitty; fi
 render() {
+  local target=''
+  target=$(tmux show-option -pqv @familiar_target 2>/dev/null || true)
+  case "$target" in agent:*) ACTIVE_JOB=${target#agent:} ;; *) ACTIVE_JOB='' ;; esac
   if [ "$MODE" = kitty ]; then send_mark || { MODE=text; send_text; }
   else send_text
   fi
   render_agent_tree
 }
+
+handle_click() {
+  local row=$1 id
+  if [ "$row" -le 11 ]; then
+    "$PRESENCE_CTL" show-presence >/dev/null 2>&1 || true
+  elif id=$(job_id_for_row "$row"); then
+    "$PRESENCE_CTL" show-agent "$id" >/dev/null 2>&1 || true
+  fi
+  render
+}
 trap render WINCH
 render
 
-# Periodic repaint makes kitty images visible to clients which attach after the
-# original APC transmission and refreshes the registry. WINCH remains immediate.
+# Reads and repainting share one resident loop, avoiding a background reader
+# racing a renderer for stdin. SGR presses look like ESC [ < 0 ; x ; y M.
 while :; do
-  sleep 10 & wait $! || true
-  render
+  char=''
+  if IFS= read -rsn1 -t 10 char; then
+    if [ "$char" = $'\033' ]; then
+      sequence=''
+      IFS= read -rs -t 0.2 -d M sequence || true
+      if row=$(mouse_row "$sequence"); then
+        handle_click "$row"
+      fi
+    fi
+  else
+    render
+  fi
 done

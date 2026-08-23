@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"familiar.dev/agents/client"
+	piadapter "familiar.dev/agents/harnesses/pi"
 	"familiar.dev/agents/supervisor"
 	"flag"
 	"log/slog"
@@ -67,7 +68,14 @@ func main() {
 		slog.Error("tmux prepare", "error", err)
 		os.Exit(1)
 	}
-	s := &supervisor.Supervisor{Host: *host, Client: client.New(*endpoint), Registry: reg, Tmux: tm, OfflineWindow: *offline, ArtifactRoot: *artifactRoot, AllowedCWDRoots: roots, Adapters: supervisor.DefaultAdapters(*pi, argvEnv("FAMILIAR_AGENTS_CLAUDE_ARGV", []string{"claude", "{prompt}"}), argvEnv("FAMILIAR_AGENTS_CODEX_ARGV", []string{"codex", "{prompt}"}))}
+	workerEnv := map[string]string{}
+	for _, key := range []string{"FAMILIAR_TIAMAT_URL", "FAMILIAR_TIAMAT_TOKEN_FILE", "FAMILIAR_TIAMAT_POLL_SECONDS", "FAMILIAR_TIAMAT_DISPLAY_TZ"} {
+		if value := os.Getenv(key); value != "" {
+			workerEnv[key] = value
+		}
+	}
+	piAdapter := piadapter.Adapter{Binary: *pi, Extension: os.Getenv("FAMILIAR_AGENTS_TIAMAT_EXTENSION"), Env: workerEnv}
+	s := &supervisor.Supervisor{Host: *host, Client: client.New(*endpoint), Registry: reg, Tmux: tm, OfflineWindow: *offline, ArtifactRoot: *artifactRoot, AllowedCWDRoots: roots, Adapters: supervisor.ConfiguredAdapters(piAdapter, argvEnv("FAMILIAR_AGENTS_CLAUDE_ARGV", []string{"claude", "{prompt}"}), argvEnv("FAMILIAR_AGENTS_CODEX_ARGV", []string{"codex", "{prompt}"}))}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	// Reconcile with global truth before any reboot recreation. Only when the
