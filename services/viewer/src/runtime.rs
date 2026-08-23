@@ -1,5 +1,6 @@
 use crate::app::{TargetRuntime, ViewerTarget};
 use crate::cli::Config;
+use crate::graphics::{probe_host, GraphicsMode, HostGraphics};
 use crate::layout::{viewer_layout, ViewerLayout};
 use crate::pty::{child_command, pty_size};
 use crate::terminal::ghostty::GhosttyTerminal;
@@ -24,9 +25,13 @@ use std::thread;
 use std::time::Duration;
 
 static TERMINAL_ACTIVE: AtomicBool = AtomicBool::new(false);
+static GRAPHICS_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 fn restore_host_terminal() {
     if TERMINAL_ACTIVE.swap(false, Ordering::SeqCst) {
+        if GRAPHICS_ACTIVE.swap(false, Ordering::SeqCst) {
+            let _ = io::stdout().write_all(b"\x1b_Ga=d,d=A,q=2;\x1b\\");
+        }
         let _ = disable_raw_mode();
         let _ = execute!(io::stdout(), LeaveAlternateScreen);
     }
@@ -279,8 +284,9 @@ fn render_frame(
     terminal: &GhosttyTerminal,
     layout: ViewerLayout,
     child_notice: Option<&str>,
+    graphics_mode: GraphicsMode,
 ) {
-    if layout.sidebar.width > 0 {
+    if layout.sidebar.width > 0 && graphics_mode == GraphicsMode::Text {
         frame.render_widget(
             Paragraph::new("FAMILIAR")
                 .alignment(Alignment::Center)
@@ -385,14 +391,22 @@ fn dimensions(layout: ViewerLayout) -> GridSize {
 
 pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let _guard = TerminalGuard::enter()?;
+    // Crossterm construction performs a cursor-position query. Do it before
+    // our raw capability probe so its CPR cannot be mistaken for user input.
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut host = Terminal::new(backend)?;
+    host.clear()?;
+    let (graphics_mode, buffered_input) = probe_host(Duration::from_millis(200))?;
+    GRAPHICS_ACTIVE.store(graphics_mode == GraphicsMode::Kitty, Ordering::SeqCst);
     let (width, height) = crossterm::terminal::size()?;
     let mut layout = viewer_layout(width, height);
     let mut core = GhosttyTerminal::new(dimensions(layout))?;
     let (tx, rx): (Sender<PtyMessage>, Receiver<PtyMessage>) = mpsc::channel();
     let mut child = ChildManager::new(config, tx, dimensions(layout))?;
-    let backend = CrosstermBackend::new(io::stdout());
-    let mut host = Terminal::new(backend)?;
-    host.clear()?;
+    if !buffered_input.is_empty() {
+        child.write_all(&buffered_input)?;
+    }
+    let mut graphics = HostGraphics::new(graphics_mode);
     let mut damaged = true;
     let mut child_notice: Option<String> = None;
 
@@ -417,7 +431,8 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                 Event::Resize(width, height) => {
                     layout = viewer_layout(width, height);
                     let size = dimensions(layout);
-                    core.resize(size)?;
+                    let update = core.resize(size)?;
+                    graphics.handle_events(update.graphics);
                     child.resize(size)?;
                     host.resize(ratatui::layout::Rect::new(0, 0, width, height))?;
                     damaged = true;
@@ -433,6 +448,7 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                     for reply in update.replies {
                         let _ = child.write_all(&reply);
                     }
+                    graphics.handle_events(update.graphics);
                     damaged |= !update.dirty.is_empty();
                 }
                 PtyMessage::Eof(id) if Some(id) == child.active_id() => {
@@ -450,7 +466,18 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
 
         // Mode 2026 is only a render-coalescing hint here; parser state remains live.
         if damaged && !core.modes().synchronized_output {
-            host.draw(|frame| render_frame(frame, &core, layout, child_notice.as_deref()))?;
+            if graphics_mode == GraphicsMode::Kitty {
+                host.backend_mut().write_all(b"\x1b[?2026h\x1b7")?;
+            }
+            host.draw(|frame| {
+                render_frame(frame, &core, layout, child_notice.as_deref(), graphics_mode)
+            })?;
+            if graphics_mode == GraphicsMode::Kitty {
+                let bytes = graphics.emit(layout.main, layout.mark, true);
+                host.backend_mut().write_all(&bytes)?;
+                host.backend_mut().write_all(b"\x1b8\x1b[?2026l")?;
+                host.backend_mut().flush()?;
+            }
             damaged = false;
         }
     }
