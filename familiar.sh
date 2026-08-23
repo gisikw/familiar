@@ -75,6 +75,13 @@ export FAMILIAR_PRESENCE_CTL="${FAMILIAR_PRESENCE_CTL:-$REPO/services/presence/p
 # depending on a user's PI_CODING_AGENT_DIR discovery.
 export FAMILIAR_AGENTS_SUPERVISOR_STATE="${FAMILIAR_AGENTS_SUPERVISOR_STATE:-$STATE_DIR/agents-supervisor}"
 export FAMILIAR_AGENTS_TIAMAT_EXTENSION="${FAMILIAR_AGENTS_TIAMAT_EXTENSION:-$REPO/integrations/pi/extensions/tiamat}"
+# The agent-hooks extension is the pi "hook adapter": it reports interactive
+# worker lifecycle out-of-band to the side channel the Go pi adapter reads. It
+# ships with the agent system under agents/integrations/pi/agent-hooks.
+export FAMILIAR_AGENTS_HOOK_EXTENSION="${FAMILIAR_AGENTS_HOOK_EXTENSION:-$REPO/agents/integrations/pi/agent-hooks}"
+# Settlement wakes the presence via the worklist drop-box (the designed subagent
+# settlement channel). Degrades gracefully when unset.
+export FAMILIAR_AGENTS_WORKLIST_DIR="${FAMILIAR_AGENTS_WORKLIST_DIR:-$FAMILIAR_WORKLIST_DIR}"
 # Session storage. Overriding this is the deliberate escape hatch for a wedged
 # session: point it at a clean-room dir to bail out without touching the main
 # continuity line. Not a first-class verb on purpose — forking continuity
