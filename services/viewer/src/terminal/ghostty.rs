@@ -6,7 +6,7 @@ use super::{
     TerminalColor, TerminalCore, TerminalModes, TerminalUpdate,
 };
 use crate::graphics::{KittyAction, KittyGraphicsEvent};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::fmt;
 use std::mem;
@@ -27,6 +27,24 @@ struct VirtualPlacement {
     columns: u32,
     rows: u32,
     z: i32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct VirtualCell {
+    column: u16,
+    row: u16,
+    image_column: u32,
+    image_row: u32,
+}
+
+#[derive(Clone, Copy)]
+struct VirtualCellGroup {
+    column: u16,
+    row: u16,
+    image_column: u32,
+    image_row: u32,
+    columns: u16,
+    rows: u16,
 }
 
 unsafe extern "C" fn decode_png(
@@ -481,6 +499,7 @@ impl GhosttyTerminal {
         if specs.is_empty() {
             return Ok(());
         }
+        let mut cells_by_image = HashMap::<u32, Vec<VirtualCell>>::new();
         for row in 0..self.size.rows {
             for column in 0..self.size.columns {
                 let cell = self.get_cell(column, row)?;
@@ -496,64 +515,97 @@ impl GhosttyTerminal {
                     None => 0,
                 };
                 let image_row = chars.next().and_then(kitty_diacritic_index).unwrap_or(0);
-                let image_col = chars.next().and_then(kitty_diacritic_index).unwrap_or(0);
+                let image_column = chars.next().and_then(kitty_diacritic_index).unwrap_or(0);
                 let image_high = chars.next().and_then(kitty_diacritic_index).unwrap_or(0);
                 let image_id = image_low | (image_high << 24);
-                let Some(spec) = specs.iter().find(|spec| spec.image_id == image_id) else {
-                    continue;
-                };
-                let image = unsafe { ffi::ghostty_kitty_graphics_image(graphics, image_id) };
-                if image.is_null() {
-                    continue;
+                if specs.iter().any(|spec| spec.image_id == image_id) {
+                    cells_by_image
+                        .entry(image_id)
+                        .or_default()
+                        .push(VirtualCell {
+                            column,
+                            row,
+                            image_column,
+                            image_row,
+                        });
                 }
-                let mut width = 0_u32;
-                let mut height = 0_u32;
-                let mut format = 0_i32;
-                let mut data_ptr: *const u8 = ptr::null();
-                let mut data_len = 0_usize;
-                for (key, out) in [
-                    (ffi::KITTY_IMAGE_WIDTH, (&mut width as *mut u32).cast()),
-                    (ffi::KITTY_IMAGE_HEIGHT, (&mut height as *mut u32).cast()),
-                    (ffi::KITTY_IMAGE_FORMAT, (&mut format as *mut i32).cast()),
-                    (
-                        ffi::KITTY_IMAGE_DATA_PTR,
-                        (&mut data_ptr as *mut *const u8).cast(),
-                    ),
-                    (
-                        ffi::KITTY_IMAGE_DATA_LEN,
-                        (&mut data_len as *mut usize).cast(),
-                    ),
-                ] {
-                    checked(unsafe { ffi::ghostty_kitty_graphics_image_get(image, key, out) })?;
-                }
-                let columns = spec.columns.max(1);
-                let rows = spec.rows.max(1);
-                if image_col >= columns || image_row >= rows {
-                    continue;
-                }
-                let source_x = scale(image_col, width, columns);
-                let source_y = scale(image_row, height, rows);
-                let source_width = scale(image_col + 1, width, columns).saturating_sub(source_x);
-                let source_height = scale(image_row + 1, height, rows).saturating_sub(source_y);
-                let payload = if data_len == 0 {
-                    Vec::new()
-                } else {
-                    unsafe { slice::from_raw_parts(data_ptr, data_len) }.to_vec()
-                };
+            }
+        }
+
+        // Placeholder cells only identify an image, not a placement. Match the
+        // first virtual placement as before, but consolidate its cells before
+        // handing them to the common host clipping/emission path.
+        let mut seen_images = HashSet::new();
+        for spec in specs {
+            if !seen_images.insert(spec.image_id) {
+                continue;
+            }
+            let Some(cells) = cells_by_image.get_mut(&spec.image_id) else {
+                continue;
+            };
+            cells.retain(|cell| {
+                cell.image_column < spec.columns.max(1) && cell.image_row < spec.rows.max(1)
+            });
+            let groups = consolidate_virtual_cells(cells);
+            if groups.is_empty() {
+                continue;
+            }
+            let image = unsafe { ffi::ghostty_kitty_graphics_image(graphics, spec.image_id) };
+            if image.is_null() {
+                continue;
+            }
+            let mut width = 0_u32;
+            let mut height = 0_u32;
+            let mut format = 0_i32;
+            let mut data_ptr: *const u8 = ptr::null();
+            let mut data_len = 0_usize;
+            for (key, out) in [
+                (ffi::KITTY_IMAGE_WIDTH, (&mut width as *mut u32).cast()),
+                (ffi::KITTY_IMAGE_HEIGHT, (&mut height as *mut u32).cast()),
+                (ffi::KITTY_IMAGE_FORMAT, (&mut format as *mut i32).cast()),
+                (
+                    ffi::KITTY_IMAGE_DATA_PTR,
+                    (&mut data_ptr as *mut *const u8).cast(),
+                ),
+                (
+                    ffi::KITTY_IMAGE_DATA_LEN,
+                    (&mut data_len as *mut usize).cast(),
+                ),
+            ] {
+                checked(unsafe { ffi::ghostty_kitty_graphics_image_get(image, key, out) })?;
+            }
+            let payload = if data_len == 0 {
+                Vec::new()
+            } else {
+                unsafe { slice::from_raw_parts(data_ptr, data_len) }.to_vec()
+            };
+            for group in groups {
+                let source_x = scale(group.image_column, width, spec.columns);
+                let source_y = scale(group.image_row, height, spec.rows);
+                let source_width = scale(
+                    group.image_column + u32::from(group.columns),
+                    width,
+                    spec.columns,
+                )
+                .saturating_sub(source_x);
+                let source_height =
+                    scale(group.image_row + u32::from(group.rows), height, spec.rows)
+                        .saturating_sub(source_y);
                 events.push(KittyGraphicsEvent {
                     action: KittyAction::TransmitAndDisplay,
-                    image_id: Some(image_id),
+                    image_id: Some(spec.image_id),
                     placement_id: Some(spec.placement_id.wrapping_add(
-                        1 + u32::from(row) * u32::from(self.size.columns) + u32::from(column),
+                        1 + u32::from(group.row) * u32::from(self.size.columns)
+                            + u32::from(group.column),
                     )),
-                    columns: Some(1),
-                    rows: Some(1),
-                    payload,
+                    columns: Some(group.columns),
+                    rows: Some(group.rows),
+                    payload: payload.clone(),
                     image_width: width,
                     image_height: height,
                     format: format as u8,
-                    column: i32::from(column),
-                    row: i32::from(row),
+                    column: i32::from(group.column),
+                    row: i32::from(group.row),
                     source_x,
                     source_y,
                     source_width,
@@ -642,6 +694,63 @@ impl GhosttyTerminal {
             width,
         })
     }
+}
+
+fn consolidate_virtual_cells(cells: &mut [VirtualCell]) -> Vec<VirtualCellGroup> {
+    if cells.is_empty() {
+        return Vec::new();
+    }
+    cells.sort_unstable_by_key(|cell| (cell.row, cell.column));
+    let first = cells[0];
+    let min_column = cells.iter().map(|cell| cell.column).min().unwrap();
+    let max_column = cells.iter().map(|cell| cell.column).max().unwrap();
+    let min_row = first.row;
+    let max_row = cells.last().unwrap().row;
+    let columns = max_column - min_column + 1;
+    let rows = max_row - min_row + 1;
+    let rectangular = first.column == min_column
+        && cells.len() == usize::from(columns) * usize::from(rows)
+        && cells.iter().enumerate().all(|(index, cell)| {
+            let column_offset = (index % usize::from(columns)) as u16;
+            let row_offset = (index / usize::from(columns)) as u16;
+            cell.column == first.column + column_offset
+                && cell.row == first.row + row_offset
+                && cell.image_column == first.image_column + u32::from(column_offset)
+                && cell.image_row == first.image_row + u32::from(row_offset)
+        });
+    if rectangular {
+        return vec![VirtualCellGroup {
+            column: first.column,
+            row: first.row,
+            image_column: first.image_column,
+            image_row: first.image_row,
+            columns,
+            rows,
+        }];
+    }
+
+    let mut groups: Vec<VirtualCellGroup> = Vec::new();
+    for cell in cells.iter().copied() {
+        if let Some(run) = groups.last_mut() {
+            if run.row == cell.row
+                && run.column + run.columns == cell.column
+                && run.image_row == cell.image_row
+                && run.image_column + u32::from(run.columns) == cell.image_column
+            {
+                run.columns += 1;
+                continue;
+            }
+        }
+        groups.push(VirtualCellGroup {
+            column: cell.column,
+            row: cell.row,
+            image_column: cell.image_column,
+            image_row: cell.image_row,
+            columns: 1,
+            rows: 1,
+        });
+    }
+    groups
 }
 
 fn kitty_diacritic_index(codepoint: char) -> Option<u32> {

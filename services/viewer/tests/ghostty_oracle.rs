@@ -86,9 +86,9 @@ fn strict_ghostty_oracle_rejects_an_oversized_unchunked_payload() {
 
 #[test]
 fn virtual_child_image_round_trips_through_host_emission_and_ghostty_oracle() {
-    // Batch-D-shaped fixture: a virtual RGB image followed by one Unicode
-    // placeholder. Its payload is intentionally large enough that the host
-    // re-transmission must contain continuation APCs.
+    // A standard kitten-shaped virtual RGB image followed by its complete
+    // 4x2 Unicode-placeholder grid. Its payload is intentionally large enough
+    // that the host re-transmission must contain continuation APCs.
     let dimensions = (64, 32);
     let pixels = (0..dimensions.0 * dimensions.1)
         .flat_map(|index| {
@@ -97,19 +97,28 @@ fn virtual_child_image_round_trips_through_host_emission_and_ghostty_oracle() {
         })
         .collect::<Vec<_>>();
     let mut child_stream = kitty_transmission("a=T,f=24,s=64,v=32,i=42,U=1,c=4,r=2,q=2", &pixels);
-    child_stream.extend_from_slice(
-        "\x1b[3;5H\x1b[38;2;0;0;42m\u{10eeee}\u{0305}\u{0305}\x1b[39m".as_bytes(),
-    );
+    child_stream.extend_from_slice(b"\x1b[3;5H\x1b[38;2;0;0;42m");
+    child_stream.extend_from_slice("\u{10eeee}\u{0305}\u{0305}\u{10eeee}\u{0305}\u{030d}\u{10eeee}\u{0305}\u{030e}\u{10eeee}\u{0305}\u{0310}".as_bytes());
+    child_stream.extend_from_slice(b"\x1b[4;5H");
+    child_stream.extend_from_slice("\u{10eeee}\u{030d}\u{0305}\u{10eeee}\u{030d}\u{030d}\u{10eeee}\u{030d}\u{030e}\u{10eeee}\u{030d}\u{0310}\x1b[39m".as_bytes());
 
     let mut child = GhosttyTerminal::new(SIZE).unwrap();
     let child_update = child.feed(&child_stream).unwrap();
-    let child_image = child_update
+    let child_images = child_update
         .graphics
         .iter()
-        .find(|event| event.action == KittyAction::TransmitAndDisplay)
-        .expect("embedded-child Ghostty did not extract the virtual placement");
+        .filter(|event| event.action == KittyAction::TransmitAndDisplay)
+        .collect::<Vec<_>>();
+    assert_eq!(child_images.len(), 1);
+    let child_image = child_images[0];
     assert_eq!(
         (child_image.image_width, child_image.image_height),
+        dimensions
+    );
+    assert_eq!((child_image.columns, child_image.rows), (Some(4), Some(2)));
+    assert_eq!((child_image.source_x, child_image.source_y), (0, 0));
+    assert_eq!(
+        (child_image.source_width, child_image.source_height),
         dimensions
     );
     assert_eq!(child_image.payload, pixels);
@@ -128,5 +137,33 @@ fn virtual_child_image_round_trips_through_host_emission_and_ghostty_oracle() {
         .collect::<Vec<_>>();
     assert!(apcs.len() >= 3, "large image was not emitted in chunks");
     assert!(emitted.windows(4).any(|window| window == b",m=1"));
-    assert_oracle_image(&emitted, 1_000_000, dimensions);
+    assert_eq!(
+        emitted
+            .windows(4)
+            .filter(|window| *window == b"a=p,")
+            .count(),
+        1,
+        "a rectangular virtual grid must emit one placement"
+    );
+
+    let mut oracle = GhosttyTerminal::new_with_kitty_apc_limit(SIZE, 4096).unwrap();
+    let oracle_update = oracle.feed(&emitted).unwrap();
+    let oracle_images = oracle_update
+        .graphics
+        .iter()
+        .filter(|event| {
+            event.action == KittyAction::TransmitAndDisplay && event.image_id == Some(1_000_000)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(oracle_images.len(), 1);
+    let oracle_image = oracle_images[0];
+    assert_eq!(
+        (oracle_image.columns, oracle_image.rows),
+        (Some(4), Some(2))
+    );
+    assert_eq!((oracle_image.source_x, oracle_image.source_y), (0, 0));
+    assert_eq!(
+        (oracle_image.source_width, oracle_image.source_height),
+        dimensions
+    );
 }

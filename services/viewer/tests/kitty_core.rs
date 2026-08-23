@@ -73,6 +73,69 @@ fn unicode_placeholder_virtual_placement_is_extracted() {
 }
 
 #[test]
+fn rectangular_unicode_placeholder_grid_is_one_placement() {
+    let mut fixture = b"\x1b_Ga=T,f=24,s=64,v=32,i=42,U=1,c=4,r=2,q=2;".to_vec();
+    fixture.extend_from_slice(
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            vec![0xff; 64 * 32 * 3],
+        )
+        .as_bytes(),
+    );
+    fixture.extend_from_slice(b"\x1b\\\x1b[2;3H\x1b[38;2;0;0;42m");
+    fixture.extend_from_slice("\u{10eeee}\u{0305}\u{0305}\u{10eeee}\u{0305}\u{030d}\u{10eeee}\u{0305}\u{030e}\u{10eeee}\u{0305}\u{0310}".as_bytes());
+    fixture.extend_from_slice(b"\x1b[3;3H");
+    fixture.extend_from_slice("\u{10eeee}\u{030d}\u{0305}\u{10eeee}\u{030d}\u{030d}\u{10eeee}\u{030d}\u{030e}\u{10eeee}\u{030d}\u{0310}\x1b[39m".as_bytes());
+
+    let mut terminal = GhosttyTerminal::new(SIZE).unwrap();
+    let update = terminal.feed(&fixture).unwrap();
+    let placements = update
+        .graphics
+        .iter()
+        .filter(|event| event.action == KittyAction::TransmitAndDisplay)
+        .collect::<Vec<_>>();
+    assert_eq!(placements.len(), 1);
+    let image = placements[0];
+    assert_eq!((image.column, image.row), (2, 1));
+    assert_eq!((image.columns, image.rows), (Some(4), Some(2)));
+    assert_eq!((image.source_x, image.source_y), (0, 0));
+    assert_eq!((image.source_width, image.source_height), (64, 32));
+}
+
+#[test]
+fn sparse_unicode_placeholder_grid_is_consolidated_by_row_runs() {
+    let mut fixture = b"\x1b_Ga=T,f=32,s=4,v=2,i=42,U=1,c=4,r=2,q=2;".to_vec();
+    fixture.extend_from_slice(
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            vec![0xff; 4 * 2 * 4],
+        )
+        .as_bytes(),
+    );
+    fixture.extend_from_slice(b"\x1b\\\x1b[38;2;0;0;42m");
+    fixture.extend_from_slice(
+        "\u{10eeee}\u{0305}\u{0305}\u{10eeee}\u{0305}\u{030d} X\x1b[2;1H\u{10eeee}\u{030d}\u{0305}\x1b[39m"
+            .as_bytes(),
+    );
+    let mut terminal = GhosttyTerminal::new(SIZE).unwrap();
+    let update = terminal.feed(&fixture).unwrap();
+    let placements = update
+        .graphics
+        .iter()
+        .filter(|event| event.action == KittyAction::TransmitAndDisplay)
+        .collect::<Vec<_>>();
+    assert_eq!(placements.len(), 2, "{placements:?}");
+    assert_eq!(
+        (placements[0].columns, placements[0].rows),
+        (Some(2), Some(1))
+    );
+    assert_eq!(
+        (placements[1].columns, placements[1].rows),
+        (Some(1), Some(1))
+    );
+}
+
+#[test]
 fn kitty_capability_query_is_answered_across_every_split() {
     let query = b"\x1b_Ga=q,f=24,s=1,v=1,i=77;AAAA\x1b\\";
     for_every_split(
