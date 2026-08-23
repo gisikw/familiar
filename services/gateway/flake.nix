@@ -3,8 +3,13 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    viewer = {
+      url = "path:../viewer";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-utils.follows = "flake-utils";
+    };
   };
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = { self, nixpkgs, flake-utils, viewer }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
@@ -32,7 +37,8 @@
             install -m 0444 ${patchedFont}/share/fonts/truetype/ProggyCleanNerdFontMono-Regular.ttf \
               $out/lib/familiar-gateway/fonts/ProggyCleanNerdFontMono-Regular.ttf
             makeWrapper ${pkgs.nodejs_22}/bin/node $out/bin/familiar-gateway \
-              --add-flags "--experimental-transform-types $out/lib/familiar-gateway/src/main.ts"
+              --add-flags "--experimental-transform-types $out/lib/familiar-gateway/src/main.ts" \
+              --set-default FAMILIAR_VIEWER_BIN "${viewer.packages.${system}.default}/bin/familiar-viewer"
             runHook postInstall
           '';
           meta = with pkgs.lib; {
@@ -51,7 +57,8 @@
         checks.default = gateway;
         devShells.default = pkgs.mkShell {
           FAMILIAR_GATEWAY_PATCHED_FONT = "${patchedFont}/share/fonts/truetype/ProggyCleanNerdFontMono-Regular.ttf";
-          packages = with pkgs; [ nodejs_22 python3 gnumake gcc curl ];
+          packages = with pkgs; [ nodejs_22 python3 gnumake gcc curl ]
+            ++ [ viewer.packages.${system}.default ];
         };
       });
 }

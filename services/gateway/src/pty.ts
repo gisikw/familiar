@@ -1,16 +1,20 @@
 import type http from "http";
 import { WebSocketServer, type WebSocket } from "ws";
 import { spawn as ptySpawn, type IPty } from "node-pty";
+import { spawnSync } from "child_process";
+import path from "path";
 import { fileURLToPath } from "url";
 import { debugLog, errorLog } from "./debug.ts";
+import { attachCommand } from "./attach.ts";
+
+export { attachCommand } from "./attach.ts";
 
 /* --- Browser terminal PTY bridge ------------------------------------------
  *
  * Bridges restty's built-in WebSocket PTY transport to a node-pty child that
- * ATTACHES to the Viewer session on the Presence Runtime's private tmux
- * server. Viewer's main pane nests the resident Presence session.
- * FAMILIAR_ATTACH_CMD remains a test override; otherwise
- * FAMILIAR_PRESENCE_CTL (or the repository adapter) is invoked with `viewer`.
+ * runs the native Familiar viewer. The viewer embeds a direct attach to the
+ * resident Presence session; there is no outer Viewer tmux session.
+ * FAMILIAR_ATTACH_CMD remains a test override.
  *
  * restty PTY protocol (see restty dist/pty.d.ts):
  *   client → server : JSON text frames {type:"input",data} / {type:"resize",cols,rows}
@@ -38,51 +42,88 @@ import { debugLog, errorLog } from "./debug.ts";
 // via setImmediate (near-zero added latency, still merges redraw bursts).
 const FLUSH_MS = Number(process.env.FAMILIAR_PTY_FLUSH_MS ?? 0);
 
-export function attachCommand(): { file: string; args: string[] } {
-  const raw = process.env.FAMILIAR_ATTACH_CMD;
-  if (raw && raw.trim()) {
-    // Split on whitespace — attach invocations are simple argv, no quoting.
-    const parts = raw.trim().split(/\s+/);
-    return { file: parts[0], args: parts.slice(1) };
+const REPOSITORY_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
+
+// familiar.sh exports the Presence socket but currently exports only the
+// agents supervisor state directory, not FAMILIAR_AGENTS_SOCKET. Normalize the
+// two socket variables exactly as presence.sh does before invoking either the
+// ensure controller or viewer. This also makes a checkout-local gateway start
+// work without first entering through familiar.sh.
+function familiarEnvironment(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) env[key] = value;
   }
+  const presenceState = env.FAMILIAR_PRESENCE_STATE_DIR
+    || path.join(REPOSITORY_ROOT, "state/presence");
+  const agentsState = env.FAMILIAR_AGENTS_SUPERVISOR_STATE
+    || path.join(REPOSITORY_ROOT, "state/agents-supervisor");
+  env.FAMILIAR_PRESENCE_SOCKET ||= path.join(presenceState, "tmux.sock");
+  env.FAMILIAR_AGENTS_SOCKET ||= path.join(agentsState, "tmux.sock");
+  return env;
+}
+
+function ensurePresence(): void {
+  // Overrides are deliberately self-contained test/smoke commands and must not
+  // acquire a production Presence dependency.
+  if (process.env.FAMILIAR_ATTACH_CMD?.trim()) return;
   const controller = process.env.FAMILIAR_PRESENCE_CTL
     || fileURLToPath(new URL("../../presence/presence.sh", import.meta.url));
-  return { file: controller, args: ["viewer"] };
+  const result = spawnSync(controller, ["ensure"], {
+    env: familiarEnvironment(),
+    stdio: ["ignore", "ignore", "pipe"],
+    encoding: "utf8",
+  });
+  if (result.error || result.status !== 0) {
+    const detail = result.error?.message || result.stderr?.trim() || `exit ${result.status}`;
+    throw new Error(`could not ensure Presence runtime: ${detail}`);
+  }
 }
 
 function startPty(cols: number, rows: number): IPty {
   const { file, args } = attachCommand();
   // Preserve Familiar context for the Presence adapter and resident pi.
-  const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (v === undefined) continue;
+  const env = familiarEnvironment();
+  for (const k of Object.keys(env)) {
     // Drop outer SSH context so it cannot override the positive
     // TERM_PROGRAM/KITTY_WINDOW_ID graphics capability signals. The server
     // itself may be reached over SSH, so these are present in
     // our own env and would otherwise leak into the attach child and defeat the
     // KITTY_WINDOW_ID/TERM_PROGRAM signals we set below. The browser is a
     // direct, local-feeling window onto the pty, so present it that way.
-    if (k === "SSH_CONNECTION" || k === "SSH_TTY" || k === "SSH_CLIENT" || k === "STY") continue;
-    env[k] = v;
+    if (k === "SSH_CONNECTION" || k === "SSH_TTY" || k === "SSH_CLIENT" || k === "STY") delete env[k];
   }
   env.TERM = "xterm-256color";
   env.COLORTERM = "truecolor";
   // The surface beyond this pty is restty, which implements kitty graphics.
   env.TERM_PROGRAM = process.env.FAMILIAR_ATTACH_TERM_PROGRAM || "ghostty";
   env.KITTY_WINDOW_ID = process.env.FAMILIAR_ATTACH_KITTY_WINDOW_ID || "1";
-  return ptySpawn(file, args, {
+  const options = {
     name: "xterm-256color",
     cols: cols || 80,
     rows: rows || 24,
     cwd: process.env.FAMILIAR_ATTACH_CWD || process.cwd(),
     env,
-  });
+  };
+  try {
+    return ptySpawn(file, args, options);
+  } catch (firstError) {
+    // Recover a runtime lost after gateway boot, then retry the PTY spawn once.
+    // The override keeps its historical behavior and skips ensurePresence().
+    if (process.env.FAMILIAR_ATTACH_CMD?.trim()) throw firstError;
+    ensurePresence();
+    return ptySpawn(file, args, options);
+  }
 }
 
 export class PtyBridge {
   private wss: WebSocketServer;
 
   constructor() {
+    // The native viewer intentionally does not own Presence lifecycle. Ensure
+    // once at gateway boot; startPty performs one recovery ensure on spawn
+    // failure if the runtime disappears later.
+    ensurePresence();
     // noServer: we route the upgrade ourselves from the shared http.Server so
     // /pty coexists with the HTTP surface on the same port.
     this.wss = new WebSocketServer({ noServer: true });

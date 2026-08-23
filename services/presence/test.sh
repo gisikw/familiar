@@ -258,14 +258,15 @@ unsafe="$TMP/unsafe"; mkdir "$unsafe.real"; ln -s "$unsafe.real" "$unsafe"
 if FAMILIAR_PRESENCE_STATE_DIR="$unsafe" FAMILIAR_PRESENCE_SOCKET="$unsafe/tmux.sock" bash "$PRESENCE" ensure >/dev/null 2>&1; then fail "symlink state accepted"; fi
 ok "symlink state is rejected"
 
-# Server source contract: default browser PTY uses the Viewer entrypoint and
-# keeps FAMILIAR_ATTACH_CMD only as an override.
+# Server source contract: default browser PTY runs the native Viewer and keeps
+# FAMILIAR_ATTACH_CMD only as an override. Presence remains the ensure adapter.
 if [ -z "${SKIP_BROWSER_CONTRACT:-}" ]; then
-  grep -q 'args: \["viewer"\]' "$HERE/../gateway/src/pty.ts" || fail "browser default is not Viewer attach"
+  grep -q 'FAMILIAR_VIEWER_BIN || "familiar-viewer"' "$HERE/../gateway/src/attach.ts" \
+    || fail "browser default is not native familiar-viewer"
   grep -q 'FAMILIAR_ATTACH_CMD' "$HERE/../gateway/src/pty.ts" || fail "browser test override missing"
-  grep -q 'new URL("../../presence/presence.sh"' "$HERE/../gateway/src/pty.ts" \
-    || fail "browser Presence fallback path is not gateway-relative"
-  ok "browser attach command points at Viewer"
+  grep -q 'spawnSync(controller, \["ensure"\]' "$HERE/../gateway/src/pty.ts" \
+    || fail "browser gateway does not ensure Presence"
+  ok "browser attach command points at native Viewer"
 fi
 
 printf '1..%d\n' "$pass"
