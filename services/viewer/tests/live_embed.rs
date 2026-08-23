@@ -57,6 +57,25 @@ fn embeds_tmux_and_tracks_outer_resize() {
         .status()
         .unwrap();
     assert!(started.success());
+    let mouse_marker = directory.join("mouse-clicked");
+    assert!(Command::new("tmux")
+        .args(["-S", socket.to_str().unwrap(), "set", "-g", "mouse", "on"])
+        .status()
+        .unwrap()
+        .success());
+    assert!(Command::new("tmux")
+        .args([
+            "-S",
+            socket.to_str().unwrap(),
+            "bind-key",
+            "-n",
+            "MouseDown1Pane",
+            "run-shell",
+            &format!("touch {}", mouse_marker.display()),
+        ])
+        .status()
+        .unwrap()
+        .success());
 
     let pair = native_pty_system()
         .openpty(PtySize {
@@ -103,6 +122,20 @@ fn embeds_tmux_and_tracks_outer_resize() {
         wait_for(&rx, &mut output, b"smoketext"),
         "child terminal was not rendered: {:?}",
         String::from_utf8_lossy(&output)
+    );
+
+    // Host cell (30,5), one-based, is inside main and becomes child cell
+    // (2,5). The inner tmux's mouse binding is a deterministic end-to-end
+    // assertion that the viewer translated and SGR-encoded the press.
+    writer.write_all(b"\x1b[<0;30;5M").unwrap();
+    writer.flush().unwrap();
+    let mouse_deadline = Instant::now() + Duration::from_secs(8);
+    while !mouse_marker.exists() && Instant::now() < mouse_deadline {
+        thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        mouse_marker.exists(),
+        "inner tmux did not receive mouse press"
     );
 
     pair.master

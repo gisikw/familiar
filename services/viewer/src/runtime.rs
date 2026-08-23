@@ -1,11 +1,15 @@
-use crate::app::{TargetRuntime, ViewerTarget};
+use crate::app::{App, TargetRuntime, ViewerTarget};
 use crate::cli::Config;
 use crate::graphics::{probe_host, GraphicsMode, HostGraphics};
+use crate::input::{route_mouse, target_for_sidebar_hit, MouseRoute, SidebarHit};
 use crate::layout::{viewer_layout, ViewerLayout};
 use crate::pty::{child_command, pty_size};
 use crate::terminal::ghostty::GhosttyTerminal;
 use crate::terminal::{CellAttributes, GridSize, TerminalCore, TerminalModes};
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, MouseButton, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -22,7 +26,7 @@ use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 static TERMINAL_ACTIVE: AtomicBool = AtomicBool::new(false);
 static GRAPHICS_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -32,8 +36,8 @@ fn restore_host_terminal() {
         if GRAPHICS_ACTIVE.swap(false, Ordering::SeqCst) {
             let _ = io::stdout().write_all(b"\x1b_Ga=d,d=A,q=2;\x1b\\");
         }
+        let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
         let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen);
     }
 }
 
@@ -43,7 +47,8 @@ pub struct TerminalGuard;
 impl TerminalGuard {
     pub fn enter() -> io::Result<Self> {
         enable_raw_mode()?;
-        if let Err(error) = execute!(io::stdout(), EnterAlternateScreen) {
+        if let Err(error) = execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture) {
+            let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
             let _ = disable_raw_mode();
             return Err(error);
         }
@@ -55,7 +60,13 @@ impl TerminalGuard {
             previous(info);
         }));
 
-        let mut signals = Signals::new([SIGTERM, SIGINT, SIGHUP])?;
+        let mut signals = match Signals::new([SIGTERM, SIGINT, SIGHUP]) {
+            Ok(signals) => signals,
+            Err(error) => {
+                restore_host_terminal();
+                return Err(error);
+            }
+        };
         thread::spawn(move || {
             if let Some(signal) = signals.forever().next() {
                 restore_host_terminal();
@@ -284,6 +295,7 @@ fn render_frame(
     terminal: &GhosttyTerminal,
     layout: ViewerLayout,
     child_notice: Option<&str>,
+    sidebar_notice: Option<&str>,
     graphics_mode: GraphicsMode,
 ) {
     if layout.sidebar.width > 0 && graphics_mode == GraphicsMode::Text {
@@ -293,6 +305,9 @@ fn render_frame(
                 .style(Style::default().bold()),
             layout.mark,
         );
+    }
+    if let Some(notice) = sidebar_notice {
+        Paragraph::new(notice).render(layout.job_rows, frame.buffer_mut());
     }
     render_cells(terminal, layout.main, frame.buffer_mut());
     if let Some(notice) = child_notice {
@@ -401,6 +416,7 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let (width, height) = crossterm::terminal::size()?;
     let mut layout = viewer_layout(width, height);
     let mut core = GhosttyTerminal::new(dimensions(layout))?;
+    let mut app = App::default();
     let (tx, rx): (Sender<PtyMessage>, Receiver<PtyMessage>) = mpsc::channel();
     let mut child = ChildManager::new(config, tx, dimensions(layout))?;
     if !buffered_input.is_empty() {
@@ -409,8 +425,16 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let mut graphics = HostGraphics::new(graphics_mode);
     let mut damaged = true;
     let mut child_notice: Option<String> = None;
+    let mut sidebar_notice: Option<(String, Instant)> = None;
 
     loop {
+        if sidebar_notice
+            .as_ref()
+            .is_some_and(|(_, until)| Instant::now() >= *until)
+        {
+            sidebar_notice = None;
+            damaged = true;
+        }
         if event::poll(Duration::from_millis(10))? {
             match event::read()? {
                 Event::Key(key) => {
@@ -426,6 +450,46 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                     {
                         child_notice = Some("tmux session ended — waiting for a new target".into());
                         damaged = true;
+                    }
+                }
+                Event::Mouse(mouse) => {
+                    // Chunk 4 replaces this dead-row closure with the live row model.
+                    match route_mouse(mouse, layout, core.modes(), |_| SidebarHit::Dead) {
+                        MouseRoute::Child(bytes) => {
+                            let _ = child.write_all(&bytes);
+                        }
+                        MouseRoute::Sidebar(hit)
+                            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) =>
+                        {
+                            // Chunk 4 replaces this resolver with the agent id
+                            // stored at the live model index.
+                            let target = target_for_sidebar_hit(hit, |_| None);
+                            if let Some(target) = target {
+                                if target != *app.target() {
+                                    match app.switch_target(target, &mut child) {
+                                        Ok(()) => {
+                                            // A fresh core cannot leak parser, modes, or screen
+                                            // state from the previous child.
+                                            core = GhosttyTerminal::new(dimensions(layout))?;
+                                            let deletes = graphics.clear_child_state();
+                                            host.backend_mut().write_all(&deletes)?;
+                                            host.clear()?;
+                                            child_notice = None;
+                                            sidebar_notice = None;
+                                            damaged = true;
+                                        }
+                                        Err(error) => {
+                                            sidebar_notice = Some((
+                                                format!("Could not switch target: {error}"),
+                                                Instant::now() + Duration::from_secs(3),
+                                            ));
+                                            damaged = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        MouseRoute::Sidebar(_) | MouseRoute::Swallowed => {}
                     }
                 }
                 Event::Resize(width, height) => {
@@ -470,7 +534,14 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                 host.backend_mut().write_all(b"\x1b[?2026h\x1b7")?;
             }
             host.draw(|frame| {
-                render_frame(frame, &core, layout, child_notice.as_deref(), graphics_mode)
+                render_frame(
+                    frame,
+                    &core,
+                    layout,
+                    child_notice.as_deref(),
+                    sidebar_notice.as_ref().map(|(notice, _)| notice.as_str()),
+                    graphics_mode,
+                )
             })?;
             if graphics_mode == GraphicsMode::Kitty {
                 let bytes = graphics.emit(layout.main, layout.mark, true);
@@ -499,6 +570,32 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(encode_key(key, modes), b"\x1bOA");
+    }
+
+    #[test]
+    fn sidebar_click_does_not_capture_the_next_keystroke() {
+        let click = crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert_eq!(
+            route_mouse(
+                click,
+                viewer_layout(100, 30),
+                TerminalModes::default(),
+                |_| SidebarHit::Dead,
+            ),
+            MouseRoute::Sidebar(SidebarHit::Mark)
+        );
+        assert_eq!(
+            encode_key(
+                KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+                TerminalModes::default()
+            ),
+            b"x"
+        );
     }
 
     #[test]
