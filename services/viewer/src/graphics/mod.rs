@@ -32,7 +32,8 @@ impl Default for CellAspect {
         }
     }
 }
-const KITTY_CHUNK: usize = 3072;
+/// Kitty specifies at most 4096 base64 payload bytes in each graphics APC.
+const KITTY_CHUNK: usize = 4096;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum GraphicsMode {
@@ -272,6 +273,12 @@ pub struct HostGraphics {
 impl HostGraphics {
     pub fn new(mode: GraphicsMode) -> Self {
         let mark_png = (mode == GraphicsMode::Kitty).then(load_mark_png).flatten();
+        Self::new_with_mark_png(mode, mark_png)
+    }
+
+    /// Constructs the graphics sink with explicit mark bytes. This keeps host
+    /// protocol oracle tests independent of their build working directory.
+    pub fn new_with_mark_png(mode: GraphicsMode, mark_png: Option<Vec<u8>>) -> Self {
         let mark_dimensions = mark_png.as_deref().and_then(png_dimensions);
         Self {
             mode,

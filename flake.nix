@@ -156,6 +156,12 @@
             FAMILIAR_SHELL = "client";
             packages = with pkgs; [ nodejs_22 ];
           };
+          # Native viewer connection needs Presence's runtime tools and palette
+          # resolver, but not the much larger pi/agent development environment.
+          connect = pkgs.mkShell {
+            FAMILIAR_SHELL = "connect";
+            packages = with pkgs; [ jq tmux util-linux ];
+          };
           # Browser-level terminal regression harness (test/e2e).  The
           # playwright-test wrapper points PLAYWRIGHT_BROWSERS_PATH at the
           # matching nixpkgs browser closure, so it never runs `npx install`.

@@ -11,7 +11,7 @@
       packages = eachSystem (pkgs: {
         default = pkgs.writeShellApplication {
           name = "familiar-presence";
-          runtimeInputs = [ pkgs.bash pkgs.coreutils pkgs.tmux pkgs.util-linux ];
+          runtimeInputs = [ pkgs.bash pkgs.coreutils pkgs.jq pkgs.tmux pkgs.util-linux ];
           text = ''
             export FAMILIAR_PRESENCE_CONFIG=${./tmux.conf}
             exec bash ${./presence.sh} "$@"
@@ -20,7 +20,7 @@
       });
       checks = eachSystem (pkgs: {
         adapter = pkgs.runCommand "familiar-presence-check" {
-          nativeBuildInputs = [ pkgs.bash pkgs.coreutils pkgs.tmux pkgs.util-linux ];
+          nativeBuildInputs = [ pkgs.bash pkgs.coreutils pkgs.jq pkgs.tmux pkgs.util-linux ];
         } ''
           export HOME=$TMPDIR/home
           export PRESENCE=${./presence.sh}
@@ -32,7 +32,7 @@
         '';
       });
       devShells = eachSystem (pkgs: {
-        default = pkgs.mkShell { packages = [ pkgs.tmux pkgs.util-linux pkgs.shellcheck ]; };
+        default = pkgs.mkShell { packages = [ pkgs.jq pkgs.tmux pkgs.util-linux pkgs.shellcheck ]; };
       });
     };
 }

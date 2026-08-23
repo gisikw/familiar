@@ -170,6 +170,16 @@ pub struct GhosttyTerminal {
 
 impl GhosttyTerminal {
     pub fn new(size: GridSize) -> Result<Self, GhosttyError> {
+        Self::new_with_kitty_apc_limit(size, APC_LIMIT)
+    }
+
+    /// Constructs a terminal with an explicit per-command Kitty payload limit.
+    /// The viewer uses a generous child-side limit; host-oracle tests use the
+    /// protocol's 4096-byte limit to match strict terminal configurations.
+    pub fn new_with_kitty_apc_limit(
+        size: GridSize,
+        kitty_apc_limit: usize,
+    ) -> Result<Self, GhosttyError> {
         if size.columns == 0 || size.rows == 0 {
             return Err(GhosttyError(-2));
         }
@@ -231,7 +241,7 @@ impl GhosttyTerminal {
                     checked(ffi::ghostty_terminal_set(
                         raw,
                         ffi::OPT_APC_MAX_BYTES_KITTY,
-                        (&APC_LIMIT as *const usize).cast(),
+                        (&kitty_apc_limit as *const usize).cast(),
                     ))
                 })
         };
