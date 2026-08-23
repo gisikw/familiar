@@ -38,6 +38,7 @@ HOME="$home" runp ensure >/dev/null
   || fail "ensure created a session other than presence"
 [ "$(tmux -S "$socket" show-options -gv status)" = off ] || fail "inner status chrome enabled"
 [ "$(tmux -S "$socket" show-options -gv prefix)" = C-b ] || fail "inner prefix unavailable"
+[ "$(tmux -S "$socket" show-options -gv remain-on-exit)" = off ] || fail "dead panes linger"
 [ "$(tmux -S "$socket" show-window-options -gv allow-passthrough)" = all ] \
   || fail "inner passthrough is not enabled"
 [ "$(tmux -S "$socket" show-options -gv extended-keys)" = on ] || fail "extended keys disabled"
@@ -135,16 +136,22 @@ wait
 [ "$(tmux -S "$socket" list-sessions -F '#{session_name}')" = presence ] || fail "concurrent viewers created outer session"
 ok "concurrent viewer processes do not interfere or duplicate Presence"
 
-# A dead pane remains addressable and ensure respawns it exactly once.
+# A worker exit removes the sole pane/session; ensure recreates the session.
 kill -TERM "$pid"
-for _ in $(seq 1 50); do [ "$(tmux -S "$socket" display -pt presence:0.0 '#{pane_dead}')" = 1 ] && break; sleep .05; done
+for _ in $(seq 1 50); do
+  ! tmux -S "$socket" has-session -t presence 2>/dev/null && break
+  sleep .05
+done
+if tmux -S "$socket" has-session -t presence 2>/dev/null; then
+  fail "dead worker left a lingering pane/session"
+fi
 runp ensure >/dev/null
 newpid=$pid
 for _ in $(seq 1 50); do newpid=$(tail -1 "$pids"); [ "$newpid" != "$pid" ] && break; sleep .05; done
 if [ "$newpid" = "$pid" ] || ! kill -0 "$newpid"; then
-  fail "dead pane not recovered"
+  fail "missing session not recovered after worker exit"
 fi
-ok "dead inner worker is recovered"
+ok "worker death removes the pane and ensure recreates the session"
 
 # A missing owned session is recreated without treating other sessions as ours.
 tmux -S "$socket" new-session -d -s diagnostic 'read -r -t 30 _ || true'
