@@ -2,7 +2,7 @@
 
 use super::ffi;
 use super::{
-    CellAttributes, DirtyRegion, GridSize, MouseEncoding, MouseTracking, TerminalCell,
+    CellAttributes, CursorState, DirtyRegion, GridSize, MouseEncoding, MouseTracking, TerminalCell,
     TerminalCore, TerminalModes, TerminalUpdate,
 };
 use std::ffi::c_void;
@@ -297,6 +297,34 @@ impl TerminalCore for GhosttyTerminal {
         (column < self.size.columns && row < self.size.rows)
             .then(|| self.get_cell(column, row).ok())
             .flatten()
+    }
+
+    fn cursor(&self) -> Option<CursorState> {
+        let mut column = 0_u16;
+        let mut row = 0_u16;
+        let mut visible = false;
+        let success = unsafe {
+            ffi::ghostty_terminal_get(
+                self.raw,
+                ffi::DATA_CURSOR_X,
+                (&mut column as *mut u16).cast(),
+            ) == ffi::SUCCESS
+                && ffi::ghostty_terminal_get(
+                    self.raw,
+                    ffi::DATA_CURSOR_Y,
+                    (&mut row as *mut u16).cast(),
+                ) == ffi::SUCCESS
+                && ffi::ghostty_terminal_get(
+                    self.raw,
+                    ffi::DATA_CURSOR_VISIBLE,
+                    (&mut visible as *mut bool).cast(),
+                ) == ffi::SUCCESS
+        };
+        success.then_some(CursorState {
+            column,
+            row,
+            visible,
+        })
     }
 
     fn modes(&self) -> TerminalModes {
