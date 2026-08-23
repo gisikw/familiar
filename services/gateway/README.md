@@ -58,7 +58,7 @@ outside that shell deliberately falls back to the vendored base font.
 | `FAMILIAR_ATTACH_CMD` | Presence controller `attach` | Test override for the browser PTY child. Set to `bash -l` to smoke-test without tmux. |
 | `FAMILIAR_PRESENCE_CTL` | repository `services/presence/presence.sh` | Presence lifecycle controller path. |
 | `FAMILIAR_ATTACH_CWD` | gateway cwd | working dir for the attach child |
-| `FAMILIAR_STT_URL` / `FAMILIAR_TTS_URL` | — | dumb HTTP model endpoints |
+| `FAMILIAR_STT_URL` / `FAMILIAR_TTS_URL` | — | HTTP model base URLs; gateway calls `/v1/audio/transcriptions` and `/v1/audio/speech` respectively |
 | `FAMILIAR_TTS_VOICE` | — | optional TTS voice selection |
 | `FAMILIAR_LOG_PATH` | stderr | JSONL sidecar log base (`${path}.${suffix}`) |
 | `FAMILIAR_DEBUG_LEVEL` | `debug` | `off` \| `error` \| `debug` |
