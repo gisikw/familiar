@@ -156,6 +156,20 @@
             FAMILIAR_SHELL = "client";
             packages = with pkgs; [ nodejs_22 ];
           };
+          # Browser-level terminal regression harness (test/e2e).  The
+          # playwright-test wrapper points PLAYWRIGHT_BROWSERS_PATH at the
+          # matching nixpkgs browser closure, so it never runs `npx install`.
+          e2e = pkgs.mkShell {
+            FAMILIAR_SHELL = "e2e";
+            PLAYWRIGHT_BROWSERS_PATH = pkgs.playwright-driver.browsers;
+            packages = with pkgs; [
+              nodejs_22 playwright-test playwright-driver
+              tmux util-linux curl kitty imagemagick
+              gateway-module.packages.${system}.default
+            ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+              viewer.packages.${system}.default
+            ];
+          };
         } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           viewer = pkgs.mkShell {
             FAMILIAR_SHELL = "viewer";
