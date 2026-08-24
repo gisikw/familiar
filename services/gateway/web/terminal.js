@@ -5,6 +5,7 @@ import { VoiceCapture } from "/app/voice.js";
 import { STATES as VOICE_STATES } from "/app/voice-state.js";
 import { installVoiceKeyRouter, VOICE_KEY_LABEL } from "/app/voice-key-routing.js";
 import { TerminalReplyGate } from "/app/terminal-replies.js";
+import { createOsc52Bridge } from "/app/osc52.js";
 
 // Browser terminal for the familiar server. Unlike the Electron client (which
 // bridges restty to node-pty over IPC), here restty talks to the server's /pty
@@ -44,9 +45,23 @@ function wsUrl() {
 // The output tap lives in the transport wrapper below (outputTaps).
 // ---------------------------------------------------------------------------
 const outputTaps = new Set();
+
+// OSC 52 clipboard-write bridge. The viewer emits `ESC ] 52 ; c ; <b64> BEL`
+// when a drag selection ends; Restty's browser path ignores it. We OBSERVE the
+// same output stream Restty consumes (bytes are still forwarded untouched) and
+// mirror clipboard-write payloads into the browser system clipboard. Only the
+// `c` write target is honored — reads are never answered. Feedback is routed to
+// the existing toast UI; payloads are never logged. `toast` is defined below
+// and hoisted, so the callbacks resolve it lazily at call time.
+const osc52Bridge = createOsc52Bridge({
+  onCopied: ({ chars }) => toast(`copied ${chars} char${chars === 1 ? "" : "s"} to clipboard`),
+  onFailed: () => toast("clipboard copy blocked by browser"),
+});
+
 function feedOutput(data) {
   terminalReplies.observeOutput(data);
   decset.feed(data);
+  osc52Bridge(data);
   for (const tap of outputTaps) {
     try { tap(data); } catch (_) { /* ignore */ }
   }

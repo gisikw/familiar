@@ -60,7 +60,7 @@ done
 curl -fsS "$FAMILIAR_E2E_URL/health" >/dev/null
 
 set +e
-playwright test --config "$HERE/playwright.config.mjs" "$HERE/terminal.spec.mjs"
+playwright test --config "$HERE/playwright.config.mjs" "$HERE/terminal.spec.mjs" "$HERE/osc52-clipboard.spec.mjs"
 status=$?
 set -e
 if [ -f "$ARTIFACTS/kitty-result.json" ]; then
