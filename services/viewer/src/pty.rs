@@ -6,6 +6,7 @@ use std::ffi::{OsStr, OsString};
 pub struct ChildCommand {
     pub program: OsString,
     pub args: Vec<OsString>,
+    pub set_env: Vec<(OsString, OsString)>,
     pub remove_env: Vec<OsString>,
 }
 
@@ -15,6 +16,9 @@ impl ChildCommand {
         let mut command = CommandBuilder::new(&self.program);
         for arg in &self.args {
             command.arg(arg);
+        }
+        for (name, value) in &self.set_env {
+            command.env(name, value);
         }
         for name in &self.remove_env {
             command.env_remove(name);
@@ -57,6 +61,15 @@ pub fn child_command(config: &Config, target: &ViewerTarget) -> ChildCommand {
     ChildCommand {
         program: "tmux".into(),
         args: full_args,
+        // Advertise truecolor to the inner tmux for this attach client. The
+        // vendored ghostty-vt engine (and both restty and Ghostty on the outer
+        // host) render truecolor unconditionally, so inner tmux must not
+        // downgrade or drop RGB SGR. Without this, inner tmux falls back to the
+        // attach client's terminfo color capability: on a color-less TERM it
+        // emits NO color SGR at all and RGB foregrounds render as default
+        // (grey) instead of the theme accent. COLORTERM=truecolor forces RGB
+        // passthrough for every TERM the client may present.
+        set_env: vec![("COLORTERM".into(), "truecolor".into())],
         remove_env: vec!["TMUX".into()],
     }
 }
@@ -95,6 +108,12 @@ mod tests {
         );
         assert!(!command.args.iter().any(|arg| arg == "-r"));
         assert_eq!(command.remove_env, ["TMUX"]);
+        // Truecolor must be advertised to the inner tmux so RGB SGR (theme
+        // accent) is not downgraded or dropped on the attach client.
+        assert_eq!(
+            command.set_env,
+            [(OsString::from("COLORTERM"), OsString::from("truecolor"))]
+        );
     }
 
     #[test]
