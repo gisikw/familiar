@@ -148,3 +148,43 @@ fn resize_smaller_and_larger_keeps_terminal_live() {
     assert!(core.cell(15, 5).is_some());
     assert!(core.cell(16, 5).is_none());
 }
+
+/// BCE (background color erase): after `ESC[K` with an active SGR background,
+/// the erased trailing cells must carry that background so full-line highlights
+/// span the entire width. Ghostty stores the erased background in cell content
+/// (not the style), which our converter must surface. A control row without EL
+/// must stay default past the written text.
+#[test]
+fn erase_line_propagates_background_color_erase() {
+    let mut core = terminal(GridSize {
+        columns: 12,
+        rows: 2,
+    });
+    // Row 0: blue bg, write "hi", then EL to end of line with bg still active.
+    // Row 1: blue bg, write "hi", reset SGR, no EL -> trailing stays default.
+    core.feed(b"\x1b[44mhi\x1b[K\r\n\x1b[44mhi\x1b[0m").unwrap();
+
+    for column in 0..core.grid_size().columns {
+        assert_eq!(
+            core.cell(column, 0).unwrap().background,
+            Some(TerminalColor::Indexed(4)),
+            "BCE row must be blue across full width at column {column}"
+        );
+    }
+
+    assert_eq!(
+        core.cell(0, 1).unwrap().background,
+        Some(TerminalColor::Indexed(4))
+    );
+    assert_eq!(
+        core.cell(1, 1).unwrap().background,
+        Some(TerminalColor::Indexed(4))
+    );
+    for column in 2..core.grid_size().columns {
+        assert_eq!(
+            core.cell(column, 1).unwrap().background,
+            None,
+            "control row without EL must stay default past text at column {column}"
+        );
+    }
+}
