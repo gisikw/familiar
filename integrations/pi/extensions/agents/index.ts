@@ -1,6 +1,12 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { execFile } from "node:child_process";
+import {
+  buildProviderConfig,
+  type ModelDescriptor,
+  type ProviderConfigBlob,
+  type RegisteredProviderConfig,
+} from "./resolve.ts";
 
 // Thin transport bridge to the independently deployable Familiar Agent System.
 // familiar.toml's [agents] endpoint is flattened by familiar-config.sh to the
@@ -48,6 +54,40 @@ const invoke = (args: string[], signal?: AbortSignal): Promise<ToolResult> =>
     );
   });
 
+// resolveProviderConfig inspects live pi model state to build the worker's
+// single-provider descriptor. Default: the presence's currently-running model
+// (ctx.model). Override: the requested `model` looked up in the registry
+// (canonical "provider/model" or a bare id resolved via find). Returns undefined
+// when nothing resolves (e.g. no UI/model context) so dispatch proceeds without
+// a descriptor (back-compat: worker falls back to the copied catalog).
+function resolveProviderConfig(ctx: ExtensionContext | undefined, requested?: string): ProviderConfigBlob | undefined {
+  if (!ctx) return undefined;
+  const registry = ctx.modelRegistry;
+  let model = ctx.model as ModelDescriptor | undefined;
+  if (requested) {
+    const slash = requested.indexOf("/");
+    const found = slash > 0
+      ? registry?.find(requested.slice(0, slash), requested.slice(slash + 1))
+      : registry?.getAll().find((m) => m.id === requested);
+    if (found) model = found as ModelDescriptor;
+    else if (!model) return undefined; // requested an unknown model and no current one
+  }
+  if (!model?.provider || !model.id) return undefined;
+  const provider = model.provider;
+  let registered: RegisteredProviderConfig | undefined;
+  try {
+    registered = registry?.getRegisteredProviderConfig(provider) as RegisteredProviderConfig | undefined;
+  } catch { registered = undefined; }
+  let authConfigured = false;
+  let source: import("./resolve.ts").AuthSource;
+  try {
+    const status = registry?.getProviderAuthStatus(provider);
+    authConfigured = Boolean(status?.configured);
+    source = status?.source;
+  } catch { /* status is best-effort */ }
+  return buildProviderConfig({ provider, model, registered, authSource: source, authConfigured });
+}
+
 export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "agents_dispatch",
@@ -63,7 +103,7 @@ export default function (pi: ExtensionAPI) {
       worktree: Type.Optional(Type.Boolean({ description: "Request detached git-worktree isolation" })),
       key: Type.Optional(Type.String({ description: "Creation idempotency key" })),
     }),
-    async execute(_id, p: { prompt: string; host?: string; harness?: string; model?: string; cwd?: string; worktree?: boolean; key?: string }, signal) {
+    async execute(_id, p: { prompt: string; host?: string; harness?: string; model?: string; cwd?: string; worktree?: boolean; key?: string }, signal, _onUpdate, ctx: ExtensionContext) {
       const host = p.host || DEFAULT_HOST;
       if (!host) return invoke(["dispatch", "--host", "", p.prompt], signal);
       const args = ["dispatch", "--host", host];
@@ -72,6 +112,15 @@ export default function (pi: ExtensionAPI) {
       if (p.cwd) args.push("--cwd", p.cwd);
       if (p.worktree) args.push("--worktree");
       if (p.key) args.push("--key", p.key);
+      // A pi worker gets EXACTLY the dispatched (or, by default, the presence's
+      // currently-running) model+provider. Resolve its single-provider
+      // connection descriptor from live pi state and forward it opaquely; the
+      // supervisor writes the worker's models.json/settings from it. Non-pi
+      // harnesses and resolution failures degrade to no descriptor.
+      if ((p.harness ?? "pi") === "pi") {
+        const blob = resolveProviderConfig(ctx, p.model);
+        if (blob) args.push("--provider-config", JSON.stringify(blob));
+      }
       args.push(p.prompt);
       return invoke(args, signal);
     },
