@@ -1,20 +1,6 @@
-# Private configuration and identity are intentionally versioned only in the private instance.
+# Private configuration, identity, and runtime state belong to the external private instance.
 models/
-state/pi/
-state/presence/
-state/agents-supervisor/
-state/uploads/
-state/theme/
-state/voices/
-state/subagents/workspaces/
-state/subagents/sessions/
-state/herdr/
-state/inbox/
-state/*.sock
-state/*.pid
-state/*.tmp
-# Accumulating memory: handoffs, worklist, logs, reviews, artifacts, docs, and system profiles.
-# These are deliberately not ignored.
+state/
 .env
 familiar.toml
 RESEARCH-*.md
