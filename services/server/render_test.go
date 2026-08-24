@@ -61,6 +61,24 @@ func TestRenderInvalidationRefetchesEarlyAndCoalesces(t *testing.T) {
 		t.Fatal(w.Code)
 	}
 }
+func TestRenderTTLTriggersEventualRefetch(t *testing.T) {
+	var hits atomic.Int32
+	short := strings.Replace(renderFixture, `"ttl_ms":5000`, `"ttl_ms":1`, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { hits.Add(1); _, _ = io.WriteString(w, short) }))
+	defer srv.Close()
+	h := newRenderHub(RenderConfig{Plugin: "p", URL: srv.URL}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.start(ctx)
+	deadline := time.Now().Add(time.Second)
+	for hits.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if hits.Load() < 2 {
+		t.Fatalf("TTL did not refetch: %d", hits.Load())
+	}
+}
+
 func TestViewerFanoutReturnsCachedDocument(t *testing.T) {
 	h := newRenderHub(RenderConfig{Plugin: "p"}, slog.Default())
 	h.doc = []byte(renderFixture)
