@@ -16,6 +16,12 @@ use std::sync::{Once, OnceLock};
 
 static INSTALL_PNG_DECODER: Once = Once::new();
 const KITTY_STORAGE_LIMIT: u64 = 64 * 1024 * 1024;
+/// Cell pixel size used before the host's real metrics are known. libghostty
+/// sizes a *classic* (non-virtual) placement that omits `c=`/`r=` by dividing
+/// the image's pixel footprint by the cell size, so this must be non-zero or
+/// every such placement collapses to a 0x0 grid. The 1:2 ratio matches
+/// `graphics::CellAspect::default`.
+const DEFAULT_CELL_PIXELS: (u32, u32) = (10, 20);
 const APC_LIMIT: usize = 16 * 1024 * 1024;
 const KITTY_UNICODE_PLACEHOLDER: char = '\u{10eeee}';
 static KITTY_DIACRITICS: OnceLock<HashMap<char, u32>> = OnceLock::new();
@@ -183,6 +189,11 @@ unsafe extern "C" fn device_attributes(
 pub struct GhosttyTerminal {
     raw: ffi::Terminal,
     size: GridSize,
+    /// Host cell pixel size (width, height). Kitty's `gridSize` divides an
+    /// image's pixel footprint by the cell size to size a *classic* (non-
+    /// virtual) placement that omitted explicit `c=`/`r=`. Without a non-zero
+    /// cell size libghostty returns a 0x0 grid and the placement is dropped.
+    cell_pixels: (u32, u32),
     callbacks: Box<CallbackState>,
 }
 
@@ -218,6 +229,7 @@ impl GhosttyTerminal {
         let mut terminal = Self {
             raw,
             size,
+            cell_pixels: DEFAULT_CELL_PIXELS,
             callbacks: Box::default(),
         };
         INSTALL_PNG_DECODER.call_once(|| unsafe {
@@ -268,7 +280,34 @@ impl GhosttyTerminal {
             unsafe { ffi::ghostty_terminal_free(raw) };
             return Err(error);
         }
+        // Prime the host cell pixel metrics. `ghostty_terminal_new` leaves
+        // `width_px`/`height_px` at zero; a classic Kitty placement that omits
+        // `c=`/`r=` (what `kitten icat` emits when the host answered its probe
+        // as graphics-capable) is then sized via `divCeil(image_px, 0)` and
+        // collapses to a 0x0 grid, dropping the image. Resizing to the same
+        // geometry with a non-zero cell size updates the pixel metrics without
+        // otherwise perturbing the grid.
+        if let Err(error) = terminal.apply_cell_pixels() {
+            // SAFETY: raw was successfully allocated above.
+            unsafe { ffi::ghostty_terminal_free(raw) };
+            return Err(error);
+        }
         Ok(terminal)
+    }
+
+    /// Pushes `cell_pixels` into libghostty's `width_px`/`height_px`. The C
+    /// resize wrapper updates the pixel metrics even when the grid is
+    /// unchanged, so this is a safe no-op for the grid itself.
+    fn apply_cell_pixels(&self) -> Result<(), GhosttyError> {
+        checked(unsafe {
+            ffi::ghostty_terminal_resize(
+                self.raw,
+                self.size.columns,
+                self.size.rows,
+                self.cell_pixels.0,
+                self.cell_pixels.1,
+            )
+        })
     }
 
     fn full_damage(&self) -> Vec<DirtyRegion> {
@@ -816,7 +855,15 @@ impl TerminalCore for GhosttyTerminal {
         if size.columns == 0 || size.rows == 0 {
             return Err(GhosttyError(-2));
         }
-        checked(unsafe { ffi::ghostty_terminal_resize(self.raw, size.columns, size.rows, 1, 1) })?;
+        checked(unsafe {
+            ffi::ghostty_terminal_resize(
+                self.raw,
+                size.columns,
+                size.rows,
+                self.cell_pixels.0,
+                self.cell_pixels.1,
+            )
+        })?;
         self.size = size;
         Ok(TerminalUpdate {
             dirty: self.full_damage(),

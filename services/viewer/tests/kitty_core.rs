@@ -167,6 +167,34 @@ fn tmux_wrapped_kitty_query_is_answered() {
 }
 
 #[test]
+fn classic_placement_without_columns_or_rows_gets_a_nonzero_grid() {
+    // When the host answers `kitten icat`'s capability probe as graphics-
+    // capable (real Ghostty, reached through tmux passthrough), icat sends a
+    // *classic* direct placement: `a=T` with `s=`/`v=` pixel dimensions but no
+    // `c=`/`r=` grid and no unicode placeholders. libghostty sizes such a
+    // placement by dividing its pixel footprint by the terminal's cell pixel
+    // size; if the embedded core never received cell metrics (width_px == 0)
+    // the grid collapses to 0x0 and the host layer drops the image. This is
+    // the exact shape captured from a real Ghostty session (a=T,f=24,s,v with
+    // no c/r), reduced to a single opaque pixel here.
+    let fixture = b"\x1b[3;3H\x1b_Ga=T,f=24,s=1,v=1,q=2;/wAA\x1b\\";
+    let mut terminal = GhosttyTerminal::new(SIZE).unwrap();
+    let update = terminal.feed(fixture).unwrap();
+    let image = update
+        .graphics
+        .iter()
+        .find(|event| event.action == KittyAction::TransmitAndDisplay)
+        .expect("classic direct placement was dropped (grid collapsed to 0x0)");
+    assert!(
+        image.columns.unwrap_or(0) > 0 && image.rows.unwrap_or(0) > 0,
+        "classic placement grid must be non-zero, got {:?}x{:?}",
+        image.columns,
+        image.rows,
+    );
+    assert_eq!(image.payload, [255, 0, 0]);
+}
+
+#[test]
 fn tmux_dcs_wrapped_kitty_image_is_extracted() {
     let mut wrapped = b"\x1bPtmux;".to_vec();
     for byte in RAW {
