@@ -102,13 +102,34 @@ func main() {
 		slog.Error("tmux prepare", "error", err)
 		os.Exit(1)
 	}
+	// A supervisor restart may adopt a server started by a previous process
+	// (sessions persist: exit-empty off, settled workers linger). tmux reads a
+	// config via -f only at server birth, so re-apply the current policy to any
+	// already-running server now. Best-effort: a source-file failure must not
+	// stop the supervisor from reconciling.
+	if err = tm.ReapplyPolicy(context.Background()); err != nil {
+		slog.Warn("tmux policy reapply on boot failed", "error", err)
+	}
 	workerEnv := map[string]string{}
 	for _, key := range []string{"FAMILIAR_TIAMAT_URL", "FAMILIAR_TIAMAT_TOKEN_FILE", "FAMILIAR_TIAMAT_POLL_SECONDS", "FAMILIAR_TIAMAT_DISPLAY_TZ"} {
 		if value := os.Getenv(key); value != "" {
 			workerEnv[key] = value
 		}
 	}
-	piAdapter := piadapter.Adapter{Binary: *pi, HookExtension: os.Getenv("FAMILIAR_AGENTS_HOOK_EXTENSION"), Extension: os.Getenv("FAMILIAR_AGENTS_TIAMAT_EXTENSION"), Env: workerEnv}
+	piAdapter := piadapter.Adapter{
+		Binary:        *pi,
+		HookExtension: os.Getenv("FAMILIAR_AGENTS_HOOK_EXTENSION"),
+		WebExtension:  os.Getenv("FAMILIAR_AGENTS_WEB_EXTENSION"),
+		// SourceProfile is the presence's pi dir: workers copy its model catalog,
+		// theme, and (only when FAMILIAR_AGENTS_COPY_AUTH=1) credentials into their
+		// own isolated dir. Its extension list is never read. Defaults to the
+		// ambient PI_CODING_AGENT_DIR the supervisor inherited from familiar.sh.
+		SourceProfile:   env("FAMILIAR_AGENTS_PI_SOURCE_PROFILE", os.Getenv("PI_CODING_AGENT_DIR")),
+		CopyAuth:        os.Getenv("FAMILIAR_AGENTS_COPY_AUTH") == "1",
+		DefaultProvider: os.Getenv("FAMILIAR_DEFAULT_PROVIDER"),
+		DefaultModel:    os.Getenv("FAMILIAR_DEFAULT_MODEL"),
+		Env:             workerEnv,
+	}
 	s := &supervisor.Supervisor{Host: *host, Client: client.New(*endpoint), Registry: reg, Tmux: tm, OfflineWindow: *offline, Linger: *linger, ArtifactRoot: *artifactRoot, AllowedCWDRoots: roots, Adapters: supervisor.ConfiguredAdapters(piAdapter, argvEnv("FAMILIAR_AGENTS_CLAUDE_ARGV", []string{"claude", "{prompt}"}), argvEnv("FAMILIAR_AGENTS_CODEX_ARGV", []string{"codex", "{prompt}"})), Notify: settlementNotifiers(*host)}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

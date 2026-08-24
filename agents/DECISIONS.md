@@ -83,3 +83,45 @@
    by `scripts/familiar-theme.sh` from the canonical palette) onto its private
    policy. Any missing/symlinked/unreadable artifact is skipped so workers
    still start on the plain policy. No hex is hardcoded.
+18. **Worker profile isolation — a security/correctness boundary.** Each worker
+   runs under a private per-job pi coding-agent dir (`<artifacts>/pi/`) the
+   adapter writes at `Start`. `PI_CODING_AGENT_DIR` is set **explicitly** in the
+   launch env (`launchEnv`) so the presence's personal profile can never leak
+   through ambient supervisor env. The dir's `settings.json` enumerates **only**
+   the worker extension set — `agent-hooks` (provides `agents_block`) plus the
+   self-contained `web` extension (SSRF guard defaults to public-only) — and
+   never the presence's worklist/identity/attention/zip/handoff/agents-dispatch/
+   subscriber/telemetry suite. Consequences that motivate the boundary: workers
+   cannot dispatch other workers, receive no presence inbox/orientation turn
+   (the root cause of the observed "I'm ready to help" non-start — extension
+   interference, not a swallowed positional prompt; proven by an isolated-profile
+   run acting on the prompt on turn 0). **Per-job dir, not a shared template:**
+   isolation is inherent (no concurrent Start races a shared mutable
+   settings.json), it is removed with the job's artifacts, and it costs only a
+   few small file writes. Extensions load via `settings.json`, **not** a CLI
+   `--extension`, because pi errors if a tool (`agents_block`) is registered
+   twice — one auditable file is the single source of the set (`pi_test.go`
+   pins it). Native compaction is kept (the `compaction` key is omitted so pi's
+   default applies; no custom handoff machinery). Model access parity: the
+   presence's `models-store.json`, `defaultProvider`/`defaultModel`, and theme
+   are copied from `FAMILIAR_AGENTS_PI_SOURCE_PROFILE` (default the supervisor's
+   ambient `PI_CODING_AGENT_DIR`); only the model defaults are read from its
+   settings, never its extension list. `job.Model` still overrides via `--model`.
+   Credentials are **not** copied by default (they flow through ambient provider
+   env like `ANTHROPIC_API_KEY`, keeping secrets out of per-job artifact dirs);
+   `FAMILIAR_AGENTS_COPY_AUTH=1` opts into copying `auth.json`.
+19. **tmux policy applied on every server-start path.** `tmux` reads a `-f`
+   config **only** when the server is born. Sessions persist across supervisor
+   restarts (`exit-empty off`, settled workers linger), so a supervisor that
+   adopts a previously-started server would never apply a changed policy — the
+   real-world defect where the worker showed `extended-keys off`, no mouse
+   scroll, and no PageUp copy-mode. Fix: keep `-f cfg` at server birth, and
+   additionally `source-file` the policy (a) after **every** session start and
+   (b) at supervisor boot (`ReapplyPolicy`, a no-op when no server is running).
+   `source-file` is idempotent (set-options/bindings) and applies synchronously
+   to the live server. The synchronous post-start `source-file` also explains
+   and eliminates the rare `TestPrivateTmuxLifecycle` "PageUp arbitration
+   missing" flake: an immediate query could previously race the `-f` config's
+   application at birth; the explicit `source-file` returns only once the policy
+   is loaded. `-f` on a non-birth invocation is silently ignored by tmux
+   (verified), so passing it on later starts is harmless but insufficient alone.

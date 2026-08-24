@@ -91,6 +91,24 @@ func (t Tmux) run(ctx context.Context, args ...string) (string, error) {
 	err := c.Run()
 	return strings.TrimSpace(b.String()), err
 }
+
+// ReapplyPolicy re-loads the pinned policy config into a live server. tmux reads
+// a config via -f ONLY when the SERVER first starts; a server adopted across a
+// supervisor restart (sessions persist because exit-empty is off and settled
+// workers linger) keeps whatever config it was born with. When the operator
+// changes the policy — e.g. adds extended-keys — an already-running server never
+// picks it up, so pi warns "extended-keys off", the mouse wheel does not scroll,
+// and PageUp copy-mode is unbound. source-file applies the current policy
+// synchronously to the running server (idempotent set-options/bindings). No-op
+// (nil) when no server is running yet. Called at supervisor boot and after
+// every session start so the policy is reliable on every server start path.
+func (t Tmux) ReapplyPolicy(ctx context.Context) error {
+	if !t.ServerAlive(ctx) {
+		return nil
+	}
+	_, err := t.run(ctx, "source-file", t.config())
+	return err
+}
 func (t Tmux) ServerAlive(ctx context.Context) bool {
 	_, err := t.run(ctx, "show-options", "-g", "status")
 	return err == nil
@@ -131,14 +149,26 @@ func (t Tmux) Start(ctx context.Context, id string, l harnesses.Launch) (string,
 		cmd = "exec bash -o pipefail -c " + quote(pipeline)
 	}
 	args := []string{"new-session", "-d", "-s", session, "-n", "worker", "-c", l.Dir, cmd}
-	if !t.ServerAlive(ctx) {
+	fresh := !t.ServerAlive(ctx)
+	if fresh {
 		if fi, err := os.Lstat(t.Socket); err == nil && fi.Mode()&os.ModeSocket != 0 {
 			_ = os.Remove(t.Socket)
 		}
+		// -f applies the policy at server birth so it is born with exit-empty off
+		// etc.; a config is read via -f ONLY on the server-spawning invocation.
 		args = append([]string{"-f", t.config()}, args...)
 	}
 	if out, err := t.run(ctx, args...); err != nil {
 		return "", "", fmt.Errorf("tmux start: %s: %w", out, err)
+	}
+	// Always source-file the policy after the session exists. On a fresh server
+	// this forces the -f config to be fully applied SYNCHRONOUSLY before Start
+	// returns (closing the rare race where an immediate query saw the PageUp
+	// binding missing — the known TestPrivateTmuxLifecycle flake). On an adopted
+	// server (supervisor restart) it re-applies the current policy the -f flag
+	// could not, so a config change always takes effect on the next start.
+	if _, err := t.run(ctx, "source-file", t.config()); err != nil {
+		return "", "", fmt.Errorf("tmux source-file: %w", err)
 	}
 	return session, session + ":0.0", nil
 }
