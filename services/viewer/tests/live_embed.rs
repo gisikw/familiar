@@ -218,9 +218,14 @@ fn embeds_tmux_and_tracks_outer_resize() {
     );
 
     // Host cell (30,5), one-based, is inside main and becomes child cell
-    // (2,5). The inner tmux's mouse binding is a deterministic end-to-end
-    // assertion that the viewer translated and SGR-encoded the press.
+    // (2,5). Under the ratified arbitration the viewer *owns* an unmodified
+    // left gesture for host selection, so a lone press is deferred rather than
+    // forwarded. A plain click (press then release with no drag) is replayed to
+    // the child as down+up on release; tmux's MouseDown1Pane binding then fires.
+    // This is the deterministic end-to-end assertion that a plain click still
+    // reaches the child, translated and SGR-encoded.
     writer.write_all(b"\x1b[<0;30;5M").unwrap();
+    writer.write_all(b"\x1b[<0;30;5m").unwrap();
     writer.flush().unwrap();
     let mouse_deadline = Instant::now() + Duration::from_secs(8);
     while !mouse_marker.exists() && Instant::now() < mouse_deadline {
@@ -228,7 +233,7 @@ fn embeds_tmux_and_tracks_outer_resize() {
     }
     assert!(
         mouse_marker.exists(),
-        "inner tmux did not receive mouse press"
+        "inner tmux did not receive replayed plain click"
     );
 
     let termfeatures = Command::new("tmux")

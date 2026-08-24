@@ -2,7 +2,7 @@ use crate::app::{App, TargetRuntime, ViewerTarget};
 use crate::capture::{self, HostWriter};
 use crate::cli::Config;
 use crate::graphics::{probe_host, CellAspect, GraphicsMode, HostGraphics};
-use crate::input::{main_cell, route_mouse, target_for_sidebar_hit, MouseRoute};
+use crate::input::{child_mouse_bytes, main_cell, route_mouse, target_for_sidebar_hit, MouseRoute};
 use crate::layout::{viewer_layout, ViewerLayout};
 use crate::pty::{child_command, pty_size};
 use crate::selection::{osc52_clipboard, selected_text, Selection};
@@ -517,6 +517,82 @@ fn dimensions(layout: ViewerLayout) -> GridSize {
     }
 }
 
+/// The IO the run loop must perform after a host-owned left gesture step. The
+/// state transition (selection + deferred click) is pure; this reports what,
+/// if anything, the caller should emit.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum HostSelectAction {
+    /// Redraw only (anchor recorded, or drag extended).
+    Redraw,
+    /// A real drag was released: copy the finalized selection to the clipboard.
+    Copy,
+    /// A plain click was released: replay these child mouse reports in order so
+    /// the child still observes an ordinary click.
+    Replay(Vec<Vec<u8>>),
+    /// Nothing happened (event outside the pane, or no active gesture).
+    Idle,
+}
+
+/// Advances the viewer-owned left-button selection gesture for one mouse event.
+///
+/// This is the arbitration seam exercised by the real (tmux mouse-active)
+/// topology: an unmodified left press anchors a selection *and* defers the
+/// press as a potential child click; a drag commits the selection (and cancels
+/// the deferred click); a release either finalizes a copy (real drag) or
+/// replays the deferred down + this up to the child (plain click).
+fn host_select_step(
+    event: crossterm::event::MouseEvent,
+    cell: Option<(u16, u16)>,
+    modes: TerminalModes,
+    layout: ViewerLayout,
+    selection: &mut Option<Selection>,
+    pending_click: &mut Option<crossterm::event::MouseEvent>,
+) -> HostSelectAction {
+    match (event.kind, cell) {
+        (MouseEventKind::Down(MouseButton::Left), Some((column, row))) => {
+            *selection = Some(Selection::anchor(column, row));
+            *pending_click = Some(event);
+            HostSelectAction::Redraw
+        }
+        (MouseEventKind::Drag(MouseButton::Left), Some((column, row))) => {
+            let Some(active) = selection.as_mut() else {
+                return HostSelectAction::Idle;
+            };
+            active.drag_to(column, row);
+            // A committed drag can no longer become a replayable click.
+            if active.is_active() {
+                *pending_click = None;
+            }
+            HostSelectAction::Redraw
+        }
+        (MouseEventKind::Up(MouseButton::Left), _) => {
+            let Some(active) = selection.as_mut() else {
+                return HostSelectAction::Idle;
+            };
+            if active.finish() {
+                // A real drag: keep the highlight, copy on the caller's side.
+                *pending_click = None;
+                HostSelectAction::Copy
+            } else {
+                // A plain click: drop the (empty) selection and replay the
+                // deferred down + this up so the child still sees a click.
+                *selection = None;
+                let mut reports = Vec::new();
+                if let Some(down) = pending_click.take() {
+                    if let Some(bytes) = child_mouse_bytes(down, layout, modes) {
+                        reports.push(bytes);
+                    }
+                }
+                if let Some(bytes) = child_mouse_bytes(event, layout, modes) {
+                    reports.push(bytes);
+                }
+                HostSelectAction::Replay(reports)
+            }
+        }
+        _ => HostSelectAction::Idle,
+    }
+}
+
 pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     // Initialize the capture tap before any host-bound bytes leave the process
     // (the guard enters the alternate screen on construction).
@@ -554,6 +630,10 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     // Host-side text selection, only engaged when the child pane is not itself
     // consuming the mouse. `None` when there is no live or retained selection.
     let mut selection: Option<Selection> = None;
+    // A deferred plain left click awaiting its release. Set on left-down within
+    // an owned host-selection gesture; if the gesture never becomes a drag, the
+    // down+up pair is replayed to the child so ordinary clicks still reach it.
+    let mut pending_click: Option<crossterm::event::MouseEvent> = None;
 
     loop {
         if sidebar_notice
@@ -573,6 +653,7 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                     if selection.take().is_some() {
                         damaged = true;
                     }
+                    pending_click = None;
                     if child.write_all(&encode_key(key, core.modes())).is_err() {
                         child_notice = Some("tmux session ended — waiting for a new target".into());
                         damaged = true;
@@ -594,6 +675,7 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                             if selection.take().is_some() {
                                 damaged = true;
                             }
+                            pending_click = None;
                             let _ = child.write_all(&bytes);
                         }
                         MouseRoute::Sidebar(hit)
@@ -627,6 +709,7 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                                             host.clear()?;
                                             graphics.invalidate_host_images();
                                             selection = None;
+                                            pending_click = None;
                                             child_notice = None;
                                             sidebar_notice = None;
                                             sidebar_rows = rows_for(
@@ -649,46 +732,48 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                         MouseRoute::Sidebar(_) => {}
-                        MouseRoute::Swallowed => {
-                            // The child is not tracking the mouse, so the viewer
-                            // owns click-drag text selection over the main pane.
-                            match (mouse.kind, main_cell(layout, mouse)) {
-                                (MouseEventKind::Down(MouseButton::Left), Some((column, row))) => {
-                                    selection = Some(Selection::anchor(column, row));
-                                    damaged = true;
-                                }
-                                (MouseEventKind::Drag(MouseButton::Left), Some((column, row))) => {
-                                    if let Some(active) = selection.as_mut() {
-                                        active.drag_to(column, row);
-                                        damaged = true;
-                                    }
-                                }
-                                (MouseEventKind::Up(MouseButton::Left), _) => {
-                                    if let Some(active) = selection.as_mut() {
-                                        // A real drag finalizes and copies; a plain
-                                        // click clears without touching the clipboard.
-                                        if active.finish() {
-                                            if let Some(text) = selected_text(&core, active) {
-                                                host.backend_mut()
-                                                    .write_all(&osc52_clipboard(&text))?;
-                                                host.backend_mut().flush()?;
-                                            }
-                                            damaged = true;
-                                        } else {
-                                            selection = None;
-                                            damaged = true;
+                        MouseRoute::HostSelect => {
+                            // The viewer owns unmodified left-drag selection
+                            // over the main pane even when the child requests
+                            // mouse tracking. A plain (non-drag) click is
+                            // deferred and replayed to the child on release so
+                            // ordinary clicks still reach it.
+                            match host_select_step(
+                                mouse,
+                                main_cell(layout, mouse),
+                                core.modes(),
+                                layout,
+                                &mut selection,
+                                &mut pending_click,
+                            ) {
+                                HostSelectAction::Redraw => damaged = true,
+                                HostSelectAction::Copy => {
+                                    if let Some(active) = selection.as_ref() {
+                                        if let Some(text) = selected_text(&core, active) {
+                                            host.backend_mut()
+                                                .write_all(&osc52_clipboard(&text))?;
+                                            host.backend_mut().flush()?;
                                         }
                                     }
+                                    damaged = true;
                                 }
-                                _ => {}
+                                HostSelectAction::Replay(reports) => {
+                                    for bytes in reports {
+                                        let _ = child.write_all(&bytes);
+                                    }
+                                    damaged = true;
+                                }
+                                HostSelectAction::Idle => {}
                             }
                         }
+                        MouseRoute::Swallowed => {}
                     }
                 }
                 Event::Resize(width, height) => {
                     layout = viewer_layout(width, height);
                     // Grid coordinates change under a resize; drop stale selection.
                     selection = None;
+                    pending_click = None;
                     let size = dimensions(layout);
                     let update = core.resize(size)?;
                     graphics.handle_events(update.graphics);
@@ -787,9 +872,157 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
     use crate::input::SidebarHit;
-    use crate::terminal::{CursorState, TerminalCell, TerminalUpdate};
+    use crate::layout::viewer_layout;
+    use crate::terminal::{
+        CursorState, MouseEncoding, MouseTracking, TerminalCell, TerminalUpdate,
+    };
+    use crossterm::event::MouseEvent as CrosstermMouseEvent;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
+
+    fn tmux_modes() -> TerminalModes {
+        // The real production child: tmux with mouse tracking + SGR reporting.
+        TerminalModes {
+            mouse_tracking: MouseTracking::ButtonEvent,
+            mouse_encoding: MouseEncoding::Sgr,
+            ..Default::default()
+        }
+    }
+
+    fn host_mouse(kind: MouseEventKind, column: u16, row: u16) -> CrosstermMouseEvent {
+        CrosstermMouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn tmux_left_drag_is_consumed_for_selection_not_forwarded() {
+        // Real topology: tmux advertises mouse tracking. An unmodified left
+        // gesture must be routed to the viewer, never encoded to the child.
+        let layout = viewer_layout(100, 30);
+        let modes = tmux_modes();
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Drag(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            assert_eq!(
+                route_mouse(host_mouse(kind, 40, 5), layout, modes, |_| SidebarHit::Dead),
+                MouseRoute::HostSelect,
+            );
+        }
+    }
+
+    #[test]
+    fn drag_gesture_builds_and_copies_a_selection() {
+        let layout = viewer_layout(100, 30);
+        let modes = tmux_modes();
+        let mut selection = None;
+        let mut pending: Option<CrosstermMouseEvent> = None;
+        let down = host_mouse(MouseEventKind::Down(MouseButton::Left), 40, 5);
+        assert_eq!(
+            host_select_step(
+                down,
+                main_cell(layout, down),
+                modes,
+                layout,
+                &mut selection,
+                &mut pending
+            ),
+            HostSelectAction::Redraw
+        );
+        assert!(pending.is_some(), "press is deferred as a potential click");
+        let drag = host_mouse(MouseEventKind::Drag(MouseButton::Left), 45, 5);
+        assert_eq!(
+            host_select_step(
+                drag,
+                main_cell(layout, drag),
+                modes,
+                layout,
+                &mut selection,
+                &mut pending
+            ),
+            HostSelectAction::Redraw
+        );
+        assert!(
+            pending.is_none(),
+            "a committed drag cancels the deferred click"
+        );
+        assert!(selection.as_ref().unwrap().is_active());
+        let up = host_mouse(MouseEventKind::Up(MouseButton::Left), 45, 5);
+        assert_eq!(
+            host_select_step(
+                up,
+                main_cell(layout, up),
+                modes,
+                layout,
+                &mut selection,
+                &mut pending
+            ),
+            HostSelectAction::Copy
+        );
+        // The finalized selection is retained (highlighted) for the caller to copy.
+        assert!(selection.as_ref().unwrap().is_active());
+    }
+
+    #[test]
+    fn plain_click_replays_down_and_up_to_the_child() {
+        let layout = viewer_layout(100, 30);
+        let modes = tmux_modes();
+        let mut selection = None;
+        let mut pending: Option<CrosstermMouseEvent> = None;
+        let down = host_mouse(MouseEventKind::Down(MouseButton::Left), 40, 5);
+        host_select_step(
+            down,
+            main_cell(layout, down),
+            modes,
+            layout,
+            &mut selection,
+            &mut pending,
+        );
+        // Release without any drag => plain click => replay to the child.
+        let up = host_mouse(MouseEventKind::Up(MouseButton::Left), 40, 5);
+        let action = host_select_step(
+            up,
+            main_cell(layout, up),
+            modes,
+            layout,
+            &mut selection,
+            &mut pending,
+        );
+        // Main pane starts at column layout.main.x; cell (40 - x) is one-based
+        // +1 in SGR. Verify both a press (M) and release (m) report reach it.
+        let col = 40 - layout.main.x + 1;
+        let expected_down = format!("\x1b[<0;{col};6M").into_bytes();
+        let expected_up = format!("\x1b[<0;{col};6m").into_bytes();
+        assert_eq!(
+            action,
+            HostSelectAction::Replay(vec![expected_down, expected_up])
+        );
+        assert!(selection.is_none(), "a plain click leaves no selection");
+        assert!(pending.is_none());
+    }
+
+    #[test]
+    fn wheel_is_forwarded_to_the_child_under_tmux_tracking() {
+        // Wheel events are never claimed for selection; they encode to the child.
+        let layout = viewer_layout(100, 30);
+        let modes = tmux_modes();
+        match route_mouse(
+            host_mouse(MouseEventKind::ScrollUp, 40, 5),
+            layout,
+            modes,
+            |_| SidebarHit::Dead,
+        ) {
+            MouseRoute::Child(bytes) => {
+                assert_eq!(bytes, b"\x1b[<64;13;6M");
+            }
+            other => panic!("wheel should forward to the child, got {other:?}"),
+        }
+    }
 
     #[test]
     fn viewer_quit_is_intercepted_but_other_control_keys_pass_through() {
