@@ -2,9 +2,10 @@ use crate::app::{App, TargetRuntime, ViewerTarget};
 use crate::capture::{self, HostWriter};
 use crate::cli::Config;
 use crate::graphics::{probe_host, CellAspect, GraphicsMode, HostGraphics};
-use crate::input::{route_mouse, target_for_sidebar_hit, MouseRoute};
+use crate::input::{main_cell, route_mouse, target_for_sidebar_hit, MouseRoute};
 use crate::layout::{viewer_layout, ViewerLayout};
 use crate::pty::{child_command, pty_size};
+use crate::selection::{osc52_clipboard, selected_text, Selection};
 use crate::sidebar::{
     render as render_sidebar, rows_for, spawn_poller, terminal_live, Activation, RowModel,
     SidebarModel,
@@ -287,6 +288,7 @@ pub fn render_cells<T: TerminalCore>(
     terminal: &T,
     area: ratatui::layout::Rect,
     buffer: &mut ratatui::buffer::Buffer,
+    selection: Option<&Selection>,
 ) {
     let size = terminal.grid_size();
     for row in 0..size.rows.min(area.height) {
@@ -303,11 +305,11 @@ pub fn render_cells<T: TerminalCore>(
                 &cell.text
             };
             if let Some(output) = buffer.cell_mut((area.x + column, area.y + row)) {
-                output.set_symbol(symbol).set_style(cell_style(
-                    cell.attributes,
-                    cell.foreground,
-                    cell.background,
-                ));
+                let mut style = cell_style(cell.attributes, cell.foreground, cell.background);
+                if selection.is_some_and(|sel| sel.contains(column, row)) {
+                    style = style.add_modifier(Modifier::REVERSED);
+                }
+                output.set_symbol(symbol).set_style(style);
             }
         }
     }
@@ -389,6 +391,7 @@ fn render_divider(area: ratatui::layout::Rect, buffer: &mut ratatui::buffer::Buf
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_frame(
     frame: &mut ratatui::Frame<'_>,
     terminal: &GhosttyTerminal,
@@ -397,6 +400,7 @@ fn render_frame(
     sidebar_rows: &RowModel,
     target: &ViewerTarget,
     graphics_mode: GraphicsMode,
+    selection: Option<&Selection>,
 ) {
     let (child_notice, sidebar_notice) = notices;
     if layout.sidebar.width > 0 {
@@ -409,7 +413,7 @@ fn render_frame(
             .style(Style::default().fg(Color::Indexed(1)))
             .render(layout.job_rows, frame.buffer_mut());
     }
-    render_cells(terminal, layout.main, frame.buffer_mut());
+    render_cells(terminal, layout.main, frame.buffer_mut(), selection);
     if let Some(notice) = child_notice {
         Paragraph::new(notice)
             .alignment(Alignment::Center)
@@ -547,6 +551,9 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let mut damaged = true;
     let mut child_notice: Option<String> = None;
     let mut sidebar_notice: Option<(String, Instant)> = None;
+    // Host-side text selection, only engaged when the child pane is not itself
+    // consuming the mouse. `None` when there is no live or retained selection.
+    let mut selection: Option<Selection> = None;
 
     loop {
         if sidebar_notice
@@ -561,6 +568,10 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                 Event::Key(key) => {
                     if is_quit_key(key) {
                         return Ok(());
+                    }
+                    // Any keystroke dismisses a retained (copied) selection.
+                    if selection.take().is_some() {
+                        damaged = true;
                     }
                     if child.write_all(&encode_key(key, core.modes())).is_err() {
                         child_notice = Some("tmux session ended — waiting for a new target".into());
@@ -579,6 +590,10 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                 Event::Mouse(mouse) => {
                     match route_mouse(mouse, layout, core.modes(), |row| sidebar_rows.hit(row)) {
                         MouseRoute::Child(bytes) => {
+                            // The child app owns the mouse; drop any host selection.
+                            if selection.take().is_some() {
+                                damaged = true;
+                            }
                             let _ = child.write_all(&bytes);
                         }
                         MouseRoute::Sidebar(hit)
@@ -611,6 +626,7 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                                             host.backend_mut().write_all(&deletes)?;
                                             host.clear()?;
                                             graphics.invalidate_host_images();
+                                            selection = None;
                                             child_notice = None;
                                             sidebar_notice = None;
                                             sidebar_rows = rows_for(
@@ -632,11 +648,47 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                         }
-                        MouseRoute::Sidebar(_) | MouseRoute::Swallowed => {}
+                        MouseRoute::Sidebar(_) => {}
+                        MouseRoute::Swallowed => {
+                            // The child is not tracking the mouse, so the viewer
+                            // owns click-drag text selection over the main pane.
+                            match (mouse.kind, main_cell(layout, mouse)) {
+                                (MouseEventKind::Down(MouseButton::Left), Some((column, row))) => {
+                                    selection = Some(Selection::anchor(column, row));
+                                    damaged = true;
+                                }
+                                (MouseEventKind::Drag(MouseButton::Left), Some((column, row))) => {
+                                    if let Some(active) = selection.as_mut() {
+                                        active.drag_to(column, row);
+                                        damaged = true;
+                                    }
+                                }
+                                (MouseEventKind::Up(MouseButton::Left), _) => {
+                                    if let Some(active) = selection.as_mut() {
+                                        // A real drag finalizes and copies; a plain
+                                        // click clears without touching the clipboard.
+                                        if active.finish() {
+                                            if let Some(text) = selected_text(&core, active) {
+                                                host.backend_mut()
+                                                    .write_all(&osc52_clipboard(&text))?;
+                                                host.backend_mut().flush()?;
+                                            }
+                                            damaged = true;
+                                        } else {
+                                            selection = None;
+                                            damaged = true;
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
                     }
                 }
                 Event::Resize(width, height) => {
                     layout = viewer_layout(width, height);
+                    // Grid coordinates change under a resize; drop stale selection.
+                    selection = None;
                     let size = dimensions(layout);
                     let update = core.resize(size)?;
                     graphics.handle_events(update.graphics);
@@ -713,6 +765,7 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                     &sidebar_rows,
                     app.target(),
                     graphics_mode,
+                    selection.as_ref(),
                 )
             })?;
             if graphics_mode == GraphicsMode::Kitty {
@@ -898,7 +951,7 @@ mod tests {
             },
         ]);
         let mut buffer = Buffer::empty(Rect::new(0, 0, 2, 1));
-        render_cells(&core, Rect::new(0, 0, 2, 1), &mut buffer);
+        render_cells(&core, Rect::new(0, 0, 2, 1), &mut buffer, None);
         let first = buffer.cell((0, 0)).unwrap();
         assert_eq!(first.symbol(), "界");
         assert_eq!(first.fg, Color::Indexed(2));
