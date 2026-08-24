@@ -81,6 +81,61 @@ python3 scripts/vendor_libghostty_vt.py /path/to/ghostty
 
 Review the resulting metadata, license, headers, and source diff. The helper builds Ghostty's `dist` target and replaces only this crate's vendor directory. `scripts/build_vendored_libghostty_vt.sh` is available for a direct smoke build.
 
+## Debugging: host byte-stream capture tap
+
+Set `FAMILIAR_VIEWER_CAPTURE` to a file path and the viewer appends every byte
+it writes to the host terminal to that file, exactly as written — all frames,
+Kitty graphics APCs, the graphics-capability probe query, and
+setup/teardown sequences. The capture is best-effort: a write failure warns
+once to stderr and is thereafter ignored, and never blocks or crashes the
+viewer. Unset, there is zero behavior change.
+
+The tap sits at the single host-bound choke point: the process stdout is
+wrapped in a `HostWriter` (`src/capture.rs`) that tees written bytes, and the
+ratatui `CrosstermBackend`, the alternate-screen enter/leave, the graphics
+teardown, and the probe query all write through it. (Two byte sequences that
+can appear on the wire are *not* viewer emission and are therefore absent:
+ratatui's internal `\x1b[6n` cursor-position probe, which crossterm hardcodes
+to its own stdout handle, and any host reply the PTY echoes before raw mode.)
+
+Host **responses** are also captured where the viewer reads raw host stdin: the
+graphics-capability probe's query/response path. Those bytes are appended to
+`FAMILIAR_VIEWER_CAPTURE` + `.in`. Steady-state keyboard and mouse input is
+decoded by crossterm's event reader rather than read as raw bytes, so it is not
+in the `.in` capture; the priority (and the render-defect signal) is the output
+stream.
+
+**Captures may contain terminal queries and responses** (graphics-capability
+probes, device-attribute replies, cursor reports). Treat a capture as terminal
+traffic, not just rendered content.
+
+Usage:
+
+```sh
+# Direct run
+FAMILIAR_VIEWER_CAPTURE=/tmp/ghostty.cap familiar-viewer --presence-socket ... --agents-socket ...
+# → /tmp/ghostty.cap (host-bound output) and /tmp/ghostty.cap.in (probe replies)
+```
+
+To capture the same icat repro against two different host terminals, the
+variable must be present in the viewer process's environment. Both entry paths
+propagate the whole environment, so exporting it before the entry point is
+enough:
+
+- **SSH / ghostty (`./familiar.sh connect`):** on the server, export it before
+  connecting, e.g. `FAMILIAR_VIEWER_CAPTURE=/tmp/ghostty.cap ./familiar.sh
+  connect`. `familiar.sh` re-execs through `nix develop -c` and
+  `presence.sh viewer` with `exec`, both of which inherit the environment, so
+  the viewer child sees it.
+- **Browser / restty (gateway):** the viewer runs as a node-pty child of the
+  gateway. Export `FAMILIAR_VIEWER_CAPTURE` in the gateway process's
+  environment (the gateway copies its whole environment into the viewer via
+  `familiarEnvironment()`), then open the browser session. Use a distinct path,
+  e.g. `FAMILIAR_VIEWER_CAPTURE=/tmp/restty.cap familiar-gateway`.
+
+Diff the two `.cap` files to compare exactly what the viewer emitted to ghostty
+vs. restty for the same repro.
+
 ## Deferred
 
 Virtual-placeholder Kitty placements and more exact pixel/cell geometry are deferred. Fine-grained render-state damage is also deferred; the current conservative full-grid region is functionally correct. Chunk 5 must provide Zig 0.15 in Nix builds and should account for the native library's clean-build cost.

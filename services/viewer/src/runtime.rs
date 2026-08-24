@@ -1,4 +1,5 @@
 use crate::app::{App, TargetRuntime, ViewerTarget};
+use crate::capture::{self, HostWriter};
 use crate::cli::Config;
 use crate::graphics::{probe_host, CellAspect, GraphicsMode, HostGraphics};
 use crate::input::{route_mouse, target_for_sidebar_hit, MouseRoute};
@@ -37,9 +38,13 @@ static GRAPHICS_ACTIVE: AtomicBool = AtomicBool::new(false);
 fn restore_host_terminal() {
     if TERMINAL_ACTIVE.swap(false, Ordering::SeqCst) {
         if GRAPHICS_ACTIVE.swap(false, Ordering::SeqCst) {
-            let _ = io::stdout().write_all(b"\x1b_Ga=d,d=A,q=2;\x1b\\");
+            let _ = HostWriter::stdout().write_all(b"\x1b_Ga=d,d=A,q=2;\x1b\\");
         }
-        let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
+        let _ = execute!(
+            HostWriter::stdout(),
+            DisableMouseCapture,
+            LeaveAlternateScreen
+        );
         let _ = disable_raw_mode();
     }
 }
@@ -50,8 +55,16 @@ pub struct TerminalGuard;
 impl TerminalGuard {
     pub fn enter() -> io::Result<Self> {
         enable_raw_mode()?;
-        if let Err(error) = execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture) {
-            let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
+        if let Err(error) = execute!(
+            HostWriter::stdout(),
+            EnterAlternateScreen,
+            EnableMouseCapture
+        ) {
+            let _ = execute!(
+                HostWriter::stdout(),
+                DisableMouseCapture,
+                LeaveAlternateScreen
+            );
             let _ = disable_raw_mode();
             return Err(error);
         }
@@ -483,10 +496,13 @@ fn dimensions(layout: ViewerLayout) -> GridSize {
 }
 
 pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize the capture tap before any host-bound bytes leave the process
+    // (the guard enters the alternate screen on construction).
+    capture::init();
     let _guard = TerminalGuard::enter()?;
     // Crossterm construction performs a cursor-position query. Do it before
     // our raw capability probe so its CPR cannot be mistaken for user input.
-    let backend = CrosstermBackend::new(io::stdout());
+    let backend = CrosstermBackend::new(HostWriter::stdout());
     let mut host = Terminal::new(backend)?;
     host.clear()?;
     let (graphics_mode, buffered_input) = probe_host(Duration::from_millis(200))?;
