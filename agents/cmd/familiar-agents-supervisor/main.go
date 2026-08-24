@@ -97,7 +97,7 @@ func main() {
 		slog.Error("registry", "error", err)
 		os.Exit(1)
 	}
-	tm := supervisor.Tmux{Socket: filepath.Join(*state, "tmux.sock"), Config: filepath.Join(*state, "tmux.conf")}
+	tm := supervisor.Tmux{Socket: filepath.Join(*state, "tmux.sock"), Config: filepath.Join(*state, "tmux.conf"), DefaultShell: os.Getenv("FAMILIAR_INTERACTIVE_SHELL")}
 	if err = tm.Prepare(); err != nil {
 		slog.Error("tmux prepare", "error", err)
 		os.Exit(1)
