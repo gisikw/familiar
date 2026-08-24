@@ -149,7 +149,7 @@ pub fn probe_host(timeout: Duration) -> io::Result<(GraphicsMode, Vec<u8>)> {
     }
     let query = format!("\x1b_Gi={PROBE_IMAGE_ID},s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c");
     use std::io::Write;
-    let mut stdout = io::stdout().lock();
+    let mut stdout = crate::capture::HostWriter::stdout();
     stdout.write_all(query.as_bytes())?;
     stdout.flush()?;
 
@@ -170,6 +170,7 @@ pub fn probe_host(timeout: Duration) -> io::Result<(GraphicsMode, Vec<u8>)> {
         let mut buf = [0_u8; 1024];
         let count = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
         if count > 0 {
+            crate::capture::tap_in(&buf[..count as usize]);
             received.extend_from_slice(&buf[..count as usize]);
             result = parser.feed(&buf[..count as usize]);
         } else {

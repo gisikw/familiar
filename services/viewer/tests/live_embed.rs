@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -139,10 +139,22 @@ fn embeds_tmux_and_tracks_outer_resize() {
     let mut reader = pair.master.try_clone_reader().unwrap();
     let mut writer = pair.master.take_writer().unwrap();
     let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
+    // A never-cleared accumulator of the entire host-bound stream. The steady
+    // `output` buffer below is drained per assertion; this mirrors exactly what
+    // the PTY harness saw so it can be compared to the capture tap's file.
+    let full = Arc::new(Mutex::new(Vec::new()));
+    let full_reader = Arc::clone(&full);
+    let reader_handle = thread::spawn(move || {
         let mut buffer = [0_u8; 8192];
         while let Ok(length) = reader.read(&mut buffer) {
-            if length == 0 || tx.send(buffer[..length].to_vec()).is_err() {
+            if length == 0 {
+                break;
+            }
+            full_reader
+                .lock()
+                .unwrap()
+                .extend_from_slice(&buffer[..length]);
+            if tx.send(buffer[..length].to_vec()).is_err() {
                 break;
             }
         }
@@ -159,6 +171,10 @@ fn embeds_tmux_and_tracks_outer_resize() {
     ]);
     command.env("TERM", "xterm-256color");
     command.env("FAMILIAR_GRAPHICS_MODE", "text");
+    // Diagnostic capture tap: the file must end up byte-identical to the host
+    // stream this harness reads back.
+    let capture = directory.join("host.cap");
+    command.env("FAMILIAR_VIEWER_CAPTURE", &capture);
     let mut viewer = pair.slave.spawn_command(command).unwrap();
     drop(pair.slave);
     // Crossterm asks the host terminal for its cursor position during ratatui setup.
@@ -466,6 +482,64 @@ fn embeds_tmux_and_tracks_outer_resize() {
     assert!(
         !output.windows(3).any(|window| window == b"\x1b_G"),
         "text mode leaked Kitty APC bytes"
+    );
+
+    // Drain the reader to EOF (the child has exited) so the accumulator holds
+    // every host-bound byte, then assert the capture tap recorded exactly that.
+    // Two byte sequences legitimately appear in the host stream but not in the
+    // tap, and neither is viewer frame/graphics emission:
+    //   * `\x1b[1;1R` — the harness injects this fake cursor-position *reply* as
+    //     viewer input; the PTY line discipline echoes it. It is not a viewer
+    //     write at all.
+    //   * `\x1b[6n` — ratatui's `get_cursor_position` calls
+    //     `crossterm::cursor::position()`, which crossterm hardcodes to its own
+    //     `io::stdout()` handle, structurally bypassing any wrapper around the
+    //     ratatui backend. It is a library-internal capability probe.
+    // With those removed, the capture is byte-identical to the observed stream:
+    // proof the tap sees every byte the viewer itself emits.
+    reader_handle.join().unwrap();
+    let captured = fs::read(&capture).unwrap();
+    let seen = full.lock().unwrap().clone();
+    fn strip_non_viewer_writes(bytes: &[u8]) -> Vec<u8> {
+        // Remove every `\x1b[1;1R` (harness-injected fake CPR reply, echoed by
+        // the PTY before raw mode) and every `\x1b[6n` (crossterm's internal
+        // cursor-position probe on its own stdout handle). Their counts are
+        // render-timing dependent, so strip from both streams.
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i..].starts_with(b"\x1b[6n") {
+                i += 4;
+                continue;
+            }
+            if bytes[i..].starts_with(b"\x1b[1;1R") {
+                i += 7;
+                continue;
+            }
+            // Before the viewer enables raw mode the PTY line discipline echoes
+            // the harness's injected ESC in caret notation, so the same fake CPR
+            // also appears as the literal bytes `^[[1;1R`.
+            if bytes[i..].starts_with(b"^[[1;1R") {
+                i += 7;
+                continue;
+            }
+            out.push(bytes[i]);
+            i += 1;
+        }
+        out
+    }
+    let expected = strip_non_viewer_writes(&seen);
+    let captured = strip_non_viewer_writes(&captured);
+    assert_eq!(
+        captured.len(),
+        expected.len(),
+        "capture length {} diverged from viewer-emitted host stream length {}",
+        captured.len(),
+        expected.len()
+    );
+    assert!(
+        captured == expected,
+        "capture file diverged from the observed viewer-emitted host byte stream"
     );
 
     let _ = Command::new("tmux")
