@@ -114,11 +114,44 @@ type TerminalEndpoint struct {
 	Target string `json:"target"`
 }
 
+// ProviderConfig is the opaque, single-provider connection descriptor the
+// presence-side agents extension resolves at dispatch time so the worker's pi
+// boots with EXACTLY the dispatched model+provider available and selected —
+// nothing else. It is written by the adapter into the worker's isolated per-job
+// pi dir (models.json + settings defaults), never logged or emitted in
+// events/settlements.
+//
+// SECURITY: this rides the job payload, which transits the service DB. The
+// extension forwards ApiKey ONLY as an unresolved reference (pi's config-value
+// form: "!cmd" runs a host-local command, "$ENV"/"${ENV}" interpolate env), so
+// the DB stores a reference string resolved on the worker host at runtime, not a
+// plaintext secret. Built-in/login providers carry no key here at all: they set
+// Builtin+CopyAuth and the adapter copies auth.json into the private per-job dir
+// (0700/0600). See agents/DECISIONS.md #20 for the credential-exposure note and
+// the remote-host caveat.
+type ProviderConfig struct {
+	// Provider and Model are the canonical ids used for defaults and for scoping
+	// the worker to a single model (enabledModels "provider/model").
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	// Builtin marks a provider pi knows natively (credentials in auth.json). No
+	// models.json is written; the adapter relies on the copied auth.json instead.
+	Builtin bool `json:"builtin,omitempty"`
+	// CopyAuth requests the adapter copy the source profile's auth.json into the
+	// worker dir (needed for oauth/stored-credential built-in providers).
+	CopyAuth bool `json:"copy_auth,omitempty"`
+	// ModelsJSON is the complete single-provider pi models.json object written
+	// verbatim (keyed by provider id, carrying baseUrl/apiKey-ref/api/models).
+	// Empty for Builtin providers.
+	ModelsJSON json.RawMessage `json:"models_json,omitempty"`
+}
+
 type Job struct {
 	ID              string            `json:"id"`
 	IdempotencyKey  string            `json:"idempotency_key"`
 	Harness         HarnessKind       `json:"harness"`
 	Model           string            `json:"model,omitempty"`
+	ProviderConfig  *ProviderConfig   `json:"provider_config,omitempty"`
 	CWD             string            `json:"cwd"`
 	Isolation       IsolationPolicy   `json:"isolation"`
 	Prompt          string            `json:"prompt"`
@@ -139,6 +172,7 @@ type CreateJob struct {
 	IdempotencyKey string          `json:"idempotency_key"`
 	Harness        HarnessKind     `json:"harness"`
 	Model          string          `json:"model,omitempty"`
+	ProviderConfig *ProviderConfig `json:"provider_config,omitempty"`
 	CWD            string          `json:"cwd"`
 	Isolation      IsolationPolicy `json:"isolation,omitempty"`
 	Prompt         string          `json:"prompt"`

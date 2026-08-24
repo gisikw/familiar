@@ -53,6 +53,10 @@ func main() {
 		cwd := f.String("cwd", ".", "working directory")
 		key := f.String("key", fmt.Sprintf("cli-%d", time.Now().UnixNano()), "idempotency key")
 		worktree := f.Bool("worktree", false, "use detached git worktree")
+		// provider-config is an opaque single-provider connection descriptor the
+		// presence-side agents extension resolves at dispatch time so the worker
+		// boots with exactly the dispatched provider+model. See protocol.ProviderConfig.
+		providerConfig := f.String("provider-config", "", "JSON protocol.ProviderConfig (worker single-provider descriptor)")
 		f.Parse(args[1:])
 		if *host == "" || f.NArg() == 0 {
 			fatal(fmt.Errorf("dispatch requires --host and prompt"))
@@ -65,7 +69,14 @@ func main() {
 		if *worktree {
 			iso = protocol.IsolationWorktree
 		}
-		j, e := c.Create(ctx, protocol.CreateJob{IdempotencyKey: *key, Harness: protocol.HarnessKind(*h), Model: *model, CWD: abs, Isolation: iso, Prompt: strings.Join(f.Args(), " "), Host: *host})
+		var pc *protocol.ProviderConfig
+		if *providerConfig != "" {
+			pc = &protocol.ProviderConfig{}
+			if err := json.Unmarshal([]byte(*providerConfig), pc); err != nil {
+				fatal(fmt.Errorf("invalid --provider-config: %w", err))
+			}
+		}
+		j, e := c.Create(ctx, protocol.CreateJob{IdempotencyKey: *key, Harness: protocol.HarnessKind(*h), Model: *model, ProviderConfig: pc, CWD: abs, Isolation: iso, Prompt: strings.Join(f.Args(), " "), Host: *host})
 		if e != nil {
 			fatal(e)
 		}
