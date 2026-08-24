@@ -31,8 +31,11 @@ func TestStartLaunchesInteractiveTUIWithSideChannel(t *testing.T) {
 	if !strings.Contains(joined, "--extension /extensions/agent-hooks") || !strings.Contains(joined, "--extension /extensions/tiamat") {
 		t.Fatalf("worker extensions absent: %v", launch.Argv)
 	}
-	if launch.Argv[len(launch.Argv)-1] != "p" {
+	if !strings.HasPrefix(launch.Argv[len(launch.Argv)-1], "p") {
 		t.Fatalf("initial prompt not delivered as positional message: %v", launch.Argv)
+	}
+	if !strings.Contains(launch.Argv[len(launch.Argv)-1], "agents_block") {
+		t.Fatalf("block-tool suffix not appended to prompt: %v", launch.Argv)
 	}
 	if launch.Events == "" || launch.Env[EventsEnv] != launch.Events {
 		t.Fatalf("side-channel path not wired into env: %#v", launch)
@@ -90,13 +93,47 @@ func TestObserveProjectsBlockedQuestion(t *testing.T) {
 	dir := t.TempDir()
 	j := protocol.Job{ID: "j", CWD: dir, Prompt: "p", Artifacts: protocol.ArtifactMetadata{ID: "j", Directory: dir}}
 	l, _ := (Adapter{}).Start(context.Background(), j)
-	if err := os.WriteFile(l.Events, []byte("{\"type\":\"blocked\",\"ts\":1,\"id\":\"q1\",\"prompt\":\"which db?\"}\n"), 0600); err != nil {
+	if err := os.WriteFile(l.Events, []byte("{\"type\":\"blocked\",\"ts\":1,\"id\":\"q1\",\"prompt\":\"which db?\",\"options\":[\"postgres\",\"sqlite\"]}\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	r := &harnesses.Runtime{Launch: l, Alive: func(context.Context) (bool, *int, error) { return true, nil, nil }}
 	o, err := (Adapter{}).Observe(context.Background(), j, r)
 	if err != nil || o.Question == nil || o.Question.ID != "q1" || o.Question.Prompt != "which db?" {
 		t.Fatalf("blocked question not projected: %#v, %v", o, err)
+	}
+	if len(o.Question.Options) != 2 || o.Question.Options[0] != "postgres" || o.Question.Options[1] != "sqlite" {
+		t.Fatalf("blocked options not projected: %#v", o.Question)
+	}
+}
+
+// After a blocked event the answer is delivered as the next TUI message; the
+// worker resumes and the side channel emits fresh progress. The next Observe
+// sees no new blocked record, so o.Question is nil and the supervisor returns
+// the worker to Running (edge-triggered: blocked is set only on the tick that
+// reads the blocked line). This test documents that projection contract.
+func TestObserveResumesAfterBlockedAnswer(t *testing.T) {
+	dir := t.TempDir()
+	j := protocol.Job{ID: "j", CWD: dir, Prompt: "p", Artifacts: protocol.ArtifactMetadata{ID: "j", Directory: dir}}
+	l, _ := (Adapter{}).Start(context.Background(), j)
+	if err := os.WriteFile(l.Events, []byte("{\"type\":\"blocked\",\"ts\":1,\"id\":\"q1\",\"prompt\":\"which db?\"}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r := &harnesses.Runtime{Launch: l, Alive: func(context.Context) (bool, *int, error) { return true, nil, nil }}
+	o, err := (Adapter{}).Observe(context.Background(), j, r)
+	if err != nil || o.Question == nil {
+		t.Fatalf("blocked question not projected: %#v, %v", o, err)
+	}
+	r.ObservationCursor = o.Cursor
+	// Operator's answer resumes the worker; it emits progress on the next turn.
+	f, _ := os.OpenFile(l.Events, os.O_APPEND|os.O_WRONLY, 0600)
+	_, _ = f.WriteString("{\"type\":\"progress\",\"ts\":2,\"turn\":1}\n")
+	_ = f.Close()
+	o, err = (Adapter{}).Observe(context.Background(), j, r)
+	if err != nil || o.Question != nil {
+		t.Fatalf("stale blocked question after answer: %#v, %v", o, err)
+	}
+	if len(o.Progresses) != 1 || o.State != protocol.Running {
+		t.Fatalf("worker did not resume to running with progress: %#v", o)
 	}
 }
 

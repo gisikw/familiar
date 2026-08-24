@@ -163,11 +163,12 @@ type Progress struct {
 }
 
 type BlockedQuestion struct {
-	ID     string          `json:"id"`
-	Prompt string          `json:"prompt"`
-	At     time.Time       `json:"at"`
-	Detail json.RawMessage `json:"detail,omitempty"`
-	Answer *Answer         `json:"answer,omitempty"`
+	ID      string          `json:"id"`
+	Prompt  string          `json:"prompt"`
+	Options []string        `json:"options,omitempty"` // suggested answers, operator-facing
+	At      time.Time       `json:"at"`
+	Detail  json.RawMessage `json:"detail,omitempty"`
+	Answer  *Answer         `json:"answer,omitempty"`
 }
 
 type Answer struct {

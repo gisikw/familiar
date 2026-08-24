@@ -39,6 +39,15 @@ type Adapter struct {
 // EventsEnv names the side-channel path the hook extension writes to.
 const EventsEnv = "FAMILIAR_AGENTS_EVENTS"
 
+// blockSuffix is appended to the worker's initial prompt. Blocking is an
+// explicit agent action (pi has no native ask mechanism): the agent-hooks
+// extension registers agents_block, and this sentence tells the worker when and
+// how to use it. Kept short by design.
+const blockSuffix = "\n\nIf you are genuinely blocked on operator input (missing credentials, ambiguous requirements, or confirmation of a destructive action), call the agents_block tool with your question, then end your turn; the operator's answer will arrive as your next message."
+
+// withBlockSuffix appends the blocked-question instruction to a worker prompt.
+func withBlockSuffix(prompt string) string { return prompt + blockSuffix }
+
 func (a Adapter) bin() string {
 	if a.Binary != "" {
 		return a.Binary
@@ -87,7 +96,7 @@ func (a Adapter) Start(_ context.Context, j protocol.Job) (harnesses.Launch, err
 	if j.Model != "" {
 		v = append(v, "--model", j.Model)
 	}
-	v = append(v, j.Prompt)
+	v = append(v, withBlockSuffix(j.Prompt))
 	return harnesses.Launch{Argv: v, Dir: j.CWD, Env: a.launchEnv(ev), Transcript: t, Session: s, Events: ev, Interactive: true}, nil
 }
 
@@ -149,6 +158,7 @@ type sideEvent struct {
 	Verdict string     `json:"verdict,omitempty"`
 	ID      string     `json:"id,omitempty"`
 	Prompt  string     `json:"prompt,omitempty"`
+	Options []string   `json:"options,omitempty"`
 	Usage   *sideUsage `json:"usage,omitempty"`
 }
 type sideUsage struct {
@@ -208,7 +218,7 @@ func (Adapter) Observe(ctx context.Context, j protocol.Job, r *harnesses.Runtime
 					o.Usage = &protocol.Usage{InputTokens: ev.Usage.Input, OutputTokens: ev.Usage.Output, CostMicros: int64(math.Round(ev.Usage.Cost * 1_000_000))}
 				}
 			case "blocked":
-				o.Question = &protocol.BlockedQuestion{ID: ev.ID, Prompt: ev.Prompt, At: at, Detail: json.RawMessage(append([]byte(nil), b...))}
+				o.Question = &protocol.BlockedQuestion{ID: ev.ID, Prompt: ev.Prompt, Options: ev.Options, At: at, Detail: json.RawMessage(append([]byte(nil), b...))}
 			default:
 				h := sha256.Sum256(b)
 				msg := ev.Message

@@ -48,8 +48,19 @@
    events. `Observe` advances a durable cursor over that file. Crash detection
    stays with the supervisor (pane death → failed). This is the documented path
    for future harnesses (`harnesses/template.go`, `harnesses/README.md`).
-   Blocked-question detection is a stub: pi 0.84.x exposes no extension-visible
-   "awaiting operator input" event; the schema reserves a `blocked` record.
+   Blocked-question detection is an **explicit agent action**, not a stub: pi
+   0.84.x exposes no native "ask the operator" mechanism (no AskUserQuestion),
+   so the tool IS the mechanism. The agent-hooks extension registers an
+   `agents_block` tool (params `question`, optional `options[]`); calling it
+   appends a `{blocked,id,prompt,options,ts}` record to the side channel and
+   returns a result telling the worker to end its turn and wait. The operator's
+   answer arrives as the next TUI message (supervisor bracketed-paste
+   send-keys). Event field names mirror `protocol.BlockedQuestion` exactly
+   (`prompt`, not `question`; `ts`, not `at`) so `Observe` projects without
+   translation; `options` was added to the protocol so the operator sees
+   suggested answers. Resume is edge-triggered: `Observe` sets the question only
+   on the tick that reads the blocked line, so the next observation returns the
+   worker to Running once the answer resumes progress.
 14. **Steering as keystrokes.** `SendText` types into the TUI via tmux
    `send-keys` with bracketed paste (so multi-line text is one atomic paste,
    not a turn per newline) then Enter. Cancel remains process-level.

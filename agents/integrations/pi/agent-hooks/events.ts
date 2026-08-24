@@ -10,7 +10,12 @@
  *   {"type":"running","ts":<ms>}
  *   {"type":"progress","ts":<ms>,"turn":<n>,"message":"<short>"}
  *   {"type":"settled","ts":<ms>,"verdict":"done","summary":"<text>","usage":{...}}
- *   {"type":"blocked","ts":<ms>,"id":"<qid>","prompt":"<question>"}   // reserved
+ *   {"type":"blocked","ts":<ms>,"id":"<qid>","prompt":"<question>","options":["a","b"]}
+ *
+ * The blocked record is emitted by the agent_block tool (index.ts): pi has no
+ * native "ask the operator" mechanism, so blocking is an explicit agent action.
+ * Field names mirror Go's sideEvent / protocol.BlockedQuestion exactly (`prompt`,
+ * not `question`; `ts`, not `at`) so the adapter projects it without translation.
  */
 import fs from "node:fs";
 
@@ -24,7 +29,7 @@ export type SideEvent =
       summary?: string;
       usage?: { input: number; output: number; cost: number };
     }
-  | { type: "blocked"; ts: number; id: string; prompt: string };
+  | { type: "blocked"; ts: number; id: string; prompt: string; options?: string[] };
 
 /** Minimal shape of a pi assistant message we read for settlement content. */
 export interface AssistantLike {
@@ -82,6 +87,37 @@ export function settledEvent(
     }
   }
   return ev;
+}
+
+/**
+ * Build a blocked event from a worker's agent_block invocation. `question`
+ * becomes the `prompt` field (Go/protocol name); suggested `options` are carried
+ * verbatim so the operator sees them alongside the question.
+ */
+export function blockedEvent(
+  question: string,
+  options: string[] | undefined,
+  now: number,
+  id: string,
+): Extract<SideEvent, { type: "blocked" }> {
+  const ev: Extract<SideEvent, { type: "blocked" }> = { type: "blocked", ts: now, id, prompt: question };
+  const opts = (options ?? []).filter((o) => typeof o === "string" && o.length > 0);
+  if (opts.length) ev.options = opts;
+  return ev;
+}
+
+/**
+ * Tool-result text returned to a worker that just called agent_block: its
+ * question is now durable on the side channel; it must end the turn and wait,
+ * because the operator's answer arrives as the next user message (the supervisor
+ * bracketed-paste send-keys path).
+ */
+export function blockedResultText(): string {
+  return (
+    "Your question was delivered to the operator via the side channel. " +
+    "End your turn now and wait — the operator's answer will arrive as your next message. " +
+    "Do not call agent_block again for the same question."
+  );
 }
 
 /**
