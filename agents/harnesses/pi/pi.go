@@ -24,20 +24,50 @@ import (
 // the job's side-channel events file; Observe advances a cursor over it. This
 // is the documented "hook/side-channel" pattern for harnesses without a
 // machine-readable stdout lifecycle stream.
+//
+// WORKER PROFILE ISOLATION IS A SECURITY/CORRECTNESS BOUNDARY. Each worker runs
+// under a private, per-job pi coding-agent dir written by the adapter at Start.
+// That dir's settings.json enumerates ONLY the worker extension set (agent-hooks
+// and, optionally, the self-contained web extension) — never the presence's
+// worklist/identity/attention/zip/handoff/agents-dispatch/subscriber/telemetry
+// suite. Workers therefore cannot dispatch other workers or receive presence
+// inbox/orientation machinery. The adapter sets PI_CODING_AGENT_DIR explicitly
+// so the operator's personal profile can never leak in through ambient env.
 type Adapter struct {
 	Binary string
-	// Extension is an optional additional worker extension (e.g. tiamat model
-	// routing) loaded alongside the hook extension.
-	Extension string
 	// HookExtension is the agent-hooks side-channel extension path. When empty
 	// no lifecycle is reported over the side channel and the worker settles only
 	// on process death (supervisor crash boundary).
 	HookExtension string
-	Env           map[string]string
+	// WebExtension is the optional self-contained web (search + fetch) extension.
+	// It carries no presence-specific state; its SSRF guard defaults to
+	// public-only destinations, so it is safe in an isolated worker.
+	WebExtension string
+	// SourceProfile is a pi coding-agent dir whose model catalog
+	// (models-store.json), theme, and — only when CopyAuth is set — credentials
+	// (auth.json) seed each worker's isolated dir. It is NEVER used as the
+	// worker's PI_CODING_AGENT_DIR; it is read for model config only, so the
+	// worker gets the same model access as the presence without inheriting its
+	// extension suite or personal settings.
+	SourceProfile string
+	// CopyAuth copies SourceProfile/auth.json into each worker dir. Off by
+	// default: credentials otherwise flow through ambient provider env vars
+	// (e.g. ANTHROPIC_API_KEY), keeping secrets out of per-job artifact dirs.
+	CopyAuth bool
+	// DefaultProvider/DefaultModel seed the worker settings default. When empty
+	// they are read from SourceProfile/settings.json so the worker's default
+	// matches the presence's; job.Model (--model) still overrides at launch.
+	DefaultProvider string
+	DefaultModel    string
+	Env             map[string]string
 }
 
 // EventsEnv names the side-channel path the hook extension writes to.
 const EventsEnv = "FAMILIAR_AGENTS_EVENTS"
+
+// CodingDirEnv is the pi coding-agent dir. The adapter sets it explicitly per
+// worker so the ambient (presence) value can never take effect.
+const CodingDirEnv = "PI_CODING_AGENT_DIR"
 
 // blockSuffix is appended to the worker's initial prompt. Blocking is an
 // explicit agent action (pi has no native ask mechanism): the agent-hooks
@@ -63,23 +93,148 @@ func paths(j protocol.Job) (string, string, string) {
 		filepath.Join(j.Artifacts.Directory, "events.jsonl")
 }
 
-func (a Adapter) launchEnv(events string) map[string]string {
+func (a Adapter) launchEnv(events, workerDir string) map[string]string {
 	env := cloneEnv(a.Env)
 	if env == nil {
 		env = map[string]string{}
 	}
 	env[EventsEnv] = events
+	// Explicit override: this wins over any ambient PI_CODING_AGENT_DIR the
+	// supervisor process inherited from the presence, so the worker never loads
+	// the operator's personal profile.
+	env[CodingDirEnv] = workerDir
 	return env
 }
 
-func (a Adapter) extensions(v []string) []string {
+// workerDir is the per-job private pi coding-agent dir. It lives beneath the
+// job artifact directory so it is isolated per worker (no shared mutable
+// settings raced by concurrent Starts) and removed with the job's artifacts.
+func workerDir(j protocol.Job) string {
+	return filepath.Join(j.Artifacts.Directory, "pi")
+}
+
+// workerExtensions is the exact, auditable worker extension set. The leak-guard
+// test pins this list; adding presence extensions here is a security change.
+func (a Adapter) workerExtensions() []string {
+	v := []string{}
 	if a.HookExtension != "" {
-		v = append(v, "--extension", a.HookExtension)
+		v = append(v, a.HookExtension)
 	}
-	if a.Extension != "" {
-		v = append(v, "--extension", a.Extension)
+	if a.WebExtension != "" {
+		v = append(v, a.WebExtension)
 	}
 	return v
+}
+
+// writeWorkerProfile materializes the isolated per-job pi dir: a fresh
+// settings.json enumerating only the worker extension set plus model defaults,
+// and (best-effort, non-fatal) the model catalog, theme, and optionally auth
+// copied from SourceProfile. Loading agent-hooks via settings.json (not a CLI
+// --extension) is deliberate: pi errors if the same tool is registered twice,
+// so the extension set must live in exactly one place, and settings.json is the
+// single file the leak-guard test can audit.
+func (a Adapter) writeWorkerProfile(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	provider, model := a.DefaultProvider, a.DefaultModel
+	if provider == "" || model == "" {
+		sp, sm := sourceDefaults(a.SourceProfile)
+		if provider == "" {
+			provider = sp
+		}
+		if model == "" {
+			model = sm
+		}
+	}
+	settings := map[string]any{
+		"lastChangelogVersion": "0.84.1",
+		// Omit the compaction key entirely: pi's native default (enabled) applies.
+		// Workers have no custom handoff machinery; pi compacts natively.
+		"extensions": a.workerExtensions(),
+	}
+	if provider != "" {
+		settings["defaultProvider"] = provider
+	}
+	if model != "" {
+		settings["defaultModel"] = model
+	}
+	// Model catalog: non-secret; give the worker the presence's provider/model
+	// catalog so job.Model resolves the same set.
+	copyProfileFile(a.SourceProfile, dir, "models-store.json")
+	// Theme is cosmetic and non-blocking.
+	if copyProfileTheme(a.SourceProfile, dir) {
+		settings["theme"] = "familiar"
+		settings["themes"] = []string{filepath.Join(dir, "themes")}
+	}
+	if a.CopyAuth {
+		copyProfileFile(a.SourceProfile, dir, "auth.json")
+	}
+	b, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "settings.json"), b, 0o600)
+}
+
+// sourceDefaults reads only defaultProvider/defaultModel from a source pi
+// settings.json. It never reads the source extension list — that is the whole
+// point of isolation.
+func sourceDefaults(sourceProfile string) (string, string) {
+	if sourceProfile == "" {
+		return "", ""
+	}
+	b, err := os.ReadFile(filepath.Join(sourceProfile, "settings.json"))
+	if err != nil {
+		return "", ""
+	}
+	var s struct {
+		DefaultProvider string `json:"defaultProvider"`
+		DefaultModel    string `json:"defaultModel"`
+	}
+	if json.Unmarshal(b, &s) != nil {
+		return "", ""
+	}
+	return s.DefaultProvider, s.DefaultModel
+}
+
+// copyProfileFile copies a single non-symlink regular file between pi dirs,
+// best-effort. A missing source is not an error: model/auth config is optional.
+func copyProfileFile(sourceProfile, dir, name string) {
+	if sourceProfile == "" {
+		return
+	}
+	src := filepath.Join(sourceProfile, name)
+	fi, err := os.Lstat(src)
+	if err != nil || fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() {
+		return
+	}
+	b, err := os.ReadFile(src)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(dir, name), b, 0o600)
+}
+
+// copyProfileTheme copies SourceProfile/themes/familiar.json into the worker
+// dir. Returns true when the theme is available so settings can select it.
+func copyProfileTheme(sourceProfile, dir string) bool {
+	if sourceProfile == "" {
+		return false
+	}
+	src := filepath.Join(sourceProfile, "themes", "familiar.json")
+	fi, err := os.Lstat(src)
+	if err != nil || fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() {
+		return false
+	}
+	b, err := os.ReadFile(src)
+	if err != nil {
+		return false
+	}
+	if os.MkdirAll(filepath.Join(dir, "themes"), 0o700) != nil {
+		return false
+	}
+	return os.WriteFile(filepath.Join(dir, "themes", "familiar.json"), b, 0o600) == nil
 }
 
 func (a Adapter) Start(_ context.Context, j protocol.Job) (harnesses.Launch, error) {
@@ -90,14 +245,21 @@ func (a Adapter) Start(_ context.Context, j protocol.Job) (harnesses.Launch, err
 		return harnesses.Launch{}, e
 	}
 	s, t, ev := paths(j)
+	wd := workerDir(j)
+	if err := a.writeWorkerProfile(wd); err != nil {
+		return harnesses.Launch{}, err
+	}
 	// Interactive TUI: no --mode json --print. The positional prompt is
-	// delivered as pi's initial message so the agent starts immediately.
-	v := a.extensions([]string{a.bin(), "--session", s})
+	// delivered as pi's initial message so the agent starts immediately — this
+	// is verified to begin work under an isolated profile (see pi/README notes).
+	// The worker extension set lives in the per-job settings.json, NOT on the
+	// command line, because pi rejects a tool registered twice.
+	v := []string{a.bin(), "--session", s, "--no-context-files", "--no-skills"}
 	if j.Model != "" {
 		v = append(v, "--model", j.Model)
 	}
 	v = append(v, withBlockSuffix(j.Prompt))
-	return harnesses.Launch{Argv: v, Dir: j.CWD, Env: a.launchEnv(ev), Transcript: t, Session: s, Events: ev, Interactive: true}, nil
+	return harnesses.Launch{Argv: v, Dir: j.CWD, Env: a.launchEnv(ev, wd), Transcript: t, Session: s, Events: ev, Interactive: true}, nil
 }
 
 func (a Adapter) Resume(_ context.Context, j protocol.Job, l harnesses.Launch) (harnesses.Launch, error) {
@@ -107,12 +269,16 @@ func (a Adapter) Resume(_ context.Context, j protocol.Job, l harnesses.Launch) (
 	if l.Events == "" {
 		_, _, l.Events = paths(j)
 	}
-	l.Argv = a.extensions([]string{a.bin(), "--session", l.Session})
+	wd := workerDir(j)
+	if err := a.writeWorkerProfile(wd); err != nil {
+		return harnesses.Launch{}, err
+	}
+	l.Argv = []string{a.bin(), "--session", l.Session, "--no-context-files", "--no-skills"}
 	if j.Model != "" {
 		l.Argv = append(l.Argv, "--model", j.Model)
 	}
 	l.Argv = append(l.Argv, "Continue the interrupted delegated task from the existing session.")
-	l.Env = a.launchEnv(l.Events)
+	l.Env = a.launchEnv(l.Events, wd)
 	l.Interactive = true
 	return l, nil
 }

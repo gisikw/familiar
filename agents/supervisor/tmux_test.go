@@ -140,3 +140,78 @@ func (t Tmux) mustPaneCommand(ctx context.Context, tb *testing.T, target string)
 	}
 	return out
 }
+
+// A server started WITHOUT the pinned config (a foreign/older process, or a
+// supervisor that predates a policy change) never applies the policy, because
+// tmux reads a config via -f only at server birth. This reproduces the
+// real-world defect (pi warns extended-keys off, no mouse scroll, no PageUp
+// copy-mode) and asserts that starting a worker — or ReapplyPolicy — repairs it
+// via source-file on the live server.
+func TestPolicyReappliedToAdoptedServer(t *testing.T) {
+	if _, e := exec.LookPath("tmux"); e != nil {
+		t.Skip("tmux absent")
+	}
+	dir := t.TempDir()
+	tm := Tmux{Socket: filepath.Join(dir, "tmux.sock")}
+	if e := tm.Prepare(); e != nil {
+		t.Fatal(e)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	t.Cleanup(func() { _, _ = tm.run(context.Background(), "kill-server") })
+	// Birth a server on this socket WITHOUT -f (config-less), exactly as an
+	// adopted/foreign server would come up. -f /dev/null blocks any ambient
+	// user config so the defaults are unambiguous.
+	if out, e := tm.run(ctx, "-f", os.DevNull, "new-session", "-d", "-s", "foreign", "sh"); e != nil {
+		t.Fatalf("seed foreign server: %s %v", out, e)
+	}
+	if out, _ := tm.run(ctx, "show-options", "-gv", "allow-passthrough"); out == "on" {
+		t.Fatal("precondition failed: config-less server already has policy")
+	}
+	// Starting a worker on the adopted server must apply the policy.
+	if _, _, e := tm.Start(ctx, "adopt", harnesses.Launch{Argv: []string{"sh", "-c", "sleep 1"}, Dir: dir, Transcript: filepath.Join(dir, "out"), Interactive: true}); e != nil {
+		t.Fatal(e)
+	}
+	for _, tc := range []struct{ opt, want string }{
+		{"allow-passthrough", "on"},
+		{"extended-keys", "on"},
+		{"mouse", "on"},
+	} {
+		if out, e := tm.run(ctx, "show-options", "-gv", tc.opt); e != nil || out != tc.want {
+			t.Fatalf("policy %s not applied to adopted server: %q %v", tc.opt, out, e)
+		}
+	}
+	if out, e := tm.run(ctx, "list-keys", "-T", "root", "PageUp"); e != nil || !strings.Contains(out, "#{alternate_on}") {
+		t.Fatalf("PageUp copy-mode binding not applied to adopted server: %q %v", out, e)
+	}
+}
+
+// ReapplyPolicy is the boot-time repair for a supervisor that adopts a live
+// server (sessions persist across restarts). It is a no-op with no server and
+// idempotently loads the policy when one is running.
+func TestReapplyPolicyRepairsLiveServer(t *testing.T) {
+	if _, e := exec.LookPath("tmux"); e != nil {
+		t.Skip("tmux absent")
+	}
+	dir := t.TempDir()
+	tm := Tmux{Socket: filepath.Join(dir, "tmux.sock")}
+	if e := tm.Prepare(); e != nil {
+		t.Fatal(e)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	t.Cleanup(func() { _, _ = tm.run(context.Background(), "kill-server") })
+	// No server: must be a silent no-op, not an error.
+	if e := tm.ReapplyPolicy(ctx); e != nil {
+		t.Fatalf("ReapplyPolicy must no-op without a server: %v", e)
+	}
+	if out, e := tm.run(ctx, "-f", os.DevNull, "new-session", "-d", "-s", "foreign", "sh"); e != nil {
+		t.Fatalf("seed foreign server: %s %v", out, e)
+	}
+	if e := tm.ReapplyPolicy(ctx); e != nil {
+		t.Fatalf("ReapplyPolicy on live server: %v", e)
+	}
+	if out, e := tm.run(ctx, "show-options", "-gv", "extended-keys"); e != nil || out != "on" {
+		t.Fatalf("ReapplyPolicy did not load policy into live server: %q %v", out, e)
+	}
+}

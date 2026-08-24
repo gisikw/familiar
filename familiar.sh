@@ -71,14 +71,26 @@ export FAMILIAR_PRESENCE_STATE_DIR="${FAMILIAR_PRESENCE_STATE_DIR:-$STATE_DIR/pr
 export FAMILIAR_PRESENCE_SOCKET="${FAMILIAR_PRESENCE_SOCKET:-$FAMILIAR_PRESENCE_STATE_DIR/tmux.sock}"
 export FAMILIAR_PRESENCE_CTL="${FAMILIAR_PRESENCE_CTL:-$REPO/services/presence/presence.sh}"
 # Agent workers share the stack configuration but have their own pi process and
-# settings. Give the supervisor an explicit extension entrypoint rather than
-# depending on a user's PI_CODING_AGENT_DIR discovery.
+# an ISOLATED per-job pi profile (see FAMILIAR_AGENTS_WEB_EXTENSION below). Give
+# the supervisor an explicit extension entrypoint rather than depending on a
+# user's PI_CODING_AGENT_DIR discovery.
 export FAMILIAR_AGENTS_SUPERVISOR_STATE="${FAMILIAR_AGENTS_SUPERVISOR_STATE:-$STATE_DIR/agents-supervisor}"
-export FAMILIAR_AGENTS_TIAMAT_EXTENSION="${FAMILIAR_AGENTS_TIAMAT_EXTENSION:-$REPO/integrations/pi/extensions/tiamat}"
+# NOTE: workers no longer load the tiamat extension. Model access comes from the
+# presence's models-store.json copied into each isolated per-job worker dir
+# (worker profile isolation is a security boundary — see agents/DECISIONS.md).
 # The agent-hooks extension is the pi "hook adapter": it reports interactive
 # worker lifecycle out-of-band to the side channel the Go pi adapter reads. It
 # ships with the agent system under agents/integrations/pi/agent-hooks.
 export FAMILIAR_AGENTS_HOOK_EXTENSION="${FAMILIAR_AGENTS_HOOK_EXTENSION:-$REPO/agents/integrations/pi/agent-hooks}"
+# Worker profile isolation (security boundary): each worker runs under a private
+# per-job pi coding-agent dir the supervisor writes, whose settings.json lists
+# ONLY agent-hooks + the self-contained web extension — never the presence's
+# worklist/identity/attention/zip/handoff/agents-dispatch suite. The web
+# extension is safe in a worker (SSRF guard defaults to public-only). Its model
+# catalog/theme (and, only with FAMILIAR_AGENTS_COPY_AUTH=1, credentials) are
+# copied from PI_CODING_AGENT_DIR so the worker has the same model access
+# without inheriting personal settings.
+export FAMILIAR_AGENTS_WEB_EXTENSION="${FAMILIAR_AGENTS_WEB_EXTENSION:-$REPO/integrations/pi/extensions/web}"
 # Settlement wakes the presence via the worklist drop-box (the designed subagent
 # settlement channel). Degrades gracefully when unset.
 export FAMILIAR_AGENTS_WORKLIST_DIR="${FAMILIAR_AGENTS_WORKLIST_DIR:-$FAMILIAR_WORKLIST_DIR}"

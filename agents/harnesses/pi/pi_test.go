@@ -2,6 +2,7 @@ package pi
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +14,7 @@ import (
 
 func TestStartLaunchesInteractiveTUIWithSideChannel(t *testing.T) {
 	dir := t.TempDir()
-	adapter := Adapter{Binary: "fake-pi", HookExtension: "/extensions/agent-hooks", Extension: "/extensions/tiamat", Env: map[string]string{
+	adapter := Adapter{Binary: "fake-pi", HookExtension: "/extensions/agent-hooks", WebExtension: "/extensions/web", DefaultProvider: "llama.cpp", DefaultModel: "gemma", Env: map[string]string{
 		"FAMILIAR_TIAMAT_URL": "http://router",
 	}}
 	j := protocol.Job{ID: "j", CWD: dir, Prompt: "p", Artifacts: protocol.ArtifactMetadata{Directory: dir}}
@@ -28,8 +29,11 @@ func TestStartLaunchesInteractiveTUIWithSideChannel(t *testing.T) {
 	if !launch.Interactive {
 		t.Fatal("launch not marked interactive")
 	}
-	if !strings.Contains(joined, "--extension /extensions/agent-hooks") || !strings.Contains(joined, "--extension /extensions/tiamat") {
-		t.Fatalf("worker extensions absent: %v", launch.Argv)
+	// Extensions load via the per-job settings.json, NOT the command line: pi
+	// errors if a tool (agents_block) is registered twice, so the extension set
+	// must live in exactly one place.
+	if strings.Contains(joined, "--extension") {
+		t.Fatalf("extensions must not be passed on the command line: %v", launch.Argv)
 	}
 	if !strings.HasPrefix(launch.Argv[len(launch.Argv)-1], "p") {
 		t.Fatalf("initial prompt not delivered as positional message: %v", launch.Argv)
@@ -40,10 +44,84 @@ func TestStartLaunchesInteractiveTUIWithSideChannel(t *testing.T) {
 	if launch.Events == "" || launch.Env[EventsEnv] != launch.Events {
 		t.Fatalf("side-channel path not wired into env: %#v", launch)
 	}
+	// Worker profile isolation: PI_CODING_AGENT_DIR is set explicitly to the
+	// per-job dir so the ambient (presence) profile can never leak in.
+	wantDir := filepath.Join(dir, "pi")
+	if launch.Env[CodingDirEnv] != wantDir {
+		t.Fatalf("worker coding dir not isolated: %q want %q", launch.Env[CodingDirEnv], wantDir)
+	}
 	// Copy discipline: launch env must not alias adapter env.
 	launch.Env["FAMILIAR_TIAMAT_URL"] = "mutated"
 	if adapter.Env["FAMILIAR_TIAMAT_URL"] != "http://router" {
 		t.Fatal("launch mutated adapter environment")
+	}
+}
+
+// The worker settings.json is a security boundary: it must enumerate ONLY the
+// worker extension set (agent-hooks + optional web) and never the presence's
+// worklist/identity/attention/zip/handoff/agents-dispatch/subscriber/telemetry
+// suite. This guards against future profile leakage.
+func TestWorkerSettingsContainsOnlyExpectedExtensions(t *testing.T) {
+	dir := t.TempDir()
+	// A source profile carrying the presence's full (dangerous) extension list
+	// plus model defaults. The adapter must read ONLY the model defaults from it.
+	source := filepath.Join(dir, "source-pi")
+	if err := os.MkdirAll(source, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sourceSettings := `{"defaultProvider":"anthropic","defaultModel":"claude-fable-5","extensions":["/p/worklist","/p/identity","/p/attention","/p/zip","/p/agents","/p/subscriber","/p/telemetry"]}`
+	if err := os.WriteFile(filepath.Join(source, "settings.json"), []byte(sourceSettings), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "models-store.json"), []byte(`{"anthropic":{"models":[]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	adapter := Adapter{Binary: "fake-pi", HookExtension: "/extensions/agent-hooks", WebExtension: "/extensions/web", SourceProfile: source}
+	j := protocol.Job{ID: "j", CWD: dir, Prompt: "p", Artifacts: protocol.ArtifactMetadata{Directory: dir}}
+	if _, err := adapter.Start(context.Background(), j); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "pi", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var s struct {
+		Extensions      []string `json:"extensions"`
+		DefaultProvider string   `json:"defaultProvider"`
+		DefaultModel    string   `json:"defaultModel"`
+		Compaction      *struct {
+			Enabled bool `json:"enabled"`
+		} `json:"compaction"`
+	}
+	if err = json.Unmarshal(b, &s); err != nil {
+		t.Fatalf("worker settings not valid JSON: %v\n%s", err, b)
+	}
+	want := map[string]bool{"/extensions/agent-hooks": true, "/extensions/web": true}
+	if len(s.Extensions) != len(want) {
+		t.Fatalf("unexpected worker extension set: %v", s.Extensions)
+	}
+	for _, e := range s.Extensions {
+		if !want[e] {
+			t.Fatalf("forbidden extension leaked into worker profile: %q (full: %v)", e, s.Extensions)
+		}
+	}
+	// The presence's model defaults are seeded (model access parity) but its
+	// extension suite is not.
+	if s.DefaultProvider != "anthropic" || s.DefaultModel != "claude-fable-5" {
+		t.Fatalf("model defaults not seeded from source profile: %+v", s)
+	}
+	// Native compaction: the key is omitted so pi's default (enabled) applies.
+	// It must never be present-and-disabled.
+	if s.Compaction != nil && !s.Compaction.Enabled {
+		t.Fatalf("worker must not disable pi native compaction: %s", b)
+	}
+	// The model catalog is copied so job.Model resolves the same providers.
+	if _, err = os.Stat(filepath.Join(dir, "pi", "models-store.json")); err != nil {
+		t.Fatalf("model catalog not seeded into worker dir: %v", err)
+	}
+	// Auth is NOT copied by default (secrets stay out of per-job artifact dirs).
+	if _, err = os.Stat(filepath.Join(dir, "pi", "auth.json")); !os.IsNotExist(err) {
+		t.Fatalf("auth.json copied without opt-in: %v", err)
 	}
 }
 
