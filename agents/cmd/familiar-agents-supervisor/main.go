@@ -47,6 +47,26 @@ func argvEnv(k string, fallback []string) []string {
 	}
 	return out
 }
+
+// settlementNotifiers assembles the configured presence-wake transports. It
+// degrades gracefully: with neither variable set it returns nil and settlement
+// proceeds without a courtesy notification.
+//
+//	FAMILIAR_AGENTS_WORKLIST_DIR (or FAMILIAR_WORKLIST_DIR): local drop-box.
+//	FAMILIAR_AGENTS_SETTLEMENT_WEBHOOK: HTTP POST for cross-host supervisors.
+func settlementNotifiers(host string) supervisor.Notifier {
+	var ns supervisor.Notifiers
+	if dir := env("FAMILIAR_AGENTS_WORKLIST_DIR", os.Getenv("FAMILIAR_WORKLIST_DIR")); dir != "" {
+		ns = append(ns, supervisor.WorklistNotifier{Host: host, Dir: dir})
+	}
+	if url := os.Getenv("FAMILIAR_AGENTS_SETTLEMENT_WEBHOOK"); url != "" {
+		ns = append(ns, supervisor.WebhookNotifier{Host: host, URL: url})
+	}
+	if len(ns) == 0 {
+		return nil
+	}
+	return ns
+}
 func main() {
 	home, _ := os.UserHomeDir()
 	stateDefault := filepath.Join(home, ".local", "state", "familiar", "agents-supervisor")
@@ -88,8 +108,8 @@ func main() {
 			workerEnv[key] = value
 		}
 	}
-	piAdapter := piadapter.Adapter{Binary: *pi, Extension: os.Getenv("FAMILIAR_AGENTS_TIAMAT_EXTENSION"), Env: workerEnv}
-	s := &supervisor.Supervisor{Host: *host, Client: client.New(*endpoint), Registry: reg, Tmux: tm, OfflineWindow: *offline, Linger: *linger, ArtifactRoot: *artifactRoot, AllowedCWDRoots: roots, Adapters: supervisor.ConfiguredAdapters(piAdapter, argvEnv("FAMILIAR_AGENTS_CLAUDE_ARGV", []string{"claude", "{prompt}"}), argvEnv("FAMILIAR_AGENTS_CODEX_ARGV", []string{"codex", "{prompt}"}))}
+	piAdapter := piadapter.Adapter{Binary: *pi, HookExtension: os.Getenv("FAMILIAR_AGENTS_HOOK_EXTENSION"), Extension: os.Getenv("FAMILIAR_AGENTS_TIAMAT_EXTENSION"), Env: workerEnv}
+	s := &supervisor.Supervisor{Host: *host, Client: client.New(*endpoint), Registry: reg, Tmux: tm, OfflineWindow: *offline, Linger: *linger, ArtifactRoot: *artifactRoot, AllowedCWDRoots: roots, Adapters: supervisor.ConfiguredAdapters(piAdapter, argvEnv("FAMILIAR_AGENTS_CLAUDE_ARGV", []string{"claude", "{prompt}"}), argvEnv("FAMILIAR_AGENTS_CODEX_ARGV", []string{"codex", "{prompt}"})), Notify: settlementNotifiers(*host)}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	// Reconcile with global truth before any reboot recreation. Only when the

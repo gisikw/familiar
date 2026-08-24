@@ -25,7 +25,8 @@ VIEWER KEY:
 PATH AND ENV CONTRACT:
     Socket paths must be absolute whether supplied by a flag or environment.
     The viewer attaches to presence with: tmux -S SOCKET attach-session -t SESSION.
-    Agent targets use FAMILIAR_AGENTS_SOCKET and a read-only worker session attach.
+    Agent targets use FAMILIAR_AGENTS_SOCKET and a writable worker session attach
+    (workers are interactive TUIs by design).
     Child commands are direct argv (never shell text), and TMUX is removed from
     their environment. Familiar-owned chrome lists jobs from the endpoint above.
 "#;

@@ -103,6 +103,12 @@ FAMILIAR_AGENTS_HOST = "local"
 # FAMILIAR_AGENTS_SUPERVISOR_STATE stays at its default
 # (~/.local/state/familiar/agents-supervisor): the supervisor requires an
 # absolute state path (tmux socket validation) and TOML cannot express $HOME.
+# Interactive workers report lifecycle over a side channel written by the
+# agent-hooks pi extension (FAMILIAR_AGENTS_HOOK_EXTENSION) and wake the presence
+# on settlement via the worklist drop-box (FAMILIAR_AGENTS_WORKLIST_DIR) or a
+# webhook (FAMILIAR_AGENTS_SETTLEMENT_WEBHOOK). Worker tmux theming is inherited
+# cosmetically via FAMILIAR_TMUX_THEME_CONFIG. All degrade gracefully when unset;
+# familiar.sh exports sensible defaults for the canonical deployment.
 [children.restart]
 policy = "on-failure"
 initial_backoff = "500ms"
