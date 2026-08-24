@@ -289,6 +289,12 @@ run_pi() {
   prepare_plugin
   ensure_devshell pi "$@"
   mkdir -p "$PI_CODING_AGENT_DIR"
+  # A remote/dynamic provider (for example Tiamat) need not configure the
+  # optional local llama.cpp backend. Keep both expansions safe under `set -u`
+  # and omit the synthetic llama.cpp cache entry when either value is absent.
+  local llama_url="${LLAMA_BASE_URL:-}"
+  local llama_model_file="${FAMILIAR_MODEL_FILE:-}"
+  local llama_model="${llama_model_file%.*}"
   # Unified theme: regenerate the pi theme JSON from the canonical palette +
   # FAMILIAR_THEME_* on every (re)start. Cold restart picks up [theme] changes
   # with no rebuild; pi hot-reloads the active custom theme file on edit too.
@@ -311,7 +317,7 @@ run_pi() {
     plugin_exts=$(plugin_extensions_json)
     jq -n --argjson prev "$prev" --argjson pluginExts "$plugin_exts" \
       --arg provider "${FAMILIAR_DEFAULT_PROVIDER:-llama.cpp}" \
-      --arg model "${FAMILIAR_DEFAULT_MODEL:-${FAMILIAR_MODEL_FILE%.*}}" \
+      --arg model "${FAMILIAR_DEFAULT_MODEL:-$llama_model}" \
       --arg dir "$PI_CODING_AGENT_DIR" \
       --arg ext "$REPO/integrations/pi/extensions" '
       $prev + {
@@ -328,38 +334,41 @@ run_pi() {
       | .defaultProvider //= $provider
       | .defaultModel //= $model
     ' > "$PI_CODING_AGENT_DIR/settings.json"
-    jq -n --arg url "$LLAMA_BASE_URL" --arg model "${FAMILIAR_MODEL_FILE%.*}" '{
-      "llama.cpp": {
-        "models": [
-          {
-            id: $model,
-            name: $model,
-            api: "openai-completions",
-            provider: "llama.cpp",
-            baseUrl: ($url  + "/v1"),
-            reasoning: false,
-            input: [ "text" ],
-            cost: {
-              input: 0,
-              output: 0,
-              cacheRead: 0,
-              cacheWrite: 0
-            },
-            contextWindow: 32768,
-            maxTokens: 32768,
-            compat: {
-              supportsStore: false,
-              supportsDeveloperRole: false,
-              supportsReasoningEffort: false,
-              supportsUsageInStreaming: true,
-              supportsStrictMode: false,
-              maxTokensField: "max_tokens"
+    jq -n --arg url "$llama_url" --arg model "$llama_model" '
+      if ($url | length) == 0 or ($model | length) == 0 then {}
+      else {
+        "llama.cpp": {
+          "models": [
+            {
+              id: $model,
+              name: $model,
+              api: "openai-completions",
+              provider: "llama.cpp",
+              baseUrl: ($url  + "/v1"),
+              reasoning: false,
+              input: [ "text" ],
+              cost: {
+                input: 0,
+                output: 0,
+                cacheRead: 0,
+                cacheWrite: 0
+              },
+              contextWindow: 32768,
+              maxTokens: 32768,
+              compat: {
+                supportsStore: false,
+                supportsDeveloperRole: false,
+                supportsReasoningEffort: false,
+                supportsUsageInStreaming: true,
+                supportsStrictMode: false,
+                maxTokensField: "max_tokens"
+              }
             }
-          }
-        ],
-        checkedAt: (now * 1000 | floor),
-      }
-    }' > "$PI_CODING_AGENT_DIR/models-store.json"
+          ],
+          checkedAt: (now * 1000 | floor),
+        }
+      } end
+    ' > "$PI_CODING_AGENT_DIR/models-store.json"
     # --continue resumes the most recent session (falls through to a fresh one
     # when none exists — verified in SessionManager.continueRecent). Bounces
     # and crash respawns keep continuity; /clear stays the only way to end a
