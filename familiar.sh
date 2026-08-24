@@ -10,7 +10,6 @@ Commands:
   init PATH       Scaffold a private familiar instance.
   server          Run the complete Familiar service stack.
   connect         Ensure Presence and open the native viewer (first run builds it).
-  agents          Run the Familiar agents CLI.
   client          Run the Electron desktop client.
   pi              Run the resident pi agent with continuity.
   llama           Run the local LLM backend.
@@ -82,8 +81,6 @@ if [ -n "${FAMILIAR_HANDOFF_PROMPT_PATH:-}" ]; then export FAMILIAR_HANDOFF_PROM
 export FAMILIAR_WORKLIST_DIR="${FAMILIAR_WORKLIST_DIR:-${FAMILIAR_INBOX_DIR:-$STATE_DIR/worklist}}"
 export FAMILIAR_WORKLIST_DIR="$(resolve_config_path "$FAMILIAR_WORKLIST_DIR")"
 if [ -n "${FAMILIAR_INBOX_DIR:-}" ]; then export FAMILIAR_INBOX_DIR="$(resolve_config_path "$FAMILIAR_INBOX_DIR")"; fi
-export FAMILIAR_AGENTS_WORKLIST_DIR="${FAMILIAR_AGENTS_WORKLIST_DIR:-$FAMILIAR_WORKLIST_DIR}"
-export FAMILIAR_AGENTS_WORKLIST_DIR="$(resolve_config_path "$FAMILIAR_AGENTS_WORKLIST_DIR")"
 export FAMILIAR_LOG_PATH="${FAMILIAR_LOG_PATH:-$STATE_DIR/log.jsonl}"
 export FAMILIAR_LOG_PATH="$(resolve_config_path "$FAMILIAR_LOG_PATH")"
 export FAMILIAR_SUBSCRIBER_PORT="${FAMILIAR_SUBSCRIBER_PORT:-1692}"
@@ -92,39 +89,6 @@ export FAMILIAR_PRESENCE_STATE_DIR="$(resolve_config_path "$FAMILIAR_PRESENCE_ST
 export FAMILIAR_PRESENCE_SOCKET="${FAMILIAR_PRESENCE_SOCKET:-$FAMILIAR_PRESENCE_STATE_DIR/tmux.sock}"
 export FAMILIAR_PRESENCE_SOCKET="$(resolve_config_path "$FAMILIAR_PRESENCE_SOCKET")"
 export FAMILIAR_PRESENCE_CTL="${FAMILIAR_PRESENCE_CTL:-$REPO/services/presence/presence.sh}"
-# Agent workers share the stack configuration but have their own pi process and
-# an ISOLATED per-job pi profile (see FAMILIAR_AGENTS_WEB_EXTENSION below). Give
-# the supervisor an explicit extension entrypoint rather than depending on a
-# user's PI_CODING_AGENT_DIR discovery.
-export FAMILIAR_AGENTS_SUPERVISOR_STATE="${FAMILIAR_AGENTS_SUPERVISOR_STATE:-$STATE_DIR/agents-supervisor}"
-export FAMILIAR_AGENTS_SUPERVISOR_STATE="$(resolve_config_path "$FAMILIAR_AGENTS_SUPERVISOR_STATE")"
-# NOTE: workers no longer load the tiamat extension. Model access is a
-# single-provider descriptor the presence-side agents extension resolves at
-# dispatch time (the dispatched model, or the presence's currently-running
-# model) and forwards on the job; the supervisor's pi adapter writes the
-# worker's models.json/settings from it so the worker boots with EXACTLY that
-# one provider+model. Credentials ride only as unresolved references (!cmd/$ENV)
-# or via copied auth.json in the private per-job dir — never plaintext on the job
-# (worker profile isolation is a security boundary — see agents/DECISIONS.md #18,
-# #20). FAMILIAR_INTERACTIVE_SHELL (exported by the pi devshell as
-# pkgs.bashInteractive) is inherited by the supervisor and used as the tmux
-# default-shell for windows a human opens while inspecting a worker.
-# The agent-hooks extension is the pi "hook adapter": it reports interactive
-# worker lifecycle out-of-band to the side channel the Go pi adapter reads. It
-# ships with the agent system under agents/integrations/pi/agent-hooks.
-export FAMILIAR_AGENTS_HOOK_EXTENSION="${FAMILIAR_AGENTS_HOOK_EXTENSION:-$REPO/agents/integrations/pi/agent-hooks}"
-# Worker profile isolation (security boundary): each worker runs under a private
-# per-job pi coding-agent dir the supervisor writes, whose settings.json lists
-# ONLY agent-hooks + the self-contained web extension — never the presence's
-# worklist/identity/attention/zip/handoff/agents-dispatch suite. The web
-# extension is safe in a worker (SSRF guard defaults to public-only). Its model
-# catalog/theme (and, only with FAMILIAR_AGENTS_COPY_AUTH=1, credentials) are
-# copied from PI_CODING_AGENT_DIR so the worker has the same model access
-# without inheriting personal settings.
-export FAMILIAR_AGENTS_WEB_EXTENSION="${FAMILIAR_AGENTS_WEB_EXTENSION:-$REPO/integrations/pi/extensions/web}"
-# Settlement wakes the presence via the worklist drop-box (the designed subagent
-# settlement channel). Degrades gracefully when unset.
-export FAMILIAR_AGENTS_WORKLIST_DIR="${FAMILIAR_AGENTS_WORKLIST_DIR:-$FAMILIAR_WORKLIST_DIR}"
 # Session storage. Overriding this is the deliberate escape hatch for a wedged
 # session: point it at a clean-room dir to bail out without touching the main
 # continuity line. Not a first-class verb on purpose — forking continuity
@@ -267,7 +231,62 @@ run_tts() {
   done
 }
 
+prepare_plugin() {
+  [ -z "${FAMILIAR_PLUGIN_ROOT:-}" ] || return 0
+  local path=${FAMILIAR_PLUGINS_GOLEM_PATH:-} git=${FAMILIAR_PLUGINS_GOLEM_GIT:-} rev=${FAMILIAR_PLUGINS_GOLEM_REV:-}
+  if [ -z "$path$git$rev" ]; then return 0; fi
+  if [ -n "$path" ] && { [ -n "$git" ] || [ -n "$rev" ]; }; then echo 'familiar: plugins.golem path and git/rev are mutually exclusive' >&2; return 1; fi
+  if [ -n "$git" ] && [[ ! $rev =~ ^[0-9a-fA-F]{40}$ ]]; then echo 'familiar: plugins.golem git requires an exact 40-character rev' >&2; return 1; fi
+  if [ -n "$rev" ] && [ -z "$git" ]; then echo 'familiar: plugins.golem rev requires git' >&2; return 1; fi
+  if [ -n "$path" ]; then
+    case "$path" in /*) ;; *) path="$(resolve_config_path "$path")" ;; esac
+    [ -d "$path" ] || { echo "familiar: plugin path is not a directory: $path" >&2; return 1; }
+  else
+    path="$STATE_DIR/plugins/golem/src"
+    install -d -m 700 "$(dirname "$path")"
+    [ ! -L "$path" ] || { echo 'familiar: refusing symlinked Git plugin cache' >&2; return 1; }
+    if [ ! -d "$path/.git" ]; then git init -q "$path"; fi
+    if [ "$(git -C "$path" remote get-url origin 2>/dev/null || true)" != "$git" ]; then
+      git -C "$path" remote remove origin 2>/dev/null || true
+      git -C "$path" remote add origin -- "$git" || { echo 'familiar: could not configure plugin origin' >&2; return 1; }
+    fi
+    [ "$(git -C "$path" remote get-url origin)" = "$git" ] || { echo 'familiar: plugin origin mismatch' >&2; return 1; }
+    git -C "$path" fetch -q --force --no-tags origin "$rev" || { echo 'familiar: could not fetch exact plugins.golem rev' >&2; return 1; }
+    git -C "$path" checkout -q --detach FETCH_HEAD || return 1
+    git -C "$path" reset -q --hard "$rev" || return 1
+    git -C "$path" clean -q -ffdqx || return 1
+    local link target root_real
+    root_real=$(realpath -e "$path") || return 1
+    while IFS= read -r -d '' link; do
+      target=$(realpath -e "$link") || { echo 'familiar: broken plugin symlink' >&2; return 1; }
+      case "$target" in "$root_real"/*) ;; *) echo 'familiar: plugin symlink escapes cache root' >&2; return 1 ;; esac
+    done < <(find "$path" -type l -print0)
+    local actual; actual=$(git -C "$path" rev-parse --verify HEAD)
+    [ "${actual,,}" = "${rev,,}" ] || { echo "familiar: plugin SHA mismatch (wanted $rev, got $actual)" >&2; return 1; }
+  fi
+  [ -f "$path/contrib/familiar/plugin.toml" ] && [ "$(realpath -e "$path/contrib/familiar/plugin.toml" 2>/dev/null)" = "$(realpath -e "$path")/contrib/familiar/plugin.toml" ] || { echo 'familiar: plugin lacks a safe contrib/familiar/plugin.toml' >&2; return 1; }
+  export FAMILIAR_PLUGIN_ROOT="$path" FAMILIAR_PLUGIN_ID=golem
+  local api
+  api=$(FAMILIAR_PLUGIN_MANIFEST="$path/contrib/familiar/plugin.toml" nix eval --impure --raw --expr 'toString (builtins.fromTOML (builtins.readFile (builtins.getEnv "FAMILIAR_PLUGIN_MANIFEST"))).familiar_api') || return 1
+  [ "$api" = 1 ] || { echo "familiar: plugin requires familiar_api = 1 (got $api)" >&2; return 1; }
+  local name value entry prefix=FAMILIAR_PLUGINS_GOLEM_ENV_
+  while IFS= read -r entry; do
+    name=${entry%%=*}; value=${entry#*=}
+    case "$name" in "$prefix"*) export "FAMILIAR_PLUGIN_ENV_${name#$prefix}=$value" ;; esac
+  done < <(env)
+  local server_listen=${FAMILIAR_SERVER_LISTEN:-127.0.0.1:9940}
+  export FAMILIAR_RENDER_URL="http://127.0.0.1:${server_listen##*:}/v1/render/golem"
+}
+
+plugin_extensions_json() {
+  if [ -z "${FAMILIAR_PLUGIN_ROOT:-}" ]; then printf '[]'; return; fi
+  FAMILIAR_PLUGIN_MANIFEST="$FAMILIAR_PLUGIN_ROOT/contrib/familiar/plugin.toml" FAMILIAR_PLUGIN_ROOT="$FAMILIAR_PLUGIN_ROOT" nix eval --impure --json --expr '
+    let m=builtins.fromTOML (builtins.readFile (builtins.getEnv "FAMILIAR_PLUGIN_MANIFEST")); root=builtins.getEnv "FAMILIAR_PLUGIN_ROOT";
+    in map (x: builtins.replaceStrings ["\${plugin_root}"] [root] x) (m.pi.extensions or [])'
+}
+
 run_pi() {
+  prepare_plugin
   ensure_devshell pi "$@"
   mkdir -p "$PI_CODING_AGENT_DIR"
   # Unified theme: regenerate the pi theme JSON from the canonical palette +
@@ -289,7 +308,8 @@ run_pi() {
     prev=$(jq -ce . "$PI_CODING_AGENT_DIR/settings.json" 2>/dev/null || echo '{}')
     # handoff/index.ts triggers at 90% of the active model's real window. Pi's fixed
     # reserve is the emergency floor for small-window models and overflows.
-    jq -n --argjson prev "$prev" \
+    plugin_exts=$(plugin_extensions_json)
+    jq -n --argjson prev "$prev" --argjson pluginExts "$plugin_exts" \
       --arg provider "${FAMILIAR_DEFAULT_PROVIDER:-llama.cpp}" \
       --arg model "${FAMILIAR_DEFAULT_MODEL:-${FAMILIAR_MODEL_FILE%.*}}" \
       --arg dir "$PI_CODING_AGENT_DIR" \
@@ -300,10 +320,10 @@ run_pi() {
         themes: [ ($dir + "/themes") ],
         compaction: { enabled: true, reserveTokens: 4096 },
         # Keep the live extension set explicit.
-        extensions: ([
-          "agents", "handoff", "identity", "subscriber", "telemetry",
+        extensions: (([
+          "handoff", "identity", "subscriber", "telemetry",
           "tiamat", "timegap", "web", "worklist", "zip"
-        ] | map($ext + "/" + .))
+        ] | map($ext + "/" + .)) + $pluginExts | unique)
       }
       | .defaultProvider //= $provider
       | .defaultModel //= $model
@@ -802,6 +822,7 @@ server_local_url() {
 
 server() {
   shift || true
+  prepare_plugin
   local canonical="$REPO/services/server/familiar-server.toml.example"
   local config="${FAMILIAR_SERVER_CONFIG:-$canonical}"
   if [ "$config" = "$canonical" ] && [ "$(uname -s)" != Linux ]; then
@@ -840,11 +861,6 @@ server() {
   export FAMILIAR_STT_URL="http://127.0.0.1:9932"
   export FAMILIAR_TTS_URL="http://127.0.0.1:9933"
   exec nix run "$REPO#familiar-server" -- --config "$config" "$@"
-}
-
-agents() {
-  shift || true
-  exec nix run "$REPO#familiar-agents" -- "$@"
 }
 
 stop() {
@@ -935,12 +951,11 @@ run_tests() {
   run_suite gateway bash -c 'cd "$1" && exec nix shell nixpkgs#bun -c bun test' _ \
     "$REPO/services/gateway"
   run_suite presence bash "$REPO/services/presence/test.sh"
-  run_suite agents bash -c 'cd "$1" && exec go test ./...' _ "$REPO/agents"
   run_suite e2e nix develop "$REPO#e2e" -c "$REPO/test/e2e/run.sh"
 
   printf '\n========== SUMMARY ==========\n'
   if [ "${#failed[@]}" -eq 0 ]; then
-    echo 'All suites passed: viewer gateway presence agents e2e'
+    echo 'All suites passed: viewer gateway presence e2e'
     return 0
   fi
   printf 'Failed suites:'
@@ -972,7 +987,6 @@ state/age.key
 state/pi/
 state/pi/auth.json
 state/presence/
-state/agents-supervisor/
 state/subagents/
 state/herdr/
 state/inbox/
@@ -1016,9 +1030,15 @@ EOF
 }
 
 config_check() {
+  if [ "${2:-}" = --plugin ]; then
+    [ "$CONFIG_LOAD_FAILED" -eq 0 ] || return 1
+    prepare_plugin
+    printf '%s\n' "plugin_root=${FAMILIAR_PLUGIN_ROOT:-}"
+    return 0
+  fi
   if [ "${2:-}" = --paths ]; then
     [ "$CONFIG_LOAD_FAILED" -eq 0 ] || { echo 'familiar: familiar.toml validation failed (contents suppressed)' >&2; return 1; }
-    printf '%s\n' "config_dir=$CONFIG_DIR" "identity=$FAMILIAR_IDENTITY_PATH" "handoff=$FAMILIAR_HANDOFF_PATH" "handoff_prompt=${FAMILIAR_HANDOFF_PROMPT_PATH:-}" "worklist=$FAMILIAR_WORKLIST_DIR" "inbox=${FAMILIAR_INBOX_DIR:-}" "log=$FAMILIAR_LOG_PATH" "voices=${FAMILIAR_TTS_VOICES_SOURCE:-}" "model=$FAMILIAR_MODEL_DIR" "artifact=${FAMILIAR_ARTIFACT_DIR:-}" "subagent=${FAMILIAR_SUBAGENT_DIR:-}" "sessions=${FAMILIAR_SUBAGENT_SESSION_DIR:-}" "pi=$PI_CODING_AGENT_DIR" "presence=$FAMILIAR_PRESENCE_STATE_DIR" "agents=$FAMILIAR_AGENTS_SUPERVISOR_STATE"
+    printf '%s\n' "config_dir=$CONFIG_DIR" "identity=$FAMILIAR_IDENTITY_PATH" "handoff=$FAMILIAR_HANDOFF_PATH" "handoff_prompt=${FAMILIAR_HANDOFF_PROMPT_PATH:-}" "worklist=$FAMILIAR_WORKLIST_DIR" "inbox=${FAMILIAR_INBOX_DIR:-}" "log=$FAMILIAR_LOG_PATH" "voices=${FAMILIAR_TTS_VOICES_SOURCE:-}" "model=$FAMILIAR_MODEL_DIR" "artifact=${FAMILIAR_ARTIFACT_DIR:-}" "subagent=${FAMILIAR_SUBAGENT_DIR:-}" "sessions=${FAMILIAR_SUBAGENT_SESSION_DIR:-}" "pi=$PI_CODING_AGENT_DIR" "presence=$FAMILIAR_PRESENCE_STATE_DIR"
     return 0
   fi
   if [ "$CONFIG_LOAD_FAILED" -ne 0 ]; then
@@ -1040,7 +1060,6 @@ case ${1:-} in
   worklist-add)  inbox_enqueue "$@" ;;
   inbox-enqueue) inbox_enqueue "$@" ;;  # bounded compat alias (one release)
   server)     server "$@" ;;
-  agents)     agents "$@" ;;
   client)     client "$@" ;;
   connect)    viewer_connect "$@" ;;
   ssh)        ssh_connect "$@" ;;

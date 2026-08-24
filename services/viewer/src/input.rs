@@ -20,15 +20,14 @@ pub enum MouseRoute {
     Swallowed,
 }
 
-/// Resolves chrome navigation without changing keyboard focus. Chunk 4 supplies
-/// the stable agent id for a live model index; stale indices remain no-ops.
-pub fn target_for_sidebar_hit<F>(hit: SidebarHit, agent_for_row: F) -> Option<ViewerTarget>
+/// Resolves host chrome navigation; stale/non-terminal rows remain no-ops.
+pub fn target_for_sidebar_hit<F>(hit: SidebarHit, target_for_row: F) -> Option<ViewerTarget>
 where
-    F: FnOnce(usize) -> Option<String>,
+    F: FnOnce(usize) -> Option<ViewerTarget>,
 {
     match hit {
         SidebarHit::Mark => Some(ViewerTarget::Presence),
-        SidebarHit::JobRow(index) => agent_for_row(index).map(ViewerTarget::Agent),
+        SidebarHit::JobRow(index) => target_for_row(index),
         SidebarHit::Dead => None,
     }
 }
@@ -411,10 +410,18 @@ mod tests {
             Some(ViewerTarget::Presence)
         );
         assert_eq!(
-            target_for_sidebar_hit(SidebarHit::JobRow(4), |index| Some(format!(
-                "agent-{index}"
-            ))),
-            Some(ViewerTarget::Agent("agent-4".into()))
+            target_for_sidebar_hit(SidebarHit::JobRow(4), |index| Some(
+                ViewerTarget::Terminal {
+                    id: format!("item-{index}"),
+                    socket: "/run/plugin.sock".into(),
+                    session: format!("worker-{index}")
+                }
+            )),
+            Some(ViewerTarget::Terminal {
+                id: "item-4".into(),
+                socket: "/run/plugin.sock".into(),
+                session: "worker-4".into()
+            })
         );
         assert_eq!(target_for_sidebar_hit(SidebarHit::Dead, |_| None), None);
     }

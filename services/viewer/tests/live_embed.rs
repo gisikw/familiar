@@ -80,7 +80,8 @@ fn embeds_tmux_and_tracks_outer_resize() {
         .unwrap()
         .success());
 
-    let fixture = br#"[{"id":"job-active","cwd":"/work/alpha","prompt":"Fix sidebar","state":"running","updated_at":"2026-08-22T07:30:00Z"}]"#.to_vec();
+    let fixture = format!(r#"{{"render_api":1,"revision":1,"ttl_ms":1000,"target":"left-nav","content":{{"kind":"tree","id":"root","label":"agents","children":[{{"kind":"branch","id":"workspace:alpha","label":"alpha","children":[{{"kind":"item","id":"job-active","label":"Fix sidebar","status":"running","activation":{{"type":"terminal","socket":"{}","session":"worker-job-active"}}}}]}}]}}}}"#, agents_socket.display()).into_bytes();
+    familiar_viewer::sidebar::parse_render(&fixture).expect("semantic render fixture");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     listener.set_nonblocking(true).unwrap();
@@ -164,9 +165,7 @@ fn embeds_tmux_and_tracks_outer_resize() {
     command.args([
         "--presence-socket",
         socket.to_str().unwrap(),
-        "--agents-socket",
-        agents_socket.to_str().unwrap(),
-        "--agents-endpoint",
+        "--render-url",
         &endpoint,
     ]);
     command.env("TERM", "xterm-256color");

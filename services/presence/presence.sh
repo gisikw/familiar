@@ -9,8 +9,6 @@ STATE=${FAMILIAR_PRESENCE_STATE_DIR:-$REPO/state/presence}
 SOCKET=${FAMILIAR_PRESENCE_SOCKET:-$STATE/tmux.sock}
 SESSION=${FAMILIAR_PRESENCE_SESSION:-presence}
 TARGET="$SESSION:0.0"
-AGENTS_STATE=${FAMILIAR_AGENTS_SUPERVISOR_STATE:-$REPO/state/agents-supervisor}
-AGENTS_SOCKET=${FAMILIAR_AGENTS_SOCKET:-$AGENTS_STATE/tmux.sock}
 RUNTIME_CONFIG="$STATE/tmux.conf"
 THEME_CONFIG=${FAMILIAR_TMUX_THEME_CONFIG:-$STATE/tmux-theme.conf}
 CONFIG_SOURCE=${FAMILIAR_PRESENCE_CONFIG:-$HERE/tmux.conf}
@@ -21,13 +19,9 @@ export FAMILIAR_PRESENCE_BASH="$BASH_EXE"
 # non-readline build bash, which renders PS1 \[ \] markers literally and lacks
 # line editing. Prefer the flake-provided interactive bash for default-shell.
 INTERACTIVE_BASH=${FAMILIAR_INTERACTIVE_SHELL:-$BASH_EXE}
-# Normalize the socket environment consumed by the native viewer. familiar.sh
-# exports the agents state directory but not its derived socket, while a direct
-# SSH shell may rely entirely on these checkout-local defaults.
+# Normalize the Presence socket environment consumed by the native viewer.
 export FAMILIAR_PRESENCE_STATE_DIR="$STATE"
 export FAMILIAR_PRESENCE_SOCKET="$SOCKET"
-export FAMILIAR_AGENTS_SUPERVISOR_STATE="$AGENTS_STATE"
-export FAMILIAR_AGENTS_SOCKET="$AGENTS_SOCKET"
 
 fail() { printf 'familiar presence: %s\n' "$*" >&2; return 1; }
 

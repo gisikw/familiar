@@ -1,6 +1,6 @@
 # Public-readiness inventory
 
-This inventory records private-project terminology and personal/deployment identifiers intentionally left after the `rewrite` public-readiness scrub. Line numbers describe this revision. The branch's genuinely new trees (`agents/`, `packages/`, `services/server/`, `services/presence/`, `integrations/pi/extensions/agents/`, and `RESTRUCTURE-NOTES.md`) were searched separately and contain none of the audited identifiers.
+This inventory records private-project terminology and personal/deployment identifiers intentionally left after the `rewrite` public-readiness scrub. Line numbers describe this revision. The product and plugin-host trees were searched separately and contain none of the audited identifiers.
 
 The entries below predate `rewrite` (confirmed with rename-aware diffs and `git log --follow`) or are protected/behavior-bearing values. They were not mass-renamed because doing so would risk compatibility or violate the scrub constraints.
 

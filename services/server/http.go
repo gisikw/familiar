@@ -39,6 +39,26 @@ func (s *Supervisor) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, statusDocument{Ready: s.Ready(), Children: s.Status()})
 	})
 	mux.HandleFunc("/children/", s.childAction)
+	// Viewer data is read-only. Invalidation URLs carry a boot-random scoped
+	// token and only coalesce a refetch; they never expose plugin data.
+	mux.HandleFunc("/v1/render/", func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/v1/render/")
+		if hub := s.renders[id]; hub != nil {
+			hub.viewerHandler(w, r)
+			return
+		}
+		http.NotFound(w, r)
+	})
+	mux.HandleFunc("/internal/render-invalidate/", func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/internal/render-invalidate/"), "/")
+		if len(parts) == 2 {
+			if hub := s.renders[parts[0]]; hub != nil && parts[1] == hub.cfg.Token {
+				hub.invalidateHandler(w, r)
+				return
+			}
+		}
+		http.NotFound(w, r)
+	})
 	return mux
 }
 func (s *Supervisor) childAction(w http.ResponseWriter, r *http.Request) {

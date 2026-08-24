@@ -25,9 +25,8 @@ EOF
 chmod 700 "$FAKE"
 
 state="$TMP/main"; socket="$state/tmux.sock"; pids="$state/pids"
-agents_state="$TMP/agents-supervisor"; agents_socket="$agents_state/tmux.sock"
 BASH_BIN=$(command -v bash)
-runp() { FAMILIAR_PRESENCE_STATE_DIR="$state" FAMILIAR_PRESENCE_SOCKET="$socket" FAMILIAR_AGENTS_SUPERVISOR_STATE="$agents_state" FAMILIAR_PRESENCE_COMMAND="exec $BASH_BIN $FAKE" WORKER_PIDS="$pids" bash "$PRESENCE" "$@"; }
+runp() { FAMILIAR_PRESENCE_STATE_DIR="$state" FAMILIAR_PRESENCE_SOCKET="$socket" FAMILIAR_PRESENCE_COMMAND="exec $BASH_BIN $FAKE" WORKER_PIDS="$pids" bash "$PRESENCE" "$@"; }
 
 # An owned config is the entire inner-session policy; user config cannot leak.
 home="$TMP/home"; mkdir -m 700 "$home"
@@ -73,7 +72,6 @@ cat >"$viewer_stub" <<'EOF'
   printf 'argc=%s\n' "$#"
   printf 'socket=%s\n' "${FAMILIAR_PRESENCE_SOCKET:-}"
   printf 'state=%s\n' "${FAMILIAR_PRESENCE_STATE_DIR:-}"
-  printf 'agents_socket=%s\n' "${FAMILIAR_AGENTS_SOCKET:-}"
 } > "$VIEWER_RECORD"
 exit 23
 EOF
@@ -86,7 +84,6 @@ set -e
 grep -Fxq 'argc=0' "$record" || fail "viewer passed arguments"
 grep -Fxq "socket=$socket" "$record" || fail "viewer dropped Presence socket env"
 grep -Fxq "state=$state" "$record" || fail "viewer dropped Presence state env"
-grep -Fxq "agents_socket=$agents_socket" "$record" || fail "viewer did not derive agents socket env"
 [ "$(tmux -S "$socket" list-sessions -F '#{session_name}')" = presence ] || fail "viewer created an outer session"
 ok "viewer execs FAMILIAR_VIEWER_BIN with no args and inherited runtime env"
 

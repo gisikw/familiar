@@ -44,11 +44,8 @@ const FLUSH_MS = Number(process.env.FAMILIAR_PTY_FLUSH_MS ?? 0);
 
 const REPOSITORY_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
 
-// familiar.sh exports the Presence socket but currently exports only the
-// agents supervisor state directory, not FAMILIAR_AGENTS_SOCKET. Normalize the
-// two socket variables exactly as presence.sh does before invoking either the
-// ensure controller or viewer. This also makes a checkout-local gateway start
-// work without first entering through familiar.sh.
+// Normalize the Presence socket before invoking either the ensure controller
+// or viewer. Plugin terminal targets arrive through Familiar's render host.
 function familiarEnvironment(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
@@ -56,10 +53,7 @@ function familiarEnvironment(): Record<string, string> {
   }
   const presenceState = env.FAMILIAR_PRESENCE_STATE_DIR
     || path.join(REPOSITORY_ROOT, "state/presence");
-  const agentsState = env.FAMILIAR_AGENTS_SUPERVISOR_STATE
-    || path.join(REPOSITORY_ROOT, "state/agents-supervisor");
   env.FAMILIAR_PRESENCE_SOCKET ||= path.join(presenceState, "tmux.sock");
-  env.FAMILIAR_AGENTS_SOCKET ||= path.join(agentsState, "tmux.sock");
   return env;
 }
 

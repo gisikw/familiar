@@ -1,9 +1,7 @@
 # Familiar Architecture
 
-> **Status:** current architecture, with planned adapter evolution called out
-> explicitly. This document describes Familiar itself. The separately deployable
-> agent-dispatch system is deliberately excluded; see
-> [Familiar Agents Architecture](AGENTS-ARCHITECTURE.md).
+> **Status:** current architecture. Delegated work is external plugin behavior;
+> Familiar owns only the reduced host seam in [PLUGIN-HOST.md](PLUGIN-HOST.md).
 
 Familiar is a persistent presence with disposable interfaces. The runtime owns
 identity, continuity, sessions, and service supervision. Desktop, mobile,
@@ -67,10 +65,8 @@ continuity, relationship history, and a long-lived session. Pi's internal
 “agent” terminology describes an implementation layer; it does not define the
 entity Familiar presents.
 
-Dispatched workers are separate delegated processes. Familiar may call an agent
-system through tools, but that system is no more constitutive of Familiar than a
-calendar, task service, or search provider. Its architecture lives in
-[AGENTS-ARCHITECTURE.md](AGENTS-ARCHITECTURE.md).
+Delegated workers are external processes. Familiar may load their trusted Pi and
+semantic-nav contributions at boot, but does not implement their lifecycle.
 
 ## Components
 

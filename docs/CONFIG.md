@@ -70,7 +70,7 @@ same-session JSON-to-setup-token cutover.
 ## Canonical groups and migration
 
 Use tables whose names match the established environment prefix: `[pi]`,
-`[anthropic]`, `[openai]`, `[tiamat]`, `[server]`, `[agents]`, `[herdr]`,
+`[anthropic]`, `[openai]`, `[tiamat]`, `[server]`, `[plugins]`, `[herdr]`,
 `[subagent]`, `[model]`, `[llama]`, `[stt]`, `[tts]`, `[searxng]`, `[brave]`,
 `[fetch]`, `[zip]`, and `[theme]`.
 Cross-cutting
@@ -89,7 +89,8 @@ spellings to the canonical tables (the effective export name is unchanged):
 
 The `[herdr]` and `[subagent]` tables are retained for the current
 worker/session integration. See `familiar.toml.example` for their complete
-key list. Anthropic also accepts `claude_credentials_json` or
+key list. `[plugins.golem]` is the sole reduced boot-time source enrollment;
+see [PLUGIN-HOST.md](PLUGIN-HOST.md). Anthropic also accepts `claude_credentials_json` or
 `claude_oauth_token`; never put real credentials in the committed example.
 
 Flat top-level keys are no longer supported: the loader rejects any key that is

@@ -38,9 +38,16 @@ skip_version_check = 1
 # config = "./services/server/familiar-server.toml.example"
 # listen = "127.0.0.1:9940"
 
-[agents]
-# endpoint = "unix:///absolute/path/to/state/agents/service.sock"
-# host = "laptop"
+# Optional trusted plugin source. Choose a mutable local path OR immutable Git
+# URL plus exact 40-character commit. A private instance supplies real values.
+# [plugins.golem]
+# path = "/absolute/path/to/golem"
+# git = "https://example.invalid/golem.git"
+# rev = "0123456789abcdef0123456789abcdef01234567"
+# [plugins.golem.env]
+# GOLEM_DB = "/absolute/private-instance/state/golem/service.db"
+# Golem's [pi.env] supplies its structured CLI environment; instance values in
+# [plugins.golem.env] deliberately override manifest defaults.
 
 [model]
 # file = "model.gguf"                       # set file + URL together
