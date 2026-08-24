@@ -48,8 +48,15 @@ HOME="$home" runp ensure >/dev/null
 tmux -S "$socket" list-keys -T root PageUp | grep -Fq '#{alternate_on}' \
   || fail "PageUp alternate-screen arbitration missing"
 case $(tmux -S "$socket" show-options -gv terminal-features) in
-  *tmux\*:extkeys*ghostty\*:clipboard:ccolour:cstyle:focus:title:extkeys*) ;;
+  *tmux\*:RGB:extkeys*ghostty\*:RGB:clipboard:ccolour:cstyle:focus:title:extkeys*) ;;
   *) fail "inner nested/direct terminal features missing" ;;
+esac
+# Truecolor (RGB) must be advertised for the direct/native attach TERM patterns
+# so inner tmux passes the theme accent RGB SGR through instead of downgrading
+# or dropping it (grey editor lines regression).
+case $(tmux -S "$socket" show-options -gv terminal-features) in
+  *xterm\*:RGB:*) ;;
+  *) fail "inner terminal features do not advertise truecolor (RGB)" ;;
 esac
 ok "ensure creates only the isolated presence session with inner terminal policy"
 
