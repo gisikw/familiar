@@ -681,6 +681,50 @@ impl GhosttyTerminal {
             _ => 1,
         };
 
+        // BCE (background color erase): blank cells written by EL/ED with an
+        // active SGR background do not carry a style; the erased background is
+        // stored in the cell's *content* (content_tag = bg_color_*). The style
+        // background only covers cells with a glyph, so fall back to the cell
+        // content color to keep full-line highlights spanning trailing blanks.
+        let mut background = self.color(style.bg_color);
+        if background.is_none() {
+            let mut content_tag = 0_i32;
+            if unsafe {
+                ffi::ghostty_cell_get(
+                    raw_cell,
+                    ffi::CELL_DATA_CONTENT_TAG,
+                    (&mut content_tag as *mut i32).cast(),
+                )
+            } == ffi::SUCCESS
+            {
+                if content_tag == ffi::CELL_CONTENT_BG_COLOR_PALETTE {
+                    let mut palette = 0_u8;
+                    if unsafe {
+                        ffi::ghostty_cell_get(
+                            raw_cell,
+                            ffi::CELL_DATA_COLOR_PALETTE,
+                            (&mut palette as *mut u8).cast(),
+                        )
+                    } == ffi::SUCCESS
+                    {
+                        background = Some(TerminalColor::Indexed(palette));
+                    }
+                } else if content_tag == ffi::CELL_CONTENT_BG_COLOR_RGB {
+                    let mut rgb = ffi::ColorRgb::default();
+                    if unsafe {
+                        ffi::ghostty_cell_get(
+                            raw_cell,
+                            ffi::CELL_DATA_COLOR_RGB,
+                            (&mut rgb as *mut ffi::ColorRgb).cast(),
+                        )
+                    } == ffi::SUCCESS
+                    {
+                        background = Some(TerminalColor::Rgb(rgb.r, rgb.g, rgb.b));
+                    }
+                }
+            }
+        }
+
         Ok(TerminalCell {
             text,
             attributes: CellAttributes {
@@ -690,7 +734,7 @@ impl GhosttyTerminal {
                 inverse: style.inverse,
             },
             foreground: self.color(style.fg_color),
-            background: self.color(style.bg_color),
+            background,
             width,
         })
     }

@@ -37,10 +37,17 @@ pub const KITTY_IMAGE_FORMAT: c_int = 5;
 pub const KITTY_IMAGE_DATA_PTR: c_int = 7;
 pub const KITTY_IMAGE_DATA_LEN: c_int = 8;
 
+pub const CELL_DATA_CONTENT_TAG: c_int = 2;
 pub const CELL_DATA_WIDE: c_int = 3;
+pub const CELL_DATA_COLOR_PALETTE: c_int = 10;
+pub const CELL_DATA_COLOR_RGB: c_int = 11;
 pub const WIDE: c_int = 1;
 pub const SPACER_TAIL: c_int = 2;
 pub const SPACER_HEAD: c_int = 3;
+
+// GhosttyCellContentTag values.
+pub const CELL_CONTENT_BG_COLOR_PALETTE: c_int = 2;
+pub const CELL_CONTENT_BG_COLOR_RGB: c_int = 3;
 
 pub const STYLE_COLOR_PALETTE: c_int = 1;
 pub const STYLE_COLOR_RGB: c_int = 2;

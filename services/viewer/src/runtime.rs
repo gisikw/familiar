@@ -372,6 +372,22 @@ fn host_cell_aspect() -> CellAspect {
         .unwrap_or_default()
 }
 
+/// Draws the single-column separator between the Familiar chrome and the child
+/// pane. The glyph color uses an ANSI palette slot (like the rest of the
+/// sidebar) so the host terminal's Familiar theme controls the exact shade —
+/// slot 8 (bright black) maps to the theme's `borderMuted` role.
+fn render_divider(area: ratatui::layout::Rect, buffer: &mut ratatui::buffer::Buffer) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let style = Style::default().fg(Color::Indexed(8));
+    for row in area.y..area.y.saturating_add(area.height) {
+        if let Some(cell) = buffer.cell_mut((area.x, row)) {
+            cell.set_symbol("│").set_style(style);
+        }
+    }
+}
+
 fn render_frame(
     frame: &mut ratatui::Frame<'_>,
     terminal: &GhosttyTerminal,
@@ -386,6 +402,7 @@ fn render_frame(
         render_mark_wordmark(graphics_mode, layout.mark, target, frame.buffer_mut());
     }
     render_sidebar(sidebar_rows, layout.job_rows, frame.buffer_mut());
+    render_divider(layout.divider, frame.buffer_mut());
     if let Some(notice) = sidebar_notice {
         Paragraph::new(notice)
             .style(Style::default().fg(Color::Indexed(1)))
@@ -785,6 +802,22 @@ mod tests {
         // Graphics cursor save/restore is emitted after draw, so this mapped
         // position is the one restored after image placements.
         assert!(b"\x1b7".starts_with(b"\x1b"));
+    }
+
+    #[test]
+    fn divider_paints_a_themed_column_between_sidebar_and_main() {
+        let layout = viewer_layout(100, 30);
+        let mut buffer = Buffer::empty(ratatui::layout::Rect::new(0, 0, 100, 30));
+        render_divider(layout.divider, &mut buffer);
+        // The divider occupies the sidebar's last column across the full height,
+        // styled from the theme palette (never a hardcoded hex).
+        for row in 0..30 {
+            let cell = buffer.cell((layout.divider.x, row)).unwrap();
+            assert_eq!(cell.symbol(), "│");
+            assert_eq!(cell.fg, Color::Indexed(8));
+        }
+        // The child pane's first column stays untouched.
+        assert_eq!(buffer.cell((layout.main.x, 0)).unwrap().symbol(), " ");
     }
 
     #[test]

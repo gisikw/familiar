@@ -166,8 +166,7 @@ pub fn derive_label(prompt: &str, id: &str) -> String {
 fn workspace(cwd: &str) -> String {
     let name = cwd
         .split('/')
-        .filter(|part| !part.is_empty())
-        .next_back()
+        .rfind(|part| !part.is_empty())
         .unwrap_or("unknown");
     let clean = normalize_whitespace(name);
     if clean.is_empty() {
