@@ -275,7 +275,9 @@ prepare_plugin() {
     case "$name" in "$prefix"*) export "FAMILIAR_PLUGIN_ENV_${name#$prefix}=$value" ;; esac
   done < <(env)
   local server_listen=${FAMILIAR_SERVER_LISTEN:-127.0.0.1:9940}
-  export FAMILIAR_RENDER_URL="http://127.0.0.1:${server_listen##*:}/v1/render/golem"
+  # The viewer consumes only the generic host-owned aggregate render endpoint.
+  # No plugin-specific path leaks into the viewer contract.
+  export FAMILIAR_RENDER_URL="http://127.0.0.1:${server_listen##*:}/v1/render"
 }
 
 plugin_extensions_json() {
@@ -780,6 +782,9 @@ ssh_connect() {
 # normal launch skips it. bash 3.2 compatible: no associative arrays, and the
 # staleness test is a plain `-nt`.
 viewer_connect() {
+  # Plugin preparation exports the generic FAMILIAR_RENDER_URL so an external
+  # `connect` gets host chrome without any manual plugin-specific URL.
+  prepare_plugin
   ensure_devshell connect "$@"
   local executable="${FAMILIAR_VIEWER_BIN:-}"
   if [ -z "$executable" ] && command -v nix >/dev/null 2>&1; then
@@ -1042,7 +1047,7 @@ config_check() {
   if [ "${2:-}" = --plugin ]; then
     [ "$CONFIG_LOAD_FAILED" -eq 0 ] || return 1
     prepare_plugin
-    printf '%s\n' "plugin_root=${FAMILIAR_PLUGIN_ROOT:-}"
+    printf '%s\n' "plugin_root=${FAMILIAR_PLUGIN_ROOT:-}" "render_url=${FAMILIAR_RENDER_URL:-}"
     return 0
   fi
   if [ "${2:-}" = --paths ]; then

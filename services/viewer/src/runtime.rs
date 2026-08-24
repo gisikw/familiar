@@ -7,8 +7,8 @@ use crate::layout::{viewer_layout, ViewerLayout};
 use crate::pty::{child_command, pty_size};
 use crate::selection::{osc52_clipboard, selected_text, Selection};
 use crate::sidebar::{
-    render as render_sidebar, rows_for, spawn_poller, terminal_live, Activation, RowModel,
-    SidebarModel,
+    plan_activation, render as render_sidebar, rows_for, spawn_poller, terminal_live, Activation,
+    ActivationPlan, RowModel, SidebarModel,
 };
 use crate::terminal::ghostty::GhosttyTerminal;
 use crate::terminal::{CellAttributes, GridSize, TerminalColor, TerminalCore, TerminalModes};
@@ -601,22 +601,22 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                         {
                             let target =
                                 target_for_sidebar_hit(hit, |row| sidebar_rows.target_for_row(row));
-                            if let Some(target) = target {
-                                if target != *app.target() {
-                                    // Snapshot liveness avoids misleading clicks; this
-                                    // immediate exact-target check closes the poll-to-click race.
-                                    if let ViewerTarget::Terminal {
-                                        socket, session, ..
-                                    } = &target
-                                    {
-                                        if !terminal_live(&Activation {
-                                            kind: "terminal".into(),
-                                            socket: socket.clone(),
-                                            session: session.clone(),
-                                        }) {
-                                            continue;
-                                        }
-                                    }
+                            // Actionable clicks route through a pure plan so a dead
+                            // terminal produces a visible notice, never a silent no-op.
+                            match plan_activation(target, app.target(), |socket, session| {
+                                terminal_live(&Activation {
+                                    kind: "terminal".into(),
+                                    socket: socket.to_owned(),
+                                    session: session.to_owned(),
+                                })
+                            }) {
+                                ActivationPlan::Ignore => {}
+                                ActivationPlan::Notice(message) => {
+                                    sidebar_notice =
+                                        Some((message, Instant::now() + Duration::from_secs(3)));
+                                    damaged = true;
+                                }
+                                ActivationPlan::Switch(target) => {
                                     match app.switch_target(target, &mut child) {
                                         Ok(()) => {
                                             // A fresh core cannot leak parser, modes, or screen

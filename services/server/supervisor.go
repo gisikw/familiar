@@ -45,14 +45,15 @@ type child struct {
 }
 
 type Supervisor struct {
-	cfg       Config
-	log       *slog.Logger
-	ctx       context.Context
-	cancel    context.CancelFunc
-	children  map[string]*child
-	renders   map[string]*renderHub
-	closeOnce sync.Once
-	stopHook  func(string) // tests observe deterministic shutdown ordering
+	cfg        Config
+	log        *slog.Logger
+	ctx        context.Context
+	cancel     context.CancelFunc
+	children   map[string]*child
+	renders    map[string]*renderHub
+	aggregator *renderAggregator
+	closeOnce  sync.Once
+	stopHook   func(string) // tests observe deterministic shutdown ordering
 }
 
 func New(cfg Config, logger *slog.Logger) (*Supervisor, error) {
@@ -68,9 +69,14 @@ func New(cfg Config, logger *slog.Logger) (*Supervisor, error) {
 	_ = os.Chmod(cfg.StateDir, 0700)
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Supervisor{cfg: cfg, log: logger, ctx: ctx, cancel: cancel, children: map[string]*child{}, renders: map[string]*renderHub{}}
+	// Deterministic config order drives aggregate composition.
+	hubs := make([]*renderHub, 0, len(cfg.Renders))
 	for _, rc := range cfg.Renders {
-		s.renders[rc.Plugin] = newRenderHub(rc, logger)
+		hub := newRenderHub(rc, logger)
+		s.renders[rc.Plugin] = hub
+		hubs = append(hubs, hub)
 	}
+	s.aggregator = newRenderAggregator(hubs, logger)
 	for _, cc := range cfg.Children {
 		x := &child{cfg: cc, sup: s, state: "waiting", wake: make(chan struct{}, 1), done: make(chan struct{})}
 		s.children[cc.Name] = x

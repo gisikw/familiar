@@ -107,10 +107,7 @@ mod tests {
             &["viewer"],
             &[
                 ("FAMILIAR_PRESENCE_SOCKET", "/p"),
-                (
-                    "FAMILIAR_RENDER_URL",
-                    "http://127.0.0.1:9940/v1/render/golem",
-                ),
+                ("FAMILIAR_RENDER_URL", "http://127.0.0.1:9940/v1/render"),
             ],
         )
         .unwrap() else {

@@ -206,6 +206,47 @@ pub fn parse_render(bytes: &[u8]) -> io::Result<SidebarModel> {
         available: true,
     })
 }
+/// The plan the viewer executes for a sidebar click. Keeping this pure makes
+/// the actionable-click and visible-failure behaviors directly testable without
+/// a live terminal or PTY.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ActivationPlan {
+    /// No actionable target (dead/nonclickable row, or already current).
+    Ignore,
+    /// Actionable, but the exact terminal is gone at click time. The viewer
+    /// must surface this as a visible, bounded sidebar notice — never a silent
+    /// no-op.
+    Notice(String),
+    /// Invoke the spawn-first writable switch to this unmodified target.
+    Switch(ViewerTarget),
+}
+/// Decides what a sidebar click should do. `live` re-checks the exact same-host
+/// terminal target and closes the poll-to-click race; a dead target yields a
+/// visible notice rather than a silent drop.
+pub fn plan_activation<F>(
+    hit_target: Option<ViewerTarget>,
+    current: &ViewerTarget,
+    live: F,
+) -> ActivationPlan
+where
+    F: FnOnce(&str, &str) -> bool,
+{
+    let Some(target) = hit_target else {
+        return ActivationPlan::Ignore;
+    };
+    if &target == current {
+        return ActivationPlan::Ignore;
+    }
+    if let ViewerTarget::Terminal {
+        socket, session, ..
+    } = &target
+    {
+        if !live(socket, session) {
+            return ActivationPlan::Notice("Terminal is no longer available".into());
+        }
+    }
+    ActivationPlan::Switch(target)
+}
 pub fn terminal_live(a: &Activation) -> bool {
     Command::new("tmux")
         .arg("-S")
@@ -397,5 +438,83 @@ mod tests {
         m.items[0].activation = None;
         let r = rows_for(&m, &ViewerTarget::Presence, 20, 28);
         assert!(r.target_for_row(2).is_none())
+    }
+
+    // The host aggregate composes multiple plugins under one tree with
+    // namespaced ("plugin/id") node IDs, while activation socket/session stay
+    // exact. The viewer must parse this and preserve the unmodified tmux target.
+    const AGGREGATE: &str = r#"{"render_api":1,"revision":7,"ttl_ms":1000,"target":"left-nav","content":{"kind":"tree","id":"root","children":[{"kind":"branch","id":"golem/root","label":"golem","children":[{"kind":"branch","id":"golem/b","label":"alpha","children":[{"kind":"item","id":"golem/i","label":"one","status":"running","activation":{"type":"terminal","socket":"/run/g.sock","session":"worker-a"}}]}]},{"kind":"branch","id":"second/root","label":"second","children":[{"kind":"branch","id":"second/b","label":"beta","children":[{"kind":"item","id":"second/i","label":"two","status":"running","activation":{"type":"terminal","socket":"/run/s.sock","session":"worker-b"}}]}]}]}}"#;
+    #[test]
+    fn aggregate_multiple_plugins_parse_with_namespaced_ids_and_exact_targets() {
+        let m = parse_render(AGGREGATE.as_bytes()).unwrap();
+        assert_eq!(m.items.len(), 2);
+        assert_eq!(m.items[0].id, "golem/i");
+        assert_eq!(m.items[1].id, "second/i");
+        // The exact same-host tmux target survives namespacing.
+        match m.items[1].target().unwrap() {
+            ViewerTarget::Terminal {
+                id,
+                socket,
+                session,
+            } => {
+                assert_eq!(id, "second/i");
+                assert_eq!(socket, "/run/s.sock");
+                assert_eq!(session, "worker-b");
+            }
+            other => panic!("unexpected target {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_activation_switches_to_exact_unmodified_target() {
+        let target = ViewerTarget::Terminal {
+            id: "golem/i".into(),
+            socket: "/run/g.sock".into(),
+            session: "worker-a".into(),
+        };
+        let plan = plan_activation(Some(target.clone()), &ViewerTarget::Presence, |s, sess| {
+            // Actionable: the exact target is live at click time.
+            s == "/run/g.sock" && sess == "worker-a"
+        });
+        assert_eq!(plan, ActivationPlan::Switch(target));
+    }
+
+    #[test]
+    fn plan_activation_dead_terminal_yields_visible_notice() {
+        let target = ViewerTarget::Terminal {
+            id: "golem/i".into(),
+            socket: "/run/g.sock".into(),
+            session: "worker-a".into(),
+        };
+        // The terminal is gone at click time: a bounded, non-secret notice, not
+        // a silent no-op.
+        let plan = plan_activation(Some(target), &ViewerTarget::Presence, |_, _| false);
+        match plan {
+            ActivationPlan::Notice(message) => {
+                assert!(!message.is_empty());
+                assert!(
+                    !message.contains("/run/g.sock"),
+                    "notice must not leak paths"
+                );
+            }
+            other => panic!("expected a visible notice, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_activation_ignores_dead_row_and_current_target() {
+        assert_eq!(
+            plan_activation(None, &ViewerTarget::Presence, |_, _| true),
+            ActivationPlan::Ignore
+        );
+        let current = ViewerTarget::Terminal {
+            id: "golem/i".into(),
+            socket: "/run/g.sock".into(),
+            session: "worker-a".into(),
+        };
+        assert_eq!(
+            plan_activation(Some(current.clone()), &current, |_, _| true),
+            ActivationPlan::Ignore
+        );
     }
 }
