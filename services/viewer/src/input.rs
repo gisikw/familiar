@@ -73,6 +73,18 @@ where
     ))
 }
 
+/// Maps a host mouse event to a main-pane-relative `(column, row)` cell, or
+/// `None` when the event falls outside the child pane. Used by host-side text
+/// selection, which operates independently of child mouse-reporting routing.
+pub fn main_cell(layout: ViewerLayout, event: MouseEvent) -> Option<(u16, u16)> {
+    contains(layout.main, event.column, event.row).then(|| {
+        (
+            event.column.saturating_sub(layout.main.x),
+            event.row.saturating_sub(layout.main.y),
+        )
+    })
+}
+
 fn contains(rect: ratatui::layout::Rect, column: u16, row: u16) -> bool {
     column >= rect.x
         && column < rect.x.saturating_add(rect.width)

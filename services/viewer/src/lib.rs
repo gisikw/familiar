@@ -8,5 +8,6 @@ pub mod input;
 pub mod layout;
 pub mod pty;
 pub mod runtime;
+pub mod selection;
 pub mod sidebar;
 pub mod terminal;
