@@ -68,8 +68,9 @@ same-session JSON-to-setup-token cutover.
 ## Canonical groups and migration
 
 Use tables whose names match the established environment prefix: `[pi]`,
-`[anthropic]`, `[openai]`, `[tiamat]`, `[server]`, `[agents]`, `[model]`, `[llama]`,
-`[stt]`, `[tts]`, `[searxng]`, `[brave]`, `[fetch]`, `[zip]`, and `[theme]`.
+`[anthropic]`, `[openai]`, `[tiamat]`, `[server]`, `[agents]`, `[herdr]`,
+`[subagent]`, `[model]`, `[llama]`, `[stt]`, `[tts]`, `[searxng]`, `[brave]`,
+`[fetch]`, `[zip]`, and `[theme]`.
 Cross-cutting
 paths and runtime policy live under `[familiar]`; the loader deliberately does
 not double that prefix. These are the mechanical moves from the retired flat
@@ -83,6 +84,11 @@ spellings to the canonical tables (the effective export name is unchanged):
 | `stt_url` | `[stt] url` | `FAMILIAR_STT_URL` |
 | `tts_voice` | `[tts] voice` | `FAMILIAR_TTS_VOICE` |
 | `brave_api_key` | `[brave] api_key` | `FAMILIAR_BRAVE_API_KEY` |
+
+The `[herdr]` and `[subagent]` tables are retained for the current
+worker/session integration. See `familiar.toml.example` for their complete
+key list. Anthropic also accepts `claude_credentials_json` or
+`claude_oauth_token`; never put real credentials in the committed example.
 
 Flat top-level keys are no longer supported: the loader rejects any key that is
 not under a table, so the old and new spellings cannot both exist. `chmod 600

@@ -29,6 +29,11 @@ skip_version_check = 1
 # tz = "America/Chicago"
 # debug_level = "debug"
 
+[herdr]
+# Legacy/current herdr session settings (kept as a public contract for existing instances).
+# session = "familiar"
+# config_path = "./state/herdr/config.toml"
+
 [server]
 # config = "./services/server/familiar-server.toml.example"
 # listen = "127.0.0.1:9940"
@@ -56,9 +61,12 @@ skip_version_check = 1
 # model_url = "https://models.example.invalid/tts.gguf"
 
 # Optional credentials for pi's native Anthropic provider. Tiamat does not use them.
+# Choose exactly one Claude credential form when using Claude Code integration.
 [anthropic]
 # api_key = "replace-locally"
 # auth_token = "replace-locally"
+# claude_credentials_json = '''{"claudeAiOauth":{"accessToken":"replace-locally","refreshToken":"replace-locally","expiresAt":0}}'''
+# claude_oauth_token = "setup-token-placeholder"
 
 [openai]
 # base_url = "https://api.openai.example.invalid/v1"
@@ -79,6 +87,13 @@ skip_version_check = 1
 # url = "https://api.search.brave.com"
 [fetch]
 # allow_private = false
+
+[subagent]
+# mode = "herdr"
+# model = "anthropic/claude-haiku-4-5"
+# timeout = 1800
+# dir = "./state/subagents"
+# session_dir = "./state/pi/subagent-sessions"
 
 [zip]
 # model = "anthropic/claude-haiku-4-5"

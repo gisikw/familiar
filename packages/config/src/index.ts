@@ -2,23 +2,25 @@ import { TOML } from "bun";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
-export const CANONICAL_TABLES = ["pi","familiar","server","agents","model","llama","stt","tts","anthropic","openai","tiamat","searxng","brave","fetch","zip","theme"] as const;
+export const CANONICAL_TABLES = ["pi","familiar","herdr","server","agents","model","llama","stt","tts","anthropic","openai","tiamat","searxng","brave","fetch","subagent","zip","theme"] as const;
 export type Scalar = string | number | boolean;
 export interface FamiliarConfig {
   pi?: { telemetry?: number; offline?: number; skip_version_check?: number; coding_agent_dir?: string };
   familiar?: { identity_path?: string; age_key?: string; handoff_path?: string; handoff_prompt_path?: string; worklist_dir?: string; inbox_dir?: string; log_path?: string; model_dir?: string; default_provider?: string; default_model?: string; artifact_dir?: string; subscriber_port?: number; tz?: string; debug_level?: string };
+  herdr?: { session?: string; config_path?: string };
   server?: { config?: string; listen?: string };
   agents?: { endpoint?: string; host?: string };
   model?: { file?: string; url?: string };
   llama?: { base_url?: string };
   stt?: { url?: string; model_file?: string; model_url?: string };
   tts?: { url?: string; voice?: string; model_file?: string; model_url?: string };
-  anthropic?: { base_url?: string; api_key?: string; auth_token?: string };
+  anthropic?: { base_url?: string; api_key?: string; auth_token?: string; claude_credentials_json?: string; claude_oauth_token?: string };
   openai?: { base_url?: string; api_key?: string };
   tiamat?: { url?: string; token_file?: string; poll_seconds?: number };
   searxng?: { url?: string };
   brave?: { api_key?: string; url?: string };
   fetch?: { allow_private?: boolean };
+  subagent?: { mode?: string; model?: string; timeout?: number; dir?: string; session_dir?: string };
   zip?: { model?: string };
   theme?: ThemeConfig;
 }
@@ -31,8 +33,9 @@ export const DEFAULT_CONFIG: FamiliarConfig = {
   theme: { name: "familiar-monokai-pro-spectrum" },
 };
 
-const schema: Record<string, Record<string, "string"|"number"|"boolean"|"table">> = {
-  pi:{telemetry:"number",offline:"number",skip_version_check:"number",coding_agent_dir:"string"}, familiar:{identity_path:"string",age_key:"string",handoff_path:"string",handoff_prompt_path:"string",worklist_dir:"string",inbox_dir:"string",log_path:"string",model_dir:"string",default_provider:"string",default_model:"string",artifact_dir:"string",subscriber_port:"number",tz:"string",debug_level:"string"}, server:{config:"string",listen:"string"}, agents:{endpoint:"string",host:"string"}, model:{file:"string",url:"string"}, llama:{base_url:"string"}, stt:{url:"string",model_file:"string",model_url:"string"}, tts:{url:"string",voice:"string",model_file:"string",model_url:"string"}, anthropic:{base_url:"string",api_key:"string",auth_token:"string"}, openai:{base_url:"string",api_key:"string"}, tiamat:{url:"string",token_file:"string",poll_seconds:"number"}, searxng:{url:"string"}, brave:{api_key:"string",url:"string"}, fetch:{allow_private:"boolean"}, zip:{model:"string"},
+type Expected = "string"|"number"|"number|string"|"boolean"|"table";
+const schema: Record<string, Record<string, Expected>> = {
+  pi:{telemetry:"number|string",offline:"number|string",skip_version_check:"number|string",coding_agent_dir:"string"}, familiar:{identity_path:"string",age_key:"string",handoff_path:"string",handoff_prompt_path:"string",worklist_dir:"string",inbox_dir:"string",log_path:"string",model_dir:"string",default_provider:"string",default_model:"string",artifact_dir:"string",subscriber_port:"number",tz:"string",debug_level:"string"}, herdr:{session:"string",config_path:"string"}, server:{config:"string",listen:"string"}, agents:{endpoint:"string",host:"string"}, model:{file:"string",url:"string"}, llama:{base_url:"string"}, stt:{url:"string",model_file:"string",model_url:"string"}, tts:{url:"string",voice:"string",model_file:"string",model_url:"string"}, anthropic:{base_url:"string",api_key:"string",auth_token:"string",claude_credentials_json:"string",claude_oauth_token:"string"}, openai:{base_url:"string",api_key:"string"}, tiamat:{url:"string",token_file:"string",poll_seconds:"number"}, searxng:{url:"string"}, brave:{api_key:"string",url:"string"}, fetch:{allow_private:"boolean"}, subagent:{mode:"string",model:"string",timeout:"number",dir:"string",session_dir:"string"}, zip:{model:"string"},
   theme:{name:"string",background:"string",surface:"string",surface_dim:"string",overlay:"string",text:"string",muted:"string",accent:"string",success:"string",warning:"string",error:"string",border:"string",border_muted:"string",selection_bg:"string",cursor:"string",cursor_text:"string",ansi:"table"},
 };
 const ansiKeys = ["black","red","green","yellow","blue","magenta","cyan","white","bright_black","bright_red","bright_green","bright_yellow","bright_blue","bright_magenta","bright_cyan","bright_white"];
@@ -51,7 +54,7 @@ export function validateConfig(value: unknown): FamiliarConfig {
       if(expected==="table") {
         if(table!=="theme"||key!=="ansi"||!isObj(leaf)){issues.push(`${table}.${key} must be a table`);continue;}
         for(const [ak,av] of Object.entries(leaf)){if(!ansiKeys.includes(ak))issues.push(`theme.ansi.${ak}: unknown setting`);else if(typeof av!=="string")issues.push(`theme.ansi.${ak} must be a string`);}
-      } else if(typeof leaf!==expected || (expected==="number"&&!Number.isFinite(leaf))) issues.push(`${table}.${key} must be a ${expected}`);
+      } else if((expected==="number|string" ? (typeof leaf!=="number" && typeof leaf!=="string") : typeof leaf!==expected) || ((expected==="number"||expected==="number|string")&&typeof leaf==="number"&&!Number.isFinite(leaf))) issues.push(`${table}.${key} must be a ${expected}`);
     }
   }
   if(issues.length) throw new ConfigError(`invalid Familiar configuration (${issues.length} ${issues.length===1?"issue":"issues"})`,issues);
@@ -66,7 +69,7 @@ export function applyEnvironment(config:FamiliarConfig, env:Record<string,string
   const copy=merge({} as FamiliarConfig,config);
   for(const [table,keys] of Object.entries(schema)) for(const [key,expected] of Object.entries(keys)) {
     if(expected==="table") { for(const ak of ansiKeys){const name=envName([table,key,ak]);if(env[name]!==undefined){const t=((copy as any)[table]??={});const a=(t[key]??={});a[ak]=env[name];}} continue; }
-    const name=envName([table,key]); if(env[name]!==undefined){const t=((copy as any)[table]??={});t[key]=parseEnv(env[name]!,expected,`${table}.${key}`);}
+    const name=envName([table,key]); if(env[name]!==undefined){const t=((copy as any)[table]??={});t[key]=parseEnv(env[name]!,expected=== "number|string" ? "string" : expected,`${table}.${key}`);}
   }
   return validateConfig(copy);
 }
