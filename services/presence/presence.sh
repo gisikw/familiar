@@ -17,6 +17,10 @@ CONFIG_SOURCE=${FAMILIAR_PRESENCE_CONFIG:-$HERE/tmux.conf}
 LOCK="$STATE/ensure.lock"
 BASH_EXE=${FAMILIAR_PRESENCE_BASH:-$(command -v bash)}
 export FAMILIAR_PRESENCE_BASH="$BASH_EXE"
+# New tmux windows spawn interactive shells; the devshell's `bash` is Nix's
+# non-readline build bash, which renders PS1 \[ \] markers literally and lacks
+# line editing. Prefer the flake-provided interactive bash for default-shell.
+INTERACTIVE_BASH=${FAMILIAR_INTERACTIVE_SHELL:-$BASH_EXE}
 # Normalize the socket environment consumed by the native viewer. familiar.sh
 # exports the agents state directory but not its derived socket, while a direct
 # SSH shell may rely entirely on these checkout-local defaults.
@@ -101,8 +105,8 @@ ensure_locked() {
   fi
   # Avoid tmux's compiled /bin/sh default (absent in pure Nix builds) while
   # retaining the explicit static policy above.
-  case "$BASH_EXE" in *\"*) fail "unsupported quote in bash path" ;; esac
-  printf 'set-option -g default-shell "%s"\n' "$BASH_EXE" >> "$RUNTIME_CONFIG"
+  case "$BASH_EXE$INTERACTIVE_BASH" in *\"*) fail "unsupported quote in bash path" ;; esac
+  printf 'set-option -g default-shell "%s"\n' "$INTERACTIVE_BASH" >> "$RUNTIME_CONFIG"
   if ! server_up; then
     if server_alive; then
       # The owned server survived but its Presence session did not. Keep any
