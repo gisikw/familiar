@@ -17,7 +17,7 @@ import (
 const renderFixture = `{"render_api":1,"revision":1,"ttl_ms":5000,"target":"left-nav","content":{"kind":"tree","id":"root","children":[{"kind":"branch","id":"b","label":"alpha","children":[{"kind":"item","id":"i","label":"work","status":"running","activation":{"type":"terminal","socket":"/run/g.sock","session":"worker-i"}}]}]}}`
 
 func TestRenderValidationBoundsTargetAndDuplicates(t *testing.T) {
-	cases := []string{renderFixture, strings.Replace(renderFixture, "left-nav", "right", 1), strings.Replace(renderFixture, `"id":"i"`, `"id":"b"`, 1), strings.Replace(renderFixture, `"kind":"item"`, `"kind":"paint"`, 1)}
+	cases := []string{renderFixture, strings.Replace(renderFixture, `"target":"left-nav",`, "", 1), strings.Replace(renderFixture, "left-nav", "right", 1), strings.Replace(renderFixture, `"id":"i"`, `"id":"b"`, 1), strings.Replace(renderFixture, `"kind":"item"`, `"kind":"paint"`, 1)}
 	for i, s := range cases {
 		var d renderEnvelope
 		if err := jsonUnmarshal([]byte(s), &d); err != nil {

@@ -32,9 +32,7 @@ depends_on=["service"]
 [pi]
 extensions=["${plugin_root}/contrib/familiar/pi"]
 [chrome]
-target="left-nav"
 render_url="http://127.0.0.1:7340/v1/render"
-invalidate_url_env="FAMILIAR_RENDER_INVALIDATE_URL"
 [pi.env]
 GOLEM_CLI_ARGV_JSON="[\"golem\",\"--root\",\"${plugin_root}\"]"
 `)
@@ -59,7 +57,46 @@ GOLEM_CLI_ARGV_JSON="[\"golem\",\"--root\",\"${plugin_root}\"]"
 	if !strings.Contains(c.Children[1].Argv[1], root) || c.Children[1].Env["GOLEM_DB"] != "/state/db" || c.Children[1].Env["FAMILIAR_RENDER_INVALIDATE_URL"] == "" {
 		t.Fatal(c.Children[0])
 	}
+	if len(c.Renders) != 1 || c.Renders[0].URL != "http://127.0.0.1:7340/v1/render" {
+		t.Fatalf("renders=%+v", c.Renders)
+	}
 }
+func TestLoadPluginHostOwnedCallbackCannotBeOverridden(t *testing.T) {
+	root := writeManifest(t, `familiar_api=1
+[[services]]
+name="service"
+argv=["run"]
+[services.env]
+FAMILIAR_RENDER_INVALIDATE_URL="plugin"
+[chrome]
+render_url="http://127.0.0.1:7340/v1/render"
+`)
+	c := DefaultConfig()
+	_, err := LoadPlugin(&c, "golem", root, map[string]string{"FAMILIAR_RENDER_INVALIDATE_URL": "operator"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	callback := c.Children[0].Env["FAMILIAR_RENDER_INVALIDATE_URL"]
+	if callback == "" || callback == "operator" || callback == "plugin" || !strings.Contains(callback, "/internal/render-invalidate/golem/") {
+		t.Fatalf("callback=%q", callback)
+	}
+}
+
+func TestLoadPluginWithoutChromeHasNoCallback(t *testing.T) {
+	root := writeManifest(t, `familiar_api=1
+[[services]]
+name="service"
+argv=["run"]
+`)
+	c := DefaultConfig()
+	if _, err := LoadPlugin(&c, "plain", root, map[string]string{"FAMILIAR_RENDER_INVALIDATE_URL": "operator"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := c.Children[0].Env["FAMILIAR_RENDER_INVALIDATE_URL"]; ok || len(c.Renders) != 0 {
+		t.Fatalf("children=%+v renders=%+v", c.Children, c.Renders)
+	}
+}
+
 func TestLoadPluginRejectsAPIMismatchAndUnknownExpansion(t *testing.T) {
 	for _, text := range []string{`familiar_api=2
 [chrome]`, `familiar_api=1

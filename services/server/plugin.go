@@ -31,11 +31,11 @@ type PluginService struct {
 	Probe     ProbeConfig       `toml:"probe"`
 }
 type PluginRender struct {
-	Target           string `toml:"target"`
-	URL              string `toml:"render_url"`
-	TTLMillis        int64  `toml:"ttl_ms"`
-	InvalidateURLEnv string `toml:"invalidate_url_env"`
+	URL string `toml:"render_url"`
 }
+
+const renderInvalidateEnv = "FAMILIAR_RENDER_INVALIDATE_URL"
+
 type RenderConfig struct {
 	Plugin string
 	URL    string
@@ -67,10 +67,7 @@ func LoadPlugin(c *Config, id, root string, environment map[string]string) ([]st
 	if manifest.FamiliarAPI != 1 {
 		return nil, fmt.Errorf("plugin %s requires familiar_api = 1 (got %d)", id, manifest.FamiliarAPI)
 	}
-	if !meta.IsDefined("chrome") {
-		return nil, fmt.Errorf("plugin %s manifest requires [chrome]", id)
-	}
-	if manifest.Chrome.URL == "" {
+	if meta.IsDefined("chrome") && manifest.Chrome.URL == "" {
 		return nil, fmt.Errorf("plugin %s manifest requires chrome.render_url", id)
 	}
 	if len(manifest.Services) > 16 || len(manifest.Pi.Extensions) > 16 || len(manifest.Pi.Env) > 32 {
@@ -105,16 +102,21 @@ func LoadPlugin(c *Config, id, root string, environment map[string]string) ([]st
 		}
 		env := make(map[string]string, len(environment)+len(service.Env)+1)
 		for key, value := range service.Env {
+			if key == renderInvalidateEnv {
+				continue
+			}
 			if env[key], err = expandRoot(value, root); err != nil {
 				return nil, err
 			}
 		}
-		// Instance [plugins.golem.env] is the deliberate operator override.
 		for key, value := range environment {
-			env[key] = value
+			if key != renderInvalidateEnv {
+				env[key] = value
+			}
 		}
-		if manifest.Chrome.InvalidateURLEnv != "" {
-			env[manifest.Chrome.InvalidateURLEnv] = callback
+		// This callback is host-owned: operator and plugin environments cannot spoof it.
+		if meta.IsDefined("chrome") {
+			env[renderInvalidateEnv] = callback
 		}
 		deps := make([]string, len(service.DependsOn))
 		for i, dep := range service.DependsOn {
@@ -126,13 +128,13 @@ func LoadPlugin(c *Config, id, root string, environment map[string]string) ([]st
 		c.Children = append(c.Children, ChildConfig{Name: names[service.Name], Argv: argv, WorkingDir: root, Env: env, Required: false, DependsOn: deps, Probe: service.Probe})
 	}
 	if manifest.Chrome.URL != "" {
-		if manifest.Chrome.Target != "left-nav" {
-			return nil, fmt.Errorf("plugin %s has unsupported chrome target %q", id, manifest.Chrome.Target)
-		}
 		c.Renders = append(c.Renders, RenderConfig{Plugin: id, URL: manifest.Chrome.URL, Token: token})
 	}
 	piEnv := make(map[string]string, len(manifest.Pi.Env))
 	for key, value := range manifest.Pi.Env {
+		if key == renderInvalidateEnv {
+			continue
+		}
 		if !validEnvKey(key) || len(value) > 4096 {
 			return nil, fmt.Errorf("plugin %s has invalid [pi.env] entry %q", id, key)
 		}
@@ -142,7 +144,9 @@ func LoadPlugin(c *Config, id, root string, environment map[string]string) ([]st
 	}
 	// Instance configuration is the deliberate override for trusted plugin defaults.
 	for key, value := range environment {
-		piEnv[key] = value
+		if key != renderInvalidateEnv {
+			piEnv[key] = value
+		}
 	}
 	for i := range c.Children {
 		if c.Children[i].Presence {
