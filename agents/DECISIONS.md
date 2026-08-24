@@ -125,3 +125,65 @@
    application at birth; the explicit `source-file` returns only once the policy
    is loaded. `-f` on a non-birth invocation is silently ignored by tmux
    (verified), so passing it on later starts is harmless but insufficient alone.
+20. **Worker model/provider access — single-provider descriptor resolved at
+   dispatch.** The presence runs every model through its tiamat router; tiamat
+   providers are registered **at runtime** by the tiamat pi extension
+   (`pi.registerProvider`) and are NEVER persisted to `models-store.json`. That
+   store is only a fetched-catalog cache — for this presence it holds solely the
+   keyless local `llama.cpp` provider, so the previous "copy models-store.json"
+   design gave workers exactly one provider (local gemma). Fix: the presence-side
+   agents extension resolves, at dispatch time, the **single** provider+model the
+   worker should get — the requested model, or by default the presence's
+   currently-running `ctx.model` — and forwards an opaque `protocol.ProviderConfig`
+   on the job. The supervisor's pi adapter writes the worker's isolated per-job
+   pi dir from it: a pi `models.json` (`{"providers":{"<id>":{baseUrl,apiKey,api,
+   models}}}` — the top-level `providers` wrapper is REQUIRED by pi's
+   `ModelsConfigSchema`, verified against pinned pi 0.84.x), `defaultProvider`/
+   `defaultModel`, and `enabledModels:["<provider>/<model>"]` scoping the worker
+   to exactly that one model — nothing else. Launch pins `--model <provider>/<model>`.
+   Three transports all work: (a) **tiamat-routed** — the extension reads
+   `modelRegistry.getRegisteredProviderConfig(provider)` and forwards its
+   `apiKey` **unresolved reference** (`!cat -- <tokenfile>`) plus baseUrl/api;
+   (b) **local llama.cpp** — keyless, a `models.json` entry with `baseUrl` and no
+   `apiKey`; (c) **direct `/login`'d** — credentials live in `auth.json`, so the
+   descriptor sets `builtin`+`copy_auth` (no `models.json`) and the adapter copies
+   `auth.json` into the private per-job dir. Chosen mechanism: writing the
+   worker's `models.json`/`settings.json`/`auth.json` (the simplest thing that
+   works with pinned pi — no worker-side boot extension needed). PROVEN with a
+   real launch: pi loaded the adapter-generated profile, selected
+   `llama.cpp/gemma-4-E4B-it-Q4_K_M`, hit local llama, and returned `PONG`.
+
+   **CREDENTIAL EXPOSURE (flagged).** Job records transit the service SQLite DB.
+   Therefore the descriptor NEVER carries a resolved plaintext secret: the
+   `apiKey` is only pi's *config-value reference* (a `!cmd` run host-side, or a
+   `$ENV` interpolation), resolved on the worker host at inference time — the DB
+   stores a command string, not a key. Keyless providers carry no key. Built-in/
+   login providers carry no key in the payload at all; `auth.json` is copied only
+   into the per-job dir (0700/0600), never onto the job. Nothing secret is logged
+   or emitted in events/settlements. **Remote-host honesty:** a `!cat tokenfile`/
+   `$ENV` reference resolves against the *worker* host. v1 assumes the supervisor
+   is colocated with the presence (loopback/unix transport), so the reference
+   resolves to the same host-local secret. A supervisor on a different host would
+   need that tokenfile/env provisioned independently; cross-host credential
+   provisioning is explicitly future work, documented rather than silently
+   broken. Back-compat: with no descriptor (older clients) the adapter falls back
+   to copying the presence catalog.
+21. **Interactive bash for human-opened worker tmux windows.** The WORKER pane
+   execs the harness argv directly and is unaffected, but windows/panes a human
+   opens while inspecting spawned the non-interactive Nix build `bash` (no
+   readline, literal `\[\]` PS1) — the same defect fixed for the presence tmux in
+   commit 1f21917. `Tmux` gains `DefaultShell`, wired from
+   `FAMILIAR_INTERACTIVE_SHELL` (the flake exports `pkgs.bashInteractive`), and
+   `Prepare` emits `set-option -g default-shell "<sh>"` when set (path validated
+   to contain no double quote); unset preserves tmux's default (current behavior).
+22. **`remain-on-exit` scoped to the worker window.** The global policy set
+   `remain-on-exit on`, so ANY window a human opened in a worker session survived
+   its process exit as a dead pane (operator hates it). But the supervisor's
+   crash/exit detection reads the worker pane's exit status after death (`Pane()`
+   reads `pane_dead`/`pane_dead_status`), so the WORKER pane must still
+   remain-on-exit. Fix: the global default is now `off`, and `Start` applies
+   `set-option -w -t <session>:worker remain-on-exit on` to the worker window only
+   (idempotent on every start path, fresh or adopted). Human-opened windows
+   inherit the global `off` and close naturally on exit; exit-status capture for
+   the worker is preserved (lifecycle tests pass, plus a new test asserts a second
+   window's pane does not remain after its command exits).
