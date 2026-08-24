@@ -46,7 +46,8 @@ skip_version_check = 1
 # rev = "0123456789abcdef0123456789abcdef01234567"
 # [plugins.golem.env]
 # GOLEM_DB = "/absolute/private-instance/state/golem/service.db"
-# FAMILIAR_AGENTS_WEB_EXTENSION = "/absolute/path/to/familiar/integrations/pi/extensions/web"
+# Golem's [pi.env] supplies its structured CLI environment; instance values in
+# [plugins.golem.env] deliberately override manifest defaults.
 
 [model]
 # file = "model.gguf"                       # set file + URL together

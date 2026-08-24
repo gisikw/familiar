@@ -17,9 +17,10 @@ type PluginManifest struct {
 	FamiliarAPI int             `toml:"familiar_api"`
 	Services    []PluginService `toml:"services"`
 	Pi          struct {
-		Extensions []string `toml:"extensions"`
+		Extensions []string          `toml:"extensions"`
+		Env        map[string]string `toml:"env"`
 	} `toml:"pi"`
-	Render PluginRender `toml:"render"`
+	Chrome PluginRender `toml:"chrome"`
 }
 type PluginService struct {
 	Name      string            `toml:"name"`
@@ -66,7 +67,13 @@ func LoadPlugin(c *Config, id, root string, environment map[string]string) ([]st
 	if manifest.FamiliarAPI != 1 {
 		return nil, fmt.Errorf("plugin %s requires familiar_api = 1 (got %d)", id, manifest.FamiliarAPI)
 	}
-	if len(manifest.Services) > 16 || len(manifest.Pi.Extensions) > 16 {
+	if !meta.IsDefined("chrome") {
+		return nil, fmt.Errorf("plugin %s manifest requires [chrome]", id)
+	}
+	if manifest.Chrome.URL == "" {
+		return nil, fmt.Errorf("plugin %s manifest requires chrome.render_url", id)
+	}
+	if len(manifest.Services) > 16 || len(manifest.Pi.Extensions) > 16 || len(manifest.Pi.Env) > 32 {
 		return nil, fmt.Errorf("plugin %s manifest contribution is too large", id)
 	}
 
@@ -97,16 +104,17 @@ func LoadPlugin(c *Config, id, root string, environment map[string]string) ([]st
 			return nil, fmt.Errorf("plugin %s service %s has empty argv", id, service.Name)
 		}
 		env := make(map[string]string, len(environment)+len(service.Env)+1)
-		for key, value := range environment {
-			env[key] = value
-		}
 		for key, value := range service.Env {
 			if env[key], err = expandRoot(value, root); err != nil {
 				return nil, err
 			}
 		}
-		if manifest.Render.InvalidateURLEnv != "" {
-			env[manifest.Render.InvalidateURLEnv] = callback
+		// Instance [plugins.golem.env] is the deliberate operator override.
+		for key, value := range environment {
+			env[key] = value
+		}
+		if manifest.Chrome.InvalidateURLEnv != "" {
+			env[manifest.Chrome.InvalidateURLEnv] = callback
 		}
 		deps := make([]string, len(service.DependsOn))
 		for i, dep := range service.DependsOn {
@@ -117,11 +125,34 @@ func LoadPlugin(c *Config, id, root string, environment map[string]string) ([]st
 		}
 		c.Children = append(c.Children, ChildConfig{Name: names[service.Name], Argv: argv, WorkingDir: root, Env: env, Required: false, DependsOn: deps, Probe: service.Probe})
 	}
-	if manifest.Render.URL != "" {
-		if manifest.Render.Target != "left-nav" {
-			return nil, fmt.Errorf("plugin %s has unsupported render target %q", id, manifest.Render.Target)
+	if manifest.Chrome.URL != "" {
+		if manifest.Chrome.Target != "left-nav" {
+			return nil, fmt.Errorf("plugin %s has unsupported chrome target %q", id, manifest.Chrome.Target)
 		}
-		c.Renders = append(c.Renders, RenderConfig{Plugin: id, URL: manifest.Render.URL, Token: token})
+		c.Renders = append(c.Renders, RenderConfig{Plugin: id, URL: manifest.Chrome.URL, Token: token})
+	}
+	piEnv := make(map[string]string, len(manifest.Pi.Env))
+	for key, value := range manifest.Pi.Env {
+		if !validEnvKey(key) || len(value) > 4096 {
+			return nil, fmt.Errorf("plugin %s has invalid [pi.env] entry %q", id, key)
+		}
+		if piEnv[key], err = expandRoot(value, root); err != nil {
+			return nil, err
+		}
+	}
+	// Instance configuration is the deliberate override for trusted plugin defaults.
+	for key, value := range environment {
+		piEnv[key] = value
+	}
+	for i := range c.Children {
+		if c.Children[i].Presence {
+			if c.Children[i].Env == nil {
+				c.Children[i].Env = map[string]string{}
+			}
+			for key, value := range piEnv {
+				c.Children[i].Env[key] = value
+			}
+		}
 	}
 	exts := make([]string, len(manifest.Pi.Extensions))
 	for i, extension := range manifest.Pi.Extensions {
@@ -133,6 +164,18 @@ func LoadPlugin(c *Config, id, root string, environment map[string]string) ([]st
 		}
 	}
 	return exts, nil
+}
+
+func validEnvKey(key string) bool {
+	if key == "" || len(key) > 256 {
+		return false
+	}
+	for i, r := range key {
+		if !((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9' && i > 0) || (r == '_' && i > 0)) {
+			return false
+		}
+	}
+	return true
 }
 
 func pluginEnvironment() map[string]string {

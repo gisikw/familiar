@@ -244,13 +244,27 @@ prepare_plugin() {
   else
     path="$STATE_DIR/plugins/golem/src"
     install -d -m 700 "$(dirname "$path")"
+    [ ! -L "$path" ] || { echo 'familiar: refusing symlinked Git plugin cache' >&2; return 1; }
     if [ ! -d "$path/.git" ]; then git init -q "$path"; fi
-    git -C "$path" fetch -q --force "$git" "$rev" || { echo 'familiar: could not fetch exact plugins.golem rev' >&2; return 1; }
-    git -C "$path" checkout -q --detach FETCH_HEAD
-    local actual; actual=$(git -C "$path" rev-parse HEAD)
+    if [ "$(git -C "$path" remote get-url origin 2>/dev/null || true)" != "$git" ]; then
+      git -C "$path" remote remove origin 2>/dev/null || true
+      git -C "$path" remote add origin -- "$git" || { echo 'familiar: could not configure plugin origin' >&2; return 1; }
+    fi
+    [ "$(git -C "$path" remote get-url origin)" = "$git" ] || { echo 'familiar: plugin origin mismatch' >&2; return 1; }
+    git -C "$path" fetch -q --force --no-tags origin "$rev" || { echo 'familiar: could not fetch exact plugins.golem rev' >&2; return 1; }
+    git -C "$path" checkout -q --detach FETCH_HEAD || return 1
+    git -C "$path" reset -q --hard "$rev" || return 1
+    git -C "$path" clean -q -ffdqx || return 1
+    local link target root_real
+    root_real=$(realpath -e "$path") || return 1
+    while IFS= read -r -d '' link; do
+      target=$(realpath -e "$link") || { echo 'familiar: broken plugin symlink' >&2; return 1; }
+      case "$target" in "$root_real"/*) ;; *) echo 'familiar: plugin symlink escapes cache root' >&2; return 1 ;; esac
+    done < <(find "$path" -type l -print0)
+    local actual; actual=$(git -C "$path" rev-parse --verify HEAD)
     [ "${actual,,}" = "${rev,,}" ] || { echo "familiar: plugin SHA mismatch (wanted $rev, got $actual)" >&2; return 1; }
   fi
-  [ -f "$path/contrib/familiar/plugin.toml" ] || { echo 'familiar: plugin lacks contrib/familiar/plugin.toml' >&2; return 1; }
+  [ -f "$path/contrib/familiar/plugin.toml" ] && [ "$(realpath -e "$path/contrib/familiar/plugin.toml" 2>/dev/null)" = "$(realpath -e "$path")/contrib/familiar/plugin.toml" ] || { echo 'familiar: plugin lacks a safe contrib/familiar/plugin.toml' >&2; return 1; }
   export FAMILIAR_PLUGIN_ROOT="$path" FAMILIAR_PLUGIN_ID=golem
   local api
   api=$(FAMILIAR_PLUGIN_MANIFEST="$path/contrib/familiar/plugin.toml" nix eval --impure --raw --expr 'toString (builtins.fromTOML (builtins.readFile (builtins.getEnv "FAMILIAR_PLUGIN_MANIFEST"))).familiar_api') || return 1
@@ -973,7 +987,6 @@ state/age.key
 state/pi/
 state/pi/auth.json
 state/presence/
-state/agents-supervisor/
 state/subagents/
 state/herdr/
 state/inbox/
