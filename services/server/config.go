@@ -26,13 +26,14 @@ func (d *Duration) UnmarshalText(text []byte) error {
 func (d Duration) Value() time.Duration { return time.Duration(d) }
 
 type Config struct {
-	Listen            string        `toml:"listen"`
-	StateDir          string        `toml:"state_dir"`
-	ShutdownGrace     Duration      `toml:"shutdown_grace"`
-	ReadHeaderTimeout Duration      `toml:"read_header_timeout"`
-	TeardownPresence  bool          `toml:"teardown_presence"`
-	LogMaxBytes       int64         `toml:"log_max_bytes"`
-	Children          []ChildConfig `toml:"children"`
+	Listen            string         `toml:"listen"`
+	StateDir          string         `toml:"state_dir"`
+	ShutdownGrace     Duration       `toml:"shutdown_grace"`
+	ReadHeaderTimeout Duration       `toml:"read_header_timeout"`
+	TeardownPresence  bool           `toml:"teardown_presence"`
+	LogMaxBytes       int64          `toml:"log_max_bytes"`
+	Children          []ChildConfig  `toml:"children"`
+	Renders           []RenderConfig `toml:"-"`
 }
 
 type ChildConfig struct {
@@ -98,6 +99,14 @@ func LoadConfig(path string) (Config, error) {
 			c.Children[i].WorkingDir = filepath.Join(filepath.Dir(path), c.Children[i].WorkingDir)
 		}
 		applyChildDefaults(&c.Children[i])
+	}
+	if root := os.Getenv("FAMILIAR_PLUGIN_ROOT"); root != "" {
+		if _, err := LoadPlugin(&c, os.Getenv("FAMILIAR_PLUGIN_ID"), root, pluginEnvironment()); err != nil {
+			return c, err
+		}
+		for i := range c.Children {
+			applyChildDefaults(&c.Children[i])
+		}
 	}
 	return c, ValidateConfig(c)
 }
@@ -200,6 +209,13 @@ func ValidateConfig(c Config) error {
 	}
 	if hasCycle(c.Children) {
 		return fmt.Errorf("dependency graph contains a cycle")
+	}
+	renders := map[string]bool{}
+	for _, render := range c.Renders {
+		if !validChildName.MatchString(render.Plugin) || renders[render.Plugin] || !validRenderURL(render.URL) || render.Token == "" {
+			return fmt.Errorf("invalid or duplicated render contribution %q", render.Plugin)
+		}
+		renders[render.Plugin] = true
 	}
 	return nil
 }

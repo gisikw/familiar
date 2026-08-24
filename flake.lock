@@ -1,24 +1,5 @@
 {
   "nodes": {
-    "agents": {
-      "inputs": {
-        "flake-utils": [
-          "flake-utils"
-        ],
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "path": "./agents",
-        "type": "path"
-      },
-      "original": {
-        "path": "./agents",
-        "type": "path"
-      },
-      "parent": []
-    },
     "desktop": {
       "inputs": {
         "flake-utils": [
@@ -113,7 +94,6 @@
     },
     "root": {
       "inputs": {
-        "agents": "agents",
         "desktop": "desktop",
         "flake-utils": "flake-utils",
         "gateway-module": "gateway-module",

@@ -26,8 +26,10 @@ claude_oauth_token="placeholder"\n[theme.ansi]\nbright_blue="#abcdef"\n`);chmodS
     const loaded=await loadConfig(join(repo,"familiar.toml.example"),{env:{},defaults:{},requirePrivateMode:false});
     expect(loaded.source).toBe("file");
     expect(loaded.config.server).toEqual({});
-    expect(loaded.config.agents).toEqual({});
-    expect(validateConfig({server:{config:"server.toml",listen:"127.0.0.1:9940"},agents:{endpoint:"unix:///state/agents.sock",host:"laptop"}})).toEqual({server:{config:"server.toml",listen:"127.0.0.1:9940"},agents:{endpoint:"unix:///state/agents.sock",host:"laptop"}});
+    expect(loaded.config.plugins).toBeUndefined();
+    const plugins={golem:{git:"https://example.invalid/golem",rev:"0123456789abcdef0123456789abcdef01234567",env:{GOLEM_DB:"/state/golem.db"}}};
+    expect(validateConfig({server:{config:"server.toml",listen:"127.0.0.1:9940"},plugins})).toEqual({server:{config:"server.toml",listen:"127.0.0.1:9940"},plugins});
+    expect(()=>validateConfig({plugins:{golem:{path:"/g",git:"x",rev:"0123456789abcdef0123456789abcdef01234567"}}})).toThrow(ConfigError);
   });
   test("canonical environment naming is deterministic",()=>expect(envName(["theme","ansi","bright-blue"])).toBe("FAMILIAR_THEME_ANSI_BRIGHT_BLUE"));
   test("rejects malformed, unknown, and invalid settings",()=>{

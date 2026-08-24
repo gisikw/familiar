@@ -57,7 +57,7 @@ func TestCanonicalConfigLoads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.Children) != 7 {
+	if len(c.Children) != 5 {
 		t.Fatalf("children=%d", len(c.Children))
 	}
 	for _, child := range c.Children {

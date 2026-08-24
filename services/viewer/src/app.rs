@@ -2,7 +2,11 @@
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ViewerTarget {
     Presence,
-    Agent(String),
+    Terminal {
+        id: String,
+        socket: String,
+        session: String,
+    },
 }
 
 /// Navigation state is deliberately local to one viewer process.
@@ -69,7 +73,11 @@ mod tests {
     #[test]
     fn target_changes_only_after_successful_replacement() {
         let mut app = App::default();
-        let target = ViewerTarget::Agent("one".into());
+        let target = ViewerTarget::Terminal {
+            id: "one".into(),
+            socket: "/run/golem.sock".into(),
+            session: "worker-one".into(),
+        };
         let mut failed = FakeRuntime {
             result: Err("spawn failed"),
             attempts: Vec::new(),

@@ -26,8 +26,8 @@ The SSH ritual is intentionally simple: log in normally, then run
 `services/presence/presence.sh viewer`. The command first ensures the inner
 session, then execs `FAMILIAR_VIEWER_BIN` when set or `familiar-viewer` from
 `PATH`; it passes no arguments. Presence exports its normalized runtime socket
-environment and derives `FAMILIAR_AGENTS_SOCKET` from
-`FAMILIAR_AGENTS_SUPERVISOR_STATE` when needed before exec.
+environment before exec. Plugin terminal targets arrive through Familiar's
+semantic render host; Presence derives no plugin sockets.
 
 The defaults are `state/presence/`, `state/presence/tmux.sock`, and session
 `presence`. `FAMILIAR_PRESENCE_STATE_DIR`, `FAMILIAR_PRESENCE_SOCKET`, and

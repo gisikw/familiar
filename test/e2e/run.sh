@@ -6,10 +6,9 @@ HERE="$ROOT/test/e2e"
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/familiar-e2e.XXXXXX")
 STATE="$TMP/presence"
 SOCKET="$STATE/tmux.sock"
-AGENTS="$TMP/agents"
 ARTIFACTS=${FAMILIAR_E2E_ARTIFACTS:-$HERE/artifacts}
 GATEWAY_LOG="$ARTIFACTS/gateway.log"
-mkdir -p "$ARTIFACTS" "$AGENTS"
+mkdir -p "$ARTIFACTS"
 rm -rf "$ARTIFACTS/playwright"
 rm -f "$ARTIFACTS"/*.png "$ARTIFACTS"/*.bin "$ARTIFACTS"/*.json "$ARTIFACTS"/*.txt "$GATEWAY_LOG"
 GATEWAY_PID=
@@ -35,8 +34,6 @@ FAMILIAR_VIEWER_BIN=${FAMILIAR_VIEWER_BIN:-$(command -v familiar-viewer || true)
 export FAMILIAR_PRESENCE_STATE_DIR="$STATE"
 export FAMILIAR_PRESENCE_SOCKET="$SOCKET"
 export FAMILIAR_PRESENCE_SESSION=presence
-export FAMILIAR_AGENTS_SUPERVISOR_STATE="$AGENTS"
-export FAMILIAR_AGENTS_SOCKET="$AGENTS/tmux.sock"
 export FAMILIAR_PRESENCE_COMMAND='exec env PS1= bash --noprofile --norc -i'
 export FAMILIAR_PRESENCE_CTL="$ROOT/services/presence/presence.sh"
 export FAMILIAR_VIEWER_BIN

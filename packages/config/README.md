@@ -1,6 +1,6 @@
 # @familiar/config
 
-Canonical typed model and Bun TOML loader for `familiar.toml`, including the documented `[server]` and `[agents]` launch settings. It validates documented tables, applies defaults, then applies `FAMILIAR_*` environment overrides. Ambient variables win; `[familiar]` does not double the prefix. Files default to optional but, when present, must be mode `0600`.
+Canonical typed model and Bun TOML loader for `familiar.toml`, including the documented `[server]` and reduced `[plugins.golem]` source settings. It validates documented tables, applies defaults, then applies `FAMILIAR_*` environment overrides. Ambient variables win; `[familiar]` does not double the prefix. Files default to optional but, when present, must be mode `0600`.
 
 ```ts
 const { config, environment } = await loadConfig("familiar.toml");

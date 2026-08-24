@@ -1,7 +1,6 @@
 use crate::{app::ViewerTarget, cli::Config};
 use portable_pty::{CommandBuilder, PtySize};
 use std::ffi::{OsStr, OsString};
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChildCommand {
     pub program: OsString,
@@ -9,25 +8,21 @@ pub struct ChildCommand {
     pub set_env: Vec<(OsString, OsString)>,
     pub remove_env: Vec<OsString>,
 }
-
 impl ChildCommand {
-    /// Converts the argv contract to portable-pty without involving a shell.
     pub fn portable_pty_builder(&self) -> CommandBuilder {
-        let mut command = CommandBuilder::new(&self.program);
-        for arg in &self.args {
-            command.arg(arg);
+        let mut c = CommandBuilder::new(&self.program);
+        for a in &self.args {
+            c.arg(a);
         }
-        for (name, value) in &self.set_env {
-            command.env(name, value);
+        for (n, v) in &self.set_env {
+            c.env(n, v);
         }
-        for name in &self.remove_env {
-            command.env_remove(name);
+        for n in &self.remove_env {
+            c.env_remove(n);
         }
-        command
+        c
     }
 }
-
-/// Initial geometry passed to a future portable-pty lifecycle owner.
 pub fn pty_size(rows: u16, cols: u16) -> PtySize {
     PtySize {
         rows,
@@ -36,9 +31,8 @@ pub fn pty_size(rows: u16, cols: u16) -> PtySize {
         pixel_height: 0,
     }
 }
-
 pub fn child_command(config: &Config, target: &ViewerTarget) -> ChildCommand {
-    let (socket, mut args): (&OsStr, Vec<OsString>) = match target {
+    let (socket, args): (&OsStr, Vec<OsString>) = match target {
         ViewerTarget::Presence => (
             config.presence_socket.as_os_str(),
             vec![
@@ -47,97 +41,57 @@ pub fn child_command(config: &Config, target: &ViewerTarget) -> ChildCommand {
                 config.presence_session.clone().into(),
             ],
         ),
-        ViewerTarget::Agent(id) => (
-            config.agents_socket.as_os_str(),
+        ViewerTarget::Terminal {
+            socket, session, ..
+        } => (
+            OsStr::new(socket),
             vec![
                 "attach-session".into(),
                 "-t".into(),
-                format!("worker-{}", sanitize_agent_id(id)).into(),
+                format!("={session}").into(),
             ],
         ),
     };
-    let mut full_args = vec!["-S".into(), socket.into()];
-    full_args.append(&mut args);
+    let mut full = vec!["-S".into(), socket.into()];
+    full.extend(args);
     ChildCommand {
         program: "tmux".into(),
-        args: full_args,
-        // Advertise truecolor to the inner tmux for this attach client. The
-        // vendored ghostty-vt engine (and both restty and Ghostty on the outer
-        // host) render truecolor unconditionally, so inner tmux must not
-        // downgrade or drop RGB SGR. Without this, inner tmux falls back to the
-        // attach client's terminfo color capability: on a color-less TERM it
-        // emits NO color SGR at all and RGB foregrounds render as default
-        // (grey) instead of the theme accent. COLORTERM=truecolor forces RGB
-        // passthrough for every TERM the client may present.
+        args: full,
         set_env: vec![("COLORTERM".into(), "truecolor".into())],
         remove_env: vec!["TMUX".into()],
     }
 }
-
-pub fn sanitize_agent_id(id: &str) -> String {
-    id.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn config() -> Config {
+    fn c() -> Config {
         Config {
-            presence_socket: "/run/p.sock".into(),
+            presence_socket: "/p".into(),
             presence_session: "presence".into(),
-            agents_socket: "/run/a.sock".into(),
-            agents_endpoint: "http://127.0.0.1:7337".into(),
+            render_url: None,
         }
     }
-
     #[test]
-    fn presence_is_writable_direct_argv() {
-        let command = child_command(&config(), &ViewerTarget::Presence);
-        assert_eq!(
-            command.args,
-            ["-S", "/run/p.sock", "attach-session", "-t", "presence"]
-        );
-        assert!(!command.args.iter().any(|arg| arg == "-r"));
-        assert_eq!(command.remove_env, ["TMUX"]);
-        // Truecolor must be advertised to the inner tmux so RGB SGR (theme
-        // accent) is not downgraded or dropped on the attach client.
-        assert_eq!(
-            command.set_env,
-            [(OsString::from("COLORTERM"), OsString::from("truecolor"))]
-        );
+    fn presence_is_writable() {
+        assert!(!child_command(&c(), &ViewerTarget::Presence)
+            .args
+            .iter()
+            .any(|x| x == "-r"))
     }
-
     #[test]
-    fn agent_is_writable_and_sanitized_like_sidebar() {
-        let command = child_command(&config(), &ViewerTarget::Agent("a b/c.é_$".into()));
-        assert_eq!(
-            command.args,
-            [
-                "-S",
-                "/run/a.sock",
-                "attach-session",
-                "-t",
-                "worker-a-b-c--_-"
-            ]
+    fn semantic_terminal_is_exact_and_writable() {
+        let x = child_command(
+            &c(),
+            &ViewerTarget::Terminal {
+                id: "i".into(),
+                socket: "/run/g.sock".into(),
+                session: "worker-1".into(),
+            },
         );
-        // Agent workers are interactive TUIs; the read-only attach is gone.
-        assert!(!command.args.iter().any(|arg| arg == "-r"));
-    }
-
-    #[test]
-    fn sanitization_replaces_each_non_ascii_allowed_character() {
-        assert_eq!(sanitize_agent_id("AZaz09_-"), "AZaz09_-");
-        assert_eq!(sanitize_agent_id("a::b"), "a--b");
-        assert_eq!(sanitize_agent_id("💥"), "-");
-        assert_eq!(sanitize_agent_id(""), "");
+        assert_eq!(
+            x.args,
+            ["-S", "/run/g.sock", "attach-session", "-t", "=worker-1"]
+        );
+        assert!(!x.args.iter().any(|x| x == "-r"))
     }
 }

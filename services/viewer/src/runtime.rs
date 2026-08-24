@@ -6,7 +6,8 @@ use crate::input::{route_mouse, target_for_sidebar_hit, MouseRoute};
 use crate::layout::{viewer_layout, ViewerLayout};
 use crate::pty::{child_command, pty_size};
 use crate::sidebar::{
-    has_live_session, render as render_sidebar, rows_for, spawn_poller, RowModel, SidebarModel,
+    render as render_sidebar, rows_for, spawn_poller, terminal_live, Activation, RowModel,
+    SidebarModel,
 };
 use crate::terminal::ghostty::GhosttyTerminal;
 use crate::terminal::{CellAttributes, GridSize, TerminalColor, TerminalCore, TerminalModes};
@@ -528,8 +529,7 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let mut layout = viewer_layout(width, height);
     let mut core = GhosttyTerminal::new(dimensions(layout))?;
     let mut app = App::default();
-    let agents_socket = config.agents_socket.clone();
-    let sidebar_rx = spawn_poller(config.agents_endpoint.clone(), agents_socket.clone());
+    let sidebar_rx = spawn_poller(config.render_url.clone());
     let mut sidebar_model = SidebarModel::default();
     let mut sidebar_rows = rows_for(
         &sidebar_model,
@@ -585,13 +585,20 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                             if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) =>
                         {
                             let target =
-                                target_for_sidebar_hit(hit, |row| sidebar_rows.agent_for_row(row));
+                                target_for_sidebar_hit(hit, |row| sidebar_rows.target_for_row(row));
                             if let Some(target) = target {
                                 if target != *app.target() {
                                     // Snapshot liveness avoids misleading clicks; this
-                                    // immediate check closes the poll-to-click race.
-                                    if let ViewerTarget::Agent(id) = &target {
-                                        if !has_live_session(&agents_socket, id) {
+                                    // immediate exact-target check closes the poll-to-click race.
+                                    if let ViewerTarget::Terminal {
+                                        socket, session, ..
+                                    } = &target
+                                    {
+                                        if !terminal_live(&Activation {
+                                            kind: "terminal".into(),
+                                            socket: socket.clone(),
+                                            session: session.clone(),
+                                        }) {
                                             continue;
                                         }
                                     }

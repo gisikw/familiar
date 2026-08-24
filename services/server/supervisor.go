@@ -50,6 +50,7 @@ type Supervisor struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 	children  map[string]*child
+	renders   map[string]*renderHub
 	closeOnce sync.Once
 	stopHook  func(string) // tests observe deterministic shutdown ordering
 }
@@ -66,7 +67,10 @@ func New(cfg Config, logger *slog.Logger) (*Supervisor, error) {
 	}
 	_ = os.Chmod(cfg.StateDir, 0700)
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &Supervisor{cfg: cfg, log: logger, ctx: ctx, cancel: cancel, children: map[string]*child{}}
+	s := &Supervisor{cfg: cfg, log: logger, ctx: ctx, cancel: cancel, children: map[string]*child{}, renders: map[string]*renderHub{}}
+	for _, rc := range cfg.Renders {
+		s.renders[rc.Plugin] = newRenderHub(rc, logger)
+	}
 	for _, cc := range cfg.Children {
 		x := &child{cfg: cc, sup: s, state: "waiting", wake: make(chan struct{}, 1), done: make(chan struct{})}
 		s.children[cc.Name] = x
@@ -75,6 +79,9 @@ func New(cfg Config, logger *slog.Logger) (*Supervisor, error) {
 }
 
 func (s *Supervisor) Start() {
+	for _, hub := range s.renders {
+		hub.start(s.ctx)
+	}
 	for _, c := range s.children {
 		go c.run()
 		go c.probeLoop()

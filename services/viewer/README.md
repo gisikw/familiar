@@ -1,141 +1,24 @@
-# Familiar viewer
+# Familiar Viewer
 
-The viewer is a Rust TUI that embeds one `tmux attach` PTY per client. The gateway's browser WebSocket PTY is a production caller and runs one viewer process per connection; direct CLI use remains supported.
-
-## Nix build and packaging
-
-The reproducible package supports x86_64 Linux and aarch64 Linux:
+`familiar-viewer` is a disposable native terminal client. It embeds a writable
+Presence tmux attach and owns Familiar chrome, layout, input, colors, and pixels.
+Browser and Electron clients use the same viewer through the gateway PTY bridge.
 
 ```sh
-nix build ./services/viewer
-nix run ./services/viewer -- --help
-# The root flake exposes the same package and app:
-nix build .#familiar-viewer
-nix run .#familiar-viewer -- --help
+familiar-viewer --presence-socket /absolute/state/presence/tmux.sock \
+  --render-url http://127.0.0.1:9940/v1/render/golem
 ```
 
-The installed launcher appends packaged `tmux` to `PATH`, allowing a system `tmux` to win while ensuring one is available. It also defaults `FAMILIAR_MARK_PNG` to the mark installed under `$out/share/familiar`; an explicitly user-set `FAMILIAR_MARK_PNG` still wins. The Nix build seeds Zig's sole eager package dependency in its writable sandbox cache and does not access the network. `nix flake check ./services/viewer` builds the package (including its non-live Rust unit tests) and checks Rust formatting.
+`--render-url` / `FAMILIAR_RENDER_URL` is optional; without it the sidebar is
+clean and Presence-only. The URL is Familiar-owned, not a plugin endpoint. A
+background long poll receives bounded `left-nav` semantic trees. Only
+`tree|branch|item` are rendered. An item can select an exact same-host terminal
+socket/session; the viewer checks liveness immediately before preserving its
+spawn-first, writable PTY switch. Dead or malformed targets are nonclickable.
+No plugin components or painting enter the process.
 
-## Run from a development checkout
-
-The native VT library requires Zig 0.15. From the repository root:
+Run tests from the root viewer shell:
 
 ```sh
-nix shell nixpkgs#zig_0_15 -c cargo run --manifest-path services/viewer/Cargo.toml -- \
-  --presence-socket /absolute/path/to/presence.sock \
-  --agents-socket /absolute/path/to/agents.sock
+nix develop .#viewer -c cargo test --manifest-path services/viewer/Cargo.toml --all-targets
 ```
-
-The viewer owns the host alternate screen and raw mode, draws Familiar chrome, and starts a writable presence-session attach in the main rectangle. `Ctrl-\\` is the sole viewer-owned key and quits with normal graphics, terminal, and child teardown; every other key is routed to the child. A clean embedded-child exit (including an inner tmux detach) also exits the viewer. An abnormal embedded-child exit keeps the chrome and displays a notice so another target can be selected. Empirically, tmux 3.5a returns attach status 0 both for `C-b d` detach and when the attached session is killed; consequently a Presence worker death that removes its sole session cleanly closes attached viewers rather than showing the abnormal-child notice. The next connection runs Presence ensure and recreates the session.
-
-## Input, mouse routing, and focus
-
-Keyboard focus permanently belongs to the main child PTY; the sidebar never captures focus, so clicking chrome does not consume the following keystroke. Keyboard input uses plain xterm sequences. Application-cursor mode, arrows/navigation keys, F1–F12, basic Ctrl/Alt combinations, and bracketed paste are supported. Modified navigation/function-key variants, application-keypad mappings, the Kitty keyboard protocol, compose/IME subtleties, and viewer-local shortcuts are not yet encoded.
-
-The viewer enables host mouse capture for its entire guarded terminal lifetime and restores it on normal exit, panic, and handled termination signals. Canonical layout geometry routes all events. Mark and job-row regions consume press, release, drag, motion, and wheel events without forwarding bytes. The mark selects Presence. Live active job rows and live lingering terminal rows select a read-only worker attach; terminal rows whose session has been reaped are omitted, while dead active, blank, and stale rows are no-ops. A target is spawned before the old child is stopped. After a successful switch the VT core is recreated at current main dimensions, old child graphics are deleted, and a full redraw is forced. A failed spawn leaves the old child and keyboard route intact and shows a nonfatal three-second notice in the sidebar.
-
-Main-region coordinates are translated to zero-based child-local cells. The owned inner tmux servers enable mouse mode, so tmux arbitrates wheel input from the actual pane state: wheel over bash enters tmux copy mode and scrolls history, while a mouse-aware pane program receives the report. The viewer does not inspect its VT core's alternate-screen state to infer pane state and no longer opens or cancels copy mode through a second tmux client. Consequently keys in copy mode follow tmux's normal key table (for example, a bound printable key may keep copy mode active). The inner configs bind PageUp to enter primary-screen history with `copy-mode -eu`, while an alternate-screen pane receives PageUp unchanged; PageDown uses tmux's normal copy-mode/pane behavior. X10 tracking accepts presses and wheel buttons; ButtonEvent adds release and drag; AnyEvent adds unbuttoned motion. X10, UTF-8, SGR, and SGR-pixels encodings include xterm Shift/Alt/Ctrl bits and wheel buttons 64/65. Legacy X10 cell coordinates clamp at 223 (encoded byte 255). Since crossterm does not expose host cell pixel dimensions here, SGR-pixels intentionally approximates each cell as 1x1 pixel and therefore emits one-based cell coordinates as pixel coordinates.
-
-The cursor position and DECTCEM visibility are read from libghostty-vt and mapped into the host frame. Synchronized-output mode is treated as a frame-coalescing hint. Text and Kitty placements are emitted in a host synchronized-output transaction.
-
-## Jobs sidebar
-
-A background thread polls `GET {agents endpoint}/v1/jobs` immediately and every ten seconds with a two-second connect/read timeout; rendering never performs network I/O. It applies the same observable model as `services/presence/sidebar.sh`: non-terminal jobs precede terminal jobs, each partition is newest-first by `updated_at`, the combined list is capped at ten, then grouped by the basename of `cwd`. Labels are the first 16 characters of a whitespace-normalized prompt, falling back to the last eight characters of the job-id tail. State glyphs/colors and dim terminal styling follow the shell sidebar.
-
-Each successful snapshot checks the agents tmux socket once and marks matching sanitized `worker-*` sessions live. Terminal jobs without a live lingering session are dropped; active jobs remain visible even if their session is transiently unavailable. Every live row is clickable, and a click revalidates `has-session` immediately before the transactional spawn. Failed HTTP status, timeout, malformed JSON, or a non-array response preserves the last good jobs and adds a dim `unavailable` indicator; startup without a good response shows an empty unavailable model. Snapshot and active-target comparisons keep unchanged chrome stable. Rendering and hit-testing share one immutable per-frame row model, including workspace-header offsets. There are no intended observable content or ordering differences from `sidebar.sh`; the native viewer additionally makes unavailable state explicit and does not treat formatting fixtures as artificially live.
-
-## Terminal core support
-
-| Area | Chunk 1 status |
-|---|---|
-| Arbitrarily split byte streams, UTF-8, CSI/OSC/DCS | libghostty-vt streaming parser |
-| Cursor, scrolling, primary/alternate screen | Supported |
-| SGR 16-color, 256-color, RGB and basic attributes | Palette colors remain indexed so the host theme applies; truecolor remains RGB; unset colors use host defaults |
-| Wide CJK/emoji and grapheme text | Supported; spacer cells have width 0 |
-| Mouse modes/encodings, focus, paste, application cursor/keypad | Tracked |
-| Synchronized output | Tracked and interpreted by libghostty-vt |
-| DA/DSR and other PTY replies | Returned by `TerminalUpdate::replies` |
-| Damage | Correct full-grid damage for nonempty writes; finer render-state damage is deferred |
-| Kitty graphics | libghostty-vt image/placement extraction; host ID remapping, main-rect translation/clipping, replay and delete |
-
-## Kitty graphics and mark
-
-At startup the viewer sends the host a 1x1 Kitty query followed by DA1 and waits up to 200ms. A matching Kitty `OK` before DA1 enables graphics; DA1-first or timeout selects text mode. `TERM_PROGRAM=ghostty` and `KITTY_WINDOW_ID` are strong positive shortcuts. Input observed during the probe is buffered and replayed. Set `FAMILIAR_VIEWER_DEBUG_LOG` to a file path for probe diagnostics; diagnostics are never printed over the TUI. `FAMILIAR_GRAPHICS_MODE=kitty|text` is an explicit test/debug override.
-
-In Kitty mode child images come from the vendored VT core (including tmux DCS passthrough), are assigned viewer-owned host IDs, clipped to the embedded main rectangle, and placed after ratatui text. Kitty `a=q` capability/image probes, including tmux-wrapped probes, receive an `OK` reply on the child PTY, so probing image tools can proceed. The native `assets/familiar-mark.png` is a square icon with no wordmark text. It is transmitted and centered above a separately rendered `F A M I L I A R` row. Placement preserves the image aspect using host cell pixel metrics from `TIOCGWINSZ` when available, falling back to 1:2 cell width:height; its data is retransmitted after target switches, host clears, and resizes because host image storage may have been discarded. `FAMILIAR_MARK_PNG` overrides its path; otherwise a development build searches upward from its current directory. The Nix wrapper defaults that variable to the store-installed mark while preserving an explicit user override. Text mode renders `FAMILIAR` and emits no child graphics. Images are deleted on replacement and terminal teardown.
-
-The Rust boundary remains `terminal::TerminalCore`. Chunk 1 did not change that trait. `GhosttyTerminal` is the FFI-backed implementation.
-
-## Vendored libghostty-vt
-
-`vendor/libghostty-vt` is the MIT-licensed Ghostty source distribution (its `LICENSE` is included), pinned in `vendor/libghostty-vt.vendor.json` to Ghostty commit `c5a21edfcbc2d5b46540ad91b7980aca31f5f1f3` (`libghostty-vt-1.3.2-HEAD-+c5a21edfc.tar.gz`).
-
-The build requires Zig 0.15. Cargo's `build.rs` invokes `${ZIG:-zig} build -Demit-lib-vt -Doptimize=ReleaseFast` and currently supports Linux x86_64/aarch64 GNU targets. If Zig is not installed, run Cargo in `nix shell nixpkgs#zig_0_15 -c ...`. The Nix package pins Zig 0.15 explicitly and provides its required package cache offline.
-
-To refresh from a clean Ghostty checkout at the intended commit:
-
-```sh
-cd services/viewer
-python3 scripts/vendor_libghostty_vt.py /path/to/ghostty
-```
-
-Review the resulting metadata, license, headers, and source diff. The helper builds Ghostty's `dist` target and replaces only this crate's vendor directory. `scripts/build_vendored_libghostty_vt.sh` is available for a direct smoke build.
-
-## Debugging: host byte-stream capture tap
-
-Set `FAMILIAR_VIEWER_CAPTURE` to a file path and the viewer appends every byte
-it writes to the host terminal to that file, exactly as written — all frames,
-Kitty graphics APCs, the graphics-capability probe query, and
-setup/teardown sequences. The capture is best-effort: a write failure warns
-once to stderr and is thereafter ignored, and never blocks or crashes the
-viewer. Unset, there is zero behavior change.
-
-The tap sits at the single host-bound choke point: the process stdout is
-wrapped in a `HostWriter` (`src/capture.rs`) that tees written bytes, and the
-ratatui `CrosstermBackend`, the alternate-screen enter/leave, the graphics
-teardown, and the probe query all write through it. (Two byte sequences that
-can appear on the wire are *not* viewer emission and are therefore absent:
-ratatui's internal `\x1b[6n` cursor-position probe, which crossterm hardcodes
-to its own stdout handle, and any host reply the PTY echoes before raw mode.)
-
-Host **responses** are also captured where the viewer reads raw host stdin: the
-graphics-capability probe's query/response path. Those bytes are appended to
-`FAMILIAR_VIEWER_CAPTURE` + `.in`. Steady-state keyboard and mouse input is
-decoded by crossterm's event reader rather than read as raw bytes, so it is not
-in the `.in` capture; the priority (and the render-defect signal) is the output
-stream.
-
-**Captures may contain terminal queries and responses** (graphics-capability
-probes, device-attribute replies, cursor reports). Treat a capture as terminal
-traffic, not just rendered content.
-
-Usage:
-
-```sh
-# Direct run
-FAMILIAR_VIEWER_CAPTURE=/tmp/ghostty.cap familiar-viewer --presence-socket ... --agents-socket ...
-# → /tmp/ghostty.cap (host-bound output) and /tmp/ghostty.cap.in (probe replies)
-```
-
-To capture the same icat repro against two different host terminals, the
-variable must be present in the viewer process's environment. Both entry paths
-propagate the whole environment, so exporting it before the entry point is
-enough:
-
-- **SSH / ghostty (`./familiar.sh connect`):** on the server, export it before
-  connecting, e.g. `FAMILIAR_VIEWER_CAPTURE=/tmp/ghostty.cap ./familiar.sh
-  connect`. `familiar.sh` re-execs through `nix develop -c` and
-  `presence.sh viewer` with `exec`, both of which inherit the environment, so
-  the viewer child sees it.
-- **Browser / restty (gateway):** the viewer runs as a node-pty child of the
-  gateway. Export `FAMILIAR_VIEWER_CAPTURE` in the gateway process's
-  environment (the gateway copies its whole environment into the viewer via
-  `familiarEnvironment()`), then open the browser session. Use a distinct path,
-  e.g. `FAMILIAR_VIEWER_CAPTURE=/tmp/restty.cap familiar-gateway`.
-
-Diff the two `.cap` files to compare exactly what the viewer emitted to ghostty
-vs. restty for the same repro.
-
-## Deferred
-
-Virtual-placeholder Kitty placements and more exact pixel/cell geometry are deferred. Fine-grained render-state damage is also deferred; the current conservative full-grid region is functionally correct. Chunk 5 must provide Zig 0.15 in Nix builds and should account for the native library's clean-build cost.

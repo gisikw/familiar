@@ -2,14 +2,14 @@ import { TOML } from "bun";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
-export const CANONICAL_TABLES = ["pi","familiar","herdr","server","agents","model","llama","stt","tts","anthropic","openai","tiamat","searxng","brave","fetch","subagent","zip","theme"] as const;
+export const CANONICAL_TABLES = ["pi","familiar","herdr","server","plugins","model","llama","stt","tts","anthropic","openai","tiamat","searxng","brave","fetch","subagent","zip","theme"] as const;
 export type Scalar = string | number | boolean;
 export interface FamiliarConfig {
   pi?: { telemetry?: number; offline?: number; skip_version_check?: number; coding_agent_dir?: string };
   familiar?: { identity_path?: string; age_key?: string; handoff_path?: string; handoff_prompt_path?: string; worklist_dir?: string; inbox_dir?: string; log_path?: string; model_dir?: string; default_provider?: string; default_model?: string; artifact_dir?: string; subscriber_port?: number; tz?: string; debug_level?: string };
   herdr?: { session?: string; config_path?: string };
   server?: { config?: string; listen?: string };
-  agents?: { endpoint?: string; host?: string };
+  plugins?: { golem?: { path?: string; git?: string; rev?: string; env?: Record<string,string> } };
   model?: { file?: string; url?: string };
   llama?: { base_url?: string };
   stt?: { url?: string; model_file?: string; model_url?: string };
@@ -35,7 +35,7 @@ export const DEFAULT_CONFIG: FamiliarConfig = {
 
 type Expected = "string"|"number"|"number|string"|"boolean"|"table";
 const schema: Record<string, Record<string, Expected>> = {
-  pi:{telemetry:"number|string",offline:"number|string",skip_version_check:"number|string",coding_agent_dir:"string"}, familiar:{identity_path:"string",age_key:"string",handoff_path:"string",handoff_prompt_path:"string",worklist_dir:"string",inbox_dir:"string",log_path:"string",model_dir:"string",default_provider:"string",default_model:"string",artifact_dir:"string",subscriber_port:"number",tz:"string",debug_level:"string"}, herdr:{session:"string",config_path:"string"}, server:{config:"string",listen:"string"}, agents:{endpoint:"string",host:"string"}, model:{file:"string",url:"string"}, llama:{base_url:"string"}, stt:{url:"string",model_file:"string",model_url:"string"}, tts:{url:"string",voice:"string",model_file:"string",model_url:"string"}, anthropic:{base_url:"string",api_key:"string",auth_token:"string",claude_credentials_json:"string",claude_oauth_token:"string"}, openai:{base_url:"string",api_key:"string"}, tiamat:{url:"string",token_file:"string",poll_seconds:"number"}, searxng:{url:"string"}, brave:{api_key:"string",url:"string"}, fetch:{allow_private:"boolean"}, subagent:{mode:"string",model:"string",timeout:"number",dir:"string",session_dir:"string"}, zip:{model:"string"},
+  pi:{telemetry:"number|string",offline:"number|string",skip_version_check:"number|string",coding_agent_dir:"string"}, familiar:{identity_path:"string",age_key:"string",handoff_path:"string",handoff_prompt_path:"string",worklist_dir:"string",inbox_dir:"string",log_path:"string",model_dir:"string",default_provider:"string",default_model:"string",artifact_dir:"string",subscriber_port:"number",tz:"string",debug_level:"string"}, herdr:{session:"string",config_path:"string"}, server:{config:"string",listen:"string"}, plugins:{golem:"table"}, model:{file:"string",url:"string"}, llama:{base_url:"string"}, stt:{url:"string",model_file:"string",model_url:"string"}, tts:{url:"string",voice:"string",model_file:"string",model_url:"string"}, anthropic:{base_url:"string",api_key:"string",auth_token:"string",claude_credentials_json:"string",claude_oauth_token:"string"}, openai:{base_url:"string",api_key:"string"}, tiamat:{url:"string",token_file:"string",poll_seconds:"number"}, searxng:{url:"string"}, brave:{api_key:"string",url:"string"}, fetch:{allow_private:"boolean"}, subagent:{mode:"string",model:"string",timeout:"number",dir:"string",session_dir:"string"}, zip:{model:"string"},
   theme:{name:"string",background:"string",surface:"string",surface_dim:"string",overlay:"string",text:"string",muted:"string",accent:"string",success:"string",warning:"string",error:"string",border:"string",border_muted:"string",selection_bg:"string",cursor:"string",cursor_text:"string",ansi:"table"},
 };
 const ansiKeys = ["black","red","green","yellow","blue","magenta","cyan","white","bright_black","bright_red","bright_green","bright_yellow","bright_blue","bright_magenta","bright_cyan","bright_white"];
@@ -52,6 +52,14 @@ export function validateConfig(value: unknown): FamiliarConfig {
       const expected=schema[table][key];
       if(!expected){issues.push(`${table}.${key}: unknown setting`);continue;}
       if(expected==="table") {
+        if(table==="plugins"&&key==="golem"&&isObj(leaf)) {
+          for(const [pk,pv] of Object.entries(leaf)) {
+            if(pk==="env"&&isObj(pv)){for(const [ek,ev] of Object.entries(pv)){if(!/^[A-Z_][A-Z0-9_]*$/.test(ek))issues.push(`plugins.golem.env.${ek}: invalid environment name`);else if(typeof ev!=="string")issues.push(`plugins.golem.env.${ek} must be a string`);}continue;}
+            if(!["path","git","rev"].includes(pk))issues.push(`plugins.golem.${pk}: unknown setting`);else if(typeof pv!=="string")issues.push(`plugins.golem.${pk} must be a string`);
+          }
+          const p=leaf as Record<string,unknown>; if(p.path!==undefined&&(p.git!==undefined||p.rev!==undefined))issues.push("plugins.golem: path and git/rev are mutually exclusive"); if(p.path===undefined&&p.git===undefined)issues.push("plugins.golem: path or git/rev is required"); if((p.git===undefined)!==(p.rev===undefined))issues.push("plugins.golem: git and rev must be supplied together"); if(typeof p.rev==="string"&&!/^[0-9a-fA-F]{40}$/.test(p.rev))issues.push("plugins.golem.rev must be an exact 40-character SHA");
+          continue;
+        }
         if(table!=="theme"||key!=="ansi"||!isObj(leaf)){issues.push(`${table}.${key} must be a table`);continue;}
         for(const [ak,av] of Object.entries(leaf)){if(!ansiKeys.includes(ak))issues.push(`theme.ansi.${ak}: unknown setting`);else if(typeof av!=="string")issues.push(`theme.ansi.${ak} must be a string`);}
       } else if((expected==="number|string" ? (typeof leaf!=="number" && typeof leaf!=="string") : typeof leaf!==expected) || ((expected==="number"||expected==="number|string")&&typeof leaf==="number"&&!Number.isFinite(leaf))) issues.push(`${table}.${key} must be a ${expected}`);

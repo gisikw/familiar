@@ -1,552 +1,401 @@
-//! Native Familiar jobs chrome: registry polling, liveness, frame rows, and rendering.
-
+//! Familiar-owned rendering of a bounded plugin semantic tree.
 use crate::app::ViewerTarget;
 use crate::input::SidebarHit;
-use crate::pty::sanitize_agent_id;
-use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Widget};
-use serde_json::Value;
-use std::collections::{BTreeMap, HashSet};
-use std::io::{self, Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::mpsc::{self, Receiver};
-use std::thread;
-use std::time::Duration;
-
-pub const POLL_INTERVAL: Duration = Duration::from_secs(10);
-pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
-const MAX_JOBS: usize = 10;
-
-// Theme roles use ANSI palette slots so the host terminal, rather than a
-// stock RGB approximation, controls their saturation and contrast.
-const RUNNING: Color = Color::Indexed(2);
-const DONE: Color = Color::Indexed(6);
-const FAILED: Color = Color::Indexed(1);
-const UNKNOWN: Color = Color::Indexed(3);
-
+use ratatui::{
+    layout::Rect,
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Paragraph, Widget},
+};
+use serde::Deserialize;
+use std::{
+    collections::HashSet,
+    io::{self, Read, Write},
+    net::{TcpStream, ToSocketAddrs},
+    path::Path,
+    process::{Command, Stdio},
+    sync::mpsc::{self, Receiver},
+    thread,
+    time::Duration,
+};
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+const MAX_BYTES: usize = 256 << 10;
+const MAX_NODES: usize = 512;
+const MAX_DEPTH: usize = 8;
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Activation {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub socket: String,
+    pub session: String,
+}
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Node {
+    kind: String,
+    id: String,
+    #[serde(default)]
+    label: String,
+    #[serde(default)]
+    status: String,
+    children: Option<Vec<Node>>,
+    activation: Option<Activation>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Envelope {
+    render_api: u8,
+    revision: u64,
+    ttl_ms: u64,
+    target: String,
+    content: Node,
+}
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Job {
+pub struct Item {
     pub id: String,
     pub workspace: String,
     pub label: String,
-    pub state: String,
-    pub updated_at: String,
-    pub live: bool,
+    pub status: String,
+    pub activation: Option<Activation>,
 }
-
-impl Job {
-    pub fn terminal(&self) -> bool {
-        is_terminal(&self.state)
+impl Item {
+    fn terminal(&self) -> bool {
+        matches!(
+            self.status.as_str(),
+            "done" | "error" | "failed" | "cancelled" | "timeout"
+        )
     }
-
-    pub fn clickable(&self) -> bool {
-        self.live
+    pub fn target(&self) -> Option<ViewerTarget> {
+        self.activation.as_ref().map(|a| ViewerTarget::Terminal {
+            id: self.id.clone(),
+            socket: a.socket.clone(),
+            session: a.session.clone(),
+        })
     }
 }
-
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SidebarModel {
-    pub jobs: Vec<Job>,
-    /// False means the last poll failed; `jobs` remains the last good snapshot.
+    pub label: Option<String>,
+    pub items: Vec<Item>,
     pub available: bool,
 }
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FrameRowKind {
     Heading,
     Workspace,
-    Job { id: String, clickable: bool },
+    Item { target: Option<ViewerTarget> },
 }
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FrameRow {
     pub kind: FrameRowKind,
     pub text: String,
     pub style: Style,
 }
-
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RowModel {
     pub rows: Vec<FrameRow>,
 }
-
 impl RowModel {
     pub fn hit(&self, row: usize) -> SidebarHit {
-        match self.rows.get(row).map(|row| &row.kind) {
-            Some(FrameRowKind::Job {
-                id: _,
-                clickable: true,
-            }) => SidebarHit::JobRow(row),
+        match self.rows.get(row).map(|x| &x.kind) {
+            Some(FrameRowKind::Item { target: Some(_) }) => SidebarHit::JobRow(row),
             _ => SidebarHit::Dead,
         }
     }
-
-    pub fn agent_for_row(&self, row: usize) -> Option<String> {
-        match self.rows.get(row).map(|row| &row.kind) {
-            Some(FrameRowKind::Job {
-                id,
-                clickable: true,
-            }) => Some(id.clone()),
+    pub fn target_for_row(&self, row: usize) -> Option<ViewerTarget> {
+        match self.rows.get(row).map(|x| &x.kind) {
+            Some(FrameRowKind::Item { target }) => target.clone(),
             _ => None,
         }
     }
 }
-
-pub fn parse_jobs(bytes: &[u8]) -> Result<Vec<Job>, serde_json::Error> {
-    let value: Value = serde_json::from_slice(bytes)?;
-    let Some(values) = value.as_array() else {
-        return Err(serde_json::Error::io(io::Error::new(
+pub fn parse_render(bytes: &[u8]) -> io::Result<SidebarModel> {
+    if bytes.len() > MAX_BYTES {
+        return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "jobs response is not an array",
-        )));
-    };
-    let mut active = Vec::new();
-    let mut terminal = Vec::new();
-    for value in values {
-        let state = string_field(value, "state", "unknown");
-        let cwd = string_field(value, "cwd", "");
-        let prompt = normalize_whitespace(&string_field(value, "prompt", ""));
-        let id = string_field(value, "id", "");
-        let label_id = string_field(value, "id", "job");
-        let job = Job {
-            label: derive_label(&prompt, &label_id),
-            workspace: workspace(&cwd),
-            updated_at: string_field(value, "updated_at", ""),
-            id,
-            state: state.clone(),
-            live: false,
-        };
-        if is_terminal(&state) {
-            terminal.push(job);
-        } else {
-            active.push(job);
+            "render too large",
+        ));
+    }
+    let e: Envelope =
+        serde_json::from_slice(bytes).map_err(|x| io::Error::new(io::ErrorKind::InvalidData, x))?;
+    if e.render_api != 1 || e.target != "left-nav" || e.ttl_ms == 0 || e.content.kind != "tree" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "unsupported render envelope",
+        ));
+    }
+    let _ = (e.revision, e.ttl_ms);
+    let mut seen = HashSet::new();
+    let mut count = 0;
+    let mut items = vec![];
+    fn walk(
+        n: &Node,
+        depth: usize,
+        workspace: &str,
+        seen: &mut HashSet<String>,
+        count: &mut usize,
+        out: &mut Vec<Item>,
+    ) -> io::Result<()> {
+        *count += 1;
+        if depth > MAX_DEPTH
+            || *count > MAX_NODES
+            || n.id.is_empty()
+            || n.id.len() > 256
+            || n.label.len() > 256
+            || !seen.insert(n.id.clone())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "malformed render tree",
+            ));
         }
+        match n.kind.as_str() {
+            "tree" | "branch" => {
+                if n.activation.is_some() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "branch activation",
+                    ));
+                }
+                let next = if n.kind == "branch" && !n.label.is_empty() {
+                    n.label.as_str()
+                } else {
+                    workspace
+                };
+                for c in n
+                    .children
+                    .as_ref()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing children"))?
+                {
+                    walk(c, depth + 1, next, seen, count, out)?
+                }
+            }
+            "item" => {
+                if n.children.is_some() {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "item children"));
+                }
+                if let Some(a) = &n.activation {
+                    if a.kind != "terminal"
+                        || !Path::new(&a.socket).is_absolute()
+                        || a.session.is_empty()
+                        || a.session.len() > 128
+                    {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "unsafe activation",
+                        ));
+                    }
+                }
+                out.push(Item {
+                    id: n.id.clone(),
+                    workspace: workspace.into(),
+                    label: n.label.clone(),
+                    status: n.status.clone(),
+                    activation: n.activation.clone(),
+                })
+            }
+            _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "node kind")),
+        }
+        Ok(())
     }
-    active.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    terminal.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    active.extend(terminal);
-    active.truncate(MAX_JOBS);
-
-    // jq's group_by(.workspace) orders groups lexically while preserving the
-    // already-established ordering inside each workspace.
-    let mut groups: BTreeMap<String, Vec<Job>> = BTreeMap::new();
-    for job in active {
-        groups.entry(job.workspace.clone()).or_default().push(job);
-    }
-    Ok(groups.into_values().flatten().collect())
+    walk(&e.content, 1, "", &mut seen, &mut count, &mut items)?;
+    Ok(SidebarModel {
+        label: (!e.content.label.is_empty()).then_some(e.content.label),
+        items,
+        available: true,
+    })
 }
-
-fn string_field(value: &Value, field: &str, default: &str) -> String {
-    match value.get(field).filter(|value| !value.is_null()) {
-        Some(Value::String(value)) => value.clone(),
-        Some(value) => value.to_string(),
-        None => default.into(),
-    }
-}
-
-pub fn normalize_whitespace(value: &str) -> String {
-    value.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-pub fn derive_label(prompt: &str, id: &str) -> String {
-    let prompt = normalize_whitespace(prompt);
-    if !prompt.is_empty() {
-        prompt.chars().take(16).collect()
-    } else {
-        let tail = id.rsplit('-').next().unwrap_or("job");
-        let chars: Vec<_> = tail.chars().collect();
-        chars[chars.len().saturating_sub(8)..].iter().collect()
-    }
-}
-
-fn workspace(cwd: &str) -> String {
-    let name = cwd
-        .split('/')
-        .rfind(|part| !part.is_empty())
-        .unwrap_or("unknown");
-    let clean = normalize_whitespace(name);
-    if clean.is_empty() {
-        "unknown".into()
-    } else {
-        clean
-    }
-}
-
-pub fn is_terminal(state: &str) -> bool {
-    matches!(state, "done" | "error" | "failed" | "cancelled" | "timeout")
-}
-
-pub fn apply_live_sessions(jobs: &mut [Job], sessions: &HashSet<String>) {
-    for job in jobs {
-        job.live = sessions.contains(&format!("worker-{}", sanitize_agent_id(&job.id)));
-    }
-}
-
-pub fn list_sessions(socket: &Path) -> HashSet<String> {
-    let output = Command::new("tmux")
-        .arg("-S")
-        .arg(socket)
-        .args(["list-sessions", "-F", "#{session_name}"])
-        .output();
-    match output {
-        Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .map(str::to_owned)
-            .collect(),
-        _ => HashSet::new(),
-    }
-}
-
-pub fn has_live_session(socket: &Path, id: &str) -> bool {
+pub fn terminal_live(a: &Activation) -> bool {
     Command::new("tmux")
         .arg("-S")
-        .arg(socket)
-        .args([
-            "has-session",
-            "-t",
-            &format!("=worker-{}", sanitize_agent_id(id)),
-        ])
+        .arg(&a.socket)
+        .args(["has-session", "-t", &format!("={}", a.session)])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .is_ok_and(|status| status.success())
+        .is_ok_and(|s| s.success())
 }
-
-pub fn spawn_poller(endpoint: String, socket: PathBuf) -> Receiver<SidebarModel> {
+pub fn spawn_poller(endpoint: Option<String>) -> Receiver<SidebarModel> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        let mut last_good = Vec::new();
+        let Some(endpoint) = endpoint else { return };
+        let mut last = SidebarModel::default();
+        let mut revision = 0;
         loop {
-            let snapshot = match fetch_jobs(&endpoint).and_then(|bytes| {
-                parse_jobs(&bytes)
-                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
-            }) {
-                Ok(mut jobs) => {
-                    apply_live_sessions(&mut jobs, &list_sessions(&socket));
-                    last_good = jobs;
-                    SidebarModel {
-                        jobs: last_good.clone(),
-                        available: true,
+            let path = format!(
+                "{}{}revision={revision}",
+                endpoint,
+                if endpoint.contains('?') { "&" } else { "?" }
+            );
+            match fetch(&path).and_then(|(b, r)| parse_render(&b).map(|m| (m, r))) {
+                Ok((mut m, r)) => {
+                    for i in &mut m.items {
+                        if i.activation.as_ref().is_some_and(|a| !terminal_live(a)) {
+                            i.activation = None
+                        }
                     }
+                    revision = r;
+                    last = m
                 }
-                Err(_) => SidebarModel {
-                    jobs: last_good.clone(),
-                    available: false,
-                },
-            };
-            if tx.send(snapshot).is_err() {
+                Err(_) => last.available = false,
+            }
+            if tx.send(last.clone()).is_err() {
                 return;
             }
-            thread::sleep(POLL_INTERVAL);
+            thread::sleep(Duration::from_millis(50))
         }
     });
     rx
 }
-
-fn fetch_jobs(endpoint: &str) -> io::Result<Vec<u8>> {
-    let endpoint = endpoint.trim_end_matches('/');
-    let rest = endpoint.strip_prefix("http://").ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "only http agents endpoints are supported",
-        )
-    })?;
-    let (authority, base_path) = rest.split_once('/').unwrap_or((rest, ""));
+fn fetch(endpoint: &str) -> io::Result<(Vec<u8>, u64)> {
+    let rest = endpoint
+        .strip_prefix("http://")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "only http render URLs"))?;
+    let split = rest.find(|c| c == '/' || c == '?').unwrap_or(rest.len());
+    let authority = &rest[..split];
+    let suffix = &rest[split..];
+    let path = if suffix.starts_with('/') {
+        suffix.to_owned()
+    } else {
+        format!("/{suffix}")
+    };
     let (host, port) = authority
         .rsplit_once(':')
-        .and_then(|(host, port)| port.parse::<u16>().ok().map(|port| (host, port)))
+        .and_then(|(h, p)| p.parse().ok().map(|p| (h, p)))
         .unwrap_or((authority, 80));
-    let address = (host, port).to_socket_addrs()?.next().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::AddrNotAvailable, "endpoint has no address")
-    })?;
-    let mut stream = TcpStream::connect_timeout(&address, REQUEST_TIMEOUT)?;
-    stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
-    stream.set_write_timeout(Some(REQUEST_TIMEOUT))?;
-    let path = if base_path.is_empty() {
-        "/v1/jobs".to_owned()
-    } else {
-        format!("/{base_path}/v1/jobs")
-    };
+    let addr = (host, port)
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::AddrNotAvailable, "no address"))?;
+    let mut s = TcpStream::connect_timeout(&addr, REQUEST_TIMEOUT)?;
+    s.set_read_timeout(Some(Duration::from_secs(30)))?;
     write!(
-        stream,
-        "GET {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\nAccept: application/json\r\n\r\n"
+        s,
+        "GET {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n"
     )?;
-    let mut response = Vec::new();
-    stream.read_to_end(&mut response)?;
-    let header_end = response
+    let mut r = Vec::new();
+    s.take((MAX_BYTES + 8192) as u64).read_to_end(&mut r)?;
+    let end = r
         .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid HTTP response"))?;
-    let headers = &response[..header_end];
-    let status = headers.split(|byte| *byte == b' ').nth(1);
-    if status != Some(b"200") {
-        return Err(io::Error::other("jobs endpoint unavailable"));
+        .position(|x| x == b"\r\n\r\n")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "HTTP"))?;
+    let h = &r[..end];
+    if h.split(|x| *x == b' ').nth(1) != Some(b"200") {
+        return Err(io::Error::other("render unavailable"));
     }
-    let body = &response[header_end + 4..];
-    if is_chunked(headers) {
-        decode_chunked(body)
-    } else {
-        Ok(body.to_vec())
-    }
+    let rev = String::from_utf8_lossy(h)
+        .lines()
+        .find_map(|x| x.strip_prefix("X-Familiar-Revision: "))
+        .and_then(|x| x.trim().parse().ok())
+        .unwrap_or(0);
+    Ok((r[end + 4..].to_vec(), rev))
 }
-
-/// True when the response headers declare `Transfer-Encoding: chunked`
-/// (case-insensitive). The agents service answers HTTP/1.1 GETs with
-/// chunked framing, which must be stripped before JSON parsing.
-fn is_chunked(headers: &[u8]) -> bool {
-    headers.split(|byte| *byte == b'\n').any(|line| {
-        let line = line.to_ascii_lowercase();
-        line.starts_with(b"transfer-encoding:") && {
-            let value = &line[b"transfer-encoding:".len()..];
-            String::from_utf8_lossy(value).contains("chunked")
-        }
-    })
-}
-
-/// Minimal HTTP/1.1 chunked-transfer decoder: hex size line, payload,
-/// CRLF, repeated until a zero-size chunk. Trailers are ignored.
-fn decode_chunked(mut body: &[u8]) -> io::Result<Vec<u8>> {
-    let invalid = || io::Error::new(io::ErrorKind::InvalidData, "invalid chunked body");
-    let mut decoded = Vec::new();
-    loop {
-        let line_end = body
-            .windows(2)
-            .position(|window| window == b"\r\n")
-            .ok_or_else(invalid)?;
-        let size_token = std::str::from_utf8(&body[..line_end])
-            .map_err(|_| invalid())?
-            .split(';')
-            .next()
-            .unwrap_or("")
-            .trim();
-        let size = usize::from_str_radix(size_token, 16).map_err(|_| invalid())?;
-        body = &body[line_end + 2..];
-        if size == 0 {
-            return Ok(decoded);
-        }
-        if body.len() < size + 2 {
-            return Err(invalid());
-        }
-        decoded.extend_from_slice(&body[..size]);
-        if &body[size..size + 2] != b"\r\n" {
-            return Err(invalid());
-        }
-        body = &body[size + 2..];
-    }
-}
-
-pub fn rows_for(model: &SidebarModel, target: &ViewerTarget, height: u16, width: u16) -> RowModel {
-    if height == 0 || width == 0 {
+pub fn rows_for(m: &SidebarModel, target: &ViewerTarget, height: u16, width: u16) -> RowModel {
+    if height == 0 || width == 0 || m.items.is_empty() && m.label.is_none() {
         return RowModel::default();
     }
-    let dim = Style::default().add_modifier(Modifier::DIM);
-    let mut rows = vec![FrameRow {
-        kind: FrameRowKind::Heading,
-        text: if model.available {
-            "agents".into()
-        } else {
-            "agents  unavailable".into()
-        },
-        style: dim,
-    }];
-    let visible: Vec<_> = model
-        .jobs
+    let mut rows = vec![];
+    if let Some(label) = &m.label {
+        rows.push(FrameRow {
+            kind: FrameRowKind::Heading,
+            text: if m.available {
+                label.clone()
+            } else {
+                format!("{label}  unavailable")
+            },
+            style: Style::default().add_modifier(Modifier::DIM),
+        })
+    }
+    let mut prior = "";
+    let visible: Vec<_> = m
+        .items
         .iter()
-        .filter(|job| !job.terminal() || job.live)
+        .filter(|i| !i.terminal() || i.activation.is_some())
         .collect();
-    let mut previous = None;
-    for (index, job) in visible.iter().enumerate() {
-        if previous != Some(job.workspace.as_str()) {
+    for (i, item) in visible.iter().enumerate() {
+        if item.workspace != prior {
             rows.push(FrameRow {
                 kind: FrameRowKind::Workspace,
-                text: truncate(&job.workspace, width as usize),
+                text: truncate(&item.workspace, width as usize),
                 style: Style::default(),
             });
-            previous = Some(&job.workspace);
+            prior = &item.workspace
         }
-        let last_in_group = visible
-            .get(index + 1)
-            .is_none_or(|next| next.workspace != job.workspace);
-        let connector = if last_in_group { "└─" } else { "├─" };
-        let active = matches!(target, ViewerTarget::Agent(id) if id == &job.id);
-        let glyph = if active { '◉' } else { '●' };
-        let prefix = format!("{connector} {glyph} ");
-        let state_width = job.state.chars().count();
-        let available = (width as usize).saturating_sub(prefix.chars().count() + state_width + 1);
-        let label = truncate(&job.label, available.max(1));
-        let text = format!("{prefix}{label} {}", job.state);
-        let style = if !job.clickable() {
-            state_style(&job.state).add_modifier(Modifier::DIM)
-        } else {
-            state_style(&job.state)
-        };
+        let last = visible
+            .get(i + 1)
+            .is_none_or(|n| n.workspace != item.workspace);
+        let active = matches!(target,ViewerTarget::Terminal{id,..}if id==&item.id);
+        let prefix = format!(
+            "{} {} ",
+            if last { "└─" } else { "├─" },
+            if active { '◉' } else { '●' }
+        );
+        let text = format!("{prefix}{} {}", item.label, item.status);
+        let mut style = state_style(&item.status);
+        if item.activation.is_none() {
+            style = style.add_modifier(Modifier::DIM)
+        }
         rows.push(FrameRow {
-            kind: FrameRowKind::Job {
-                id: job.id.clone(),
-                clickable: job.clickable(),
+            kind: FrameRowKind::Item {
+                target: item.target(),
             },
             text: truncate(&text, width as usize),
             style,
-        });
+        })
     }
     rows.truncate(height as usize);
     RowModel { rows }
 }
-
-fn state_style(state: &str) -> Style {
-    match state {
-        "running" => Style::default().fg(RUNNING),
-        "done" => Style::default().fg(DONE),
-        "error" | "failed" | "timeout" => Style::default().fg(FAILED),
+fn state_style(s: &str) -> Style {
+    match s {
+        "running" => Style::default().fg(Color::Indexed(2)),
+        "done" => Style::default().fg(Color::Indexed(6)),
+        "error" | "failed" | "timeout" => Style::default().fg(Color::Indexed(1)),
         "cancelled" => Style::default().add_modifier(Modifier::DIM),
-        _ => Style::default().fg(UNKNOWN),
+        _ => Style::default().fg(Color::Indexed(3)),
     }
 }
-
-fn truncate(value: &str, width: usize) -> String {
-    let count = value.chars().count();
-    if count <= width {
-        return value.into();
+fn truncate(s: &str, w: usize) -> String {
+    if s.chars().count() <= w {
+        return s.into();
     }
-    if width == 0 {
+    if w == 0 {
         return String::new();
     }
-    value
-        .chars()
-        .take(width - 1)
-        .chain(std::iter::once('…'))
-        .collect()
+    s.chars().take(w - 1).chain(std::iter::once('…')).collect()
 }
-
-pub fn render(rows: &RowModel, area: Rect, buffer: &mut ratatui::buffer::Buffer) {
-    let lines: Vec<_> = rows
-        .rows
-        .iter()
-        .map(|row| Line::from(Span::styled(row.text.clone(), row.style)))
-        .collect();
-    Paragraph::new(lines).render(area, buffer);
+pub fn render(rows: &RowModel, area: Rect, b: &mut ratatui::buffer::Buffer) {
+    Paragraph::new(
+        rows.rows
+            .iter()
+            .map(|r| Line::from(Span::styled(r.text.clone(), r.style)))
+            .collect::<Vec<_>>(),
+    )
+    .render(area, b)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const FIXTURE: &str = r#"[
-      {"id":"job-active","cwd":"/work/alpha","prompt":"Fix\nsidebar","state":"running","updated_at":"2026-08-22T07:30:00Z"},
-      {"id":"job-blocked","cwd":"/work/alpha","prompt":"Need input","state":"blocked","updated_at":"2026-08-22T07:20:00Z"},
-      {"id":"job-abcdefgh","cwd":"/work/beta","prompt":"  ","state":"done","updated_at":"2026-08-22T07:40:00Z"},
-      {"id":"job-old","cwd":"/work/alpha","prompt":"Old task","state":"cancelled","updated_at":"2026-08-22T07:10:00Z"}
-    ]"#;
-
+    const OK: &str = r#"{"render_api":1,"revision":2,"ttl_ms":1000,"target":"left-nav","content":{"kind":"tree","id":"root","label":"agents","children":[{"kind":"branch","id":"w","label":"alpha","children":[{"kind":"item","id":"j","label":"Fix sidebar","status":"running","activation":{"type":"terminal","socket":"/run/g.sock","session":"worker-j"}}]}]}}"#;
     #[test]
-    fn chunked_transfer_encoding_is_detected_and_decoded() {
-        assert!(is_chunked(
-            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r"
-        ));
-        assert!(is_chunked(
-            b"HTTP/1.1 200 OK\r\ntransfer-encoding: Chunked\r"
-        ));
-        assert!(!is_chunked(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r"));
-
-        // "[{}]" split across two chunks, with a chunk extension and trailer.
-        let body = b"2;ext=1\r\n[{\r\n2\r\n}]\r\n0\r\nTrailer: x\r\n\r\n";
-        assert_eq!(decode_chunked(body).unwrap(), b"[{}]");
-
-        assert!(decode_chunked(b"zz\r\nbad").is_err());
-        assert!(decode_chunked(b"5\r\nshort").is_err());
+    fn semantic_tree_parses() {
+        let m = parse_render(OK.as_bytes()).unwrap();
+        assert_eq!(m.label.as_deref(), Some("agents"));
+        assert_eq!(m.items[0].workspace, "alpha");
+        assert!(m.items[0].target().is_some())
     }
-
     #[test]
-    fn bash_fixture_has_grouping_order_and_labels() {
-        let jobs = parse_jobs(FIXTURE.as_bytes()).unwrap();
-        assert_eq!(
-            jobs.iter().map(|job| job.id.as_str()).collect::<Vec<_>>(),
-            ["job-active", "job-blocked", "job-old", "job-abcdefgh"]
-        );
-        assert_eq!(
-            jobs.iter()
-                .map(|job| job.workspace.as_str())
-                .collect::<Vec<_>>(),
-            ["alpha", "alpha", "alpha", "beta"]
-        );
-        assert_eq!(jobs[0].label, "Fix sidebar");
-        assert_eq!(jobs[3].label, "abcdefgh");
+    fn malformed_target_duplicate_and_relative_socket_rejected() {
+        assert!(parse_render(OK.replace("left-nav", "right").as_bytes()).is_err());
+        assert!(parse_render(OK.replace("\"id\":\"j\"", "\"id\":\"w\"").as_bytes()).is_err());
+        assert!(parse_render(OK.replace("/run/g.sock", "relative").as_bytes()).is_err())
     }
-
     #[test]
-    fn malformed_non_array_and_empty_are_tolerated() {
-        assert!(parse_jobs(b"not json").is_err());
-        assert!(parse_jobs(br#"{"jobs":[]}"#).is_err());
-        assert!(parse_jobs(b"[]").unwrap().is_empty());
-    }
-
-    #[test]
-    fn labels_cover_whitespace_empty_prompt_short_id_and_unicode() {
-        assert_eq!(
-            derive_label("  one\n two\tthree ", "ignored"),
-            "one two three"
-        );
-        assert_eq!(derive_label("", "job-id"), "id");
-        assert_eq!(derive_label("", "x"), "x");
-        assert_eq!(derive_label("abcdefghijklmnopQ", "x"), "abcdefghijklmnop");
-    }
-
-    #[test]
-    fn active_precedes_terminal_and_total_is_capped() {
-        let values: Vec<_> = (0..12)
-            .map(|index| {
-                serde_json::json!({
-                    "id": format!("job-{index}"), "cwd": "/z", "prompt": "p",
-                    "state": if index == 11 { "running" } else { "done" },
-                    "updated_at": format!("{index:02}")
-                })
-            })
-            .collect();
-        let jobs = parse_jobs(serde_json::to_string(&values).unwrap().as_bytes()).unwrap();
-        assert_eq!(jobs.len(), 10);
-        assert_eq!(jobs[0].id, "job-11");
-    }
-
-    #[test]
-    fn sanitized_names_drive_liveness() {
-        let mut jobs = vec![Job {
-            id: "a b/c".into(),
-            workspace: "w".into(),
-            label: "l".into(),
-            state: "running".into(),
-            updated_at: String::new(),
-            live: false,
-        }];
-        apply_live_sessions(&mut jobs, &HashSet::from(["worker-a-b-c".into()]));
-        assert!(jobs[0].live);
-    }
-
-    #[test]
-    fn rendered_row_and_hit_test_share_the_same_index() {
-        let mut jobs = parse_jobs(FIXTURE.as_bytes()).unwrap();
-        jobs[0].live = true;
-        jobs[1].live = false;
-        jobs[3].live = true;
-        let rows = rows_for(
-            &SidebarModel {
-                jobs,
-                available: true,
-            },
-            &ViewerTarget::Presence,
-            20,
-            28,
-        );
-        assert_eq!(rows.hit(2), SidebarHit::JobRow(2));
-        assert_eq!(rows.agent_for_row(2).as_deref(), Some("job-active"));
-        assert_eq!(rows.hit(3), SidebarHit::Dead);
-        assert_eq!(rows.agent_for_row(3), None);
-        // The dead cancelled row is absent; the live terminal row remains and
-        // is clickable after its beta workspace heading.
-        assert_eq!(rows.agent_for_row(5).as_deref(), Some("job-abcdefgh"));
-        assert!(rows.rows.iter().all(|row| !row.text.contains("cancelled")));
+    fn dead_item_nonclickable() {
+        let mut m = parse_render(OK.as_bytes()).unwrap();
+        m.items[0].activation = None;
+        let r = rows_for(&m, &ViewerTarget::Presence, 20, 28);
+        assert!(r.target_for_row(2).is_none())
     }
 }

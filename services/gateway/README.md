@@ -44,10 +44,8 @@ properties; no separate build step.
 At boot the gateway runs `presence.sh ensure` once (unless the test override is
 active), because `familiar-viewer` deliberately does not create the resident
 Presence session. A synchronous PTY spawn failure triggers one more ensure and
-one retry. `familiar.sh` already exports `FAMILIAR_PRESENCE_SOCKET`; it currently
-exports the agents state directory rather than `FAMILIAR_AGENTS_SOCKET`, so the
-gateway derives the latter as `<state>/tmux.sock`, matching `presence.sh`, and
-puts both absolute paths in the viewer child environment.
+one retry. `familiar.sh` exports `FAMILIAR_PRESENCE_SOCKET`; plugin navigation
+and exact terminal targets are passed through Familiar's render host environment.
 
 The first restty resize supplies node-pty's initial `cols`/`rows`. Later
 WebSocket resize messages call `node-pty.resize`; the resulting SIGWINCH is read
@@ -77,8 +75,7 @@ outside that shell deliberately falls back to the vendored base font.
 | `FAMILIAR_PRESENCE_CTL` | repository `services/presence/presence.sh` | Presence lifecycle controller used for `ensure`, not browser attachment. |
 | `FAMILIAR_ATTACH_CWD` | gateway cwd | working dir for the attach child |
 | `FAMILIAR_PRESENCE_SOCKET` | `${FAMILIAR_PRESENCE_STATE_DIR:-<repo>/state/presence}/tmux.sock` | Inner Presence tmux socket passed through to the viewer. |
-| `FAMILIAR_AGENTS_SOCKET` | `${FAMILIAR_AGENTS_SUPERVISOR_STATE:-<repo>/state/agents-supervisor}/tmux.sock` | Agents tmux socket passed through to the viewer. |
-| `FAMILIAR_AGENTS_ENDPOINT` | viewer default (`http://127.0.0.1:7337`) | Jobs API base URL passed through to the viewer. |
+| `FAMILIAR_RENDER_URL` | — | Optional Familiar-owned semantic `left-nav` endpoint passed to each viewer. |
 | `FAMILIAR_STT_URL` / `FAMILIAR_TTS_URL` | — | HTTP model base URLs; gateway calls `/v1/audio/transcriptions` and `/v1/audio/speech` respectively |
 | `FAMILIAR_TTS_VOICE` | — | optional TTS voice selection |
 | `FAMILIAR_LOG_PATH` | stderr | JSONL sidecar log base (`${path}.${suffix}`) |
