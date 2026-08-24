@@ -68,7 +68,7 @@ func TestAnswerIdempotencyConflict(t *testing.T) {
 		events := []protocol.ObservedEvent{
 			{ID: key + "-start", JobID: j.ID, State: protocol.Starting},
 			{ID: key + "-run", JobID: j.ID, State: protocol.Running},
-			{ID: key + "-question", JobID: j.ID, Question: &protocol.BlockedQuestion{ID: question, Prompt: "answer", At: time.Now()}},
+			{ID: key + "-question", JobID: j.ID, Question: &protocol.BlockedQuestion{ID: question, Prompt: "answer", Options: []string{"yes", "no"}, At: time.Now()}},
 		}
 		if err = s.Record(ctx, protocol.EventBatch{Host: "host", Events: events}); err != nil {
 			t.Fatal(err)
@@ -76,6 +76,9 @@ func TestAnswerIdempotencyConflict(t *testing.T) {
 		return j
 	}
 	first := block("answer-job-1", "q1")
+	if got, e := s.Get(ctx, first.ID); e != nil || got.Question == nil || len(got.Question.Options) != 2 || got.Question.Options[0] != "yes" {
+		t.Fatalf("blocked question options not persisted: %#v, %v", got.Question, e)
+	}
 	a := protocol.Answer{IdempotencyKey: "answer-key", QuestionID: "q1", Text: "yes"}
 	if _, e = s.Answer(ctx, first.ID, a); e != nil {
 		t.Fatal(e)

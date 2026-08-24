@@ -6,7 +6,7 @@ import { expect, test, describe } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { appendEvent, assistantText, finalAssistant, settledEvent } from "./events.ts";
+import { appendEvent, assistantText, blockedEvent, blockedResultText, finalAssistant, settledEvent } from "./events.ts";
 
 describe("assistantText", () => {
   test("joins text blocks and trims", () => {
@@ -34,6 +34,27 @@ describe("finalAssistant", () => {
   });
   test("undefined when no assistant present", () => {
     expect(finalAssistant([{ role: "user", content: "go" }])).toBeUndefined();
+  });
+});
+
+describe("blockedEvent", () => {
+  test("maps question to prompt and carries options", () => {
+    expect(blockedEvent("which db?", ["postgres", "sqlite"], 7, "0-7")).toEqual({
+      type: "blocked",
+      ts: 7,
+      id: "0-7",
+      prompt: "which db?",
+      options: ["postgres", "sqlite"],
+    });
+  });
+  test("omits options when empty or absent, drops blanks", () => {
+    expect(blockedEvent("go?", undefined, 1, "a")).toEqual({ type: "blocked", ts: 1, id: "a", prompt: "go?" });
+    expect(blockedEvent("go?", ["", "ok"], 1, "a")).toEqual({ type: "blocked", ts: 1, id: "a", prompt: "go?", options: ["ok"] });
+  });
+  test("result text tells the agent to end its turn and wait", () => {
+    const t = blockedResultText();
+    expect(t).toContain("End your turn");
+    expect(t).toContain("next message");
   });
 });
 
