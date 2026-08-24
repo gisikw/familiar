@@ -17,6 +17,11 @@ pub enum MouseRoute {
     /// Familiar chrome consumed the event; these bytes never reach the PTY.
     Sidebar(SidebarHit),
     Child(Vec<u8>),
+    /// An unmodified left-button gesture over the child pane. The viewer owns
+    /// it for host text selection and copy-on-release *even when the child
+    /// advertises mouse tracking*; a plain click is later replayed to the child
+    /// so non-drag clicks still reach it. See [`route_mouse`] for arbitration.
+    HostSelect,
     Swallowed,
 }
 
@@ -56,15 +61,55 @@ where
         return MouseRoute::Swallowed;
     }
 
+    // Mouse arbitration for the child pane. An ordinary, unmodified left-button
+    // gesture (down/drag/up) belongs to the *viewer* for text selection and
+    // copy-on-release, regardless of whether the child requested mouse
+    // tracking. This keeps host selection/OSC 52 reachable under the real
+    // topology, where the child (tmux) has mouse tracking enabled.
+    //
+    // Holding Shift — the conventional terminal mouse-arbitration modifier —
+    // forces the left gesture through to the child instead. Wheel, middle, and
+    // right events are never claimed here and fall through to the child.
+    if is_left_gesture(event.kind) && !event.modifiers.contains(KeyModifiers::SHIFT) {
+        return MouseRoute::HostSelect;
+    }
+
+    match child_mouse_bytes(event, layout, modes) {
+        Some(bytes) => MouseRoute::Child(bytes),
+        None => MouseRoute::Swallowed,
+    }
+}
+
+/// Whether a mouse event is a left-button press, drag, or release — the gesture
+/// classes the viewer arbitrates for host text selection.
+fn is_left_gesture(kind: MouseEventKind) -> bool {
+    matches!(
+        kind,
+        MouseEventKind::Down(MouseButton::Left)
+            | MouseEventKind::Drag(MouseButton::Left)
+            | MouseEventKind::Up(MouseButton::Left)
+    )
+}
+
+/// Encodes a main-pane mouse event into child mouse-report bytes, honoring the
+/// child's tracking mode and encoding. Returns `None` when the child is not
+/// tracking or the event class is filtered out for the active tracking mode.
+///
+/// The event's coordinates are translated relative to the main pane; callers
+/// must have already confirmed the event lies within it. This is also the seam
+/// the runtime uses to *replay* a deferred plain left click to the child.
+pub fn child_mouse_bytes(
+    event: MouseEvent,
+    layout: ViewerLayout,
+    modes: TerminalModes,
+) -> Option<Vec<u8>> {
+    if modes.mouse_tracking == MouseTracking::None {
+        return None;
+    }
     let column = event.column.saturating_sub(layout.main.x);
     let row = event.row.saturating_sub(layout.main.y);
-    if modes.mouse_tracking == MouseTracking::None {
-        return MouseRoute::Swallowed;
-    }
-    let Some(report) = report_for(event.kind, modes.mouse_tracking) else {
-        return MouseRoute::Swallowed;
-    };
-    MouseRoute::Child(encode_report(
+    let report = report_for(event.kind, modes.mouse_tracking)?;
+    Some(encode_report(
         report,
         column,
         row,
@@ -263,31 +308,89 @@ mod tests {
     fn translates_all_main_corners_and_clamps_legacy_edges() {
         let layout = viewer_layout(300, 240);
         let mode = modes(MouseTracking::X10, MouseEncoding::X10);
+        // Coordinate translation is tested through the child-encoding seam,
+        // which is independent of the left-button host-selection arbitration.
         for (host, encoded) in [
             ((28, 0), (33, 33)),
             ((299, 0), (255, 33)),
             ((28, 239), (33, 255)),
             ((299, 239), (255, 255)),
         ] {
-            let MouseRoute::Child(bytes) = route_mouse(
+            let bytes = child_mouse_bytes(
                 mouse(MouseEventKind::Down(MouseButton::Left), host.0, host.1),
                 layout,
                 mode,
-                SidebarHit::JobRow,
-            ) else {
-                panic!("main edge was not forwarded")
-            };
+            )
+            .expect("main edge was not forwarded");
             assert_eq!((bytes[4], bytes[5]), encoded);
         }
     }
 
     #[test]
-    fn tracking_modes_filter_event_types() {
-        let press = mouse(MouseEventKind::Down(MouseButton::Left), 30, 2);
+    fn unmodified_left_gesture_is_owned_by_the_viewer_even_with_tracking() {
+        // Real topology: child (tmux) advertises mouse tracking. An ordinary
+        // unmodified left down/drag/up over the main pane is claimed by the
+        // viewer for host selection, not forwarded to the child.
+        let tmux = modes(MouseTracking::ButtonEvent, MouseEncoding::Sgr);
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Drag(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            assert_eq!(route(mouse(kind, 30, 2), tmux), MouseRoute::HostSelect);
+        }
+        // The same holds even when the child requests no tracking at all.
         assert_eq!(
-            route(press, TerminalModes::default()),
-            MouseRoute::Swallowed
+            route(
+                mouse(MouseEventKind::Down(MouseButton::Left), 30, 2),
+                TerminalModes::default()
+            ),
+            MouseRoute::HostSelect
         );
+    }
+
+    #[test]
+    fn shift_passes_left_drag_through_to_the_child() {
+        // Shift is the conventional modifier that hands the left gesture back to
+        // the child instead of the viewer.
+        let tmux = modes(MouseTracking::ButtonEvent, MouseEncoding::Sgr);
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Drag(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            let mut event = mouse(kind, 30, 2);
+            event.modifiers = KeyModifiers::SHIFT;
+            assert!(
+                matches!(route(event, tmux), MouseRoute::Child(_)),
+                "shift+{kind:?} should reach the child"
+            );
+        }
+    }
+
+    #[test]
+    fn wheel_and_other_buttons_still_reach_a_tracking_child() {
+        // Wheel and middle/right events are never claimed for host selection;
+        // they forward to a tracking child unchanged.
+        let tmux = modes(MouseTracking::ButtonEvent, MouseEncoding::Sgr);
+        for kind in [
+            MouseEventKind::ScrollUp,
+            MouseEventKind::ScrollDown,
+            MouseEventKind::Down(MouseButton::Middle),
+            MouseEventKind::Down(MouseButton::Right),
+            MouseEventKind::Drag(MouseButton::Right),
+        ] {
+            assert!(
+                matches!(route(mouse(kind, 30, 2), tmux), MouseRoute::Child(_)),
+                "{kind:?} should forward to the child"
+            );
+        }
+    }
+
+    #[test]
+    fn tracking_modes_filter_event_types() {
+        // Non-left events are subject to the child's tracking-mode filter. A
+        // wheel event is dropped when the child requests no tracking.
         assert_eq!(
             route(
                 mouse(MouseEventKind::ScrollUp, 30, 2),
@@ -296,15 +399,19 @@ mod tests {
             MouseRoute::Swallowed
         );
         let x10 = modes(MouseTracking::X10, MouseEncoding::Sgr);
-        assert!(matches!(route(press, x10), MouseRoute::Child(_)));
-        assert_eq!(
-            route(mouse(MouseEventKind::Up(MouseButton::Left), 30, 2), x10),
-            MouseRoute::Swallowed
-        );
+        assert!(matches!(
+            route(mouse(MouseEventKind::ScrollUp, 30, 2), x10),
+            MouseRoute::Child(_)
+        ));
+        // X10 never reports drag/moved motion, so a shift-passthrough right
+        // drag is filtered out and swallowed.
+        let mut right_drag = mouse(MouseEventKind::Drag(MouseButton::Right), 30, 2);
+        right_drag.modifiers = KeyModifiers::SHIFT;
+        assert_eq!(route(right_drag, x10), MouseRoute::Swallowed);
         let button_mode = modes(MouseTracking::ButtonEvent, MouseEncoding::Sgr);
         assert!(matches!(
             route(
-                mouse(MouseEventKind::Drag(MouseButton::Left), 30, 2),
+                mouse(MouseEventKind::Drag(MouseButton::Right), 30, 2),
                 button_mode
             ),
             MouseRoute::Child(_)
@@ -341,13 +448,18 @@ mod tests {
             MouseTracking::AnyEvent,
         ] {
             for (index, kind) in events.into_iter().enumerate() {
-                let forwarded = matches!(
-                    route(mouse(kind, 30, 2), modes(tracking, MouseEncoding::Sgr)),
-                    MouseRoute::Child(_)
-                );
+                let route = route(mouse(kind, 30, 2), modes(tracking, MouseEncoding::Sgr));
+                // Unmodified left gestures (down/up/drag = indices 0..=2) are
+                // always claimed by the viewer for host selection, regardless
+                // of the child's tracking mode.
+                if matches!(index, 0..=2) {
+                    assert_eq!(route, MouseRoute::HostSelect, "{tracking:?} event {index}");
+                    continue;
+                }
+                let forwarded = matches!(route, MouseRoute::Child(_));
                 let expected = match tracking {
                     MouseTracking::None => false,
-                    MouseTracking::X10 => matches!(index, 0 | 4..=7),
+                    MouseTracking::X10 => matches!(index, 4..=7),
                     MouseTracking::ButtonEvent => index != 3,
                     MouseTracking::AnyEvent => true,
                 };
