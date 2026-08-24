@@ -75,16 +75,22 @@ fi
 if [ -n "${FAMILIAR_IDENTITY_PATH:-}" ]; then export FAMILIAR_IDENTITY_PATH="$(resolve_config_path "$FAMILIAR_IDENTITY_PATH")"; fi
 export FAMILIAR_HANDOFF_PATH="${FAMILIAR_HANDOFF_PATH:-$STATE_DIR/handoffs}"
 export FAMILIAR_HANDOFF_PATH="$(resolve_config_path "$FAMILIAR_HANDOFF_PATH")"
+if [ -n "${FAMILIAR_HANDOFF_PROMPT_PATH:-}" ]; then export FAMILIAR_HANDOFF_PROMPT_PATH="$(resolve_config_path "$FAMILIAR_HANDOFF_PROMPT_PATH")"; fi
 # Worklist durable queue. FAMILIAR_WORKLIST_DIR is canonical; FAMILIAR_INBOX_DIR
 # is a bounded compatibility alias (one release) so a mid-flight external writer
 # does not silently drop items.
 export FAMILIAR_WORKLIST_DIR="${FAMILIAR_WORKLIST_DIR:-${FAMILIAR_INBOX_DIR:-$STATE_DIR/worklist}}"
 export FAMILIAR_WORKLIST_DIR="$(resolve_config_path "$FAMILIAR_WORKLIST_DIR")"
+if [ -n "${FAMILIAR_INBOX_DIR:-}" ]; then export FAMILIAR_INBOX_DIR="$(resolve_config_path "$FAMILIAR_INBOX_DIR")"; fi
+export FAMILIAR_AGENTS_WORKLIST_DIR="${FAMILIAR_AGENTS_WORKLIST_DIR:-$FAMILIAR_WORKLIST_DIR}"
+export FAMILIAR_AGENTS_WORKLIST_DIR="$(resolve_config_path "$FAMILIAR_AGENTS_WORKLIST_DIR")"
 export FAMILIAR_LOG_PATH="${FAMILIAR_LOG_PATH:-$STATE_DIR/log.jsonl}"
 export FAMILIAR_LOG_PATH="$(resolve_config_path "$FAMILIAR_LOG_PATH")"
 export FAMILIAR_SUBSCRIBER_PORT="${FAMILIAR_SUBSCRIBER_PORT:-1692}"
 export FAMILIAR_PRESENCE_STATE_DIR="${FAMILIAR_PRESENCE_STATE_DIR:-$STATE_DIR/presence}"
+export FAMILIAR_PRESENCE_STATE_DIR="$(resolve_config_path "$FAMILIAR_PRESENCE_STATE_DIR")"
 export FAMILIAR_PRESENCE_SOCKET="${FAMILIAR_PRESENCE_SOCKET:-$FAMILIAR_PRESENCE_STATE_DIR/tmux.sock}"
+export FAMILIAR_PRESENCE_SOCKET="$(resolve_config_path "$FAMILIAR_PRESENCE_SOCKET")"
 export FAMILIAR_PRESENCE_CTL="${FAMILIAR_PRESENCE_CTL:-$REPO/services/presence/presence.sh}"
 # Agent workers share the stack configuration but have their own pi process and
 # an ISOLATED per-job pi profile (see FAMILIAR_AGENTS_WEB_EXTENSION below). Give
@@ -132,8 +138,9 @@ for _familiar_path_var in FAMILIAR_TTS_VOICES_SOURCE FAMILIAR_ARTIFACT_DIR FAMIL
   fi
 done
 
-MODEL_DIR="${FAMILIAR_MODEL_DIR:-$REPO/models}"
-MODEL_DIR="$(resolve_config_path "$MODEL_DIR")"
+export FAMILIAR_MODEL_DIR="${FAMILIAR_MODEL_DIR:-$REPO/models}"
+export FAMILIAR_MODEL_DIR="$(resolve_config_path "$FAMILIAR_MODEL_DIR")"
+MODEL_DIR="$FAMILIAR_MODEL_DIR"
 
 prepare_tmux_theme() {
   local theme_dir="$STATE_DIR/theme"
@@ -947,27 +954,26 @@ init_instance() {
   [ -n "$target" ] || { echo 'Usage: ./familiar.sh init PATH' >&2; return 2; }
   target="$(mkdir -p "$target" && cd "$target" && pwd -P)"
   [ -e "$target/familiar.toml" ] && { echo "familiar: refusing to overwrite $target/familiar.toml" >&2; return 1; }
-  cp "$REPO/familiar.toml.example" "$target/familiar.toml"
+  for entry in "$target"/* "$target"/.[!.]*; do
+    [ -e "$entry" ] || continue
+    case "$(basename "$entry")" in .git) continue ;; identity|voices|state|skills|extensions|.gitignore) continue ;; *)
+      echo "familiar: refusing non-empty conflict at $entry" >&2; return 1 ;;
+    esac
+  done
+  install -d -m 700 "$target/identity" "$target/voices" "$target/state" "$target/skills" "$target/extensions"
+  (umask 077; cp "$REPO/familiar.toml.example" "$target/familiar.toml")
   chmod 600 "$target/familiar.toml"
-  mkdir -p "$target/identity" "$target/voices" "$target/state" "$target/skills" "$target/extensions"
-  cat > "$target/.gitignore" <<'EOF'
-# Runtime/chatty workspace data is retained according to your backup policy.
-state/pi/
-state/presence/
-state/agents-supervisor/
-state/uploads/
-state/theme/
-state/voices/
-state/*.sock
-state/*.pid
-state/*.tmp
-models/
-EOF
+  if [ ! -e "$target/.gitignore" ]; then cp "$REPO/.gitignore" "$target/.gitignore"; fi
   git -C "$target" init >/dev/null 2>&1 || true
   echo "familiar: initialized private instance at $target"
 }
 
 config_check() {
+  if [ "${2:-}" = --paths ]; then
+    [ "$CONFIG_LOAD_FAILED" -eq 0 ] || { echo 'familiar: familiar.toml validation failed (contents suppressed)' >&2; return 1; }
+    printf '%s\n' "config_dir=$CONFIG_DIR" "identity=$FAMILIAR_IDENTITY_PATH" "handoff=$FAMILIAR_HANDOFF_PATH" "handoff_prompt=${FAMILIAR_HANDOFF_PROMPT_PATH:-}" "worklist=$FAMILIAR_WORKLIST_DIR" "inbox=${FAMILIAR_INBOX_DIR:-}" "log=$FAMILIAR_LOG_PATH" "voices=${FAMILIAR_TTS_VOICES_SOURCE:-}" "model=$FAMILIAR_MODEL_DIR" "artifact=${FAMILIAR_ARTIFACT_DIR:-}" "subagent=${FAMILIAR_SUBAGENT_DIR:-}" "sessions=${FAMILIAR_SUBAGENT_SESSION_DIR:-}" "pi=$PI_CODING_AGENT_DIR" "presence=$FAMILIAR_PRESENCE_STATE_DIR" "agents=$FAMILIAR_AGENTS_SUPERVISOR_STATE"
+    return 0
+  fi
   if [ "$CONFIG_LOAD_FAILED" -ne 0 ]; then
     echo 'familiar: familiar.toml validation failed (contents suppressed)' >&2
     return 1
@@ -977,7 +983,7 @@ config_check() {
 
 case ${1:-} in
   init)        init_instance "$@" ;;
-  config-check) config_check ;;
+  config-check) config_check "$@" ;;
   test)       run_tests "$@" ;;
   pi)         run_pi "$@" ;;
   llama)      run_llama "$@" ;;

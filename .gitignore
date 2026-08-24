@@ -1,12 +1,22 @@
-models
-state
-# Local configuration may contain credentials. The legacy .env name remains
-# ignored defensively, but Familiar no longer reads it.
-familiar.toml
+# Private configuration and identity are intentionally versioned only in the private instance.
+models/
+state/pi/
+state/presence/
+state/agents-supervisor/
+state/uploads/
+state/theme/
+state/voices/
+state/subagents/workspaces/
+state/subagents/sessions/
+state/herdr/
+state/inbox/
+state/*.sock
+state/*.pid
+state/*.tmp
+# Accumulating memory: handoffs, worklist, logs, reviews, artifacts, docs, and system profiles.
+# These are deliberately not ignored.
 .env
-
-# Transient research/design/settlement/verdict artifacts
-# (should be relocated to state/artifacts, not committed to repo root)
+familiar.toml
 RESEARCH-*.md
 VERDICT-*.md
 SETTLEMENT-*.md
