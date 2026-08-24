@@ -1,8 +1,10 @@
 # Local configuration
 
-Familiar reads the private repo-local `familiar.toml` before applying defaults
-and before its first `nix develop` recursion. Copy the committed schema and
-protect it before adding credentials:
+Familiar reads `familiar.toml` before applying defaults and before its first
+`nix develop` recursion. Use `./familiar.sh --config /path/to/private/familiar.toml`
+as shorthand for `FAMILIAR_CONFIG_PATH`. Relative `[familiar]` paths are anchored
+at the TOML file's directory. Copy the committed schema and protect it before
+adding credentials:
 
 ```sh
 cp familiar.toml.example familiar.toml
@@ -114,9 +116,9 @@ the unified theme and restarts services with the new exports. Malformed TOML,
 unsupported types, normalized-key collisions, and insecure permissions abort
 ordinary startup with a secret-suppressed error. They do not brick the bounded
 recovery/operational verbs `kill` and `worklist-add` (`inbox-enqueue` alias):
-those continue using ambient values and defaults after a loud warning. The
-`age` verb fails closed because bypassing config could select the wrong key or
-target. `config-check` remains runnable and returns nonzero until the optional file is
+those continue using ambient values and defaults after a loud warning. Identity
+and voices are ordinary files in the private instance; public-transit
+ciphertext remains the responsibility of its owning integration. `config-check` remains runnable and returns nonzero until the optional file is
 fixed or moved aside. Other launch verbs fail closed and do not silently ignore
 the file.
 

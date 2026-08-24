@@ -60,11 +60,9 @@
           '';
         };
         # Voice baking: gguf+torch env for scripts/bake-kokoro-voices.py,
-        # which injects decrypted identity voice packs (identity/voices/kokoro/
-        # *.pt.age) into the Kokoro gguf. Runs at runtime (run_tts), not in a
-        # derivation: the packs are age-encrypted and the key is runtime
-        # state, so a pure build can't decrypt them — and shouldn't, or the
-        # voice lands in the world-readable nix store.
+        # which injects private-instance voice packs into the Kokoro gguf.
+        # Runs at runtime (run_tts), keeping mutable operator data out of the
+        # world-readable Nix store.
         bakePython = pkgs.python3.withPackages (ps: with ps; [ gguf torch ]);
         piShell = pkgs.mkShell (modelEnv // {
           FAMILIAR_SHELL = "pi";

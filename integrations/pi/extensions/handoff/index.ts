@@ -2,13 +2,9 @@ import { uuidv7 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { buildSessionContext, convertToLlm } from "@earendil-works/pi-coding-agent";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { extname, join } from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { join } from "node:path";
 import { errorLog } from "../lib/debug.ts";
 import { Type } from "typebox";
-
-const execFileP = promisify(execFile);
 
 // Context compaction becomes an active-model-authored handoff, followed by
 // private orientation before the next user turn. /clear invokes it explicitly;
@@ -51,9 +47,7 @@ type HandoffDetails = {
 const handoffPrompt = async (): Promise<string> => {
   const path = process.env.FAMILIAR_HANDOFF_PROMPT_PATH;
   if (!path) return DEFAULT_HANDOFF_PROMPT;
-  const body = extname(path) === ".age"
-    ? (await execFileP("age", ["-i", process.env.FAMILIAR_AGE_KEY!, "--decrypt", path])).stdout
-    : await readFile(path, "utf-8");
+  const body = await readFile(path, "utf-8");
   return body.trim() || DEFAULT_HANDOFF_PROMPT;
 };
 

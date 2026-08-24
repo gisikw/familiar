@@ -1,12 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { formatSkillsForPrompt } from "@earendil-works/pi-coding-agent";
 import { readdir, readFile } from "node:fs/promises";
-import { join, extname } from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { join } from "node:path";
 import { errorLog } from "../lib/debug.ts";
-const execFileP = promisify(execFile);
-
 export default function(pi: ExtensionAPI) {
   // Last successfully built prompt. This handler runs before *every* turn and
   // reassembles identity from disk each time — which is what lets identity
@@ -30,20 +26,12 @@ export default function(pi: ExtensionAPI) {
 
   const buildPrompt = async (event: any): Promise<string> => {
     const identityDir = process.env.FAMILIAR_IDENTITY_PATH;
-    const ageKey = process.env.FAMILIAR_AGE_KEY;
-    if (!identityDir) throw new Error("FAMILIAR_IDENTITY_PATH is unset");
+    if (!identityDir) return undefined;
 
-    // Identity is prose only: .md and .md.age. Anything else under identity/
-    // (e.g. voices/kokoro/*.pt.age — binary, decrypted and baked into the
-    // TTS gguf by run_tts) must never be decrypted into the prompt.
-    const files = (await readdir(identityDir)).sort().filter(f => /\.md(\.age)?$/.test(f));
-    const bodies = await Promise.all(
-      files
-        .map(f => join(identityDir, f))
-        .map(f => extname(f) === ".age"
-          ? execFileP("age", ["-i", ageKey!, "--decrypt", f]).then(({ stdout }) => stdout)
-          : readFile(f, "utf-8"))
-    );
+    // Identity is ordinary markdown in the private instance. Binary voices
+    // live in the sibling voices tree and are never loaded into this prompt.
+    const files = (await readdir(identityDir)).sort().filter(f => f.endsWith(".md"));
+    const bodies = await Promise.all(files.map(f => readFile(join(identityDir, f), "utf-8")));
     const identity = bodies
       .map(body => {
         const m = body.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);

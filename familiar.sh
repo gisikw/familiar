@@ -6,6 +6,8 @@ usage() {
 Usage: ./familiar.sh <command> [arguments]
 
 Commands:
+  --config PATH   Use an external private-instance familiar.toml.
+  init PATH       Scaffold a private familiar instance.
   server          Run the complete Familiar service stack.
   connect         Ensure Presence and open the native viewer (first run builds it).
   agents          Run the Familiar agents CLI.
@@ -15,7 +17,6 @@ Commands:
   stt             Run the local speech-to-text backend.
   tts             Run the local text-to-speech backend.
   kill            Stop the private Presence runtime.
-  age TARGET      Edit or create an age-encrypted file.
   ssh HOST [...]  Open SSH with Familiar image-drop transport.
   drop-serve PATH Run the image-drop socket server (transport helper).
   drop-fetch PATH Fetch a file from a connected client.
@@ -29,13 +30,26 @@ EOF
 
 # Help must be available even when optional configuration is invalid, and a
 # bare invocation must never recurse into a dev shell or start services.
+if [ "${1:-}" = "--config" ]; then
+  [ $# -ge 2 ] || { echo 'familiar: --config requires a path' >&2; exit 2; }
+  export FAMILIAR_CONFIG_PATH="$2"
+  shift 2
+fi
 case ${1:-} in
   ""|-h|--help|help) usage; exit 0 ;;
 esac
 
 SELF="$(realpath "$0" 2>/dev/null || { cd "$(dirname "$0")" && printf '%s/%s' "$(pwd -P)" "$(basename "$0")"; })"
 REPO="$(dirname "$SELF")"
+if [ -n "${FAMILIAR_CONFIG_PATH:-}" ] && [[ "$FAMILIAR_CONFIG_PATH" != /* ]]; then
+  FAMILIAR_CONFIG_PATH="$(cd "$(dirname "$FAMILIAR_CONFIG_PATH")" && pwd -P)/$(basename "$FAMILIAR_CONFIG_PATH")"
+  export FAMILIAR_CONFIG_PATH
+fi
+CONFIG_DIR="$REPO"
+[ -n "${FAMILIAR_CONFIG_PATH:-}" ] && CONFIG_DIR="$(dirname "$FAMILIAR_CONFIG_PATH")"
 STATE_DIR="$REPO/state"
+[ "$CONFIG_DIR" = "$REPO" ] || STATE_DIR="$CONFIG_DIR/state"
+resolve_config_path() { case "$1" in /*) printf '%s' "$1";; *) printf '%s/%s' "$CONFIG_DIR" "$1";; esac; }
 
 # Local configuration must load before defaults and before dev-shell recursion:
 # file values beat defaults, while the ambient variables captured by the loader
@@ -58,14 +72,16 @@ if ! familiar_config_load "$REPO"; then
 fi
 
 # Defaults (lowest precedence)
-export FAMILIAR_IDENTITY_PATH="${FAMILIAR_IDENTITY_PATH:-$REPO/identity}"
-export FAMILIAR_AGE_KEY="${FAMILIAR_AGE_KEY:-$STATE_DIR/age.key}"
+if [ -n "${FAMILIAR_IDENTITY_PATH:-}" ]; then export FAMILIAR_IDENTITY_PATH="$(resolve_config_path "$FAMILIAR_IDENTITY_PATH")"; fi
 export FAMILIAR_HANDOFF_PATH="${FAMILIAR_HANDOFF_PATH:-$STATE_DIR/handoffs}"
+export FAMILIAR_HANDOFF_PATH="$(resolve_config_path "$FAMILIAR_HANDOFF_PATH")"
 # Worklist durable queue. FAMILIAR_WORKLIST_DIR is canonical; FAMILIAR_INBOX_DIR
 # is a bounded compatibility alias (one release) so a mid-flight external writer
 # does not silently drop items.
 export FAMILIAR_WORKLIST_DIR="${FAMILIAR_WORKLIST_DIR:-${FAMILIAR_INBOX_DIR:-$STATE_DIR/worklist}}"
+export FAMILIAR_WORKLIST_DIR="$(resolve_config_path "$FAMILIAR_WORKLIST_DIR")"
 export FAMILIAR_LOG_PATH="${FAMILIAR_LOG_PATH:-$STATE_DIR/log.jsonl}"
+export FAMILIAR_LOG_PATH="$(resolve_config_path "$FAMILIAR_LOG_PATH")"
 export FAMILIAR_SUBSCRIBER_PORT="${FAMILIAR_SUBSCRIBER_PORT:-1692}"
 export FAMILIAR_PRESENCE_STATE_DIR="${FAMILIAR_PRESENCE_STATE_DIR:-$STATE_DIR/presence}"
 export FAMILIAR_PRESENCE_SOCKET="${FAMILIAR_PRESENCE_SOCKET:-$FAMILIAR_PRESENCE_STATE_DIR/tmux.sock}"
@@ -75,6 +91,7 @@ export FAMILIAR_PRESENCE_CTL="${FAMILIAR_PRESENCE_CTL:-$REPO/services/presence/p
 # the supervisor an explicit extension entrypoint rather than depending on a
 # user's PI_CODING_AGENT_DIR discovery.
 export FAMILIAR_AGENTS_SUPERVISOR_STATE="${FAMILIAR_AGENTS_SUPERVISOR_STATE:-$STATE_DIR/agents-supervisor}"
+export FAMILIAR_AGENTS_SUPERVISOR_STATE="$(resolve_config_path "$FAMILIAR_AGENTS_SUPERVISOR_STATE")"
 # NOTE: workers no longer load the tiamat extension. Model access is a
 # single-provider descriptor the presence-side agents extension resolves at
 # dispatch time (the dispatched model, or the presence's currently-running
@@ -107,8 +124,16 @@ export FAMILIAR_AGENTS_WORKLIST_DIR="${FAMILIAR_AGENTS_WORKLIST_DIR:-$FAMILIAR_W
 # continuity line. Not a first-class verb on purpose — forking continuity
 # should have friction.
 export PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR:-$STATE_DIR/pi}"
+export PI_CODING_AGENT_DIR="$(resolve_config_path "$PI_CODING_AGENT_DIR")"
+for _familiar_path_var in FAMILIAR_TTS_VOICES_SOURCE FAMILIAR_ARTIFACT_DIR FAMILIAR_SUBAGENT_DIR FAMILIAR_SUBAGENT_SESSION_DIR; do
+  if [ -n "${!_familiar_path_var:-}" ]; then
+    printf -v "$_familiar_path_var" '%s' "$(resolve_config_path "${!_familiar_path_var}")"
+    export "$_familiar_path_var"
+  fi
+done
 
 MODEL_DIR="${FAMILIAR_MODEL_DIR:-$REPO/models}"
+MODEL_DIR="$(resolve_config_path "$MODEL_DIR")"
 
 prepare_tmux_theme() {
   local theme_dir="$STATE_DIR/theme"
@@ -181,9 +206,9 @@ setup_tts() {
 
 run_tts() {
   ensure_devshell tts "$@"
-  # Custom voices: committed under identity/voices/kokoro/ as <name>.pt.age
-  # (encrypted) or plain <name>.pt, staged to state/voices/kokoro/<name>.pt
-  # (decrypt or copy), then baked into a local copy of the Kokoro gguf.
+  # Custom voices are ordinary <name>.pt files under the private instance's
+  # voices tree, staged to state/voices/kokoro, then baked into a local copy
+  # of the Kokoro gguf.
   # tts-server only speaks voices embedded in the gguf (--voice selects,
   # never loads), so baking is what makes a pack selectable;
   # FAMILIAR_TTS_VOICE is runtime selection only.
@@ -197,20 +222,18 @@ run_tts() {
   fi
   local tts_model="$MODEL_DIR/$FAMILIAR_TTS_MODEL_FILE"
   local baked="$MODEL_DIR/baked-$FAMILIAR_TTS_MODEL_FILE"
-  local voices_src="$REPO/identity/voices/kokoro"
+  local voices_src="${FAMILIAR_TTS_VOICES_SOURCE:-${FAMILIAR_IDENTITY_PATH:+$FAMILIAR_IDENTITY_PATH/voices/kokoro}}"
+  [ -n "$voices_src" ] && voices_src="$(resolve_config_path "$voices_src")"
   local voices_dir="$STATE_DIR/voices/kokoro"
   local packs=() rebake="" f name pt
   if [ -d "$voices_src" ]; then
-    for f in "$voices_src"/*.pt "$voices_src"/*.pt.age; do
+    for f in "$voices_src"/*.pt; do
       [ -e "$f" ] || continue
-      name="$(basename "$f")"; name="${name%.age}"; name="${name%.pt}"
+      name="$(basename "$f")"; name="${name%.pt}"
       pt="$voices_dir/$name.pt"
       mkdir -p "$voices_dir"
       if [ ! -f "$pt" ] || [ "$f" -nt "$pt" ]; then
-        case "$f" in
-          *.age) age -i "$FAMILIAR_AGE_KEY" --decrypt -o "$pt" "$f" ;;
-          *)     cp "$f" "$pt" ;;
-        esac
+        cp "$f" "$pt"
       fi
       packs+=("$pt")
       if [ ! -f "$baked" ] || [ "$pt" -nt "$baked" ]; then rebake=1; fi
@@ -325,37 +348,6 @@ run_pi() {
       --skill "$REPO/skills/" || true
     sleep 1
   done
-}
-
-handle_age() {
-  target=${2:-}
-  if [ -z "${target}" ]; then
-    echo "Usage: ./familiar.sh age <target>"
-    exit 1
-  fi
-
-  ensure_devshell pi "$@"
-
-  if [ ! -f "$FAMILIAR_AGE_KEY" ]; then
-    echo "Generating age key to $FAMILIAR_AGE_KEY"
-    mkdir -p "$(dirname "$FAMILIAR_AGE_KEY")"
-    age-keygen -o "$FAMILIAR_AGE_KEY" >/dev/null
-  fi
-
-  pubkey=$(age-keygen -y "$FAMILIAR_AGE_KEY")
-
-  if test ! -t 0; then
-    age -r "$pubkey" -o "$target"
-  else
-    tmp=$(mktemp); orig=$(mktemp)
-    trap 'rm -f "$tmp" "$orig"' EXIT
-    if [ -f "$target" ]; then
-      age -i "$FAMILIAR_AGE_KEY" --decrypt -o "$tmp" "$target"
-    fi
-    cp "$tmp" "$orig"
-    "${EDITOR:-vi}" "$tmp"
-    cmp -s "$tmp" "$orig" || age -r "$pubkey" -o "$target" "$tmp"
-  fi
 }
 
 # --- image drop transport ----------------------------------------------------
@@ -950,6 +942,31 @@ run_tests() {
   return 1
 }
 
+init_instance() {
+  local target=${2:-}
+  [ -n "$target" ] || { echo 'Usage: ./familiar.sh init PATH' >&2; return 2; }
+  target="$(mkdir -p "$target" && cd "$target" && pwd -P)"
+  [ -e "$target/familiar.toml" ] && { echo "familiar: refusing to overwrite $target/familiar.toml" >&2; return 1; }
+  cp "$REPO/familiar.toml.example" "$target/familiar.toml"
+  chmod 600 "$target/familiar.toml"
+  mkdir -p "$target/identity" "$target/voices" "$target/state" "$target/skills" "$target/extensions"
+  cat > "$target/.gitignore" <<'EOF'
+# Runtime/chatty workspace data is retained according to your backup policy.
+state/pi/
+state/presence/
+state/agents-supervisor/
+state/uploads/
+state/theme/
+state/voices/
+state/*.sock
+state/*.pid
+state/*.tmp
+models/
+EOF
+  git -C "$target" init >/dev/null 2>&1 || true
+  echo "familiar: initialized private instance at $target"
+}
+
 config_check() {
   if [ "$CONFIG_LOAD_FAILED" -ne 0 ]; then
     echo 'familiar: familiar.toml validation failed (contents suppressed)' >&2
@@ -959,6 +976,7 @@ config_check() {
 }
 
 case ${1:-} in
+  init)        init_instance "$@" ;;
   config-check) config_check ;;
   test)       run_tests "$@" ;;
   pi)         run_pi "$@" ;;
@@ -971,7 +989,6 @@ case ${1:-} in
   server)     server "$@" ;;
   agents)     agents "$@" ;;
   client)     client "$@" ;;
-  age)        handle_age "$@" ;;
   connect)    viewer_connect "$@" ;;
   ssh)        ssh_connect "$@" ;;
   drop-serve) drop_serve "$@" ;;

@@ -15,4 +15,4 @@ JSON records carry Markdown in `body`; this preserves prose without making front
 
 Every write creates a mode-0600 sibling temp file, writes and `fsync`s it, atomically renames it, then `fsync`s the parent directory. Thus a crash exposes either the old or complete new record, never partial JSON. `FileContinuityStore` accepts test hooks for deterministic crash simulation.
 
-The `ContinuityStore` interface contains no filesystem details so a DB implementation can replace it. `appendCanon` appends Markdown to an existing entry; `appendHandoff` mints an ordered ID. Existing encrypted `identity/*.md.age` must be decrypted/encrypted by the Presence integration during a later migration; this package deliberately does not own key management.
+The `ContinuityStore` interface contains no filesystem details so a DB implementation can replace it. `appendCanon` appends Markdown to an existing entry; `appendHandoff` mints an ordered ID. Identity files belong to the private instance and are ordinary markdown; this package deliberately does not own filesystem or retention policy.

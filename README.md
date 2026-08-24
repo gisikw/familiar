@@ -29,30 +29,24 @@ A portable, personal, progressively-enhanced agent framework.
    nix shell nixpkgs#git -c git clone git@github.com:gisikw/familiar.git ~/Projects/familiar
    ```
 
-3. **Optionally create private local configuration**
+3. **Create your private instance**
    ```bash
-   cp familiar.toml.example familiar.toml
-   chmod 600 familiar.toml
+   ./familiar.sh init ~/mine
    ```
-   See [docs/CONFIG.md](docs/CONFIG.md) for mapping and precedence.
+   Edit `~/mine/familiar.toml`, keep that repository private, and run with
+   `./familiar.sh --config ~/mine/familiar.toml`. See [docs/CONFIG.md](docs/CONFIG.md).
 
 4. **Run Familiar**
    ```bash
-   ./familiar.sh
+   ./familiar.sh --config ~/mine/familiar.toml pi
    ```
 
 ## Privacy
 
-Some components are optionally encrypted at rest using [age](https://github.com/FiloSottile/age).
-
-Edit or create new files via:
-   ```bash
-   echo "My dog's name is Fido" | ./familiar.sh age ./identity/01-household.md.age
-   ./familiar.sh age ./identity/00-private.md.age # opens in $EDITOR, reencrypting on close
-   ```
-
-The files are decrypted at runtime. On first use, a key will be generated at
-$FAMILIAR_AGE_KEY, which defaults to ./state/age.key.
+Your private instance contains `familiar.toml`, identity, voices, and
+accumulating state. Keep that repository private and choose its retention and
+backup policy deliberately; the public product repository contains no persona.
+Credentials may be stored in the mode-0600 private configuration.
 
 ## Extension layout
 

@@ -15,13 +15,13 @@ skip_version_check = 1
 # Cross-cutting Familiar paths/policy use [familiar]; its prefix is not doubled.
 [familiar]
 # identity_path = "./identity"
-# age_key = "./state/age.key"
 # handoff_path = "./state/handoffs"
-# handoff_prompt_path = "/private/path/prompt.md.age"
+# handoff_prompt_path = "./state/handoff-prompt.md"
 # worklist_dir = "./state/worklist" # canonical queue path
 # inbox_dir = "./state/worklist"    # bounded compatibility alias (one release)
 # log_path = "./state/log.jsonl"
-# model_dir = "./models"
+# tts_voices_source = "./voices/kokoro"
+# model_dir = "./models" # relative paths are anchored at this file
 # default_provider = "llama.cpp"
 # default_model = "provider/model-id"
 # artifact_dir = "./state/artifacts"
