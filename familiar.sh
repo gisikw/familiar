@@ -963,7 +963,54 @@ init_instance() {
   install -d -m 700 "$target/identity" "$target/voices" "$target/state" "$target/skills" "$target/extensions"
   (umask 077; cp "$REPO/familiar.toml.example" "$target/familiar.toml")
   chmod 600 "$target/familiar.toml"
-  if [ ! -e "$target/.gitignore" ]; then cp "$REPO/.gitignore" "$target/.gitignore"; fi
+  if [ ! -e "$target/.gitignore" ]; then
+    cat > "$target/.gitignore" <<'EOF'
+# Private instance policy: version configuration, identity, voices, and substantive memory.
+# High-volume runtime output and generated/private workspace data.
+state/log.jsonl*
+state/age.key
+state/pi/
+state/pi/auth.json
+state/presence/
+state/agents-supervisor/
+state/subagents/
+state/herdr/
+state/inbox/
+state/voices/
+state/theme/
+state/uploads/
+state/*.sock
+state/*.pid
+state/*.tmp
+models/
+
+# Runtime credentials and payloads in otherwise substantive artifacts.
+state/artifacts/**/auth.json
+state/artifacts/**/credentials.json
+state/artifacts/**/token.json
+state/artifacts/**/secret.json
+state/artifacts/**/key.json
+state/artifacts/**/token
+state/artifacts/**/secret
+state/artifacts/**/credential
+state/artifacts/**/key
+state/artifacts/**/config-token-evidence.md
+state/artifacts/**/config-token-review.md
+state/artifacts/**/integration-key-lines.txt
+state/artifacts/**/repair-integration-key-lines.txt
+
+# Nested artifact worktrees and their git metadata are generated runtime state.
+state/artifacts/**/.git/
+state/artifacts/**/.git-worktree/
+state/artifacts/**/worktree/
+state/artifacts/**/*-worktree/
+state/artifacts/**/*-review-tree/
+state/artifacts/**/alpha-review-tree/
+state/artifacts/**/integration-main/
+state/artifacts/**/repair-review-tree/
+state/artifacts/**/review-tree/
+EOF
+  fi
   git -C "$target" init >/dev/null 2>&1 || true
   echo "familiar: initialized private instance at $target"
 }

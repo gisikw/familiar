@@ -40,6 +40,25 @@ INSTANCE="$TMP/new"
 "$REPO/familiar.sh" init "$INSTANCE" >/dev/null
 for d in identity voices state skills extensions; do assert_file "$INSTANCE/$d"; done
 [ "$(stat -c '%a' "$INSTANCE/familiar.toml" 2>/dev/null || stat -f '%Lp' "$INSTANCE/familiar.toml")" = 600 ] || fail 'config is not 0600'
+ignore() { git -C "$INSTANCE" check-ignore -q -- "$1" || fail "expected ignored: $1"; }
+trackable() { ! git -C "$INSTANCE" check-ignore -q -- "$1" || fail "expected trackable: $1"; }
+trackable familiar.toml
+trackable identity/profile.md
+trackable voices/operator.wav
+trackable state/handoffs/next.md
+trackable state/worklist/queue.md
+trackable state/reviews/review.md
+trackable state/artifacts/evidence.md
+trackable state/docs/notes.md
+trackable state/system-profiles/default.md
+ignore state/log.jsonl
+ignore state/log.jsonl.1
+ignore state/pi/auth.json
+ignore state/subagents/workspaces/job/file
+ignore state/herdr/worktree/file
+ignore state/age.key
+ignore state/artifacts/run/credentials.json
+ignore state/artifacts/run/worktree/file
 cp "$INSTANCE/familiar.toml" "$TMP/config.before"
 ! "$REPO/familiar.sh" init "$INSTANCE" >/dev/null 2>&1 || fail 'init overwrote existing config'
 cmp "$TMP/config.before" "$INSTANCE/familiar.toml" || fail 'config changed after refusal'
