@@ -51,9 +51,15 @@ type renderHub struct {
 	client     *http.Client
 	mu         sync.Mutex
 	doc        []byte
+	content    renderNode
+	target     string
+	hasDoc     bool
 	revision   uint64
 	changed    chan struct{}
 	invalidate chan struct{}
+	// notify wakes the host aggregator when this hub's cached doc changes. It
+	// is called without holding h.mu so the aggregator may snapshot this hub.
+	notify func()
 }
 
 func newRenderHub(cfg RenderConfig, log *slog.Logger) *renderHub {
@@ -115,11 +121,17 @@ func (h *renderHub) fetch(ctx context.Context) (time.Duration, error) {
 	changed := !bytes.Equal(h.doc, canonical)
 	if changed {
 		h.doc = canonical
+		h.content = doc.Content
+		h.target = doc.Target
+		h.hasDoc = true
 		h.revision++
 		close(h.changed)
 		h.changed = make(chan struct{})
 	}
 	h.mu.Unlock()
+	if changed && h.notify != nil {
+		h.notify()
+	}
 	ttl := time.Duration(doc.TTLMillis) * time.Millisecond
 	if ttl < minRenderTTL {
 		ttl = minRenderTTL
@@ -240,4 +252,113 @@ func (h *renderHub) viewerHandler(w http.ResponseWriter, r *http.Request) {
 func validRenderURL(raw string) bool {
 	u, err := url.Parse(raw)
 	return err == nil && u.Scheme == "http" && u.Host != ""
+}
+
+// snapshot returns the last validated envelope this hub cached, or ok=false when
+// the plugin has not yet produced a usable render.
+func (h *renderHub) snapshot() (renderEnvelope, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.hasDoc {
+		return renderEnvelope{}, false
+	}
+	return renderEnvelope{Target: h.target, Content: h.content}, true
+}
+
+// renderAggregator is the one host-owned render surface. It composes every
+// enrolled plugin's `left-nav` contribution, in deterministic config order,
+// under a single host tree. Plugin node IDs are namespaced to prevent
+// cross-plugin collisions; terminal activation identifiers are left untouched
+// so the viewer's exact tmux target is preserved. TTL and invalidation stay
+// internal to each hub; the aggregate exposes one revision/long-poll stream
+// that changes whenever any hub's composed contribution changes.
+type renderAggregator struct {
+	hubs     []*renderHub // deterministic config order
+	log      *slog.Logger
+	mu       sync.Mutex
+	content  []byte // composed content bytes, for change detection
+	doc      []byte // full envelope served to viewers
+	revision uint64
+	changed  chan struct{}
+}
+
+func newRenderAggregator(hubs []*renderHub, log *slog.Logger) *renderAggregator {
+	if log == nil {
+		log = slog.Default()
+	}
+	a := &renderAggregator{hubs: hubs, log: log, changed: make(chan struct{})}
+	for _, h := range hubs {
+		h.notify = a.recompose
+	}
+	a.recompose()
+	return a
+}
+
+// namespaceNode prefixes every node ID with "<plugin>/" recursively. Activation
+// (socket/session) is deliberately left unchanged: it is the exact same-host
+// tmux target the viewer must re-check and attach.
+func namespaceNode(n renderNode, plugin string) renderNode {
+	n.ID = plugin + "/" + n.ID
+	if n.Children != nil {
+		kids := make([]renderNode, len(*n.Children))
+		for i, c := range *n.Children {
+			kids[i] = namespaceNode(c, plugin)
+		}
+		n.Children = &kids
+	}
+	return n
+}
+
+func (a *renderAggregator) recompose() {
+	children := []renderNode{}
+	for _, h := range a.hubs {
+		env, ok := h.snapshot()
+		if !ok || env.Target != "left-nav" {
+			continue
+		}
+		branch := namespaceNode(env.Content, h.cfg.Plugin)
+		// The plugin's own tree root becomes a branch under the host root.
+		branch.Kind = "branch"
+		children = append(children, branch)
+	}
+	root := renderNode{Kind: "tree", ID: "root", Children: &children}
+	contentBytes, _ := json.Marshal(root)
+	a.mu.Lock()
+	if !bytes.Equal(a.content, contentBytes) {
+		a.content = contentBytes
+		a.revision++
+		env := renderEnvelope{RenderAPI: 1, Revision: a.revision, TTLMillis: 1000, Target: "left-nav", Content: root}
+		a.doc, _ = json.Marshal(env)
+		close(a.changed)
+		a.changed = make(chan struct{})
+	}
+	a.mu.Unlock()
+}
+
+func (a *renderAggregator) viewerHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+	since := r.URL.Query().Get("revision")
+	a.mu.Lock()
+	revision := a.revision
+	ch := a.changed
+	body := append([]byte(nil), a.doc...)
+	a.mu.Unlock()
+	if since == fmt.Sprint(revision) {
+		select {
+		case <-ch:
+			a.mu.Lock()
+			revision = a.revision
+			body = append([]byte(nil), a.doc...)
+			a.mu.Unlock()
+		case <-time.After(25 * time.Second):
+		case <-r.Context().Done():
+			return
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Familiar-Revision", fmt.Sprint(revision))
+	_, _ = w.Write(body)
 }

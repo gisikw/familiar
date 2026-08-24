@@ -39,8 +39,14 @@ func (s *Supervisor) Handler() http.Handler {
 		writeJSON(w, http.StatusOK, statusDocument{Ready: s.Ready(), Children: s.Status()})
 	})
 	mux.HandleFunc("/children/", s.childAction)
+	// The one host-owned aggregate render surface. Viewer and config use only
+	// this generic endpoint; it composes every enrolled plugin contribution.
+	mux.HandleFunc("/v1/render", func(w http.ResponseWriter, r *http.Request) {
+		s.aggregator.viewerHandler(w, r)
+	})
 	// Viewer data is read-only. Invalidation URLs carry a boot-random scoped
 	// token and only coalesce a refetch; they never expose plugin data.
+	// Per-plugin GET is retained for bounded compatibility/debugging only.
 	mux.HandleFunc("/v1/render/", func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(r.URL.Path, "/v1/render/")
 		if hub := s.renders[id]; hub != nil {
