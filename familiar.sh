@@ -75,9 +75,17 @@ export FAMILIAR_PRESENCE_CTL="${FAMILIAR_PRESENCE_CTL:-$REPO/services/presence/p
 # the supervisor an explicit extension entrypoint rather than depending on a
 # user's PI_CODING_AGENT_DIR discovery.
 export FAMILIAR_AGENTS_SUPERVISOR_STATE="${FAMILIAR_AGENTS_SUPERVISOR_STATE:-$STATE_DIR/agents-supervisor}"
-# NOTE: workers no longer load the tiamat extension. Model access comes from the
-# presence's models-store.json copied into each isolated per-job worker dir
-# (worker profile isolation is a security boundary — see agents/DECISIONS.md).
+# NOTE: workers no longer load the tiamat extension. Model access is a
+# single-provider descriptor the presence-side agents extension resolves at
+# dispatch time (the dispatched model, or the presence's currently-running
+# model) and forwards on the job; the supervisor's pi adapter writes the
+# worker's models.json/settings from it so the worker boots with EXACTLY that
+# one provider+model. Credentials ride only as unresolved references (!cmd/$ENV)
+# or via copied auth.json in the private per-job dir — never plaintext on the job
+# (worker profile isolation is a security boundary — see agents/DECISIONS.md #18,
+# #20). FAMILIAR_INTERACTIVE_SHELL (exported by the pi devshell as
+# pkgs.bashInteractive) is inherited by the supervisor and used as the tmux
+# default-shell for windows a human opens while inspecting a worker.
 # The agent-hooks extension is the pi "hook adapter": it reports interactive
 # worker lifecycle out-of-band to the side channel the Go pi adapter reads. It
 # ships with the agent system under agents/integrations/pi/agent-hooks.

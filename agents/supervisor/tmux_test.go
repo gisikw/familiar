@@ -186,6 +186,96 @@ func TestPolicyReappliedToAdoptedServer(t *testing.T) {
 	}
 }
 
+// DefaultShell (FAMILIAR_INTERACTIVE_SHELL) is written as the tmux default-shell
+// so windows/panes a human opens use an interactive readline bash, not the
+// non-interactive Nix build bash (literal \[\] PS1). Empty preserves tmux's
+// default; a path with a double quote is rejected.
+func TestDefaultShellPolicy(t *testing.T) {
+	dir := t.TempDir()
+	tm := Tmux{Socket: filepath.Join(dir, "tmux.sock"), DefaultShell: "/nix/store/x/bin/bash"}
+	if err := tm.Prepare(); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := os.ReadFile(tm.config())
+	if err != nil || !strings.Contains(string(cfg), "set-option -g default-shell \"/nix/store/x/bin/bash\"") {
+		t.Fatalf("default-shell not written: %q %v", cfg, err)
+	}
+	tm2 := Tmux{Socket: filepath.Join(dir, "tmux2.sock")}
+	if err := tm2.Prepare(); err != nil {
+		t.Fatal(err)
+	}
+	cfg2, _ := os.ReadFile(tm2.config())
+	if strings.Contains(string(cfg2), "default-shell") {
+		t.Fatalf("default-shell written when unset: %q", cfg2)
+	}
+	tm3 := Tmux{Socket: filepath.Join(dir, "tmux3.sock"), DefaultShell: "/bin/ba\"sh"}
+	if err := tm3.Prepare(); err == nil {
+		t.Fatal("expected rejection of double-quoted default-shell path")
+	}
+}
+
+// remain-on-exit is scoped to the worker window: the WORKER pane retains its
+// dead status (exit-status capture) while a second window a human opens closes
+// naturally when its command exits. The global policy default is OFF.
+func TestRemainOnExitScopedToWorkerWindow(t *testing.T) {
+	if _, e := exec.LookPath("tmux"); e != nil {
+		t.Skip("tmux absent")
+	}
+	dir := t.TempDir()
+	tm := Tmux{Socket: filepath.Join(dir, "tmux.sock")}
+	if e := tm.Prepare(); e != nil {
+		t.Fatal(e)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	t.Cleanup(func() { _, _ = tm.run(context.Background(), "kill-server") })
+	transcript := filepath.Join(dir, "out")
+	s, target, e := tm.Start(ctx, "scope", harnesses.Launch{Argv: []string{"sh", "-c", "printf 'worker\\n'; exit 5"}, Dir: dir, Transcript: transcript})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if out, e := tm.run(ctx, "show-options", "-gv", "remain-on-exit"); e != nil || out != "off" {
+		t.Fatalf("global remain-on-exit must be off: %q %v", out, e)
+	}
+	if out, e := tm.run(ctx, "show-options", "-wv", "-t", s+":worker", "remain-on-exit"); e != nil || out != "on" {
+		t.Fatalf("worker window remain-on-exit must be on: %q %v", out, e)
+	}
+	var exit *int
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); {
+		alive, code, paneErr := tm.Pane(ctx, target)
+		if paneErr != nil {
+			t.Fatal(paneErr)
+		}
+		if !alive {
+			exit = code
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if exit == nil || *exit != 5 {
+		t.Fatalf("worker pane lost exit status after scoping: %v", exit)
+	}
+	// A SECOND window a human opens must NOT remain after its command exits.
+	if _, e := tm.run(ctx, "new-window", "-a", "-t", s+":worker", "-n", "inspect", "sh", "-c", "exit 0"); e != nil {
+		t.Fatalf("open inspect window: %v", e)
+	}
+	gone := false
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); {
+		out, e := tm.run(ctx, "list-windows", "-t", s, "-F", "#{window_name}")
+		if e != nil {
+			t.Fatalf("list-windows: %v", e)
+		}
+		if !strings.Contains(out, "inspect") {
+			gone = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !gone {
+		t.Fatal("human-opened window lingered as a dead pane after its command exited")
+	}
+}
+
 // ReapplyPolicy is the boot-time repair for a supervisor that adopts a live
 // server (sessions persist across restarts). It is a no-op with no server and
 // idempotently loads the policy when one is running.

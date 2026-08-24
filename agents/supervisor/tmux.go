@@ -17,7 +17,14 @@ import (
 
 // Tmux addresses only the supervisor-owned server. No command may use the user
 // default socket, and server creation always supplies the pinned config.
-type Tmux struct{ Binary, Socket, Config string }
+//
+// DefaultShell, when set, is the interactive shell tmux uses for windows/panes a
+// human opens while inspecting a worker (the WORKER pane execs the harness argv
+// directly and is unaffected). It exists because tmux would otherwise spawn the
+// non-interactive Nix build bash (no readline, literal \[\] PS1). The supervisor
+// wires it from FAMILIAR_INTERACTIVE_SHELL (the flake exports
+// pkgs.bashInteractive); empty preserves tmux's default.
+type Tmux struct{ Binary, Socket, Config, DefaultShell string }
 
 var safeName = regexp.MustCompile(`[^A-Za-z0-9_-]`)
 
@@ -57,7 +64,22 @@ func (t Tmux) Prepare() error {
 	if fi, err := os.Lstat(cfg); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 		return errors.New("refusing symlink tmux config")
 	}
-	policy := "# Familiar Agent Supervisor complete private tmux policy.\nset-option -g status off\nset-option -g pane-border-status off\nset-option -g remain-on-exit on\nset-option -g exit-empty off\nset-option -g destroy-unattached off\nset-option -g allow-rename off\nset-option -g prefix C-b\nunbind-key C-b\nbind-key C-b send-prefix\nset-option -g mouse on\nbind-key -n PageUp if-shell -F '#{alternate_on}' 'send-keys PageUp' 'copy-mode -eu'\nset-option -g allow-passthrough on\nset-option -g extended-keys on\nset-option -g extended-keys-format csi-u\nset-option -g terminal-features 'xterm*:extkeys,screen*:extkeys,tmux*:extkeys,kitty*:extkeys,ghostty*:extkeys,xterm-ghostty:extkeys'\n"
+	// remain-on-exit is scoped to the WORKER pane/window only (set at Start via
+	// set-option -w on the worker window). Globally it is OFF so any window a
+	// human opens to inspect a worker closes naturally when its process exits
+	// (the operator hates lingering dead panes). The worker pane still needs
+	// remain-on-exit so the supervisor can read pane_dead/exit-status after death
+	// (see Pane()); that is applied per-window, not globally.
+	policy := "# Familiar Agent Supervisor complete private tmux policy.\nset-option -g status off\nset-option -g pane-border-status off\nset-option -g remain-on-exit off\nset-option -g exit-empty off\nset-option -g destroy-unattached off\nset-option -g allow-rename off\nset-option -g prefix C-b\nunbind-key C-b\nbind-key C-b send-prefix\nset-option -g mouse on\nbind-key -n PageUp if-shell -F '#{alternate_on}' 'send-keys PageUp' 'copy-mode -eu'\nset-option -g allow-passthrough on\nset-option -g extended-keys on\nset-option -g extended-keys-format csi-u\nset-option -g terminal-features 'xterm*:extkeys,screen*:extkeys,tmux*:extkeys,kitty*:extkeys,ghostty*:extkeys,xterm-ghostty:extkeys'\n"
+	// default-shell: prefer an interactive bash for windows/panes a human opens.
+	// Empty preserves tmux's compiled default. The path must contain no double
+	// quote (it is embedded in a quoted set-option value).
+	if sh := t.DefaultShell; sh != "" {
+		if strings.Contains(sh, "\"") {
+			return errors.New("tmux default-shell path must not contain a double quote")
+		}
+		policy += fmt.Sprintf("set-option -g default-shell \"%s\"\n", sh)
+	}
 	// Familiar theming is COSMETIC AND NON-BLOCKING: a missing, symlinked,
 	// irregular, or unreadable theme artifact is skipped so workers still start
 	// on the plain policy config. Never hardcode palette values here; the styles
@@ -169,6 +191,15 @@ func (t Tmux) Start(ctx context.Context, id string, l harnesses.Launch) (string,
 	// could not, so a config change always takes effect on the next start.
 	if _, err := t.run(ctx, "source-file", t.config()); err != nil {
 		return "", "", fmt.Errorf("tmux source-file: %w", err)
+	}
+	// Scope remain-on-exit to the WORKER window only. The global policy keeps it
+	// OFF so human-opened inspection windows close naturally on process exit;
+	// the worker pane must retain its dead status so Pane() can read the harness
+	// exit code after death (crash → failed settlement). set-option -w targets
+	// exactly this window on the live server, applied idempotently on every start
+	// path (fresh or adopted).
+	if _, err := t.run(ctx, "set-option", "-w", "-t", session+":worker", "remain-on-exit", "on"); err != nil {
+		return "", "", fmt.Errorf("tmux remain-on-exit scope: %w", err)
 	}
 	return session, session + ":0.0", nil
 }

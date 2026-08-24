@@ -85,6 +85,17 @@ func (a Adapter) bin() string {
 	return "pi"
 }
 
+// modelArg is the pi --model argument. A resolved ProviderConfig pins the exact
+// dispatched provider/model (canonical reference so pi selects that provider's
+// model, not a fuzzy match across providers); otherwise the bare job.Model is
+// used, matching pre-fix behavior.
+func modelArg(j protocol.Job) string {
+	if pc := j.ProviderConfig; pc != nil && pc.Provider != "" && pc.Model != "" {
+		return pc.Provider + "/" + pc.Model
+	}
+	return j.Model
+}
+
 // paths returns the session JSONL, pane transcript, and side-channel events
 // file beneath the job's artifact directory.
 func paths(j protocol.Job) (string, string, string) {
@@ -133,7 +144,14 @@ func (a Adapter) workerExtensions() []string {
 // --extension) is deliberate: pi errors if the same tool is registered twice,
 // so the extension set must live in exactly one place, and settings.json is the
 // single file the leak-guard test can audit.
-func (a Adapter) writeWorkerProfile(dir string) error {
+//
+// When pc is non-nil (the presence resolved the dispatched model+provider at
+// dispatch time) the worker is provisioned with EXACTLY that one provider+model
+// and nothing else: a single-provider models.json (unless the provider is a pi
+// built-in), defaults pinned to it, and enabledModels scoped to the one
+// "provider/model". This is the fix for the presence's tiamat-routed catalog
+// otherwise collapsing to whatever happens to sit in models-store.json.
+func (a Adapter) writeWorkerProfile(dir string, pc *protocol.ProviderConfig) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
@@ -147,6 +165,9 @@ func (a Adapter) writeWorkerProfile(dir string) error {
 			model = sm
 		}
 	}
+	if pc != nil && pc.Provider != "" {
+		provider, model = pc.Provider, pc.Model
+	}
 	settings := map[string]any{
 		"lastChangelogVersion": "0.84.1",
 		// Omit the compaction key entirely: pi's native default (enabled) applies.
@@ -159,15 +180,36 @@ func (a Adapter) writeWorkerProfile(dir string) error {
 	if model != "" {
 		settings["defaultModel"] = model
 	}
-	// Model catalog: non-secret; give the worker the presence's provider/model
-	// catalog so job.Model resolves the same set.
-	copyProfileFile(a.SourceProfile, dir, "models-store.json")
+	switch {
+	case pc != nil && len(pc.ModelsJSON) > 0:
+		// The single dispatched provider. Write it as pi's models.json (custom
+		// provider layer: baseUrl/apiKey-ref/api/models). apiKey is an unresolved
+		// reference (!cmd/$ENV), resolved on the worker host at runtime — no
+		// plaintext secret is written here. Do NOT copy the presence
+		// models-store.json: the worker must see ONLY this provider.
+		if err := os.WriteFile(filepath.Join(dir, "models.json"), pc.ModelsJSON, 0o600); err != nil {
+			return err
+		}
+		if provider != "" && model != "" {
+			settings["enabledModels"] = []string{provider + "/" + model}
+		}
+	case pc != nil && pc.Builtin:
+		// A pi built-in provider whose credentials live in auth.json. Nothing to
+		// write to models.json; scope to the single model and rely on auth copy.
+		if provider != "" && model != "" {
+			settings["enabledModels"] = []string{provider + "/" + model}
+		}
+	default:
+		// Back-compat: no resolved provider config. Copy the presence catalog so
+		// job.Model resolves the same set (this is the pre-fix behavior).
+		copyProfileFile(a.SourceProfile, dir, "models-store.json")
+	}
 	// Theme is cosmetic and non-blocking.
 	if copyProfileTheme(a.SourceProfile, dir) {
 		settings["theme"] = "familiar"
 		settings["themes"] = []string{filepath.Join(dir, "themes")}
 	}
-	if a.CopyAuth {
+	if a.CopyAuth || (pc != nil && pc.CopyAuth) {
 		copyProfileFile(a.SourceProfile, dir, "auth.json")
 	}
 	b, err := json.MarshalIndent(settings, "", "  ")
@@ -246,7 +288,7 @@ func (a Adapter) Start(_ context.Context, j protocol.Job) (harnesses.Launch, err
 	}
 	s, t, ev := paths(j)
 	wd := workerDir(j)
-	if err := a.writeWorkerProfile(wd); err != nil {
+	if err := a.writeWorkerProfile(wd, j.ProviderConfig); err != nil {
 		return harnesses.Launch{}, err
 	}
 	// Interactive TUI: no --mode json --print. The positional prompt is
@@ -255,8 +297,8 @@ func (a Adapter) Start(_ context.Context, j protocol.Job) (harnesses.Launch, err
 	// The worker extension set lives in the per-job settings.json, NOT on the
 	// command line, because pi rejects a tool registered twice.
 	v := []string{a.bin(), "--session", s, "--no-context-files", "--no-skills"}
-	if j.Model != "" {
-		v = append(v, "--model", j.Model)
+	if m := modelArg(j); m != "" {
+		v = append(v, "--model", m)
 	}
 	v = append(v, withBlockSuffix(j.Prompt))
 	return harnesses.Launch{Argv: v, Dir: j.CWD, Env: a.launchEnv(ev, wd), Transcript: t, Session: s, Events: ev, Interactive: true}, nil
@@ -270,12 +312,12 @@ func (a Adapter) Resume(_ context.Context, j protocol.Job, l harnesses.Launch) (
 		_, _, l.Events = paths(j)
 	}
 	wd := workerDir(j)
-	if err := a.writeWorkerProfile(wd); err != nil {
+	if err := a.writeWorkerProfile(wd, j.ProviderConfig); err != nil {
 		return harnesses.Launch{}, err
 	}
 	l.Argv = []string{a.bin(), "--session", l.Session, "--no-context-files", "--no-skills"}
-	if j.Model != "" {
-		l.Argv = append(l.Argv, "--model", j.Model)
+	if m := modelArg(j); m != "" {
+		l.Argv = append(l.Argv, "--model", m)
 	}
 	l.Argv = append(l.Argv, "Continue the interrupted delegated task from the existing session.")
 	l.Env = a.launchEnv(l.Events, wd)
