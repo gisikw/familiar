@@ -102,6 +102,11 @@ func TestBundledGolemClientManifestLoads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := os.Stat(filepath.Join(root, "contrib/familiar/plugin.toml")); err != nil {
+		// The server flake's src is services/server only; in that sandbox the
+		// bundled manifest does not exist. This guard is for repo checkouts.
+		t.Skip("bundled manifest not present (building outside the repo root)")
+	}
 	c := DefaultConfig()
 	c.Children = append(c.Children, ChildConfig{Name: "presence", Presence: true})
 	exts, err := LoadPlugin(&c, "golem", root, map[string]string{"GOLEM_ENDPOINT": "unix:///tmp/golemd.sock"})
