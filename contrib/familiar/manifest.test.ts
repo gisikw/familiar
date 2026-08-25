@@ -1,0 +1,3 @@
+import { expect,test } from "bun:test";import {readFileSync,statSync}from"node:fs";
+const text=readFileSync(new URL("./plugin.toml",import.meta.url),"utf8");
+test("bundled manifest is API-1 and self-contained",()=>{expect(text.match(/^familiar_api = 1$/gm)?.length).toBe(1);expect(text).toContain('GOLEM_REPO_PATH = ""');expect(text).toContain('${plugin_root}#golem-familiar-render');expect(text).toContain('[chrome]');expect(text).toContain('[pi.env]');expect(text).not.toContain("provider");for(const m of text.matchAll(/\$\{([^}]+)\}/g))expect(m[1]).toBe("plugin_root");expect(statSync(new URL("./pi/agents/index.ts",import.meta.url)).isFile()).toBe(true)});

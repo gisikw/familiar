@@ -1,0 +1,26 @@
+familiar_api = 1
+
+# Optional local fallback only. It is inert unless GOLEM_REPO_PATH is supplied
+# through [plugins.golem.env]; production deployments use a system golemd.
+[[services]]
+name = "golemd-fallback"
+argv = ["${plugin_root}/contrib/familiar/bin/run-golemd-fallback.sh"]
+required = false
+env = { GOLEM_REPO_PATH = "" }
+
+[[services]]
+name = "golem-render"
+argv = ["nix", "run", "${plugin_root}#golem-familiar-render"]
+required = false
+env = { GOLEM_ENDPOINT = "http://127.0.0.1:7337", GOLEM_TOKEN = "", GOLEM_RENDER_LISTEN = "127.0.0.1:7340" }
+probe = { type = "http", url = "http://127.0.0.1:7340/live" }
+
+[pi]
+extensions = ["${plugin_root}/contrib/familiar/pi/agents"]
+
+[pi.env]
+GOLEM_ENDPOINT = "http://127.0.0.1:7337"
+GOLEM_TOKEN = ""
+
+[chrome]
+render_url = "http://127.0.0.1:7340/v1/render"

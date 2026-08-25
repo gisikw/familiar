@@ -97,6 +97,25 @@ argv=["run"]
 	}
 }
 
+func TestBundledGolemClientManifestLoads(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := DefaultConfig()
+	c.Children = append(c.Children, ChildConfig{Name: "presence", Presence: true})
+	exts, err := LoadPlugin(&c, "golem", root, map[string]string{"GOLEM_ENDPOINT": "unix:///tmp/golemd.sock"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(exts) != 1 || !strings.HasSuffix(exts[0], "contrib/familiar/pi/agents") || len(c.Renders) != 1 || len(c.Children) != 3 {
+		t.Fatalf("extensions=%v renders=%v children=%v", exts, c.Renders, c.Children)
+	}
+	if c.Children[0].Env["GOLEM_ENDPOINT"] != "unix:///tmp/golemd.sock" || c.Children[2].Env["GOLEM_ENDPOINT"] != "unix:///tmp/golemd.sock" {
+		t.Fatalf("operator endpoint did not reach presence and render: %+v %+v", c.Children[0].Env, c.Children[2].Env)
+	}
+}
+
 func TestLoadPluginRejectsAPIMismatchAndUnknownExpansion(t *testing.T) {
 	for _, text := range []string{`familiar_api=2
 [chrome]`, `familiar_api=1
