@@ -76,6 +76,13 @@
           familiar-llm = llm.packages.${system}.default;
           familiar-stt = stt.packages.${system}.default;
           familiar-gateway = gateway-module.packages.${system}.default;
+          golem-familiar-render = pkgs.buildGoModule {
+            pname = "golem-familiar-render";
+            version = "1";
+            src = ./contrib/familiar/render;
+            vendorHash = null;
+            subPackages = [ "cmd/golem-familiar-render" ];
+          };
           default = familiar-server;
         } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           familiar-tts = tts.packages.${system}.default;
@@ -96,6 +103,7 @@
           default = flake-utils.lib.mkApp { drv = server.packages.${system}.default; };
           familiar-server = flake-utils.lib.mkApp { drv = server.packages.${system}.default; };
           familiar-gateway = flake-utils.lib.mkApp { drv = gateway-module.packages.${system}.default; };
+          golem-familiar-render = flake-utils.lib.mkApp { drv = self.packages.${system}.golem-familiar-render; };
         } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           familiar-viewer = flake-utils.lib.mkApp { drv = viewer.packages.${system}.default; };
           familiar-desktop = flake-utils.lib.mkApp { drv = desktop.packages.${system}.default; };

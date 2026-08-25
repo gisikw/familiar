@@ -1,13 +1,13 @@
 # Trusted boot-time plugins
 
-Familiar has one reduced host seam, not a plugin platform. A private instance may enroll Golem from operator-trusted mutable source:
+Familiar has one reduced host seam, not a plugin platform. Its Golem pure-client contribution is stored at `contrib/familiar` (the fixed API-1 manifest location). A private instance may enroll it from an operator-trusted mutable Familiar checkout:
 
 ```toml
 [plugins.golem]
-path = "/absolute/path/to/golem"
+path = "/absolute/path/to/familiar"
 ```
 
-or from an immutable Git commit:
+or from an immutable Familiar Git commit:
 
 ```toml
 [plugins.golem]
@@ -23,4 +23,4 @@ The renderer contract is a bounded JSON envelope with `render_api: 1`, positive 
 
 Familiar exposes exactly one host-owned aggregate render surface, `GET /v1/render`, and this is the only endpoint the viewer and plugin preparation use (`FAMILIAR_RENDER_URL` is the generic `.../v1/render`). The host composes every enrolled plugin's `left-nav` contribution, in deterministic config order, under a single host tree: each plugin's own tree root is demoted to a `branch`, and every plugin node ID is namespaced `"<plugin>/<id>"` so contributions cannot collide. Terminal activation identifiers (`socket`/`session`) are never namespaced, so the viewer's exact tmux target is preserved. The aggregate exposes one revision/long-poll stream that advances whenever any plugin hub's composed contribution changes; TTL and invalidation remain internal to each hub. With no plugin, or while a plugin has not yet produced a usable render, `/v1/render` still returns a valid (possibly empty) tree and never gates core readiness. Per-plugin `GET /v1/render/{plugin}` is retained only for bounded compatibility/debugging.
 
-Familiar caches plugin renders. For plugins with `[chrome]`, Familiar injects a boot-random, plugin-scoped callback as the host-owned `FAMILIAR_RENDER_INVALIDATE_URL`; operator and manifest environments cannot override it. An empty POST coalesces an immediate refetch and wakes all long-polling viewers. TTL remains fallback. Plugin failure is nonfatal and never gates core readiness. Rollback is a Git revert; there is no legacy-provider flag. This host branch requires Golem `d87a387` or later; Golem code is intentionally not vendored here.
+Familiar caches plugin renders. For plugins with `[chrome]`, Familiar injects a boot-random, plugin-scoped callback as the host-owned `FAMILIAR_RENDER_INVALIDATE_URL`; operator and manifest environments cannot override it. An empty POST coalesces an immediate refetch and wakes all long-polling viewers. TTL remains fallback. Plugin failure is nonfatal and never gates core readiness. Rollback is a Git revert; there is no legacy-provider flag. The contribution speaks golemd's standalone v1 HTTP contract directly; Golem code is intentionally not vendored here. A Golem checkout is needed only when the explicitly configured fallback child is enabled.
