@@ -42,8 +42,8 @@ HOME="$home" runp ensure >/dev/null
   || fail "inner passthrough is not enabled"
 [ "$(tmux -S "$socket" show-options -gv extended-keys)" = on ] || fail "extended keys disabled"
 [ "$(tmux -S "$socket" show-options -gv mouse)" = on ] || fail "inner mouse arbitration disabled"
-[ "$(tmux -S "$socket" show-options -gv mode-style)" = 'fg=#f7f1ff,bg=#525053' ] || fail "copy-mode selection is not themed"
-[ "$(tmux -S "$socket" show-options -gv copy-mode-position-style)" = 'fg=#5ad4e6,bg=#222222' ] || fail "copy-mode position is not themed"
+[ "$(tmux -S "$socket" show-options -gv mode-style)" = 'fg=#ebdbb2,bg=#504945' ] || fail "copy-mode selection is not themed"
+[ "$(tmux -S "$socket" show-options -gv copy-mode-position-style)" = 'fg=#8ec07c,bg=#282828' ] || fail "copy-mode position is not themed"
 tmux -S "$socket" list-keys -T root PageUp | grep -Fq '#{alternate_on}' \
   || fail "PageUp alternate-screen arbitration missing"
 case $(tmux -S "$socket" show-options -gv terminal-features) in

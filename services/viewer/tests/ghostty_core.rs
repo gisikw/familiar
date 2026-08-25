@@ -86,7 +86,7 @@ fn every_split_preserves_streaming_parser_state() {
 #[test]
 fn truecolor_rgb_foreground_survives_conversion() {
     // Regression: pi styles editor input lines with the theme accent, a
-    // TRUECOLOR RGB foreground (familiar.json accent #5ad4e6). Earlier those
+    // TRUECOLOR RGB foreground (familiar.json accent #8ec07c). Earlier those
     // lines rendered grey because the RGB SGR was dropped by the inner tmux
     // before reaching the vendored VT (the viewer now advertises
     // COLORTERM=truecolor to the inner attach, and both tmux policies advertise
@@ -94,12 +94,12 @@ fn truecolor_rgb_foreground_survives_conversion() {
     // an RGB fg/bg once the SGR actually arrives, so the fix's other layer
     // (tmux passthrough) is the only remaining variable.
     let mut core = terminal(SIZE);
-    core.feed(b"\x1b[38;2;90;212;230;48;2;34;34;34mACCENT\x1b[0m")
+    core.feed(b"\x1b[38;2;142;192;124;48;2;40;40;40mACCENT\x1b[0m")
         .unwrap();
     let cell = core.cell(0, 0).unwrap();
     assert_eq!(cell.text, "A");
-    assert_eq!(cell.foreground, Some(TerminalColor::Rgb(90, 212, 230)));
-    assert_eq!(cell.background, Some(TerminalColor::Rgb(34, 34, 34)));
+    assert_eq!(cell.foreground, Some(TerminalColor::Rgb(142, 192, 124)));
+    assert_eq!(cell.background, Some(TerminalColor::Rgb(40, 40, 40)));
 }
 
 #[test]

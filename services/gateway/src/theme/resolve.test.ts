@@ -21,24 +21,24 @@ function cleanEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
   return { ...env, ...overrides };
 }
 
-test("default theme is the adapted Monokai Pro Spectrum palette", () => {
+test("default theme is the adapted gruvbox dark palette", () => {
   const t = resolveTheme(cleanEnv());
-  assert.equal(t.name, "familiar-monokai-pro-spectrum");
-  assert.equal(t.roles.background, "#222222");
-  assert.equal(t.roles.text, "#f7f1ff");
-  assert.equal(t.roles.accent, "#5ad4e6");
-  assert.equal(t.roles.cursor, "#bab6c0");
-  assert.equal(t.roles.cursorText, "#222222");
+  assert.equal(t.name, "familiar-gruvbox");
+  assert.equal(t.roles.background, "#282828");
+  assert.equal(t.roles.text, "#ebdbb2");
+  assert.equal(t.roles.accent, "#8ec07c");
+  assert.equal(t.roles.cursor, "#bdae93");
+  assert.equal(t.roles.cursorText, "#282828");
 });
 
 test("ansiList returns 16 entries in SGR order", () => {
   const t = resolveTheme(cleanEnv());
   const list = ansiList(t);
   assert.equal(list.length, 16);
-  assert.equal(list[0], "#222222"); // black
-  assert.equal(list[1], "#fc618d"); // red
-  assert.equal(list[4], "#fd9353"); // Ghostty Spectrum intentionally maps ANSI blue to orange
-  assert.equal(list[15], "#f7f1ff"); // brightWhite
+  assert.equal(list[0], "#282828"); // black
+  assert.equal(list[1], "#cc241d"); // red
+  assert.equal(list[4], "#458588"); // blue
+  assert.equal(list[15], "#ebdbb2"); // brightWhite
   for (const c of list) assert.match(c, /^#[0-9a-f]{6}$/);
 });
 
@@ -73,14 +73,14 @@ test("generated CSS snapshot (default theme)", () => {
   const css = toCss(resolveTheme(cleanEnv()));
   // Stable, load-bearing lines. Full-string compare would be brittle; assert
   // the contract instead: back-compat aliases + fm-* roles + ansi indices.
-  assert.match(css, /--term-bg: #222222;/);
-  assert.match(css, /--frame-fg: #f7f1ff;/);
-  assert.match(css, /--accent: #5ad4e6;/);
-  assert.match(css, /--fm-background: #222222;/);
-  assert.match(css, /--fm-accent: #5ad4e6;/);
-  assert.match(css, /--fm-selection-bg: #525053;/);
-  assert.match(css, /--fm-ansi-0: #222222;/);
-  assert.match(css, /--fm-ansi-15: #f7f1ff;/);
+  assert.match(css, /--term-bg: #282828;/);
+  assert.match(css, /--frame-fg: #ebdbb2;/);
+  assert.match(css, /--accent: #8ec07c;/);
+  assert.match(css, /--fm-background: #282828;/);
+  assert.match(css, /--fm-accent: #8ec07c;/);
+  assert.match(css, /--fm-selection-bg: #504945;/);
+  assert.match(css, /--fm-ansi-0: #282828;/);
+  assert.match(css, /--fm-ansi-15: #ebdbb2;/);
   // exactly 16 ansi vars
   assert.equal((css.match(/--fm-ansi-\d+:/g) || []).length, 16);
 });
@@ -95,11 +95,11 @@ test("restty GhosttyTheme has rgb semantic colors + 256 palette with 0..15 fille
       palette: ({ r: number; g: number; b: number } | undefined)[];
     };
   };
-  assert.equal(rt.name, "familiar-monokai-pro-spectrum");
-  assert.deepEqual(rt.colors.background, { r: 34, g: 34, b: 34 });
-  assert.deepEqual(rt.colors.cursor, { r: 186, g: 182, b: 192 });
+  assert.equal(rt.name, "familiar-gruvbox");
+  assert.deepEqual(rt.colors.background, { r: 40, g: 40, b: 40 });
+  assert.deepEqual(rt.colors.cursor, { r: 189, g: 174, b: 147 });
   assert.equal(rt.colors.palette.length, 256);
-  assert.deepEqual(rt.colors.palette[0], { r: 34, g: 34, b: 34 });
+  assert.deepEqual(rt.colors.palette[0], { r: 40, g: 40, b: 40 });
   assert.equal(rt.colors.palette[16], undefined); // only 0..15 filled
 });
 

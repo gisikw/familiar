@@ -10,15 +10,15 @@
     <style>
       /* Offline shell fallback. This page is shown precisely WHEN the familiar
          server is unreachable, so it CANNOT fetch the runtime /theme.css. These
-         literals are therefore a static mirror of the Spectrum defaults
+         literals are therefore a static mirror of the gruvbox defaults
          (services/gateway/src/theme/defaults.json) — keep them in sync by hand. */
       :root {
-        --bg: #222222;
-        --fg: #f7f1ff;
-        --muted: #bab6c0;
-        --accent: #5ad4e6;
-        --panel: #191919;
-        --border: #363537;
+        --bg: #282828;
+        --fg: #ebdbb2;
+        --muted: #bdae93;
+        --accent: #8ec07c;
+        --panel: #1d2021;
+        --border: #3c3836;
       }
       * {
         box-sizing: border-box;
@@ -90,7 +90,7 @@
         filter: brightness(1.08);
       }
       #detail {
-        color: #8b888f;
+        color: #928374;
         font-size: 12px;
         font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       }

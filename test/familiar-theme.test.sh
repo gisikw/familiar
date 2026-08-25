@@ -13,9 +13,9 @@ pass=0; fail=0
 ok()  { echo "PASS: $1"; pass=$((pass+1)); }
 bad() { echo "FAIL: $1"; fail=$((fail+1)); }
 
-# 1. accent default is Spectrum cyan (legible Familiar mark).
+# 1. accent default is gruvbox aqua (legible Familiar mark).
 got="$(bash "$GEN" accent)"
-[ "$got" = "#5ad4e6" ] && ok "accent default #5ad4e6" || bad "accent default (got $got)"
+[ "$got" = "#8ec07c" ] && ok "accent default #8ec07c" || bad "accent default (got $got)"
 
 
 # 2. pi JSON: valid JSON, name=familiar, all 51 required color tokens present.
@@ -30,7 +30,7 @@ for tok in $required; do
 done
 [ -z "$missing" ] && ok "pi has all 51 required tokens" || bad "pi missing tokens:$missing"
 # pi accent var must resolve to the theme accent.
-[ "$(echo "$pi" | jq -r .vars.accent)" = "#5ad4e6" ] && ok "pi accent var" || bad "pi accent var"
+[ "$(echo "$pi" | jq -r .vars.accent)" = "#8ec07c" ] && ok "pi accent var" || bad "pi accent var"
 
 # 3. ANSI env: 16 exports, index 0 == ansi.black default, all hex.
 ansi="$(bash "$GEN" ansi)"
@@ -64,7 +64,7 @@ eval "$borders"
 # 7. tmux copy-mode styles use semantic palette roles and honor overrides.
 tmux_style="$(FAMILIAR_THEME_ACCENT='#abc' bash "$GEN" tmux)"
 case "$tmux_style" in
-  *"mode-style 'fg=#f7f1ff,bg=#525053'"*"copy-mode-position-style 'fg=#aabbcc,bg=#222222'"*)
+  *"mode-style 'fg=#ebdbb2,bg=#504945'"*"copy-mode-position-style 'fg=#aabbcc,bg=#282828'"*)
     ok "tmux copy-mode roles and overrides" ;;
   *) bad "tmux copy-mode roles (got $tmux_style)" ;;
 esac

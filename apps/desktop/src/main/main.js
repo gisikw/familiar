@@ -104,7 +104,7 @@ function createWindow() {
     x: Number.isInteger(bounds.x) ? bounds.x : undefined,
     y: Number.isInteger(bounds.y) ? bounds.y : undefined,
     icon: iconPng(512) || undefined, // Linux/Windows window + taskbar icon
-    backgroundColor: "#222222", // static mirror: terminal bg, avoiding a light flash
+    backgroundColor: "#282828", // static mirror: terminal bg, avoiding a light flash
     // Edgeless: no native titlebar. The served page (and our offline page) each
     // carry a slim -webkit-app-region:drag strip so the window stays draggable.
     frame: false,
