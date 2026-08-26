@@ -41,7 +41,8 @@ Design principles it implements (state/docs/presence.md):
 
   // delivery state (extension-owned, persisted with the item):
   "delivered": false, "acked": false, "surfacedCount": 0,
-  "escalated": false, "digested": false, "snoozedUntil": null,
+  "escalated": false, "digested": false, "digestedAt": null,
+  "snoozedUntil": null,
   "withdrawn": false                  // claimed elsewhere; never surfaces (see Dedup)
 }
 ```
@@ -110,7 +111,7 @@ conversation, never *whether* it is tracked.
 | **steer** | deliver ASAP via `deliverAs:"steer"` + `triggerTurn`. **Auto-acks.** |
 | **nudge** | inject a one-line summary prefix into the NEXT active turn. If no foreground turn comes, sustained quiet dynamically upgrades it to a full-body wake; arrival-time policy never strands it as a permanent follow-up. |
 | **wait** | after settled ≥ `waitSettleMs` (30 sec) AND attention allows, wake the model with the full body and auto-ack. Focused holds entirely. |
-| **linger** | never delivered individually. A single digest line for ALL lingering items after sustained idle (5 min) or on `/peek`. |
+| **linger** | never delivered individually. A single digest line for ALL lingering items after sustained idle (5 min) or on `/peek`. A digest is a **followUp courtesy, not an ack**: the item stays pending, is stamped with `digestedAt`, and after a bounded ack grace (`digestAckGraceMs`, 30 min) is surfaced **explicitly** as a full-body wake (which auto-acks) if the agent never acknowledged it. This is the liveness guarantee — a digested item never holds forever. |
 
 ### Priority × attention matrix (the full policy)
 
@@ -139,6 +140,27 @@ If `suggested_deadline` passes, the item is **promoted one tier, once**
 `protected` level still forces `hold` afterward — protected genuinely means
 protected; the only escape is expiry or manual release.
 
+### Digest ack liveness (the "followUp is not an ack" rule)
+
+A `linger` digest reaches the conversation via `deliverAs:"followUp"` — a
+courtesy prefix on the next turn. followUp delivery is **never** an
+acknowledgement: it does not set `acked`, and the item stays pending. To keep a
+digested item from holding forever (the original liveness leak), the policy
+stamps `digestedAt` when it first folds the item into a digest, then:
+
+1. grants a bounded **ack grace** (`digestAckGraceMs`, 30 min) during which the
+   agent may resolve it with `ack_worklist` and a hidden reminder nudges it to;
+2. once the grace lapses without an ack, surfaces the item **explicitly** as a
+   full-body wake on the next settled tick (`deliver-wait`), which auto-acks.
+
+`protected` still short-circuits to `hold` (including hidden ack reminders),
+and `focused` holds the linger tier entirely, so the escalation never violates
+attention. The item-level grace gate is applied before tier dispatch, so `open`
+promotion cannot shorten it. A missing `digestedAt` (torn/legacy read)
+holds rather than escalating — the runtime backfills the stamp so an item
+digested by an **older build** (which had no `digestedAt`) becomes resolvable
+again, its grace starting at first sight.
+
 ---
 
 ## Commands
@@ -146,7 +168,7 @@ protected; the only escape is expiry or manual release.
 | Command | Effect |
 |---------|--------|
 | `/peek` | Queue snapshot (id, priority, type, age, resolved tier, summary). |
-| `/ack [id\|all]` | Acknowledge nudged item(s); inject full body and resolve. |
+| `/ack [id\|all]` | **User-only** slash command: acknowledge nudged item(s); inject full body and resolve. The agent cannot invoke slash commands — it uses the `ack_worklist` tool instead. |
 | `/remind <text> [--in <dur>\|--at <time>]` | Enqueue a self-reminder (P2). |
 | `/attention [auto\|available\|focused\|protected] [duration]` | Show or set attention. Non-`auto` levels REQUIRE a duration (always time-bounded); `auto` releases. |
 | `/protect <duration>` | Headline DND: hold ALL items (even P0) for a duration, then auto-resume. Shorthand for `/attention protected <duration>`. |
@@ -156,14 +178,33 @@ Autocomplete populates the `description` field so the menu teaches the policy
 (e.g. `protected — total do-not-disturb, time-bounded, queue stays durable`) and
 duration hints compute the live resume time.
 
-## Model-callable tool
+## Model-callable tools
 
 `set_attention({ level, duration_minutes? })` — Exo can protect the conversation
 herself. Any non-`auto` level requires `duration_minutes` and is clamped; the
 tool can never set an unbounded state. Returns the resolved `expires_at`.
 
-Command, tool, and restart all funnel through one internal `setOverride(level,
-durationMs)` that clamps, persists, and repaints.
+`ack_worklist({ id? })` — the **agent-facing** equivalent of the user's `/ack`.
+Slash commands are user-only, so the foreground model cannot invoke `/ack`; it
+would otherwise be unable to resolve its own worklist and every digested item
+would sit pending until the explicit-surfacing escalation fired. This tool
+returns each item's **full body inline in the tool result** (that IS the
+delivery — it sends no message, so it can never duplicate a body the digest/wake
+path also emits) and **atomically ack/archives** the item. Omitting `id` (or
+passing `'all'`) acks every pending item. Acking a digested item before its
+`digestAckGraceMs` grace lapses prevents the explicit full-interruption wake.
+
+Because a digest is not an ack, `before_agent_start` also appends a **hidden**
+(`display:false`) system-reminder for live, digested-but-unacked items, telling
+the model to call `ack_worklist` and that unacked digested items are eventually
+surfaced explicitly. It is suppressed under `protected` and while an item is
+snoozed, and rate-limited by `digestReminderMs` (5 min), so it cannot become
+per-turn spam. Visible surfaces name both valid controls: `ack_worklist` for the
+agent and `/ack` for Kevin.
+
+Command, tool, and restart all funnel attention through one internal
+`setOverride(level, durationMs)` that clamps, persists, and repaints; the two ack
+paths (`/ack` command, `ack_worklist` tool) share one `resolveAck` primitive.
 
 ---
 
@@ -333,5 +374,10 @@ Tests: `nix develop .#stt -c bun test integrations/pi/extensions/worklist/workli
 - Event: `worklist:add`; `inbox:add` kept as a bounded alias.
 - Commands: `/posture` → `/attention` + `/protect`. Widget/status keys
   `worklist` / `attention`. Custom message types `worklist-item`/`-nudge`/`-digest`.
+- Item schema is additive-only: `digestedAt` (digest ack grace clock) is a new
+  optional field. Items written by older builds simply lack it; a digested item
+  stranded by the pre-fix code (`digested:true`, no `digestedAt`, held forever)
+  is repaired on the next tick, which backfills `digestedAt` so it re-enters the
+  ack-grace → explicit-surfacing ladder. No store-format or attention change.
 
 Aliases are for exactly one release; drop them after.

@@ -99,6 +99,14 @@ export interface QueueItem {
   escalated?: boolean;
   /** Folded into a linger digest already (so we don't repeat it every idle). */
   digested?: boolean;
+  /**
+   * Wall-clock (ms) an item was FIRST folded into a linger digest. A digest is
+   * a courtesy prefix (followUp), never an ack — so a digested item must still
+   * resolve. After `digestAckGraceMs` elapses without an ack it is surfaced
+   * explicitly (a full-body wake), which then auto-acks. Kept distinct from
+   * `surfacedCount` (a nudge counter) so neither field's meaning is overloaded.
+   */
+  digestedAt?: number;
   /** Wall-clock until which the item is suppressed entirely (/snooze). */
   snoozedUntil?: number;
   /**
@@ -129,6 +137,14 @@ export interface AttentionConfig {
   settleToOpenMs: number;
   /** Idle ms of sustained quiet before a "linger" digest is offered. */
   lingerDigestMs: number;
+  /**
+   * Grace after a digest during which the agent may ack (via ack_worklist)
+   * before the item is surfaced explicitly. A digest is a followUp courtesy,
+   * not an ack; this bound is what keeps digested items from holding forever.
+   */
+  digestAckGraceMs: number;
+  /** Min interval between hidden "you still owe an ack" digest reminders. */
+  digestReminderMs: number;
   /** Hard ceiling for any manual override duration (clamp). */
   maxOverrideMs: number;
   /**
@@ -146,6 +162,8 @@ export const DEFAULT_CONFIG: AttentionConfig = {
   settleToAvailableMs: 30 * 1000,
   settleToOpenMs: 30 * 60 * 1000,
   lingerDigestMs: 5 * 60 * 1000,
+  digestAckGraceMs: 30 * 60 * 1000,
+  digestReminderMs: 5 * 60 * 1000,
   maxOverrideMs: 8 * 60 * 60 * 1000,
   demoteOnFocusedExceptP0: true,
 };
@@ -317,7 +335,8 @@ export function sanitizeOverride(
  *   deliver-wait   — settled delivery: sendMessage steer + wake, then auto-ack
  *   nudge          — eligible for a one-line prefix next turn; if quiet persists,
  *                    dynamically becomes deliver-wait rather than waiting forever
- *   digest         — fold into the linger digest
+ *   digest         — fold into the linger digest (a followUp courtesy, NOT an
+ *                    ack; a bounded grace later escalates to an explicit wake)
  *   hold           — do nothing this tick
  */
 export type Action = "deliver-steer" | "deliver-wait" | "nudge" | "digest" | "hold";
@@ -341,6 +360,18 @@ export function decideAction(
 
   const tier = resolveTier(item, input.attention, cfg);
 
+  // A digest is a followUp courtesy, not an ack. Its grace is an item-level
+  // delivery contract, so attention promotion (`open`) must not accidentally
+  // bypass it by changing the resolved tier from linger → wait. Once grace
+  // lapses, ordinary attention still applies: focused holds, settled
+  // available/open wakes once. The runtime backfills a missing legacy stamp.
+  if (item.digested) {
+    if (input.attention === "focused") return "hold";
+    if (typeof item.digestedAt !== "number") return "hold";
+    if (input.now - item.digestedAt < cfg.digestAckGraceMs) return "hold";
+    return input.idleForMs >= cfg.waitSettleMs ? "deliver-wait" : "hold";
+  }
+
   switch (tier) {
     case "steer":
       return item.delivered ? "hold" : "deliver-steer";
@@ -357,7 +388,6 @@ export function decideAction(
       if (input.attention === "focused") return "hold";
       return input.idleForMs >= cfg.waitSettleMs ? "deliver-wait" : "hold";
     case "linger":
-      if (item.digested) return "hold";
       if (input.attention === "focused") return "hold";
       return input.idleForMs >= cfg.lingerDigestMs ? "digest" : "hold";
   }

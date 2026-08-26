@@ -215,6 +215,34 @@ describe("decideAction: full policy matrix (4 attention × 4 priority)", () => {
     expect(act(0, "available", 0, { snoozedUntil: now + 1000 })).toBe("hold");
     expect(act(0, "available", 0, { snoozedUntil: now - 1000 })).toBe("deliver-steer"); // expired snooze
   });
+
+  test("digested item holds within the ack grace, then wakes explicitly (liveness)", () => {
+    const grace = CFG.digestAckGraceMs;
+    // Freshly digested: within grace, holds even when quiet (agent may ack).
+    expect(act(3, "available", CFG.lingerDigestMs, { digested: true, digestedAt: now })).toBe("hold");
+    // Long-idle promotion to open must not bypass the item-level ack grace.
+    expect(act(3, "open", CFG.lingerDigestMs, { digested: true, digestedAt: now })).toBe("hold");
+    // Grace lapsed but not yet settled → still holds.
+    expect(act(3, "available", 0, { digested: true, digestedAt: now - grace })).toBe("hold");
+    // Grace lapsed AND settled → one explicit full-body wake (which auto-acks).
+    expect(act(3, "available", CFG.waitSettleMs, { digested: true, digestedAt: now - grace })).toBe("deliver-wait");
+    expect(act(3, "open", CFG.waitSettleMs - 1, { digested: true, digestedAt: now - grace })).toBe("hold"); // open promotes P3 linger→wait but still needs settle
+  });
+
+  test("digested escalation is still gated by focused and protected", () => {
+    const old = { digested: true, digestedAt: now - CFG.digestAckGraceMs };
+    expect(act(3, "focused", CFG.waitSettleMs, old)).toBe("hold"); // focused holds linger entirely
+    expect(act(3, "protected", CFG.waitSettleMs, old)).toBe("hold"); // protected is the total floor
+  });
+
+  test("digested without a digestedAt stamp holds (never a spurious wake)", () => {
+    // A torn/legacy read lacking the grace clock must not escalate from linger;
+    // the runtime backfills digestedAt, it is never inferred inside the pure
+    // policy. The item-level gate applies regardless of tier promotion.
+    expect(act(3, "available", CFG.lingerDigestMs, { digested: true })).toBe("hold");
+    expect(act(3, "open", CFG.lingerDigestMs, { digested: true })).toBe("hold");
+    expect(act(3, "focused", CFG.lingerDigestMs, { digested: true })).toBe("hold");
+  });
 });
 
 describe("store: persistence + atomic + drain + migration", () => {
@@ -440,6 +468,7 @@ describe("runtime scheduler wiring", () => {
           Literal: (v: unknown) => v,
           Optional: (v: unknown) => v,
           Number: (v: unknown) => v,
+          String: (v: unknown) => v,
         },
       }));
       // Cache-bust so WORKLIST_ROOT observes this test's isolated env.
@@ -508,6 +537,194 @@ describe("runtime scheduler wiring", () => {
       else process.env.FAMILIAR_WORKLIST_DIR = priorRoot;
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  // Shared headless harness: isolated dir + frozen clock + minimal pi/ctx
+  // doubles. Exposes the runtime, the sendMessage log, and the registered
+  // handler/tool maps so each test can drive ticks, tools, and lifecycle events.
+  const withRuntime = async (
+    body: (h: {
+      dir: string;
+      runtime: any;
+      sent: Array<{ message: any; options: any }>;
+      handlers: Map<string, Array<(...args: any[]) => any>>;
+      tools: Map<string, any>;
+      ctx: any;
+      setNow: (n: number) => void;
+      now: () => number;
+    }) => Promise<void>,
+  ) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "worklist-runtime-test-"));
+    const priorRoot = process.env.FAMILIAR_WORKLIST_DIR;
+    const realNow = Date.now;
+    let now = 10_000_000;
+    process.env.FAMILIAR_WORKLIST_DIR = dir;
+    Date.now = () => now;
+    const handlers = new Map<string, Array<(...args: any[]) => any>>();
+    const tools = new Map<string, any>();
+    const sent: Array<{ message: any; options: any }> = [];
+    const pi = {
+      on(event: string, handler: (...args: any[]) => any) {
+        const list = handlers.get(event) ?? [];
+        list.push(handler);
+        handlers.set(event, list);
+      },
+      events: { on() {} },
+      registerCommand() {},
+      registerTool(def: any) { tools.set(def.name, def); },
+      sendMessage(message: any, options: any) { sent.push({ message, options }); },
+    };
+    const ctx = { hasUI: true, ui: { setStatus() {}, setWidget() {}, notify() {} } };
+    try {
+      mock.module("typebox", () => ({
+        Type: {
+          Object: (v: unknown) => v,
+          Union: (v: unknown) => v,
+          Literal: (v: unknown) => v,
+          Optional: (v: unknown) => v,
+          Number: (v: unknown) => v,
+          String: (v: unknown) => v,
+        },
+      }));
+      const mod = await import(`./index.ts?runtime-test=${Date.now()}-${Math.random()}`);
+      const runtime = mod.default(pi as any);
+      await handlers.get("session_start")?.[0]?.({ type: "session_start", reason: "startup" }, ctx);
+      await body({ dir, runtime, sent, handlers, tools, ctx, setNow: (n) => { now = n; }, now: () => now });
+      await handlers.get("session_shutdown")?.[0]?.({ type: "session_shutdown", reason: "quit" }, ctx);
+    } finally {
+      Date.now = realNow;
+      if (priorRoot === undefined) delete process.env.FAMILIAR_WORKLIST_DIR;
+      else process.env.FAMILIAR_WORKLIST_DIR = priorRoot;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  test("a digested item is surfaced explicitly (once) if unacked past its grace", async () => {
+    await withRuntime(async ({ dir, runtime, sent, setNow, now }) => {
+      const P = worklistPaths(dir);
+      // A P3 arrives; it lingers. Settle the agent so attention can relax.
+      const it = runtime.enqueue({ id: "digest-esc", priority: 3, type: "notify", summary: "low pri note", body: "the full note body", source: "test" });
+      setNow(now() + CFG.settleToAvailableMs + 1); // available
+      setNow(now() + CFG.lingerDigestMs);          // idle long enough to digest
+      runtime.tick();
+      // Folded into a followUp digest, NOT acked, and stamped with digestedAt.
+      expect(sent).toHaveLength(1);
+      expect(sent[0].message.customType).toBe("worklist-digest");
+      expect(sent[0].options).toEqual({ deliverAs: "followUp" });
+      const stored = getItem(P, it.id)!;
+      expect(stored.digested).toBe(true);
+      expect(stored.acked).toBeUndefined();
+      expect(typeof stored.digestedAt).toBe("number");
+      // Within the grace, further ticks do NOT re-surface it.
+      runtime.tick();
+      expect(sent).toHaveLength(1);
+      // Grace lapses: the next settled tick wakes the model with the full body
+      // exactly once and auto-acks/archives it.
+      setNow(now() + CFG.digestAckGraceMs + 1);
+      runtime.tick();
+      expect(sent).toHaveLength(2);
+      expect(sent[1].message.customType).toBe("worklist-item");
+      expect(sent[1].message.content).toContain("the full note body");
+      expect(sent[1].options).toEqual({ deliverAs: "steer", triggerTurn: true });
+      expect(getItem(P, it.id)).toBeNull();
+      expect(getArchivedItem(P, it.id)?.acked).toBe(true);
+      // Idempotent afterwards.
+      runtime.tick();
+      expect(sent).toHaveLength(2);
+    });
+  });
+
+  test("ack_worklist returns the full body and atomically archives (agent-facing ack)", async () => {
+    await withRuntime(async ({ dir, runtime, tools, sent }) => {
+      const P = worklistPaths(dir);
+      const a = runtime.enqueue({ id: "ack-a", priority: 2, type: "notify", summary: "sum a", body: "body A", source: "test" });
+      runtime.enqueue({ id: "ack-b", priority: 3, type: "review", summary: "sum b", body: "body B", source: "test" });
+      const tool = tools.get("ack_worklist");
+      expect(tool).toBeTruthy();
+
+      // Ack a single id: body returned inline, no sendMessage, item archived.
+      const r1 = await tool.execute("call-1", { id: "ack-a" });
+      expect(r1.details.ok).toBe(true);
+      expect(r1.details.count).toBe(1);
+      expect(r1.details.acked[0].body).toBe("body A");
+      expect(sent).toHaveLength(0); // the tool result IS the delivery; no dup body
+      expect(getItem(P, a.id)).toBeNull();
+      expect(getArchivedItem(P, a.id)?.acked).toBe(true);
+
+      // Ack 'all' resolves the remainder.
+      const r2 = await tool.execute("call-2", {});
+      expect(r2.details.ok).toBe(true);
+      expect(r2.details.count).toBe(1);
+      expect(r2.details.acked[0].id).toBe("ack-b");
+      expect(listItems(P).length).toBe(0);
+
+      // Unknown id is a clean error, not a throw.
+      const r3 = await tool.execute("call-3", { id: "nope" });
+      expect(r3.isError).toBe(true);
+      expect(r3.details.ok).toBe(false);
+    });
+  });
+
+  test("acking a digested item before its grace prevents the explicit wake", async () => {
+    await withRuntime(async ({ dir, runtime, tools, sent, setNow, now }) => {
+      const P = worklistPaths(dir);
+      const it = runtime.enqueue({ id: "digest-ack", priority: 3, type: "notify", summary: "note", body: "note body", source: "test" });
+      setNow(now() + CFG.settleToAvailableMs + 1);
+      setNow(now() + CFG.lingerDigestMs);
+      runtime.tick();
+      expect(sent).toHaveLength(1); // digest only
+      // Agent acks via the tool during the grace.
+      await tools.get("ack_worklist").execute("c", { id: it.id });
+      expect(getItem(P, it.id)).toBeNull();
+      // Even well past the grace, no explicit wake fires (it is resolved).
+      setNow(now() + CFG.digestAckGraceMs + 1);
+      runtime.tick();
+      expect(sent).toHaveLength(1);
+    });
+  });
+
+  test("hidden digest reminder is rate-limited and respects protected attention", async () => {
+    await withRuntime(async ({ runtime, handlers, tools, setNow, now }) => {
+      runtime.enqueue({ id: "rem-1", priority: 3, type: "notify", summary: "note", body: "b", source: "test" });
+      setNow(now() + CFG.settleToAvailableMs + 1);
+      setNow(now() + CFG.lingerDigestMs);
+      runtime.tick(); // digest it (unacked)
+      const bas = handlers.get("before_agent_start")![0];
+      const first = await bas();
+      expect(first?.message.display).toBe(false);
+      expect(first?.message.content).toContain("ack_worklist");
+      expect(first?.message.content).toContain("rem-1");
+      // A second turn immediately after is rate-limited: no reminder.
+      const second = await bas();
+      expect(second).toBeUndefined();
+      // After the reminder interval elapses, it may remind again.
+      setNow(now() + CFG.digestReminderMs + 1);
+      const third = await bas();
+      expect(third?.message.content).toContain("ack_worklist");
+      // Protected is the total floor: even hidden agent-facing reminders hold.
+      await tools.get("set_attention").execute("p", { level: "protected", duration_minutes: 60 });
+      setNow(now() + CFG.digestReminderMs + 1);
+      expect(await bas()).toBeUndefined();
+    });
+  });
+
+  test("a legacy digested item lacking digestedAt is backfilled on tick, then resolves", async () => {
+    await withRuntime(async ({ dir, runtime, sent, setNow, now }) => {
+      const P = worklistPaths(dir);
+      // Simulate an item stranded by the OLD build: digested:true, no digestedAt.
+      putItem(P, { ...envelopeToItem({ id: "legacy-digest", summary: "old", body: "old body", priority: 3 }), digested: true });
+      setNow(now() + CFG.settleToAvailableMs + 1);
+      runtime.tick(); // backfills digestedAt (does not wake yet — grace starts now)
+      const stamped = getItem(P, "legacy-digest")!;
+      expect(typeof stamped.digestedAt).toBe("number");
+      expect(sent).toHaveLength(0);
+      // Once its (freshly started) grace lapses and settled, it wakes explicitly.
+      setNow(now() + CFG.digestAckGraceMs + 1);
+      runtime.tick();
+      expect(sent).toHaveLength(1);
+      expect(sent[0].message.content).toContain("old body");
+      expect(getArchivedItem(P, "legacy-digest")?.acked).toBe(true);
+    });
   });
 });
 

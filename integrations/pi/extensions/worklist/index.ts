@@ -13,6 +13,7 @@ import {
   parseWhen,
   parseDurationMs,
   isPending,
+  isLive,
   resolveTier,
   shouldEscalate,
   type Attention,
@@ -127,6 +128,10 @@ export default function (pi: ExtensionAPI) {
   let ctxRef: ExtensionContext | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
   let sinkDisposer: (() => void) | undefined;
+  // Last time the hidden "you still owe an ack" digest reminder was appended.
+  // In-memory only: cadence, not correctness — a restart re-reminding once is
+  // harmless, and the eventual explicit wake is the real liveness guarantee.
+  let lastDigestReminderAt = 0;
   // Ids withdrawn via the durable sink. A tombstone refuses a later/in-flight
   // enqueue for the same id so an await-claimed settlement cannot resurface.
   const tombstones = new Set<string>();
@@ -203,6 +208,17 @@ export default function (pi: ExtensionAPI) {
 
   /* --- delivery ---------------------------------------------------------- */
 
+  /** Atomically resolve an item: mark delivered+acked, persist, then archive so
+   *  it leaves the live queue (audit survives). Idempotent — archiveItem is a
+   *  no-op once the file is gone. Shared by every ack path (steer/wait auto-ack,
+   *  the user's /ack command, and the agent's ack_worklist tool). */
+  const resolveAck = (item: QueueItem) => {
+    item.delivered = true;
+    item.acked = true;
+    putItem(P, item);
+    archiveItem(P, item.id);
+  };
+
   const deliverBody = (item: QueueItem, opts: { steer: boolean; autoAck: boolean }) => {
     const lines = [
       `<worklist-item id="${item.id}" type="${item.type}" priority="${PRI_LABEL(item.priority)}" source="${item.source}">`,
@@ -217,11 +233,9 @@ export default function (pi: ExtensionAPI) {
     );
     item.delivered = true;
     if (opts.autoAck) {
-      item.acked = true;
-      putItem(P, item);
       // Resolved items leave the live queue for the archive (audit survives,
       // but /peek and the widget stay clean and bounded).
-      archiveItem(P, item.id);
+      resolveAck(item);
     } else {
       putItem(P, item);
     }
@@ -232,7 +246,8 @@ export default function (pi: ExtensionAPI) {
    *  be no next turn; append one visible nudge so long-idle promotion cannot
    *  turn into permanent silence. surfacedCount makes the idle path one-shot. */
   const deliverIdleNudge = (item: QueueItem) => {
-    const line = `📋 worklist: ${item.summary} — /ack ${item.id} for details`;
+    const line =
+      `📋 worklist: ${item.summary} — agent: ack_worklist id="${item.id}"; Kevin: /ack ${item.id}`;
     pi.sendMessage({
       customType: "worklist-nudge",
       content: `<worklist-nudge id="${item.id}" priority="${PRI_LABEL(item.priority)}">\n${line}\n</worklist-nudge>`,
@@ -243,9 +258,13 @@ export default function (pi: ExtensionAPI) {
   };
 
   // The linger digest: a single line for ALL lingering items, never one-per.
+  // A digest is a followUp COURTESY, not an ack — it stamps digestedAt so the
+  // policy can grant a bounded ack grace and then escalate to an explicit wake
+  // if the agent never acks (via ack_worklist). It does NOT resolve the item.
   const deliverDigest = (items: QueueItem[]) => {
     const lines = items.map(
-      (it) => `  • ${PRI_LABEL(it.priority)} ${it.summary} — /ack ${it.id}`,
+      (it) =>
+        `  • ${PRI_LABEL(it.priority)} ${it.summary} — agent: ack_worklist id="${it.id}"; Kevin: /ack ${it.id}`,
     );
     pi.sendMessage(
       {
@@ -255,8 +274,10 @@ export default function (pi: ExtensionAPI) {
       },
       { deliverAs: "followUp" },
     );
+    const now = Date.now();
     for (const it of items) {
       it.digested = true;
+      if (typeof it.digestedAt !== "number") it.digestedAt = now;
       putItem(P, it);
     }
   };
@@ -282,6 +303,16 @@ export default function (pi: ExtensionAPI) {
       // Advisory escalation: latch once when the deadline passes.
       if (shouldEscalate(item, now)) {
         item.escalated = true;
+        putItem(P, item);
+        dirtySurfaces = true;
+      }
+
+      // Migration repair: an item digested by an OLDER build carries
+      // `digested:true` but no `digestedAt`, so the old code held it forever.
+      // Stamp the grace clock at first sight so it becomes resolvable again
+      // (its ack grace starts now, not retroactively). One-shot per item.
+      if (item.digested && typeof item.digestedAt !== "number") {
+        item.digestedAt = now;
         putItem(P, item);
         dirtySurfaces = true;
       }
@@ -728,21 +759,90 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  /* --- agent-callable ack tool ------------------------------------------- */
+  // The user's /ack is a slash command (user-only). Without a model-facing
+  // equivalent the agent could never resolve its own worklist, so digested
+  // items would sit pending forever and eventually be surfaced explicitly. This
+  // tool is the agent's honest ack: it returns each item's FULL body inline in
+  // the tool result (that IS the delivery — no sendMessage, so no duplicate
+  // body) and atomically ack/archives it. Idempotent and race-free under pi's
+  // single-threaded loop: once archived an item is no longer pending, so no
+  // subsequent tick can re-surface it.
+  pi.registerTool({
+    name: "ack_worklist",
+    label: "Acknowledge Worklist Item",
+    description:
+      "Acknowledge and read out-of-band worklist item(s) (subagent settlements, reminders, alerts). " +
+      "Returns each item's full body and resolves it (archived from the live queue). " +
+      "Pass a specific id, or omit it / pass 'all' to acknowledge every pending item. " +
+      "This is the agent-facing equivalent of the user's /ack. Acknowledging a digested item " +
+      "before its grace elapses prevents it from being surfaced explicitly as a full interruption.",
+    promptSnippet: "Acknowledge + read worklist items (settlements, reminders); resolves them",
+    parameters: Type.Object({
+      id: Type.Optional(Type.String({ description: "Item id, or 'all'/omitted for every pending item." })),
+    }),
+    async execute(_id, params: { id?: string }) {
+      const arg = (params.id ?? "").trim();
+      const pending = listItems(P).filter(isPending);
+      const targets =
+        arg === "" || arg === "all" ? pending : pending.filter((it) => it.id === arg);
+      const acked = targets.map((it) => {
+        resolveAck(it);
+        return {
+          id: it.id,
+          priority: PRI_LABEL(it.priority),
+          type: it.type,
+          source: it.source,
+          summary: it.summary,
+          body: it.body || it.summary,
+        };
+      });
+      if (acked.length > 0) refreshSurfaces();
+      const details = arg && arg !== "all" && acked.length === 0
+        ? { ok: false, error: `no pending worklist item "${arg}"`, acked: [] as unknown[] }
+        : { ok: true, count: acked.length, acked };
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(details) }],
+        details,
+        ...(details.ok ? {} : { isError: true }),
+      };
+    },
+  });
+
   /* --- nudge prefix injection (rides the next turn, no prefix-cache churn) */
   pi.on("before_agent_start", async () => {
     const now = Date.now();
     expireIfElapsed(now);
     const attention = currentAttention(now);
-    const nudges = listItems(P)
-      .filter(isPending)
-      .filter((it) => decideAction(it, { attention, now, idleForMs: idleForMs() }, CFG) === "nudge");
-    if (nudges.length === 0) return;
+    const live = listItems(P).filter(isPending);
+    const nudges = live.filter(
+      (it) => decideAction(it, { attention, now, idleForMs: idleForMs() }, CFG) === "nudge",
+    );
+    // Digested-but-unacked items owe an ack. A digest is a followUp courtesy,
+    // not an ack, so quietly remind the model (hidden) that it must call
+    // ack_worklist — and that if it doesn't, the item is eventually surfaced
+    // explicitly. Rate-limited so it can never become per-turn spam.
+    const owed =
+      attention !== "protected" && now - lastDigestReminderAt >= CFG.digestReminderMs
+        ? live.filter((it) => isLive(it, now) && it.digested && !it.acked)
+        : [];
+    if (nudges.length === 0 && owed.length === 0) return;
 
     for (const it of nudges) {
       it.surfacedCount = (it.surfacedCount ?? 0) + 1;
       putItem(P, it);
     }
-    const lines = nudges.map((it) => `📋 worklist: ${it.summary} — /ack ${it.id} for details`);
+    const lines = nudges.map(
+      (it) => `📋 worklist: ${it.summary} — call ack_worklist id="${it.id}" for details`,
+    );
+    if (owed.length > 0) {
+      lastDigestReminderAt = now;
+      lines.push(
+        `📋 ${owed.length} digested worklist item(s) still need an ack — call ack_worklist ` +
+          `(id or 'all') to read + resolve them; unacked items are eventually surfaced explicitly: ` +
+          owed.map((it) => it.id).join(", "),
+      );
+    }
     return {
       message: {
         customType: "worklist-nudge",
