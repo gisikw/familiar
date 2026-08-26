@@ -82,6 +82,14 @@
             src = ./contrib/familiar/render;
             vendorHash = null;
             subPackages = [ "cmd/golem-familiar-render" ];
+            # The renderer shells out to `tmux -S <socket> has-session` to verify
+            # the exact local session behind each job, so tmux must be on PATH
+            # in the packaged runtime.
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+            postInstall = ''
+              wrapProgram $out/bin/golem-familiar-render \
+                --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.tmux ]}
+            '';
           };
           default = familiar-server;
         } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {

@@ -35,13 +35,29 @@ cursor; after three consecutive stream failures it refreshes the complete job
 list on every retry, so polling is the degraded fallback. Settled rows remain
 for 24 hours (up to 20 total rows).
 
-Only Familiar's existing terminal activation is emitted. A live local
-`terminal.socket` must exist; its target is reduced to the exact tmux session
-name and attached unchanged. Familiar API-1 cannot represent SSH activation,
-so a remote-only job remains non-actionable and its label includes an explicit
+Terminal activation is emitted for **any** job — running or settled — whenever
+the exact local tmux session is still live. The renderer verifies the precise
+target with `tmux -S <socket> has-session -t =<session>` (exact-name match),
+not mere socket existence, and reduces `worker-…:0.0` to the exact session name
+attached unchanged. Golem retains a settled tmux session for its linger window
+(default 1h, `--linger` / `GOLEM_LINGER_SECONDS`), so a done/failed/cancelled/
+timeout job stays visible and **clickable** for its retained lifetime; once the
+exact session is reaped the activation drops and the viewer removes the row
+under its terminal-row policy. In the sidebar, settled-but-retained rows render
+faded (DIM + their state color) to read as inactive while remaining clickable,
+and failure/cancel colors are preserved. A running job with no live terminal
+stays visible but non-actionable. Diagnosable tmux faults (permission denied,
+tmux missing) are logged at most once per socket per minute so a fault stays
+observable without flooding the log under frequent polling.
+
+Familiar API-1 cannot represent SSH activation, so a remote-only job with no
+live local terminal remains non-actionable and its label includes an explicit
 `ssh user@host:port; use golem attach` hint (the status remains the exact state
-so Familiar's state coloring still applies). Settled jobs never activate and use
-the settlement verdict as their clipped row label.
+so Familiar's state coloring still applies).
+
+The packaged `golem-familiar-render` is wrapped so `tmux` is on its PATH for the
+liveness check; the render adapter must be able to reach the Golem tmux server
+socket (see the fort-nix ownership fix).
 
 The Presence extension speaks HTTP directly (including Unix-domain HTTP), which
 avoids a CLI subprocess, shell/argv configuration, and a runtime dependency on
