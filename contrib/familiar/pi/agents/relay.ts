@@ -54,7 +54,12 @@ export interface JobDetail {
     verdict?: string;
     artifacts?: { path?: string; size?: number }[];
     worktree?: { name?: string; head?: string; dirty?: boolean } | null;
+    /** Authoritative usage lives HERE in golemd's live payload (nested under
+     *  settlement), not at the top level. Kept optional + unknown so a shape
+     *  drift never breaks the relay. */
+    usage?: unknown;
   } | null;
+  /** Legacy/top-level fallback only; prefer settlement.usage. */
   usage?: unknown;
 }
 
@@ -148,12 +153,15 @@ export function buildEnvelope(jobId: string, job: JobDetail): DurableEnqueueEnve
   }
   const wt = job.settlement?.worktree;
   if (wt && (wt.name || wt.head)) lines.push("", `worktree: ${wt.name ?? "?"}@${(wt.head ?? "").slice(0, 12)}${wt.dirty ? " (dirty)" : ""}`);
-  if (job.usage !== undefined && job.usage !== null) {
+  // golemd nests usage under settlement in its live job payload; prefer that and
+  // fall back to any legacy top-level usage.
+  const usage = job.settlement?.usage ?? job.usage;
+  if (usage !== undefined && usage !== null) {
     let u: string;
     try {
-      u = typeof job.usage === "string" ? job.usage : JSON.stringify(job.usage);
+      u = typeof usage === "string" ? usage : JSON.stringify(usage);
     } catch {
-      u = String(job.usage);
+      u = String(usage);
     }
     lines.push("", `usage: ${u.slice(0, 500)}`);
   }
@@ -178,7 +186,12 @@ export class SettlementRelay {
   private abort?: AbortController;
   private timer?: ReturnType<typeof setInterval>;
   private streamLoop?: Promise<void>;
-  private pumpChain: Promise<void> = Promise.resolve();
+  /** The single serial execution chain. ALL work that reads pending/ and calls
+   *  the sink (queue drain, periodic maintenance, reconnect backstop, startup,
+   *  recordDispatch) is appended here so the same pending envelope is never
+   *  concurrently submitted to the sink. Stable sink ids make a duplicate
+   *  harmless, but we do not intentionally race calls. */
+  private opChain: Promise<void> = Promise.resolve();
   private readonly queue: string[] = [];
 
   constructor(deps: RelayDeps) {
@@ -222,11 +235,10 @@ export class SettlementRelay {
       writeAtomic(this.ownedFile(jobId), { id: jobId, ts: this.d.now!() });
     }
     // Best-effort immediate reconcile; a normal (still-running) job is a no-op.
-    try {
-      await this.reconcileJob(jobId);
-    } catch (err) {
-      this.log({ relay: "recordDispatch.reconcile", jobId, err: String(err) });
-    }
+    // Serialized on the shared chain (force: runs even before start()) so it
+    // cannot race maintenance/pump for the same pending envelope. Awaited so the
+    // fast-settle path is observable.
+    await this.enqueueOp("recordDispatch", () => this.reconcileJob(jobId), true);
   }
 
   /** The single idempotent settlement unit. Fetches authoritative detail and,
@@ -325,20 +337,51 @@ export class SettlementRelay {
     }
   }
 
-  /** Serial async drain of SSE-enqueued job ids. Keeps ordering and avoids
-   *  overlapping status fetches for the same job. */
+  /** Append work to the single serial chain and resolve when it has run. Errors
+   *  are logged, never thrown out of the chain (one failed op must not wedge the
+   *  rest). This is the ONE concurrency primitive: nothing that touches pending/
+   *  or the sink runs outside it. */
+  private enqueueOp<T>(label: string, fn: () => Promise<T>, force = false): Promise<T | undefined> {
+    const run = this.opChain.then(async () => {
+      // Background ops (tick/pump/reconnect) must not run after stop(); external
+      // ops (recordDispatch) pass force so a dispatch's fast-settle reconcile
+      // runs even before start() or during shutdown.
+      if (this.stopped && !force) return undefined;
+      try {
+        return await fn();
+      } catch (err) {
+        this.log({ relay: label, err: String(err) });
+        return undefined;
+      }
+    });
+    // Keep the chain alive regardless of this op's outcome.
+    this.opChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  /** Serial drain of SSE-enqueued job ids, then persist the cursor. Scheduled on
+   *  the shared chain so it cannot overlap maintenance or the reconnect
+   *  backstop. */
   private pump(): void {
-    this.pumpChain = this.pumpChain.then(async () => {
+    void this.enqueueOp("pump", async () => {
       while (this.queue.length && !this.stopped) {
         const jid = this.queue.shift()!;
-        try {
-          await this.reconcileJob(jid);
-        } catch (err) {
-          this.log({ relay: "pump", jid, err: String(err) });
-        }
+        await this.reconcileJob(jid);
       }
       this.persistCursor();
     });
+  }
+
+  /** One maintenance pass: persist cursor, reconcile every owned-unsettled job
+   *  (the bounded backstop for a healthy-but-silent SSE, or dropped/pruned
+   *  events), then flush any retained pending envelope. Serialized. */
+  private async maintenance(): Promise<void> {
+    this.persistCursor();
+    await this.reconcileOwnedUnsettled();
+    await this.flushPending();
   }
 
   private onEvent = (e: { seq?: number; job_id?: string; state?: string }): void => {
@@ -386,18 +429,21 @@ export class SettlementRelay {
       // Any stream return is a disconnect (a healthy SSE request stays open).
       fail++;
       // Degrade to polling after repeated failures: reconcile owned-unsettled
-      // jobs so a pruned/missed event still settles.
+      // jobs so a pruned/missed event still settles. Serialized on the chain.
       if (fail >= 3) {
-        await this.reconcileOwnedUnsettled();
-        await this.flushPending();
+        await this.enqueueOp("reconnect-backstop", () => this.maintenance());
       }
       await this.delay(Math.min(fail, 5) * this.d.backoffMs!);
     }
   }
 
+  // Periodic maintenance backstop. Runs even while SSE is HEALTHY-but-silent:
+  // if the endpoint/DB is replaced and its sequence is below our persisted
+  // cursor, the stream can stay open forever while future owned settlements
+  // never arrive as events. A bounded owned-unsettled reconcile every tickMs
+  // guarantees those (and any dropped/pruned events) still settle. Serialized.
   private tick = (): void => {
-    this.persistCursor();
-    void this.flushPending();
+    void this.enqueueOp("tick", () => this.maintenance());
   };
 
   /** Start the background consumer. Safe to call once per session_start. */
@@ -407,9 +453,8 @@ export class SettlementRelay {
     this.ensureDirs();
     this.loadCursor();
     // Startup reconciliation: settle anything that terminated while we were down
-    // and flush any envelope retained across restart.
-    await this.reconcileOwnedUnsettled();
-    await this.flushPending();
+    // and flush any envelope retained across restart. Serialized on the chain.
+    await this.enqueueOp("startup", () => this.maintenance());
     if (this.timer) clearInterval(this.timer);
     this.timer = setInterval(this.tick, this.d.tickMs!);
     (this.timer as unknown as { unref?: () => void }).unref?.();
@@ -417,7 +462,7 @@ export class SettlementRelay {
   }
 
   /** Stop cleanly: abort the in-flight SSE request, clear the timer, drain the
-   *  pump. Leaks no timers or sockets. */
+   *  serial op chain. Leaks no timers or sockets. */
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
@@ -431,8 +476,10 @@ export class SettlementRelay {
     } catch {
       /* already logged */
     }
+    // Drain whatever is already queued on the chain (in-flight sink calls run to
+    // completion) so we never abort mid-enqueue and leave a half state.
     try {
-      await this.pumpChain;
+      await this.opChain;
     } catch {
       /* ignore */
     }

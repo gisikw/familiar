@@ -65,7 +65,8 @@ delivery is never forced past attention.
 The item's stable id is `golem-settle-<sanitized job id>` so replay is
 idempotent. Priority is P1 for a non-success settlement and P2 for `done`. The
 body carries job id, state, verdict, workspace/harness/model, artifact list, and
-usage when present.
+usage when present (read from golemd's nested `settlement.usage`, with a
+top-level `usage` fallback).
 
 **Ownership (anti-flood).** Only jobs THIS extension dispatched are relayed. A
 dispatch records a durable ownership marker; a fresh instance owns nothing, so
@@ -79,10 +80,15 @@ in source: a cursor, per-job `owned/`, `pending/` (retriable envelope), and
 `done/` (tombstone) — all atomic temp+rename. Exactly-once is best-effort across
 replay/restart via three layers: the sink dedupes on the stable id, a local
 tombstone skips already-relayed jobs, and a durable pending envelope survives
-restart and sink outages. The cursor is only an optimization; on start and after
-repeated SSE failures the relay reconciles every owned-unsettled job so an event
-missed below the cursor (or a very fast job that settles around dispatch
-registration) still settles.
+restart and sink outages. The cursor is only an optimization; on start, on every
+periodic maintenance tick (20s), and after repeated SSE failures the relay
+reconciles every owned-unsettled job so an event missed below the cursor (or a
+very fast job that settles around dispatch registration) still settles. The
+periodic tick is a bounded backstop even while the SSE stays HEALTHY-but-silent
+— e.g. if the endpoint/DB is replaced and its event sequence is below the stored
+cursor, so future settlements would otherwise never arrive as events. All
+maintenance, SSE-driven reconciliation, and flushing run on a single serial
+chain, so the same pending envelope is never concurrently submitted to the sink.
 
 **Not covered (by design).** This client exposes no `await`/claim tool, so there
 is no await-race to dedup against — the relay does not call `sink.withdraw()` or

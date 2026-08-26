@@ -23,10 +23,11 @@ function fakeSink() {
  * array of SSE frames fed to whoever streams. streamEvents resolves when the
  * (pre-seeded) frames are drained OR on abort — modelling a stream that returns
  * (disconnects) so the relay's reconnect loop is exercised. */
-function fakeClient() {
+function fakeClient(opts: { keepStreamOpen?: boolean } = {}) {
   const jobs = new Map<string, JobDetail>();
   let pending: { seq?: number; job_id?: string; state?: string }[] = [];
   const statusCalls: string[] = [];
+  let sinceSeen = -1;
   const client: RelayClient & { push: (e: any) => void } = {
     async status(id: string) {
       statusCalls.push(id);
@@ -35,18 +36,20 @@ function fakeClient() {
       return j;
     },
     async list() { return [...jobs.values()]; },
-    async streamEvents(_since, onEvent, signal) {
+    async streamEvents(since, onEvent, signal) {
+      sinceSeen = since;
       for (const e of pending) { if (signal.aborted) break; onEvent(e); }
       pending = [];
-      // Model a finite stream segment: return promptly so the loop reconnects.
+      // keepStreamOpen models a HEALTHY-but-silent stream: it stays open (only
+      // abort resolves it), so no disconnect-driven reconciliation ever fires.
       await new Promise<void>((r) => {
-        const t = setTimeout(r, 20);
-        signal.addEventListener("abort", () => { clearTimeout(t); r(); }, { once: true });
+        const t = opts.keepStreamOpen ? undefined : setTimeout(r, 20);
+        signal.addEventListener("abort", () => { if (t) clearTimeout(t); r(); }, { once: true });
       });
     },
     push(e) { pending.push(e); },
   };
-  return { client, jobs, statusCalls, push: (e: any) => client.push(e) };
+  return { client, jobs, statusCalls, push: (e: any) => client.push(e), sinceSeen: () => sinceSeen };
 }
 
 const settled = (id: string, state = "done", verdict = "all good"): JobDetail => ({
@@ -73,6 +76,28 @@ describe("settlement relay", () => {
     const bad = buildEnvelope("job-2", settled("job-2", "failed", "boom"));
     expect(bad.priority).toBe(1); // failure is more urgent than success
     expect(safeJobId("weird/../id")).not.toContain("/");
+  });
+
+  test("buildEnvelope: prefers nested settlement.usage from golemd's live payload", () => {
+    // Realistic golemd job payload: usage is nested UNDER settlement, not at top.
+    const job: JobDetail = {
+      id: "job-usage", state: "done", harness: "pi", model: "anthropic/claude",
+      workspace: { project: "familiar", repo: "", ref: "", worktree: "feat-x", path: "/w/feat-x" },
+      settlement: {
+        state: "done", verdict: "implemented and tested",
+        artifacts: [{ path: "diff.patch", size: 4096 }],
+        worktree: { name: "feat-x", head: "deadbeefcafe1234", dirty: false },
+        usage: { input_tokens: 12345, output_tokens: 6789, cost_usd: 0.42 },
+      },
+    };
+    const env = buildEnvelope("job-usage", job);
+    expect(env.body).toContain("usage:");
+    expect(env.body).toContain("12345");
+    expect(env.body).toContain("output_tokens");
+    expect(env.body).toContain("diff.patch");
+    // Top-level usage still works as a fallback when settlement.usage is absent.
+    const legacy = buildEnvelope("j", { id: "j", state: "done", settlement: { state: "done" }, usage: { total: 7 } });
+    expect(legacy.body).toContain("\"total\":7");
   });
 
   test("fast settlement race: recordDispatch reconciles a job already terminal", async () => {
@@ -221,5 +246,57 @@ describe("settlement relay", () => {
     await relay.stop();
     expect(seen.has("golem-settle-c")).toBe(true);
     expect(existsSync(path.join(stateDir, "done", "c.json"))).toBe(true);
+  });
+
+  test("healthy-but-silent SSE: periodic maintenance settles an owned job with NO terminal event", async () => {
+    // Stream stays open forever (never returns) and emits no terminal event for
+    // our job — modelling an endpoint/DB swap whose sequence is below our cursor.
+    // Only the periodic maintenance backstop can settle it.
+    const { client, jobs } = fakeClient({ keepStreamOpen: true });
+    const { sink, seen } = fakeSink();
+    jobs.set("silent", { id: "silent", state: "running" });
+    const relay = new SettlementRelay({ client, stateDir: newDir(), resolveSink: () => sink, backoffMs: 1, tickMs: 30 });
+    await relay.recordDispatch("silent"); // still running at dispatch → nothing yet
+    expect(seen.size).toBe(0);
+    await relay.start();
+    await tick(50); // no terminal event ever arrives; job settles out-of-band
+    jobs.set("silent", settled("silent", "done", "settled without an event"));
+    // Wait for at least one maintenance tick to fire (tickMs=30).
+    await tick(90);
+    await relay.stop();
+    expect(seen.has("golem-settle-silent")).toBe(true);
+  });
+
+  test("concurrent triggers are serialized: one pending envelope, single sink submission", async () => {
+    // A slow sink lets multiple triggers pile up. If they raced, enqueue() would
+    // be entered more than once concurrently for the same id; the opChain must
+    // serialize them so at most one call is in flight at a time.
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let calls = 0;
+    const sink: DurableSink = {
+      async enqueue(env: DurableEnqueueEnvelope): Promise<DurableAcceptance> {
+        calls++;
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((r) => setTimeout(r, 30));
+        inFlight--;
+        return { accepted: true, id: env.id };
+      },
+      async withdraw() { return true; },
+    };
+    const { client, jobs } = fakeClient({ keepStreamOpen: true });
+    jobs.set("race", settled("race", "done", "contended"));
+    const relay = new SettlementRelay({ client, stateDir: newDir(), resolveSink: () => sink, backoffMs: 1, tickMs: 10 });
+    // Fire many triggers at once: recordDispatch + start (startup) + rapid ticks
+    // via the running timer all target the same pending envelope.
+    const p = relay.recordDispatch("race");
+    await relay.start();
+    await p;
+    await tick(120); // let the timer fire repeatedly while the slow sink drains
+    await relay.stop();
+    expect(maxInFlight).toBe(1); // never two concurrent sink calls for one id
+    // Tombstone written after the first acceptance → no further submissions.
+    expect(calls).toBe(1);
   });
 });
