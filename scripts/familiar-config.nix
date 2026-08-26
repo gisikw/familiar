@@ -2,7 +2,29 @@
 # is a length-framed stream consumed without eval by familiar-config.sh:
 #   NAME "\n" BYTE_LENGTH "\n" VALUE
 let
-  config = builtins.fromTOML (builtins.readFile (builtins.getEnv "FAMILIAR_CONFIG_PATH"));
+  rawConfig = builtins.fromTOML (builtins.readFile (builtins.getEnv "FAMILIAR_CONFIG_PATH"));
+  pluginTables = rawConfig.plugins or {};
+  pluginNames = builtins.attrNames pluginTables;
+  golem = pluginTables.golem or {};
+  golemKeys = builtins.attrNames golem;
+  allowedGolemKeys = [ "env" "git" "path" "rev" ];
+  unknownGolemKeys = builtins.filter (key: !(builtins.elem key allowedGolemKeys)) golemKeys;
+  rawPluginEnv = golem.env or {};
+  pluginEnv = if builtins.isAttrs rawPluginEnv then rawPluginEnv else { __invalid = 0; };
+  badPluginEnv = builtins.filter (key:
+    builtins.match "[A-Z_][A-Z0-9_]*" key == null || !(builtins.isString pluginEnv.${key})
+  ) (builtins.attrNames pluginEnv);
+  pathForm = golem ? path;
+  gitForm = golem ? git || golem ? rev;
+  pluginConfigValid =
+    (pluginNames == [] || pluginNames == [ "golem" ])
+    && unknownGolemKeys == []
+    && builtins.isAttrs rawPluginEnv
+    && badPluginEnv == []
+    && (pluginNames == [] || pathForm != gitForm)
+    && ((golem ? git) == (golem ? rev))
+    && (!(golem ? rev) || (builtins.isString golem.rev && builtins.match "[0-9a-fA-F]{40}" golem.rev != null));
+  config = if pluginConfigValid then rawConfig else throw "invalid [plugins.golem] source or environment configuration";
   chars = s: builtins.genList (i: builtins.substring i 1 s) (builtins.stringLength s);
   upper = s: builtins.replaceStrings
     (chars "abcdefghijklmnopqrstuvwxyz") (chars "ABCDEFGHIJKLMNOPQRSTUVWXYZ") s;

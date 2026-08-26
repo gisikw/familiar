@@ -1,5 +1,24 @@
 {
   "nodes": {
+    "desktop": {
+      "inputs": {
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./apps/desktop",
+        "type": "path"
+      },
+      "original": {
+        "path": "./apps/desktop",
+        "type": "path"
+      },
+      "parent": []
+    },
     "flake-utils": {
       "inputs": {
         "systems": "systems"
@@ -18,26 +37,44 @@
         "type": "github"
       }
     },
-    "herdr": {
+    "gateway-module": {
       "inputs": {
+        "flake-utils": [
+          "flake-utils"
+        ],
         "nixpkgs": [
           "nixpkgs"
         ],
-        "rust-overlay": "rust-overlay"
+        "viewer": "viewer"
       },
       "locked": {
-        "lastModified": 1787103808,
-        "narHash": "sha256-PG369hPknuuNnsigpLtxKO+3QcyZ5sO1Tbo7NOxWfwg=",
-        "owner": "herdrdev",
-        "repo": "herdr",
-        "rev": "a5c69beabfc82d9c3f9563eb821139b2e0f3e14f",
-        "type": "github"
+        "path": "./services/gateway",
+        "type": "path"
       },
       "original": {
-        "owner": "herdrdev",
-        "repo": "herdr",
-        "type": "github"
-      }
+        "path": "./services/gateway",
+        "type": "path"
+      },
+      "parent": []
+    },
+    "llm": {
+      "inputs": {
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./services/llm",
+        "type": "path"
+      },
+      "original": {
+        "path": "./services/llm",
+        "type": "path"
+      },
+      "parent": []
     },
     "nixpkgs": {
       "locked": {
@@ -57,31 +94,54 @@
     },
     "root": {
       "inputs": {
+        "desktop": "desktop",
         "flake-utils": "flake-utils",
-        "herdr": "herdr",
-        "nixpkgs": "nixpkgs"
+        "gateway-module": "gateway-module",
+        "llm": "llm",
+        "nixpkgs": "nixpkgs",
+        "server": "server",
+        "stt": "stt",
+        "tts": "tts",
+        "viewer": "viewer_2"
       }
     },
-    "rust-overlay": {
+    "server": {
       "inputs": {
+        "flake-utils": [
+          "flake-utils"
+        ],
         "nixpkgs": [
-          "herdr",
           "nixpkgs"
         ]
       },
       "locked": {
-        "lastModified": 1783577481,
-        "narHash": "sha256-EWMxOWrJ031f8f/lrcEmhTRs4npw1/5N3Hcjin846c8=",
-        "owner": "oxalica",
-        "repo": "rust-overlay",
-        "rev": "4cdea398dc491b082dccdce0fad1ed0b75fa3394",
-        "type": "github"
+        "path": "./services/server",
+        "type": "path"
       },
       "original": {
-        "owner": "oxalica",
-        "repo": "rust-overlay",
-        "type": "github"
-      }
+        "path": "./services/server",
+        "type": "path"
+      },
+      "parent": []
+    },
+    "stt": {
+      "inputs": {
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./services/stt",
+        "type": "path"
+      },
+      "original": {
+        "path": "./services/stt",
+        "type": "path"
+      },
+      "parent": []
     },
     "systems": {
       "locked": {
@@ -97,6 +157,64 @@
         "repo": "default",
         "type": "github"
       }
+    },
+    "tts": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./services/tts",
+        "type": "path"
+      },
+      "original": {
+        "path": "./services/tts",
+        "type": "path"
+      },
+      "parent": []
+    },
+    "viewer": {
+      "inputs": {
+        "flake-utils": [
+          "gateway-module",
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "gateway-module",
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "../viewer",
+        "type": "path"
+      },
+      "original": {
+        "path": "../viewer",
+        "type": "path"
+      },
+      "parent": [
+        "gateway-module"
+      ]
+    },
+    "viewer_2": {
+      "inputs": {
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "path": "./services/viewer",
+        "type": "path"
+      },
+      "original": {
+        "path": "./services/viewer",
+        "type": "path"
+      },
+      "parent": []
     }
   },
   "root": "root",

@@ -1,0 +1,748 @@
+/* ============================================================================
+ * Worklist tests — headless, no pi runtime required.
+ * Run with:  nix develop .#stt -c bun test integrations/pi/extensions/worklist/worklist.test.ts
+ *   (bun is available in the .#stt dev shell; there is no node in .#pi)
+ * ============================================================================
+ */
+import { expect, test, describe, beforeEach, mock } from "bun:test";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import {
+  DEFAULT_CONFIG as CFG,
+  decideAction,
+  demote,
+  promote,
+  resolveAttention,
+  applyVoiceHold,
+  resolveTier,
+  shouldEscalate,
+  clampDuration,
+  makeOverride,
+  overrideExpired,
+  parseWhen,
+  parseDurationMs,
+  type Attention,
+  type QueueItem,
+  type Priority,
+} from "./policy.ts";
+import {
+  drainIncoming,
+  ensureDirs,
+  envelopeToItem,
+  worklistPaths,
+  listItems,
+  putItem,
+  getArchivedItem,
+  getItem,
+  archiveItem,
+  writeJSONAtomic,
+  readJSON,
+  readAttention,
+  writeAttention,
+  itemExists,
+  enqueueEnvelopeIdempotent,
+  isValidItemId,
+} from "./store.ts";
+
+const mkItem = (p: Priority, over: Partial<QueueItem> = {}): QueueItem => ({
+  id: `t-${p}-${Math.random().toString(36).slice(2, 6)}`,
+  ts: Date.now(),
+  priority: p,
+  type: "notify",
+  summary: `sum-${p}`,
+  body: `body-${p}`,
+  source: "test",
+  ...over,
+});
+
+describe("tier arithmetic", () => {
+  test("demote clamps at linger", () => {
+    expect(demote("steer")).toBe("nudge");
+    expect(demote("nudge")).toBe("wait");
+    expect(demote("wait")).toBe("linger");
+    expect(demote("linger")).toBe("linger");
+  });
+  test("promote clamps at steer", () => {
+    expect(promote("linger")).toBe("wait");
+    expect(promote("steer")).toBe("steer");
+  });
+});
+
+describe("resolveTier: priority × attention matrix", () => {
+  test("available uses base mapping", () => {
+    expect(resolveTier(mkItem(0), "available", CFG)).toBe("steer");
+    expect(resolveTier(mkItem(1), "available", CFG)).toBe("nudge");
+    expect(resolveTier(mkItem(2), "available", CFG)).toBe("wait");
+    expect(resolveTier(mkItem(3), "available", CFG)).toBe("linger");
+  });
+  test("open promotes all except P0 (already steer)", () => {
+    expect(resolveTier(mkItem(0), "open", CFG)).toBe("steer"); // P0 stays
+    expect(resolveTier(mkItem(1), "open", CFG)).toBe("steer"); // nudge→steer
+    expect(resolveTier(mkItem(2), "open", CFG)).toBe("nudge"); // wait→nudge
+    expect(resolveTier(mkItem(3), "open", CFG)).toBe("wait"); // linger→wait
+  });
+  test("focused demotes all except P0", () => {
+    expect(resolveTier(mkItem(0), "focused", CFG)).toBe("steer"); // P0 protected
+    expect(resolveTier(mkItem(1), "focused", CFG)).toBe("wait"); // nudge→wait
+    expect(resolveTier(mkItem(2), "focused", CFG)).toBe("linger"); // wait→linger
+    expect(resolveTier(mkItem(3), "focused", CFG)).toBe("linger"); // clamp
+  });
+  test("escalation promotes one tier, then focused demotes", () => {
+    const it = mkItem(2, { escalated: true });
+    expect(resolveTier(it, "available", CFG)).toBe("nudge");
+    expect(resolveTier(it, "focused", CFG)).toBe("wait");
+  });
+});
+
+describe("shouldEscalate", () => {
+  const now = 1_000_000;
+  test("fires once when deadline passed", () => {
+    expect(shouldEscalate(mkItem(2, { suggested_deadline: now - 1 }), now)).toBe(true);
+  });
+  test("no fire before deadline or when latched", () => {
+    expect(shouldEscalate(mkItem(2, { suggested_deadline: now + 1 }), now)).toBe(false);
+    expect(shouldEscalate(mkItem(2, { suggested_deadline: now - 1, escalated: true }), now)).toBe(false);
+    expect(shouldEscalate(mkItem(2), now)).toBe(false); // no deadline
+  });
+});
+
+describe("resolveAttention: inference + override", () => {
+  const now = 10_000_000;
+  test("live override wins outright", () => {
+    expect(resolveAttention({ override: { level: "protected", expiresAt: now + 1000 }, lastActivity: now, agentBusy: true, now }, CFG)).toBe("protected");
+    expect(resolveAttention({ override: { level: "available", expiresAt: now + 1000 }, lastActivity: now, agentBusy: true, now }, CFG)).toBe("available");
+  });
+  test("expired override falls straight through to inference (no decay)", () => {
+    // override expired at now → agent working → focused
+    expect(resolveAttention({ override: { level: "protected", expiresAt: now - 1 }, lastActivity: now, agentBusy: true, now }, CFG)).toBe("focused");
+  });
+  test("auto: agent working → focused", () => {
+    expect(resolveAttention({ lastActivity: 0, agentBusy: true, now }, CFG)).toBe("focused");
+  });
+  test("auto: recent activity → focused; then available; then open", () => {
+    expect(resolveAttention({ lastActivity: now - 1000, agentBusy: false, now }, CFG)).toBe("focused");
+    const avail = now - (CFG.settleToAvailableMs + 1);
+    expect(resolveAttention({ lastActivity: avail, agentBusy: false, now }, CFG)).toBe("available");
+    const open = now - (CFG.settleToOpenMs + 1);
+    expect(resolveAttention({ lastActivity: open, agentBusy: false, now }, CFG)).toBe("open");
+  });
+  test("attention only ever takes the four named values", () => {
+    const valid: Attention[] = ["open", "available", "focused", "protected"];
+    for (const t of [-1, 0, 1000, CFG.settleToAvailableMs + 1, CFG.settleToOpenMs + 1]) {
+      const a = resolveAttention({ lastActivity: now - t, agentBusy: false, now }, CFG);
+      expect(valid).toContain(a);
+    }
+  });
+});
+
+describe("voice focus lease", () => {
+  test("forces focused only until expiry and preserves protected", () => {
+    const now = 10_000;
+    expect(applyVoiceHold("open", now + 30_000, now)).toBe("focused");
+    expect(applyVoiceHold("protected", now + 30_000, now)).toBe("protected");
+    expect(applyVoiceHold("open", now, now)).toBe("open");
+    expect(applyVoiceHold("available", now - 1, now)).toBe("available");
+  });
+});
+
+describe("override duration clamp + build", () => {
+  const now = 5_000_000;
+  test("clampDuration rejects non-positive/NaN, caps at ceiling", () => {
+    expect(clampDuration(-1, CFG)).toBeNull();
+    expect(clampDuration(0, CFG)).toBeNull();
+    expect(clampDuration(NaN, CFG)).toBeNull();
+    expect(clampDuration(30 * 60_000, CFG)).toBe(30 * 60_000);
+    expect(clampDuration(CFG.maxOverrideMs + 1, CFG)).toBe(CFG.maxOverrideMs);
+    expect(clampDuration(300 * 3600_000, CFG)).toBe(CFG.maxOverrideMs); // /protect 300h
+  });
+  test("makeOverride produces wall-clock expiry, clamped", () => {
+    const ov = makeOverride("protected", 30 * 60_000, now, CFG);
+    expect(ov).toEqual({ level: "protected", expiresAt: now + 30 * 60_000 });
+    const capped = makeOverride("protected", 100 * 3600_000, now, CFG);
+    expect(capped?.expiresAt).toBe(now + CFG.maxOverrideMs);
+    expect(makeOverride("protected", 0, now, CFG)).toBeNull();
+  });
+  test("overrideExpired boundary", () => {
+    expect(overrideExpired({ level: "protected", expiresAt: now }, now)).toBe(true); // >= expiry
+    expect(overrideExpired({ level: "protected", expiresAt: now + 1 }, now)).toBe(false);
+    expect(overrideExpired(null, now)).toBe(true);
+  });
+});
+
+describe("decideAction: full policy matrix (4 attention × 4 priority)", () => {
+  const now = 5_000_000;
+  const act = (p: Priority, a: Attention, idle = 0, over: Partial<QueueItem> = {}) =>
+    decideAction(mkItem(p, over), { attention: a, now, idleForMs: idle }, CFG);
+
+  test("protected holds EVERY priority incl. P0", () => {
+    expect(act(0, "protected")).toBe("hold");
+    expect(act(1, "protected")).toBe("hold");
+    expect(act(2, "protected", CFG.waitSettleMs)).toBe("hold");
+    expect(act(3, "protected", CFG.lingerDigestMs)).toBe("hold");
+    // even escalated P0 during protected holds
+    expect(act(0, "protected", 0, { escalated: true })).toBe("hold");
+  });
+  test("P0 steers under open/available/focused; holds once delivered", () => {
+    expect(act(0, "open")).toBe("deliver-steer");
+    expect(act(0, "available")).toBe("deliver-steer");
+    expect(act(0, "focused")).toBe("deliver-steer");
+    expect(act(0, "available", 0, { delivered: true })).toBe("hold");
+  });
+  test("open pulls work forward; a nudge becomes a wake after sustained quiet", () => {
+    expect(act(1, "open")).toBe("deliver-steer");
+    expect(act(2, "open", CFG.waitSettleMs - 1)).toBe("nudge");
+    expect(act(2, "open", CFG.waitSettleMs)).toBe("deliver-wait");
+    expect(act(3, "open", 0)).toBe("hold");
+    expect(act(3, "open", CFG.waitSettleMs)).toBe("deliver-wait"); // linger→wait under open
+  });
+  test("available base ladder", () => {
+    expect(act(1, "available", CFG.waitSettleMs - 1)).toBe("nudge");
+    expect(act(1, "available", CFG.waitSettleMs)).toBe("deliver-wait");
+    expect(act(2, "available", 0)).toBe("hold");
+    expect(act(2, "available", CFG.waitSettleMs)).toBe("deliver-wait");
+    expect(act(3, "available", 0)).toBe("hold");
+    expect(act(3, "available", CFG.lingerDigestMs)).toBe("digest");
+  });
+  test("focused suppresses ordinary interruptions (wait/linger hold entirely)", () => {
+    expect(act(1, "focused")).toBe("hold"); // nudge→wait, focused holds wait
+    expect(act(2, "focused", CFG.waitSettleMs)).toBe("hold"); // →linger, focused holds
+    expect(act(3, "focused", CFG.lingerDigestMs)).toBe("hold");
+  });
+  test("acked / withdrawn / snoozed items hold", () => {
+    expect(act(0, "available", 0, { acked: true })).toBe("hold");
+    expect(act(0, "available", 0, { withdrawn: true })).toBe("hold");
+    expect(act(0, "available", 0, { snoozedUntil: now + 1000 })).toBe("hold");
+    expect(act(0, "available", 0, { snoozedUntil: now - 1000 })).toBe("deliver-steer"); // expired snooze
+  });
+
+  test("digested item holds within the ack grace, then wakes explicitly (liveness)", () => {
+    const grace = CFG.digestAckGraceMs;
+    // Freshly digested: within grace, holds even when quiet (agent may ack).
+    expect(act(3, "available", CFG.lingerDigestMs, { digested: true, digestedAt: now })).toBe("hold");
+    // Long-idle promotion to open must not bypass the item-level ack grace.
+    expect(act(3, "open", CFG.lingerDigestMs, { digested: true, digestedAt: now })).toBe("hold");
+    // Grace lapsed but not yet settled → still holds.
+    expect(act(3, "available", 0, { digested: true, digestedAt: now - grace })).toBe("hold");
+    // Grace lapsed AND settled → one explicit full-body wake (which auto-acks).
+    expect(act(3, "available", CFG.waitSettleMs, { digested: true, digestedAt: now - grace })).toBe("deliver-wait");
+    expect(act(3, "open", CFG.waitSettleMs - 1, { digested: true, digestedAt: now - grace })).toBe("hold"); // open promotes P3 linger→wait but still needs settle
+  });
+
+  test("digested escalation is still gated by focused and protected", () => {
+    const old = { digested: true, digestedAt: now - CFG.digestAckGraceMs };
+    expect(act(3, "focused", CFG.waitSettleMs, old)).toBe("hold"); // focused holds linger entirely
+    expect(act(3, "protected", CFG.waitSettleMs, old)).toBe("hold"); // protected is the total floor
+  });
+
+  test("digested without a digestedAt stamp holds (never a spurious wake)", () => {
+    // A torn/legacy read lacking the grace clock must not escalate from linger;
+    // the runtime backfills digestedAt, it is never inferred inside the pure
+    // policy. The item-level gate applies regardless of tier promotion.
+    expect(act(3, "available", CFG.lingerDigestMs, { digested: true })).toBe("hold");
+    expect(act(3, "open", CFG.lingerDigestMs, { digested: true })).toBe("hold");
+    expect(act(3, "focused", CFG.lingerDigestMs, { digested: true })).toBe("hold");
+  });
+});
+
+describe("store: persistence + atomic + drain + migration", () => {
+  let dir: string;
+  let P: ReturnType<typeof worklistPaths>;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "worklist-test-"));
+    P = worklistPaths(dir);
+    ensureDirs(P);
+  });
+
+  test("put/list/archive round-trips and survives 'restart'", () => {
+    const a = envelopeToItem({ summary: "one", priority: 1 });
+    const b = envelopeToItem({ summary: "two", priority: 3 });
+    putItem(P, a);
+    putItem(P, b);
+    const reread = listItems(worklistPaths(dir)); // simulated restart
+    expect(reread.length).toBe(2);
+    archiveItem(P, a.id);
+    expect(listItems(P).length).toBe(1);
+    expect(readJSON(path.join(P.archive, `${a.id}.json`))).toBeTruthy();
+  });
+
+  test("drainIncoming promotes envelopes and is idempotent", () => {
+    writeJSONAtomic(path.join(P.incoming, "m1.json"), { summary: "from cron", priority: 0, source: "cron" });
+    writeJSONAtomic(path.join(P.incoming, "m2.json"), { summary: "no prio" });
+    const created = drainIncoming(P);
+    expect(created.length).toBe(2);
+    expect(created.find((c) => c.source === "cron")?.priority).toBe(0);
+    expect(created.find((c) => c.summary === "no prio")?.priority).toBe(2);
+    expect(drainIncoming(P).length).toBe(0);
+    expect(listItems(P).length).toBe(2);
+  });
+
+  test("drainIncoming dedups on stable id (no double-enqueue)", () => {
+    const item = envelopeToItem({ summary: "settle", id: "sub-x-1" });
+    putItem(P, item);
+    writeJSONAtomic(path.join(P.incoming, "again.json"), { summary: "settle", id: "sub-x-1" });
+    const created = drainIncoming(P);
+    expect(created.length).toBe(0); // already exists
+    expect(itemExists(P, "sub-x-1")).toBe(true);
+  });
+
+  test("malformed / torn claims are retained, not fatal or silently lost", () => {
+    fs.writeFileSync(path.join(P.incoming, "bad.json"), "{not json");
+    writeJSONAtomic(path.join(P.incoming, "ok.json"), { summary: "good" });
+    expect(drainIncoming(P).length).toBe(1);
+    expect(fs.existsSync(path.join(P.incoming, "bad.json.claimed"))).toBe(true);
+    fs.writeFileSync(path.join(P.items, "torn.json"), "{half");
+    putItem(P, envelopeToItem({ summary: "intact" }));
+    expect(listItems(P).filter((i) => i.summary === "intact").length).toBe(1);
+  });
+
+  test("restart recovers claims at every promotion boundary", () => {
+    // Death immediately after claim rename.
+    writeJSONAtomic(path.join(P.incoming, "claimed.json.claimed"), { summary: "recover claim", id: "claim-1" });
+    expect(drainIncoming(P).map((i) => i.id)).toEqual(["claim-1"]);
+    expect(fs.existsSync(path.join(P.incoming, "claimed.json.claimed"))).toBe(false);
+
+    // Death after durable put but before claim cleanup: restart dedupes then cleans.
+    putItem(P, envelopeToItem({ summary: "already promoted", id: "claim-2" }));
+    writeJSONAtomic(path.join(P.incoming, "put.json.claimed"), { summary: "already promoted", id: "claim-2" });
+    expect(drainIncoming(P).length).toBe(0);
+    expect(fs.existsSync(path.join(P.incoming, "put.json.claimed"))).toBe(false);
+    expect(listItems(P).filter((i) => i.id === "claim-2").length).toBe(1);
+  });
+
+  test("attention persistence: wall-clock override survives restart; expired discarded on read", () => {
+    const future = Date.now() + 60_000;
+    writeAttention(P, { mode: "protected", override: { level: "protected", expiresAt: future } });
+    const back = readAttention(worklistPaths(dir)); // restart
+    expect(back.override?.expiresAt).toBe(future);
+    expect(back.mode).toBe("protected");
+    // A past expiry is still returned by the store (extension discards lazily);
+    // resolveAttention/overrideExpired handle the discard.
+    writeAttention(P, { mode: "protected", override: { level: "protected", expiresAt: Date.now() - 1 } });
+    const stale = readAttention(P);
+    expect(overrideExpired(stale.override, Date.now())).toBe(true);
+  });
+
+  test("persisted override is validated + clamped on load (never unbounded across restart)", () => {
+    const now = Date.now();
+    // Far-future expiry (clock rollback / corrupt / older writer): clamp to the
+    // 8h ceiling, and persist the normalized state.
+    const farFuture = now + 30 * 24 * 60 * 60 * 1000; // 30 days
+    writeAttention(P, { mode: "protected", override: { level: "protected", expiresAt: farFuture } });
+    const clamped = readAttention(P, now);
+    expect(clamped.override).not.toBeNull();
+    const ceiling = now + 8 * 60 * 60 * 1000;
+    expect(clamped.override!.expiresAt).toBeLessThanOrEqual(ceiling);
+    expect(clamped.override!.expiresAt).toBeGreaterThan(now);
+    // Normalized state was persisted atomically: a second read is already capped.
+    const persisted = readJSON<{ override?: { expiresAt?: number } }>(P.attention);
+    expect(persisted?.override?.expiresAt).toBeLessThanOrEqual(ceiling);
+
+    // Corrupt level → dropped to auto inference (no override).
+    writeAttention(P, { mode: "protected", override: { level: "bogus" as never, expiresAt: now + 1000 } });
+    expect(readAttention(P, now).override).toBeNull();
+
+    // Non-finite expiry → dropped.
+    writeJSONAtomic(P.attention, { mode: "protected", override: { level: "protected", expiresAt: "soon" } });
+    expect(readAttention(P, now).override).toBeNull();
+  });
+
+  test("legacy inbox migration: items + posture adopted, no unbounded busy carried", () => {
+    const fresh = fs.mkdtempSync(path.join(os.tmpdir(), "wl-mig-"));
+    const legacy = path.join(fresh, "inbox");
+    const wl = path.join(fresh, "worklist");
+    fs.mkdirSync(path.join(legacy, "items"), { recursive: true });
+    fs.mkdirSync(path.join(legacy, "incoming"), { recursive: true });
+    const legacyItem = envelopeToItem({ summary: "legacy queued", id: "legacy-1" });
+    fs.writeFileSync(path.join(legacy, "items", "legacy-1.json"), JSON.stringify(legacyItem));
+    fs.writeFileSync(path.join(legacy, "posture.json"), JSON.stringify({ mode: "busy" }));
+    const WP = worklistPaths(wl);
+    // A pre-existing partial destination must not suppress reconciliation.
+    ensureDirs(WP);
+    ensureDirs(WP, legacy);
+    expect(getItem(WP, "legacy-1")?.summary).toBe("legacy queued");
+    // legacy permanent "busy" must NOT persist as an unbounded override
+    const att = readAttention(WP);
+    expect(att.override).toBeNull();
+    expect(att.mode).toBe("auto"); // busy→focused pin dropped to auto (no expiry)
+
+    // An old writer appearing after migration is continuously reconciled.
+    fs.mkdirSync(path.join(legacy, "incoming"), { recursive: true });
+    writeJSONAtomic(path.join(legacy, "incoming", "late.json"), { summary: "late old writer", id: "legacy-late" });
+    ensureDirs(WP, legacy);
+    expect(getItem(WP, "legacy-late")?.summary).toBe("late old writer");
+    expect(fs.existsSync(path.join(legacy, "incoming", "late.json.claimed"))).toBe(false);
+  });
+
+  test("untrusted ids cannot escape live/archive/incoming/migration paths", () => {
+    const escaped = path.join(path.dirname(P.root), "escaped.json");
+    const bad = "../../escaped";
+    expect(isValidItemId(bad)).toBe(false);
+    expect(() => enqueueEnvelopeIdempotent(P, { id: bad, summary: "attack" })).toThrow();
+    expect(getItem(P, bad)).toBeNull();
+    expect(getArchivedItem(P, bad)).toBeNull();
+    archiveItem(P, bad); // withdraw/archive-style lookup is a no-op, never traversal
+    expect(fs.existsSync(escaped)).toBe(false);
+
+    writeJSONAtomic(path.join(P.incoming, "attack.json"), { id: bad, summary: "incoming attack" });
+    expect(drainIncoming(P)).toEqual([]);
+    expect(fs.existsSync(path.join(P.incoming, "attack.json.claimed"))).toBe(true);
+    expect(fs.existsSync(escaped)).toBe(false);
+
+    const legacy = path.join(path.dirname(P.root), "legacy-traversal");
+    fs.mkdirSync(path.join(legacy, "items", "archive"), { recursive: true });
+    writeJSONAtomic(path.join(legacy, "items", "attack.json"), mkItem(1, { id: bad, summary: "legacy attack" }));
+    writeJSONAtomic(path.join(legacy, "items", "archive", "attack-archive.json"), mkItem(1, { id: bad, summary: "legacy archive attack" }));
+    ensureDirs(P, legacy);
+    expect(fs.existsSync(escaped)).toBe(false);
+    const quarantined = fs.readdirSync(path.join(P.root, "migration-conflicts"));
+    expect(quarantined.some((n) => n.startsWith("invalid-live-attack"))).toBe(true);
+    expect(quarantined.some((n) => n.startsWith("invalid-archive-attack-archive"))).toBe(true);
+  });
+
+  test("partial migration is idempotent, archive-aware, and preserves conflicts", () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "wl-partial-"));
+    const legacy = path.join(base, "inbox");
+    const WP = worklistPaths(path.join(base, "worklist"));
+    fs.mkdirSync(path.join(legacy, "items"), { recursive: true });
+    ensureDirs(WP);
+    const terminal = envelopeToItem({ id: "same", summary: "new terminal" });
+    terminal.acked = terminal.delivered = true;
+    putItem(WP, terminal);
+    archiveItem(WP, "same");
+    const old = envelopeToItem({ id: "same", summary: "old conflicting copy" });
+    writeJSONAtomic(path.join(legacy, "items", "same.json"), old);
+    ensureDirs(WP, legacy);
+    ensureDirs(WP, legacy); // restart/retry
+    expect(getItem(WP, "same")).toBeNull();
+    expect(readJSON<QueueItem>(path.join(WP.archive, "same.json"))?.summary).toBe("new terminal");
+    expect(readJSON<QueueItem>(path.join(WP.root, "migration-conflicts", "live-same.json"))?.summary).toBe("old conflicting copy");
+
+    // A later, different conflict with the same source name must get its own
+    // collision-safe file; neither source may overwrite/delete the other.
+    const second = envelopeToItem({ id: "same", summary: "second conflicting copy" });
+    writeJSONAtomic(path.join(legacy, "items", "same.json"), second);
+    ensureDirs(WP, legacy);
+    const conflictFiles = fs.readdirSync(path.join(WP.root, "migration-conflicts")).filter((n) => n.startsWith("live-same"));
+    expect(conflictFiles.length).toBe(2);
+    const summaries = conflictFiles.map((n) => readJSON<QueueItem>(path.join(WP.root, "migration-conflicts", n))?.summary).sort();
+    expect(summaries).toEqual(["old conflicting copy", "second conflicting copy"]);
+    expect(fs.existsSync(path.join(legacy, "items", "same.json"))).toBe(false);
+  });
+});
+
+describe("runtime scheduler wiring", () => {
+  test("P2 wait and P1 nudge both become one-shot wakes after 30s idle", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "worklist-runtime-test-"));
+    const priorRoot = process.env.FAMILIAR_WORKLIST_DIR;
+    const realNow = Date.now;
+    let now = 10_000_000;
+    process.env.FAMILIAR_WORKLIST_DIR = dir;
+    Date.now = () => now;
+
+    const handlers = new Map<string, Array<(...args: any[]) => any>>();
+    const sent: Array<{ message: any; options: any }> = [];
+    const pi = {
+      on(event: string, handler: (...args: any[]) => any) {
+        const list = handlers.get(event) ?? [];
+        list.push(handler);
+        handlers.set(event, list);
+      },
+      events: { on() {} },
+      registerCommand() {},
+      registerTool() {},
+      sendMessage(message: any, options: any) { sent.push({ message, options }); },
+    };
+    const ctx = {
+      hasUI: true,
+      ui: { setStatus() {}, setWidget() {}, notify() {} },
+    };
+
+    try {
+      // index.ts registers one TypeBox tool; the scheduler test does not need
+      // the external schema package, so keep this headless suite self-contained.
+      mock.module("typebox", () => ({
+        Type: {
+          Object: (v: unknown) => v,
+          Union: (v: unknown) => v,
+          Literal: (v: unknown) => v,
+          Optional: (v: unknown) => v,
+          Number: (v: unknown) => v,
+          String: (v: unknown) => v,
+        },
+      }));
+      // Cache-bust so WORKLIST_ROOT observes this test's isolated env.
+      const mod = await import(`./index.ts?runtime-test=${Date.now()}`);
+      const runtime = mod.default(pi as any);
+      await handlers.get("session_start")?.[0]?.({ type: "session_start", reason: "startup" }, ctx);
+      const item = runtime.enqueue({
+        id: "runtime-open-p2",
+        priority: 2,
+        type: "notify",
+        summary: "idle settlement",
+        body: "full verdict",
+        source: "test",
+      });
+
+      // It arrived while attention was focused. Do not interrupt immediately,
+      // and do not irrevocably queue a followUp that needs Kevin's next turn.
+      runtime.tick();
+      expect(sent).toHaveLength(0);
+      now += CFG.waitSettleMs - 1;
+      runtime.tick();
+      expect(sent).toHaveLength(0);
+
+      // At 30s of continuous quiet, auto-attention relaxes to available and the
+      // scheduler wakes the model with the full item exactly once.
+      now += 1;
+      runtime.tick();
+      expect(sent).toHaveLength(1);
+      expect(sent[0].message.customType).toBe("worklist-item");
+      expect(sent[0].message.display).toBe(true);
+      expect(sent[0].message.content).toContain("full verdict");
+      expect(sent[0].options).toEqual({ deliverAs: "steer", triggerTurn: true });
+      expect(getItem(worklistPaths(dir), item.id)).toBeNull();
+
+      // Auto-ack/archive makes repeated scheduler ticks idempotent.
+      runtime.tick();
+      expect(sent).toHaveLength(1);
+
+      // Exercise the canonical nudge path too: P1/available remains optional
+      // while conversation can carry it, then uses the same delayed wake path.
+      await handlers.get("agent_settled")?.[0]?.({ type: "agent_settled" }, ctx);
+      const p1 = runtime.enqueue({
+        id: "runtime-available-p1",
+        priority: 1,
+        type: "notify",
+        summary: "important review",
+        body: "review verdict",
+        source: "test",
+      });
+      runtime.tick();
+      expect(sent).toHaveLength(1);
+      now += CFG.waitSettleMs;
+      runtime.tick();
+      expect(sent).toHaveLength(2);
+      expect(sent[1].message.customType).toBe("worklist-item");
+      expect(sent[1].message.content).toContain("review verdict");
+      expect(sent[1].options).toEqual({ deliverAs: "steer", triggerTurn: true });
+      expect(getItem(worklistPaths(dir), p1.id)).toBeNull();
+      runtime.tick();
+      expect(sent).toHaveLength(2);
+
+      await handlers.get("session_shutdown")?.[0]?.({ type: "session_shutdown", reason: "quit" }, ctx);
+    } finally {
+      Date.now = realNow;
+      if (priorRoot === undefined) delete process.env.FAMILIAR_WORKLIST_DIR;
+      else process.env.FAMILIAR_WORKLIST_DIR = priorRoot;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Shared headless harness: isolated dir + frozen clock + minimal pi/ctx
+  // doubles. Exposes the runtime, the sendMessage log, and the registered
+  // handler/tool maps so each test can drive ticks, tools, and lifecycle events.
+  const withRuntime = async (
+    body: (h: {
+      dir: string;
+      runtime: any;
+      sent: Array<{ message: any; options: any }>;
+      handlers: Map<string, Array<(...args: any[]) => any>>;
+      tools: Map<string, any>;
+      ctx: any;
+      setNow: (n: number) => void;
+      now: () => number;
+    }) => Promise<void>,
+  ) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "worklist-runtime-test-"));
+    const priorRoot = process.env.FAMILIAR_WORKLIST_DIR;
+    const realNow = Date.now;
+    let now = 10_000_000;
+    process.env.FAMILIAR_WORKLIST_DIR = dir;
+    Date.now = () => now;
+    const handlers = new Map<string, Array<(...args: any[]) => any>>();
+    const tools = new Map<string, any>();
+    const sent: Array<{ message: any; options: any }> = [];
+    const pi = {
+      on(event: string, handler: (...args: any[]) => any) {
+        const list = handlers.get(event) ?? [];
+        list.push(handler);
+        handlers.set(event, list);
+      },
+      events: { on() {} },
+      registerCommand() {},
+      registerTool(def: any) { tools.set(def.name, def); },
+      sendMessage(message: any, options: any) { sent.push({ message, options }); },
+    };
+    const ctx = { hasUI: true, ui: { setStatus() {}, setWidget() {}, notify() {} } };
+    try {
+      mock.module("typebox", () => ({
+        Type: {
+          Object: (v: unknown) => v,
+          Union: (v: unknown) => v,
+          Literal: (v: unknown) => v,
+          Optional: (v: unknown) => v,
+          Number: (v: unknown) => v,
+          String: (v: unknown) => v,
+        },
+      }));
+      const mod = await import(`./index.ts?runtime-test=${Date.now()}-${Math.random()}`);
+      const runtime = mod.default(pi as any);
+      await handlers.get("session_start")?.[0]?.({ type: "session_start", reason: "startup" }, ctx);
+      await body({ dir, runtime, sent, handlers, tools, ctx, setNow: (n) => { now = n; }, now: () => now });
+      await handlers.get("session_shutdown")?.[0]?.({ type: "session_shutdown", reason: "quit" }, ctx);
+    } finally {
+      Date.now = realNow;
+      if (priorRoot === undefined) delete process.env.FAMILIAR_WORKLIST_DIR;
+      else process.env.FAMILIAR_WORKLIST_DIR = priorRoot;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  test("a digested item is surfaced explicitly (once) if unacked past its grace", async () => {
+    await withRuntime(async ({ dir, runtime, sent, setNow, now }) => {
+      const P = worklistPaths(dir);
+      // A P3 arrives; it lingers. Settle the agent so attention can relax.
+      const it = runtime.enqueue({ id: "digest-esc", priority: 3, type: "notify", summary: "low pri note", body: "the full note body", source: "test" });
+      setNow(now() + CFG.settleToAvailableMs + 1); // available
+      setNow(now() + CFG.lingerDigestMs);          // idle long enough to digest
+      runtime.tick();
+      // Folded into a followUp digest, NOT acked, and stamped with digestedAt.
+      expect(sent).toHaveLength(1);
+      expect(sent[0].message.customType).toBe("worklist-digest");
+      expect(sent[0].options).toEqual({ deliverAs: "followUp" });
+      const stored = getItem(P, it.id)!;
+      expect(stored.digested).toBe(true);
+      expect(stored.acked).toBeUndefined();
+      expect(typeof stored.digestedAt).toBe("number");
+      // Within the grace, further ticks do NOT re-surface it.
+      runtime.tick();
+      expect(sent).toHaveLength(1);
+      // Grace lapses: the next settled tick wakes the model with the full body
+      // exactly once and auto-acks/archives it.
+      setNow(now() + CFG.digestAckGraceMs + 1);
+      runtime.tick();
+      expect(sent).toHaveLength(2);
+      expect(sent[1].message.customType).toBe("worklist-item");
+      expect(sent[1].message.content).toContain("the full note body");
+      expect(sent[1].options).toEqual({ deliverAs: "steer", triggerTurn: true });
+      expect(getItem(P, it.id)).toBeNull();
+      expect(getArchivedItem(P, it.id)?.acked).toBe(true);
+      // Idempotent afterwards.
+      runtime.tick();
+      expect(sent).toHaveLength(2);
+    });
+  });
+
+  test("ack_worklist returns the full body and atomically archives (agent-facing ack)", async () => {
+    await withRuntime(async ({ dir, runtime, tools, sent }) => {
+      const P = worklistPaths(dir);
+      const a = runtime.enqueue({ id: "ack-a", priority: 2, type: "notify", summary: "sum a", body: "body A", source: "test" });
+      runtime.enqueue({ id: "ack-b", priority: 3, type: "review", summary: "sum b", body: "body B", source: "test" });
+      const tool = tools.get("ack_worklist");
+      expect(tool).toBeTruthy();
+
+      // Ack a single id: body returned inline, no sendMessage, item archived.
+      const r1 = await tool.execute("call-1", { id: "ack-a" });
+      expect(r1.details.ok).toBe(true);
+      expect(r1.details.count).toBe(1);
+      expect(r1.details.acked[0].body).toBe("body A");
+      expect(sent).toHaveLength(0); // the tool result IS the delivery; no dup body
+      expect(getItem(P, a.id)).toBeNull();
+      expect(getArchivedItem(P, a.id)?.acked).toBe(true);
+
+      // Ack 'all' resolves the remainder.
+      const r2 = await tool.execute("call-2", {});
+      expect(r2.details.ok).toBe(true);
+      expect(r2.details.count).toBe(1);
+      expect(r2.details.acked[0].id).toBe("ack-b");
+      expect(listItems(P).length).toBe(0);
+
+      // Unknown id is a clean error, not a throw.
+      const r3 = await tool.execute("call-3", { id: "nope" });
+      expect(r3.isError).toBe(true);
+      expect(r3.details.ok).toBe(false);
+    });
+  });
+
+  test("acking a digested item before its grace prevents the explicit wake", async () => {
+    await withRuntime(async ({ dir, runtime, tools, sent, setNow, now }) => {
+      const P = worklistPaths(dir);
+      const it = runtime.enqueue({ id: "digest-ack", priority: 3, type: "notify", summary: "note", body: "note body", source: "test" });
+      setNow(now() + CFG.settleToAvailableMs + 1);
+      setNow(now() + CFG.lingerDigestMs);
+      runtime.tick();
+      expect(sent).toHaveLength(1); // digest only
+      // Agent acks via the tool during the grace.
+      await tools.get("ack_worklist").execute("c", { id: it.id });
+      expect(getItem(P, it.id)).toBeNull();
+      // Even well past the grace, no explicit wake fires (it is resolved).
+      setNow(now() + CFG.digestAckGraceMs + 1);
+      runtime.tick();
+      expect(sent).toHaveLength(1);
+    });
+  });
+
+  test("hidden digest reminder is rate-limited and respects protected attention", async () => {
+    await withRuntime(async ({ runtime, handlers, tools, setNow, now }) => {
+      runtime.enqueue({ id: "rem-1", priority: 3, type: "notify", summary: "note", body: "b", source: "test" });
+      setNow(now() + CFG.settleToAvailableMs + 1);
+      setNow(now() + CFG.lingerDigestMs);
+      runtime.tick(); // digest it (unacked)
+      const bas = handlers.get("before_agent_start")![0];
+      const first = await bas();
+      expect(first?.message.display).toBe(false);
+      expect(first?.message.content).toContain("ack_worklist");
+      expect(first?.message.content).toContain("rem-1");
+      // A second turn immediately after is rate-limited: no reminder.
+      const second = await bas();
+      expect(second).toBeUndefined();
+      // After the reminder interval elapses, it may remind again.
+      setNow(now() + CFG.digestReminderMs + 1);
+      const third = await bas();
+      expect(third?.message.content).toContain("ack_worklist");
+      // Protected is the total floor: even hidden agent-facing reminders hold.
+      await tools.get("set_attention").execute("p", { level: "protected", duration_minutes: 60 });
+      setNow(now() + CFG.digestReminderMs + 1);
+      expect(await bas()).toBeUndefined();
+    });
+  });
+
+  test("a legacy digested item lacking digestedAt is backfilled on tick, then resolves", async () => {
+    await withRuntime(async ({ dir, runtime, sent, setNow, now }) => {
+      const P = worklistPaths(dir);
+      // Simulate an item stranded by the OLD build: digested:true, no digestedAt.
+      putItem(P, { ...envelopeToItem({ id: "legacy-digest", summary: "old", body: "old body", priority: 3 }), digested: true });
+      setNow(now() + CFG.settleToAvailableMs + 1);
+      runtime.tick(); // backfills digestedAt (does not wake yet — grace starts now)
+      const stamped = getItem(P, "legacy-digest")!;
+      expect(typeof stamped.digestedAt).toBe("number");
+      expect(sent).toHaveLength(0);
+      // Once its (freshly started) grace lapses and settled, it wakes explicitly.
+      setNow(now() + CFG.digestAckGraceMs + 1);
+      runtime.tick();
+      expect(sent).toHaveLength(1);
+      expect(sent[0].message.content).toContain("old body");
+      expect(getArchivedItem(P, "legacy-digest")?.acked).toBe(true);
+    });
+  });
+});
+
+describe("parseWhen / parseDurationMs", () => {
+  const now = 1_000_000_000;
+  test("durations", () => {
+    expect(parseWhen("30m", now)).toBe(now + 30 * 60_000);
+    expect(parseWhen("2h", now)).toBe(now + 2 * 3600_000);
+    expect(parseWhen("45s", now)).toBe(now + 45 * 1000);
+    expect(parseWhen("1d", now)).toBe(now + 86400_000);
+    expect(parseWhen("15", now)).toBe(now + 15 * 60_000);
+  });
+  test("parseDurationMs returns delta", () => {
+    expect(parseDurationMs("30m", now)).toBe(30 * 60_000);
+    expect(parseDurationMs("banana", now)).toBeUndefined();
+  });
+  test("absolute ISO + garbage", () => {
+    expect(parseWhen("2026-08-20T15:00:00Z", now)).toBe(Date.parse("2026-08-20T15:00:00Z"));
+    expect(parseWhen("banana", now)).toBeUndefined();
+  });
+});

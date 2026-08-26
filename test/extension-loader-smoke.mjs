@@ -14,13 +14,12 @@ const scratch = mkdtempSync(join(tmpdir(), "familiar-pi-loader-"));
 const agentDir = join(scratch, "agent");
 mkdirSync(agentDir, { recursive: true });
 try {
-  const result = await discoverAndLoadExtensions([join(repo, "extensions")], scratch, agentDir);
+  const result = await discoverAndLoadExtensions([join(repo, "integrations", "pi", "extensions")], scratch, agentDir);
   assert.deepEqual(result.errors, [], `extension load errors: ${JSON.stringify(result.errors, null, 2)}`);
   const loaded = result.extensions.map((extension) => extension.resolvedPath).sort();
   const expected = [
-    "anthropic-gateway", "handoff", "identity", "ratelimit", "refamiliarize",
-    "subagent", "subscriber", "telemetry", "timegap", "web", "worklist", "zip",
-  ].map((name) => join(repo, "extensions", name, "index.ts")).sort();
+    "handoff", "identity", "subscriber", "telemetry", "tiamat", "timegap", "web", "worklist", "zip",
+  ].map((name) => join(repo, "integrations", "pi", "extensions", name, "index.ts")).sort();
   assert.deepEqual(loaded, expected);
   assert.equal(typeof globalThis.Bun, "undefined", "smoke must run without Bun globals");
   console.log(`pi loader smoke: loaded ${loaded.length} index.ts entrypoints; Bun absent`);

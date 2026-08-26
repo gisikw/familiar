@@ -1,0 +1,39 @@
+{
+  "$comment": "CANONICAL Familiar theme — single source of truth. Both generators read this file and overlay FAMILIAR_THEME_<ROLE> / FAMILIAR_THEME_ANSI_<NAME>. Palette provenance: gruvbox dark, medium contrast (morhetz). Semantic adaptations: the error role uses gruvbox-material red (#ea6962) instead of bright red (#fb4934), which misses the 4.5:1 contrast floor on bg0; surface levels recess below background (bg0_h, then bg_dim) matching the established Familiar depth model. The ANSI palette is authentic gruvbox.",
+  "name": "familiar-gruvbox",
+  "roles": {
+    "background": "#282828",
+    "surface": "#1d2021",
+    "surfaceDim": "#141617",
+    "overlay": "#3c3836",
+    "text": "#ebdbb2",
+    "muted": "#bdae93",
+    "accent": "#8ec07c",
+    "success": "#b8bb26",
+    "warning": "#fabd2f",
+    "error": "#ea6962",
+    "border": "#3c3836",
+    "borderMuted": "#504945",
+    "selectionBg": "#504945",
+    "cursor": "#bdae93",
+    "cursorText": "#282828"
+  },
+  "ansi": {
+    "black": "#282828",
+    "red": "#cc241d",
+    "green": "#98971a",
+    "yellow": "#d79921",
+    "blue": "#458588",
+    "magenta": "#b16286",
+    "cyan": "#689d6a",
+    "white": "#a89984",
+    "brightBlack": "#928374",
+    "brightRed": "#fb4934",
+    "brightGreen": "#b8bb26",
+    "brightYellow": "#fabd2f",
+    "brightBlue": "#83a598",
+    "brightMagenta": "#d3869b",
+    "brightCyan": "#8ec07c",
+    "brightWhite": "#ebdbb2"
+  }
+}

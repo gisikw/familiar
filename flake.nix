@@ -2,14 +2,17 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    herdr = {
-      url = "github:herdrdev/herdr";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
+    server = { url = "path:./services/server"; inputs.nixpkgs.follows = "nixpkgs"; inputs.flake-utils.follows = "flake-utils"; };
+    llm = { url = "path:./services/llm"; inputs.nixpkgs.follows = "nixpkgs"; inputs.flake-utils.follows = "flake-utils"; };
+    stt = { url = "path:./services/stt"; inputs.nixpkgs.follows = "nixpkgs"; inputs.flake-utils.follows = "flake-utils"; };
+    tts = { url = "path:./services/tts"; inputs.nixpkgs.follows = "nixpkgs"; };
+    gateway-module = { url = "path:./services/gateway"; inputs.nixpkgs.follows = "nixpkgs"; inputs.flake-utils.follows = "flake-utils"; };
+    viewer = { url = "path:./services/viewer"; inputs.nixpkgs.follows = "nixpkgs"; inputs.flake-utils.follows = "flake-utils"; };
+    desktop = { url = "path:./apps/desktop"; inputs.nixpkgs.follows = "nixpkgs"; inputs.flake-utils.follows = "flake-utils"; };
   };
 
-  outputs = { self, nixpkgs, flake-utils, herdr }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs = { self, nixpkgs, flake-utils, server, llm, stt, tts, gateway-module, viewer, desktop }:
+    flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ] (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
         modelEnv = {
@@ -56,32 +59,44 @@
           '';
         };
         # Voice baking: gguf+torch env for scripts/bake-kokoro-voices.py,
-        # which injects decrypted identity voice packs (identity/voices/kokoro/
-        # *.pt.age) into the Kokoro gguf. Runs at runtime (run_tts), not in a
-        # derivation: the packs are age-encrypted and the key is runtime
-        # state, so a pure build can't decrypt them — and shouldn't, or the
-        # voice lands in the world-readable nix store.
+        # which injects private-instance voice packs into the Kokoro gguf.
+        # Runs at runtime (run_tts), keeping mutable operator data out of the
+        # world-readable Nix store.
         bakePython = pkgs.python3.withPackages (ps: with ps; [ gguf torch ]);
-        familiarSplash = pkgs.buildGoModule {
-          pname = "familiar-splash";
-          version = "0.1.0";
-          src = ./scripts/splash;
-          vendorHash = null;
-        };
-        familiarHerdr = herdr.packages.${system}.default.overrideAttrs (old: {
-          patches = (old.patches or [ ]) ++ [ ./patches/herdr-left-nav-pty.patch ];
-        });
         piShell = pkgs.mkShell (modelEnv // {
           FAMILIAR_SHELL = "pi";
           FAMILIAR_INTERACTIVE_SHELL = "${pkgs.bashInteractive}/bin/bash";
-          # Subagents run as Herdr agents in their own panes/worktrees.
-          # The extension refuses to dispatch unless this is "herdr".
-          FAMILIAR_SUBAGENT_MODE = "herdr";
           PI_PACKAGE_DIR = "${pkgs.pi-coding-agent}/lib/node_modules/pi-monorepo";
-          packages = with pkgs; [ age curl jq sqlite pi-coding-agent familiarHerdr familiarSplash librsvg ffmpeg ];
+          packages = with pkgs; [ age curl jq sqlite pi-coding-agent librsvg ffmpeg tmux util-linux git ];
         });
       in
       {
+        packages = rec {
+          familiar-server = server.packages.${system}.default;
+          familiar-llm = llm.packages.${system}.default;
+          familiar-stt = stt.packages.${system}.default;
+          familiar-gateway = gateway-module.packages.${system}.default;
+          golem-familiar-render = pkgs.buildGoModule {
+            pname = "golem-familiar-render";
+            version = "1";
+            src = ./contrib/familiar/render;
+            vendorHash = null;
+            subPackages = [ "cmd/golem-familiar-render" ];
+            # The renderer shells out to `tmux -S <socket> has-session` to verify
+            # the exact local session behind each job, so tmux must be on PATH
+            # in the packaged runtime.
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+            postInstall = ''
+              wrapProgram $out/bin/golem-familiar-render \
+                --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.tmux ]}
+            '';
+          };
+          default = familiar-server;
+        } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          familiar-tts = tts.packages.${system}.default;
+          familiar-viewer = viewer.packages.${system}.default;
+          familiar-desktop = desktop.packages.${system}.default;
+        };
         checks = pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           drop-serve-lifecycle = pkgs.runCommand "drop-serve-lifecycle" {
             nativeBuildInputs = with pkgs; [ bash coreutils gnugrep gawk netcat-openbsd ];
@@ -91,6 +106,15 @@
             bash ${self}/test/drop-serve-lifecycle.test.sh ${self}/familiar.sh
             touch $out
           '';
+        };
+        apps = {
+          default = flake-utils.lib.mkApp { drv = server.packages.${system}.default; };
+          familiar-server = flake-utils.lib.mkApp { drv = server.packages.${system}.default; };
+          familiar-gateway = flake-utils.lib.mkApp { drv = gateway-module.packages.${system}.default; };
+          golem-familiar-render = flake-utils.lib.mkApp { drv = self.packages.${system}.golem-familiar-render; };
+        } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          familiar-viewer = flake-utils.lib.mkApp { drv = viewer.packages.${system}.default; };
+          familiar-desktop = flake-utils.lib.mkApp { drv = desktop.packages.${system}.default; };
         };
         devShells = {
           default = piShell;
@@ -107,17 +131,20 @@
             FAMILIAR_SHELL = "tts";
             packages = with pkgs; [ tts-cpp curl age bakePython ];
           });
-          # The standalone familiar server (./server): a plain Node service —
-          # SSE hub, ingress/egress relay, and the restty browser terminal
-          # bridged to a herdr attach. node-pty ships no Linux prebuild, so a
-          # C/C++ + Python toolchain is present for its first-install native
-          # build (npm bundles node-gyp). No FAMILIAR_SHELL re-exec: the
-          # services pane invokes `npm start` in this shell directly.
-          server = pkgs.mkShell {
-            FAMILIAR_SHELL = "server";
-            packages = with pkgs; [ nodejs_22 python3 gnumake gcc curl ];
+          # The Familiar Interface Gateway (./services/gateway): a plain Node
+          # service owning ingress/egress and the browser terminal. node-pty
+          # ships no Linux prebuild, so its first install needs a native build
+          # toolchain. The services pane invokes `npm start` here directly.
+          gateway = pkgs.mkShell {
+            FAMILIAR_SHELL = "gateway";
+            FAMILIAR_INTERACTIVE_SHELL = "${pkgs.bashInteractive}/bin/bash";
+            # Dev mode serves source assets directly; override only ProggyClean
+            # with the same generated font installed by the gateway package.
+            FAMILIAR_GATEWAY_PATCHED_FONT = "${gateway-module.packages.${system}.patched-font}/share/fonts/truetype/ProggyCleanNerdFontMono-Regular.ttf";
+            packages = with pkgs; [ nodejs_22 python3 gnumake gcc curl ]
+              ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ viewer.packages.${system}.default ];
           };
-          # The Electron chrome shell under client/. It is a DUMB CLIENT: a
+          # The Electron chrome shell under apps/desktop/. It is a DUMB CLIENT: a
           # frameless Electron window that loads the familiar server's served
           # terminal page (FAMILIAR_BASE_URL). No node-pty, no vendored restty,
           # no bundled fonts — the served page owns all of that. Only Electron
@@ -126,6 +153,36 @@
           client = pkgs.mkShell {
             FAMILIAR_SHELL = "client";
             packages = with pkgs; [ nodejs_22 ];
+          };
+          # Native viewer connection needs Presence's runtime tools and palette
+          # resolver, but not the much larger pi/agent development environment.
+          connect = pkgs.mkShell {
+            FAMILIAR_SHELL = "connect";
+            # presence.sh ensure regenerates tmux.conf (default-shell included) on
+            # EVERY ensure, so every shell that can trigger an ensure must carry
+            # the interactive bash or a connect clobbers the server-set value.
+            FAMILIAR_INTERACTIVE_SHELL = "${pkgs.bashInteractive}/bin/bash";
+            packages = with pkgs; [ jq tmux util-linux ];
+          };
+          # Browser-level terminal regression harness (test/e2e).  The
+          # playwright-test wrapper points PLAYWRIGHT_BROWSERS_PATH at the
+          # matching nixpkgs browser closure, so it never runs `npx install`.
+          e2e = pkgs.mkShell {
+            FAMILIAR_SHELL = "e2e";
+            PLAYWRIGHT_BROWSERS_PATH = pkgs.playwright-driver.browsers;
+            packages = with pkgs; [
+              nodejs_22 playwright-test playwright-driver
+              tmux util-linux curl kitty imagemagick
+              gateway-module.packages.${system}.default
+            ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+              viewer.packages.${system}.default
+            ];
+          };
+        } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          viewer = pkgs.mkShell {
+            FAMILIAR_SHELL = "viewer";
+            ZIG = "${pkgs.zig_0_15}/bin/zig";
+            packages = with pkgs; [ zig_0_15 cargo rustc rustfmt clippy tmux ];
           };
         };
       }

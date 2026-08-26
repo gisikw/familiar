@@ -1,16 +1,60 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+usage() {
+  cat <<'EOF'
+Usage: ./familiar.sh <command> [arguments]
+
+Commands:
+  --config PATH   Use an external private-instance familiar.toml.
+  init PATH       Scaffold a private familiar instance.
+  server          Run the complete Familiar service stack.
+  connect         Ensure Presence and open the native viewer (first run builds it).
+  client          Run the Electron desktop client.
+  pi              Run the resident pi agent with continuity.
+  llama           Run the local LLM backend.
+  stt             Run the local speech-to-text backend.
+  tts             Run the local text-to-speech backend.
+  kill            Stop the private Presence runtime.
+  ssh HOST [...]  Open SSH with Familiar image-drop transport.
+  drop-serve PATH Run the image-drop socket server (transport helper).
+  drop-fetch PATH Fetch a file from a connected client.
+  worklist-add    Add an item to the durable worklist.
+  inbox-enqueue   Compatibility alias for worklist-add.
+  config-check    Validate familiar.toml.
+  test [--all]    Run e2e tests, or every suite with --all.
+  help            Print this usage.
+EOF
+}
+
+# Help must be available even when optional configuration is invalid, and a
+# bare invocation must never recurse into a dev shell or start services.
+if [ "${1:-}" = "--config" ]; then
+  [ $# -ge 2 ] || { echo 'familiar: --config requires a path' >&2; exit 2; }
+  export FAMILIAR_CONFIG_PATH="$2"
+  shift 2
+fi
+case ${1:-} in
+  ""|-h|--help|help) usage; exit 0 ;;
+esac
+
 SELF="$(realpath "$0" 2>/dev/null || { cd "$(dirname "$0")" && printf '%s/%s' "$(pwd -P)" "$(basename "$0")"; })"
 REPO="$(dirname "$SELF")"
+export FAMILIAR_PRESENCE_CWD="${FAMILIAR_PRESENCE_CWD:-$PWD}"
+if [ -n "${FAMILIAR_CONFIG_PATH:-}" ] && [[ "$FAMILIAR_CONFIG_PATH" != /* ]]; then
+  FAMILIAR_CONFIG_PATH="$(cd "$(dirname "$FAMILIAR_CONFIG_PATH")" && pwd -P)/$(basename "$FAMILIAR_CONFIG_PATH")"
+  export FAMILIAR_CONFIG_PATH
+fi
+CONFIG_DIR="$REPO"
+[ -n "${FAMILIAR_CONFIG_PATH:-}" ] && CONFIG_DIR="$(dirname "$FAMILIAR_CONFIG_PATH")"
 STATE_DIR="$REPO/state"
-HERDR_STATE_DIR="$STATE_DIR/herdr"
-HERDR_COLD_START=0
+[ "$CONFIG_DIR" = "$REPO" ] || STATE_DIR="$CONFIG_DIR/state"
+resolve_config_path() { case "$1" in /*) printf '%s' "$1";; *) printf '%s/%s' "$CONFIG_DIR" "$1";; esac; }
 
 # Local configuration must load before defaults and before dev-shell recursion:
 # file values beat defaults, while the ambient variables captured by the loader
 # beat file values. The exported provenance marker keeps that ordering stable
-# when nix develop or /refamiliarize re-enters this script.
+# when nix develop re-enters this script.
 # shellcheck source=scripts/familiar-config.sh
 . "$REPO/scripts/familiar-config.sh"
 CONFIG_LOAD_FAILED=0
@@ -27,33 +71,54 @@ if ! familiar_config_load "$REPO"; then
   esac
 fi
 
-export HERDR_SESSION="${HERDR_SESSION:-familiar}"
-export HERDR_CONFIG_PATH="${HERDR_CONFIG_PATH:-$HERDR_STATE_DIR/config.toml}"
-
 # Defaults (lowest precedence)
-export FAMILIAR_IDENTITY_PATH="${FAMILIAR_IDENTITY_PATH:-$REPO/identity}"
-export FAMILIAR_AGE_KEY="${FAMILIAR_AGE_KEY:-$STATE_DIR/age.key}"
+if [ -n "${FAMILIAR_IDENTITY_PATH:-}" ]; then export FAMILIAR_IDENTITY_PATH="$(resolve_config_path "$FAMILIAR_IDENTITY_PATH")"; fi
 export FAMILIAR_HANDOFF_PATH="${FAMILIAR_HANDOFF_PATH:-$STATE_DIR/handoffs}"
+export FAMILIAR_HANDOFF_PATH="$(resolve_config_path "$FAMILIAR_HANDOFF_PATH")"
+if [ -n "${FAMILIAR_HANDOFF_PROMPT_PATH:-}" ]; then export FAMILIAR_HANDOFF_PROMPT_PATH="$(resolve_config_path "$FAMILIAR_HANDOFF_PROMPT_PATH")"; fi
 # Worklist durable queue. FAMILIAR_WORKLIST_DIR is canonical; FAMILIAR_INBOX_DIR
 # is a bounded compatibility alias (one release) so a mid-flight external writer
 # does not silently drop items.
 export FAMILIAR_WORKLIST_DIR="${FAMILIAR_WORKLIST_DIR:-${FAMILIAR_INBOX_DIR:-$STATE_DIR/worklist}}"
-export FAMILIAR_RELOAD_REQUEST_PATH="${FAMILIAR_RELOAD_REQUEST_PATH:-$HERDR_STATE_DIR/reload-request}"
-export FAMILIAR_RELOAD_COMPLETE_PATH="${FAMILIAR_RELOAD_COMPLETE_PATH:-$HERDR_STATE_DIR/reload-complete}"
+export FAMILIAR_WORKLIST_DIR="$(resolve_config_path "$FAMILIAR_WORKLIST_DIR")"
+if [ -n "${FAMILIAR_INBOX_DIR:-}" ]; then export FAMILIAR_INBOX_DIR="$(resolve_config_path "$FAMILIAR_INBOX_DIR")"; fi
 export FAMILIAR_LOG_PATH="${FAMILIAR_LOG_PATH:-$STATE_DIR/log.jsonl}"
+export FAMILIAR_LOG_PATH="$(resolve_config_path "$FAMILIAR_LOG_PATH")"
 export FAMILIAR_SUBSCRIBER_PORT="${FAMILIAR_SUBSCRIBER_PORT:-1692}"
+export FAMILIAR_PRESENCE_STATE_DIR="${FAMILIAR_PRESENCE_STATE_DIR:-$STATE_DIR/presence}"
+export FAMILIAR_PRESENCE_STATE_DIR="$(resolve_config_path "$FAMILIAR_PRESENCE_STATE_DIR")"
+export FAMILIAR_PRESENCE_SOCKET="${FAMILIAR_PRESENCE_SOCKET:-$FAMILIAR_PRESENCE_STATE_DIR/tmux.sock}"
+export FAMILIAR_PRESENCE_SOCKET="$(resolve_config_path "$FAMILIAR_PRESENCE_SOCKET")"
+export FAMILIAR_PRESENCE_CTL="${FAMILIAR_PRESENCE_CTL:-$REPO/services/presence/presence.sh}"
 # Session storage. Overriding this is the deliberate escape hatch for a wedged
 # session: point it at a clean-room dir to bail out without touching the main
 # continuity line. Not a first-class verb on purpose — forking continuity
 # should have friction.
 export PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR:-$STATE_DIR/pi}"
+export PI_CODING_AGENT_DIR="$(resolve_config_path "$PI_CODING_AGENT_DIR")"
+for _familiar_path_var in FAMILIAR_TTS_VOICES_SOURCE FAMILIAR_ARTIFACT_DIR FAMILIAR_SUBAGENT_DIR FAMILIAR_SUBAGENT_SESSION_DIR; do
+  if [ -n "${!_familiar_path_var:-}" ]; then
+    printf -v "$_familiar_path_var" '%s' "$(resolve_config_path "${!_familiar_path_var}")"
+    export "$_familiar_path_var"
+  fi
+done
 
-MODEL_DIR="${FAMILIAR_MODEL_DIR:-$REPO/models}"
+export FAMILIAR_MODEL_DIR="${FAMILIAR_MODEL_DIR:-$REPO/models}"
+export FAMILIAR_MODEL_DIR="$(resolve_config_path "$FAMILIAR_MODEL_DIR")"
+MODEL_DIR="$FAMILIAR_MODEL_DIR"
+
+prepare_tmux_theme() {
+  local theme_dir="$STATE_DIR/theme"
+  install -d -m 700 "$theme_dir"
+  export FAMILIAR_TMUX_THEME_CONFIG="$theme_dir/tmux.conf"
+  bash "$REPO/scripts/familiar-theme.sh" tmux > "$FAMILIAR_TMUX_THEME_CONFIG"
+  chmod 600 "$FAMILIAR_TMUX_THEME_CONFIG"
+}
 
 ensure_devshell() {
   local shell=$1; shift
   if [ "${FAMILIAR_SHELL:-}" != "$shell" ]; then
-    exec nix develop ".#$shell" -c "$SELF" "$@"; 
+    exec nix develop "$REPO#$shell" -c "$SELF" "$@";
   fi
 }
 
@@ -113,9 +178,9 @@ setup_tts() {
 
 run_tts() {
   ensure_devshell tts "$@"
-  # Custom voices: committed under identity/voices/kokoro/ as <name>.pt.age
-  # (encrypted) or plain <name>.pt, staged to state/voices/kokoro/<name>.pt
-  # (decrypt or copy), then baked into a local copy of the Kokoro gguf.
+  # Custom voices are ordinary <name>.pt files under the private instance's
+  # voices tree, staged to state/voices/kokoro, then baked into a local copy
+  # of the Kokoro gguf.
   # tts-server only speaks voices embedded in the gguf (--voice selects,
   # never loads), so baking is what makes a pack selectable;
   # FAMILIAR_TTS_VOICE is runtime selection only.
@@ -129,20 +194,18 @@ run_tts() {
   fi
   local tts_model="$MODEL_DIR/$FAMILIAR_TTS_MODEL_FILE"
   local baked="$MODEL_DIR/baked-$FAMILIAR_TTS_MODEL_FILE"
-  local voices_src="$REPO/identity/voices/kokoro"
+  local voices_src="${FAMILIAR_TTS_VOICES_SOURCE:-${FAMILIAR_IDENTITY_PATH:+$FAMILIAR_IDENTITY_PATH/voices/kokoro}}"
+  [ -n "$voices_src" ] && voices_src="$(resolve_config_path "$voices_src")"
   local voices_dir="$STATE_DIR/voices/kokoro"
   local packs=() rebake="" f name pt
   if [ -d "$voices_src" ]; then
-    for f in "$voices_src"/*.pt "$voices_src"/*.pt.age; do
+    for f in "$voices_src"/*.pt; do
       [ -e "$f" ] || continue
-      name="$(basename "$f")"; name="${name%.age}"; name="${name%.pt}"
+      name="$(basename "$f")"; name="${name%.pt}"
       pt="$voices_dir/$name.pt"
       mkdir -p "$voices_dir"
       if [ ! -f "$pt" ] || [ "$f" -nt "$pt" ]; then
-        case "$f" in
-          *.age) age -i "$FAMILIAR_AGE_KEY" --decrypt -o "$pt" "$f" ;;
-          *)     cp "$f" "$pt" ;;
-        esac
+        cp "$f" "$pt"
       fi
       packs+=("$pt")
       if [ ! -f "$baked" ] || [ "$pt" -nt "$baked" ]; then rebake=1; fi
@@ -169,9 +232,72 @@ run_tts() {
   done
 }
 
+prepare_plugin() {
+  [ -z "${FAMILIAR_PLUGIN_ROOT:-}" ] || return 0
+  local path=${FAMILIAR_PLUGINS_GOLEM_PATH:-} git=${FAMILIAR_PLUGINS_GOLEM_GIT:-} rev=${FAMILIAR_PLUGINS_GOLEM_REV:-}
+  if [ -z "$path$git$rev" ]; then return 0; fi
+  if [ -n "$path" ] && { [ -n "$git" ] || [ -n "$rev" ]; }; then echo 'familiar: plugins.golem path and git/rev are mutually exclusive' >&2; return 1; fi
+  if [ -n "$git" ] && [[ ! $rev =~ ^[0-9a-fA-F]{40}$ ]]; then echo 'familiar: plugins.golem git requires an exact 40-character rev' >&2; return 1; fi
+  if [ -n "$rev" ] && [ -z "$git" ]; then echo 'familiar: plugins.golem rev requires git' >&2; return 1; fi
+  if [ -n "$path" ]; then
+    case "$path" in /*) ;; *) path="$(resolve_config_path "$path")" ;; esac
+    [ -d "$path" ] || { echo "familiar: plugin path is not a directory: $path" >&2; return 1; }
+  else
+    path="$STATE_DIR/plugins/golem/src"
+    install -d -m 700 "$(dirname "$path")"
+    [ ! -L "$path" ] || { echo 'familiar: refusing symlinked Git plugin cache' >&2; return 1; }
+    if [ ! -d "$path/.git" ]; then git init -q "$path"; fi
+    if [ "$(git -C "$path" remote get-url origin 2>/dev/null || true)" != "$git" ]; then
+      git -C "$path" remote remove origin 2>/dev/null || true
+      git -C "$path" remote add origin -- "$git" || { echo 'familiar: could not configure plugin origin' >&2; return 1; }
+    fi
+    [ "$(git -C "$path" remote get-url origin)" = "$git" ] || { echo 'familiar: plugin origin mismatch' >&2; return 1; }
+    git -C "$path" fetch -q --force --no-tags origin "$rev" || { echo 'familiar: could not fetch exact plugins.golem rev' >&2; return 1; }
+    git -C "$path" checkout -q --detach FETCH_HEAD || return 1
+    git -C "$path" reset -q --hard "$rev" || return 1
+    git -C "$path" clean -q -ffdqx || return 1
+    local link target root_real
+    root_real=$(realpath -e "$path") || return 1
+    while IFS= read -r -d '' link; do
+      target=$(realpath -e "$link") || { echo 'familiar: broken plugin symlink' >&2; return 1; }
+      case "$target" in "$root_real"/*) ;; *) echo 'familiar: plugin symlink escapes cache root' >&2; return 1 ;; esac
+    done < <(find "$path" -type l -print0)
+    local actual; actual=$(git -C "$path" rev-parse --verify HEAD)
+    [ "${actual,,}" = "${rev,,}" ] || { echo "familiar: plugin SHA mismatch (wanted $rev, got $actual)" >&2; return 1; }
+  fi
+  [ -f "$path/contrib/familiar/plugin.toml" ] && [ "$(realpath -e "$path/contrib/familiar/plugin.toml" 2>/dev/null)" = "$(realpath -e "$path")/contrib/familiar/plugin.toml" ] || { echo 'familiar: plugin lacks a safe contrib/familiar/plugin.toml' >&2; return 1; }
+  export FAMILIAR_PLUGIN_ROOT="$path" FAMILIAR_PLUGIN_ID=golem
+  local api
+  api=$(FAMILIAR_PLUGIN_MANIFEST="$path/contrib/familiar/plugin.toml" nix eval --impure --raw --expr 'toString (builtins.fromTOML (builtins.readFile (builtins.getEnv "FAMILIAR_PLUGIN_MANIFEST"))).familiar_api') || return 1
+  [ "$api" = 1 ] || { echo "familiar: plugin requires familiar_api = 1 (got $api)" >&2; return 1; }
+  local name value entry prefix=FAMILIAR_PLUGINS_GOLEM_ENV_
+  while IFS= read -r entry; do
+    name=${entry%%=*}; value=${entry#*=}
+    case "$name" in "$prefix"*) export "FAMILIAR_PLUGIN_ENV_${name#$prefix}=$value" ;; esac
+  done < <(env)
+  local server_listen=${FAMILIAR_SERVER_LISTEN:-127.0.0.1:9940}
+  # The viewer consumes only the generic host-owned aggregate render endpoint.
+  # No plugin-specific path leaks into the viewer contract.
+  export FAMILIAR_RENDER_URL="http://127.0.0.1:${server_listen##*:}/v1/render"
+}
+
+plugin_extensions_json() {
+  if [ -z "${FAMILIAR_PLUGIN_ROOT:-}" ]; then printf '[]'; return; fi
+  FAMILIAR_PLUGIN_MANIFEST="$FAMILIAR_PLUGIN_ROOT/contrib/familiar/plugin.toml" FAMILIAR_PLUGIN_ROOT="$FAMILIAR_PLUGIN_ROOT" nix eval --impure --json --expr '
+    let m=builtins.fromTOML (builtins.readFile (builtins.getEnv "FAMILIAR_PLUGIN_MANIFEST")); root=builtins.getEnv "FAMILIAR_PLUGIN_ROOT";
+    in map (x: builtins.replaceStrings ["\${plugin_root}"] [root] x) (m.pi.extensions or [])'
+}
+
 run_pi() {
+  prepare_plugin
   ensure_devshell pi "$@"
   mkdir -p "$PI_CODING_AGENT_DIR"
+  # A remote/dynamic provider (for example Tiamat) need not configure the
+  # optional local llama.cpp backend. Keep both expansions safe under `set -u`
+  # and omit the synthetic llama.cpp cache entry when either value is absent.
+  local llama_url="${LLAMA_BASE_URL:-}"
+  local llama_model_file="${FAMILIAR_MODEL_FILE:-}"
+  local llama_model="${llama_model_file%.*}"
   # Unified theme: regenerate the pi theme JSON from the canonical palette +
   # FAMILIAR_THEME_* on every (re)start. Cold restart picks up [theme] changes
   # with no rebuild; pi hot-reloads the active custom theme file on edit too.
@@ -191,331 +317,84 @@ run_pi() {
     prev=$(jq -ce . "$PI_CODING_AGENT_DIR/settings.json" 2>/dev/null || echo '{}')
     # handoff/index.ts triggers at 90% of the active model's real window. Pi's fixed
     # reserve is the emergency floor for small-window models and overflows.
-    jq -n --argjson prev "$prev" \
+    plugin_exts=$(plugin_extensions_json)
+    jq -n --argjson prev "$prev" --argjson pluginExts "$plugin_exts" \
       --arg provider "${FAMILIAR_DEFAULT_PROVIDER:-llama.cpp}" \
-      --arg model "${FAMILIAR_DEFAULT_MODEL:-${FAMILIAR_MODEL_FILE%.*}}" \
+      --arg model "${FAMILIAR_DEFAULT_MODEL:-$llama_model}" \
       --arg dir "$PI_CODING_AGENT_DIR" \
-      --arg ext "$REPO/extensions" '
+      --arg ext "$REPO/integrations/pi/extensions" '
       $prev + {
         lastChangelogVersion: "0.84.1",
         theme: "familiar",
         themes: [ ($dir + "/themes") ],
         compaction: { enabled: true, reserveTokens: 4096 },
-        extensions: [ $ext ]
+        # Keep the live extension set explicit.
+        extensions: (([
+          "handoff", "identity", "subscriber", "telemetry",
+          "tiamat", "timegap", "web", "worklist", "zip"
+        ] | map($ext + "/" + .)) + $pluginExts | unique)
       }
       | .defaultProvider //= $provider
       | .defaultModel //= $model
     ' > "$PI_CODING_AGENT_DIR/settings.json"
-    jq -n --arg url "$LLAMA_BASE_URL" --arg model "${FAMILIAR_MODEL_FILE%.*}" '{
-      "llama.cpp": {
-        "models": [
-          {
-            id: $model,
-            name: $model,
-            api: "openai-completions",
-            provider: "llama.cpp",
-            baseUrl: ($url  + "/v1"),
-            reasoning: false,
-            input: [ "text" ],
-            cost: {
-              input: 0,
-              output: 0,
-              cacheRead: 0,
-              cacheWrite: 0
-            },
-            contextWindow: 32768,
-            maxTokens: 32768,
-            compat: {
-              supportsStore: false,
-              supportsDeveloperRole: false,
-              supportsReasoningEffort: false,
-              supportsUsageInStreaming: true,
-              supportsStrictMode: false,
-              maxTokensField: "max_tokens"
+    jq -n --arg url "$llama_url" --arg model "$llama_model" '
+      if ($url | length) == 0 or ($model | length) == 0 then {}
+      else {
+        "llama.cpp": {
+          "models": [
+            {
+              id: $model,
+              name: $model,
+              api: "openai-completions",
+              provider: "llama.cpp",
+              baseUrl: ($url  + "/v1"),
+              reasoning: false,
+              input: [ "text" ],
+              cost: {
+                input: 0,
+                output: 0,
+                cacheRead: 0,
+                cacheWrite: 0
+              },
+              contextWindow: 32768,
+              maxTokens: 32768,
+              compat: {
+                supportsStore: false,
+                supportsDeveloperRole: false,
+                supportsReasoningEffort: false,
+                supportsUsageInStreaming: true,
+                supportsStrictMode: false,
+                maxTokensField: "max_tokens"
+              }
             }
-          }
-        ],
-        checkedAt: (now * 1000 | floor),
-      }
-    }' > "$PI_CODING_AGENT_DIR/models-store.json"
+          ],
+          checkedAt: (now * 1000 | floor),
+        }
+      } end
+    ' > "$PI_CODING_AGENT_DIR/models-store.json"
     # --continue resumes the most recent session (falls through to a fresh one
     # when none exists — verified in SessionManager.continueRecent). Bounces
     # and crash respawns keep continuity; /clear stays the only way to end a
     # session, and it writes a handoff first.
     #
     # `|| true` is load-bearing under `set -e`: a bare command as the loop body
-    # aborts the whole function on any non-zero exit, so a crashed pi would
-    # skip both the reload check below and the respawn — leaving a dead pane
-    # with no supervisor, and stalling /refamiliarize unless shutdown happened
-    # to exit 0.
+    # aborts the whole function on any non-zero exit, leaving a dead pane with
+    # no supervisor instead of respawning pi.
     command pi \
       --continue \
       --no-context-files \
       --no-skills \
       --skill "$REPO/skills/" || true
-    if [ -f "$FAMILIAR_RELOAD_REQUEST_PATH" ]; then
-      herdr server stop >/dev/null 2>&1 || true
-      return
-    fi
     sleep 1
   done
-}
-
-handle_age() {
-  target=${2:-}
-  if [ -z "${target}" ]; then
-    echo "Usage: ./familiar.sh age <target>"
-    exit 1
-  fi
-
-  ensure_devshell pi "$@"
-
-  if [ ! -f "$FAMILIAR_AGE_KEY" ]; then
-    echo "Generating age key to $FAMILIAR_AGE_KEY"
-    mkdir -p "$(dirname "$FAMILIAR_AGE_KEY")"
-    age-keygen -o "$FAMILIAR_AGE_KEY" >/dev/null
-  fi
-
-  pubkey=$(age-keygen -y "$FAMILIAR_AGE_KEY")
-
-  if test ! -t 0; then
-    age -r "$pubkey" -o "$target"
-  else
-    tmp=$(mktemp); orig=$(mktemp)
-    trap 'rm -f "$tmp" "$orig"' EXIT
-    if [ -f "$target" ]; then
-      age -i "$FAMILIAR_AGE_KEY" --decrypt -o "$tmp" "$target"
-    fi
-    cp "$tmp" "$orig"
-    "${EDITOR:-vi}" "$tmp"
-    cmp -s "$tmp" "$orig" || age -r "$pubkey" -o "$target" "$tmp"
-  fi
-}
-
-write_herdr_config() {
-  mkdir -p "$HERDR_STATE_DIR" "$(dirname "$HERDR_CONFIG_PATH")"
-  # Unified theme: generate the [theme]/[theme.custom] block from the canonical
-  # palette + FAMILIAR_THEME_* env (scripts/familiar-theme.sh). A bad color
-  # aborts (set -e) before a broken config is written.
-  local theme_block
-  theme_block="$(bash "$REPO/scripts/familiar-theme.sh" herdr)"
-  cat > "$HERDR_CONFIG_PATH" <<EOF
-onboarding = false
-
-$theme_block
-
-[terminal]
-default_shell = "$FAMILIAR_INTERACTIVE_SHELL"
-new_cwd = "follow"
-
-[update]
-version_check = false
-manifest_check = false
-
-[[keys.command]]
-key = "prefix+shift+q"
-type = "shell"
-command = "\$HERDR_BIN_PATH server stop"
-description = "stop the Familiar Herdr server"
-
-[ui]
-sidebar_width = 30
-sidebar_min_width = 24
-sidebar_max_width = 36
-prompt_new_workspace_name = false
-# The Familiar workspace holds only the pi tab (services live in their own
-# workspace), so this hides the tab row exactly when Kevin is looking at pi.
-hide_tab_bar_when_single_tab = true
-# Reclaim the scrollbar column — the thin line on the right edge of an
-# otherwise unsplit pane.
-pane_scrollbars = false
-# No outside frame around the pane area either; splits keep their internal
-# dividers via pane_borders (default true).
-pane_outer_borders = false
-
-[ui.sidebar.pty]
-command = "$REPO/scripts/herdr-sidebar.sh"
-rows = 12
-cwd = "$REPO"
-
-# The sidebar mark is transmitted via kitty graphics (scripts/herdr-sidebar.sh).
-# Herdr's kitty-graphics rendering for attached clients is experimental and OFF
-# by default — without this the APC transmit is swallowed and the sidebar shows
-# only the wordmark text.
-[experimental]
-kitty_graphics = true
-EOF
-}
-
-herdr_server_running() {
-  herdr status server --json 2>/dev/null | jq -e '.running == true' >/dev/null
-}
-
-wait_for_herdr() {
-  local tries=0
-  until herdr_server_running; do
-    tries=$((tries + 1))
-    if [ "$tries" -ge 100 ]; then
-      echo "Herdr server did not become ready; see $HERDR_STATE_DIR/server.stdout.log" >&2
-      return 1
-    fi
-    sleep 0.1
-  done
-}
-
-start_herdr_server() {
-  if herdr_server_running; then return; fi
-  HERDR_COLD_START=1
-  nohup herdr server </dev/null >"$HERDR_STATE_DIR/server.stdout.log" 2>&1 &
-  wait_for_herdr
-}
-
-run_in_herdr_pane() {
-  local pane=$1 role=$2 command
-  if [ "$role" = pi ]; then
-    printf -v command 'printf "\\033[2J\\033[H"; %q %q' "$SELF" "$role"
-  elif [ "$role" = server ]; then
-    # The familiar server (web presence) is a plain Node service under ./server,
-    # launched DIRECTLY here — there is deliberately no `familiar.sh server`
-    # subcommand. Install deps on first run (node-pty native build + vendored
-    # web assets via postinstall), then supervise with a restart loop, matching
-    # llama/stt/tts. Its toolchain is the .#server devshell (nodejs_22 + a
-    # C/py toolchain for node-pty).
-    printf -v command \
-      'cd %q && { [ -d node_modules ] || nix develop %q#server -c npm install; }; while true; do nix develop %q#server -c npm start || true; sleep 1; done' \
-      "$REPO/server" "$REPO" "$REPO"
-  else
-    printf -v command '%q %q' "$SELF" "$role"
-  fi
-  herdr pane rename "$pane" "$role" >/dev/null
-  herdr pane run "$pane" "$command" >/dev/null
-}
-
-split_herdr_pane() {
-  local pane=$1 direction=$2
-  herdr pane split "$pane" --direction "$direction" --cwd "$REPO" --no-focus \
-    | jq -er '.result.pane.pane_id'
-}
-
-wait_for_pi_pane() {
-  local pane=$1 response
-  while true; do
-    if response=$(herdr agent get "$pane" 2>/dev/null) \
-      && jq -e '.result.agent.agent == "pi"' <<<"$response" >/dev/null; then
-      return
-    fi
-    sleep 0.1
-  done
-}
-
-launch_pi_with_splash() {
-  local workspace=$1 pi_tab=$2 pi_pane=$3 response splash_tab splash_pane
-  local ready_file handoff_file command
-
-  response=$(herdr tab create --workspace "$workspace" --cwd "$REPO" --label loading --no-focus)
-  splash_tab=$(jq -er '.result.tab.tab_id' <<<"$response")
-  splash_pane=$(jq -er '.result.root_pane.pane_id' <<<"$response")
-  ready_file="$HERDR_STATE_DIR/splash-ready-${splash_pane//:/-}"
-  handoff_file="$HERDR_STATE_DIR/splash-handoff-${splash_pane//:/-}"
-  rm -f "$ready_file" "$handoff_file"
-
-  printf -v command '%q %q %q %q' \
-    familiar-splash "$ready_file" "$handoff_file" "$pi_pane"
-  herdr pane run "$splash_pane" "$command" >/dev/null
-  run_in_herdr_pane "$pi_pane" pi
-  herdr tab focus "$splash_tab" >/dev/null
-
-  # Finish the cut beside the attaching Herdr client. Both tabs have full-size
-  # PTYs, so focusing Pi before closing the splash causes no resize redraw.
-  (
-    wait_for_pi_pane "$pi_pane"
-    : > "$ready_file"
-    until [ -e "$handoff_file" ]; do sleep 0.05; done
-    herdr tab focus "$pi_tab" >/dev/null
-    herdr tab close "$splash_tab" >/dev/null
-    rm -f "$ready_file" "$handoff_file"
-  ) >/dev/null 2>&1 &
-}
-
-populate_familiar_workspace() {
-  local workspace=$1 pi_tab=$2 pi_root=$3
-  local service_response service_root pane direction role
-  local -a services=()
-
-  # The web-presence server always runs — it is not gated behind a NEED_ flag
-  # like the optional local models. It is the first service so it takes the
-  # services-tab root pane; llama/stt/tts split off it when enabled.
-  services+=(server)
-  [ -n "${NEED_LLAMA:-}" ] && services+=(llama)
-  [ -n "${NEED_STT:-}" ] && services+=(stt)
-  [ -n "${NEED_TTS:-}" ] && services+=(tts)
-  # Services live in their OWN workspace (not a second tab in the Familiar
-  # workspace): with ui.hide_tab_bar_when_single_tab, this leaves the Familiar
-  # workspace single-tab so the tab row disappears while looking at pi.
-  # Reuse/replace the previous services workspace across cold starts so they
-  # do not accumulate in the sidebar.
-  local services_id_file="$HERDR_STATE_DIR/services-workspace-id" old_services
-  if [ "${#services[@]}" -gt 0 ]; then
-    if [ -s "$services_id_file" ]; then
-      old_services=$(<"$services_id_file")
-      herdr workspace close "$old_services" >/dev/null 2>&1 || true
-    fi
-    service_response=$(herdr workspace create --cwd "$REPO" --label services --no-focus)
-    jq -er '.result.workspace.workspace_id' <<<"$service_response" > "$services_id_file"
-    service_root=$(jq -er '.result.root_pane.pane_id' <<<"$service_response")
-    run_in_herdr_pane "$service_root" "${services[0]}"
-    for role in "${services[@]:1}"; do
-      direction=right
-      [ "$role" = tts ] && direction=down
-      pane=$(split_herdr_pane "$service_root" "$direction")
-      run_in_herdr_pane "$pane" "$role"
-    done
-  fi
-
-  launch_pi_with_splash "$workspace" "$pi_tab" "$pi_root"
-}
-
-ensure_familiar_workspace() {
-  local id_file="$HERDR_STATE_DIR/workspace-id" workspace pi_root pi_tab response old_tab
-  local -a old_tabs=()
-  if [ -s "$id_file" ]; then
-    workspace=$(<"$id_file")
-    if herdr workspace get "$workspace" >/dev/null 2>&1; then
-      if [ "$HERDR_COLD_START" != 1 ]; then return; fi
-
-      # Snapshot restore deliberately revives layout, not arbitrary processes.
-      # Keep the workspace itself (and therefore its sidebar ordering), but
-      # replace its shell-only tabs with our declarative live layout. Create
-      # replacements first so closing the old last tab cannot close the space.
-      mapfile -t old_tabs < <(
-        herdr tab list --workspace "$workspace" | jq -er '.result.tabs[].tab_id'
-      )
-      response=$(herdr tab create --workspace "$workspace" --cwd "$REPO" --label pi --no-focus)
-      pi_root=$(jq -er '.result.root_pane.pane_id' <<<"$response")
-      pi_tab=$(jq -er '.result.tab.tab_id' <<<"$response")
-      populate_familiar_workspace "$workspace" "$pi_tab" "$pi_root"
-      for old_tab in "${old_tabs[@]}"; do
-        herdr tab close "$old_tab" >/dev/null
-      done
-      return
-    fi
-  fi
-
-  response=$(herdr workspace create --cwd "$REPO" --label Familiar --focus)
-  workspace=$(jq -er '.result.workspace.workspace_id' <<<"$response")
-  pi_root=$(jq -er '.result.root_pane.pane_id' <<<"$response")
-  pi_tab=$(jq -er '.result.tab.tab_id' <<<"$response")
-  printf '%s\n' "$workspace" > "$id_file"
-  herdr tab rename "$pi_tab" pi >/dev/null
-  populate_familiar_workspace "$workspace" "$pi_tab" "$pi_root"
 }
 
 # --- image drop transport ----------------------------------------------------
 #
 # Dragging a file onto a terminal types its *path* into the tty. Over ssh that
 # path names a file on the machine holding the mouse, not the one running the
-# agent, so the bytes never cross. These verbs carry them: `connect` opens a
-# session with a reverse socket wired back to a small file server, `drop-serve`
+# agent, so the bytes never cross. These verbs carry them: `ssh` opens a session
+# with a reverse socket wired back to a small file server, `drop-serve`
 # is that server, and `drop-fetch` pulls a path across it.
 #
 # The client half runs on a stock machine — no nix, no jq, no bun. It needs only
@@ -842,11 +721,11 @@ drop_fetch() {
 # Open an ssh session with the drop server wired back through it. The server
 # lives and dies with this command: no stray daemon outlives the session that
 # needed it.
-connect() {
+ssh_connect() {
   shift 2>/dev/null || true
   local target=${1:-} client_id local_sock remote_dir daemon status waited
   if [ -z "$target" ]; then
-    echo "Usage: ./familiar.sh connect <[user@]host> [command...]" >&2
+    echo "Usage: ./familiar.sh ssh <[user@]host> [command...]" >&2
     return 1
   fi
   shift
@@ -898,14 +777,45 @@ connect() {
   return "$status"
 }
 
-# The Electron terminal app under client/. Runs in the `client` devShell so the
+# The Electron terminal app under apps/desktop/. Runs in the `client` devShell so the
 # Node version lives only in flake.nix. npm install runs only when node_modules
 # is missing or package-lock.json is newer than it (cheap staleness check), so a
 # normal launch skips it. bash 3.2 compatible: no associative arrays, and the
 # staleness test is a plain `-nt`.
+viewer_connect() {
+  # Plugin preparation exports the generic FAMILIAR_RENDER_URL so an external
+  # `connect` gets host chrome without any manual plugin-specific URL.
+  prepare_plugin
+  ensure_devshell connect "$@"
+  local executable="${FAMILIAR_VIEWER_BIN:-}"
+  if [ -z "$executable" ] && command -v nix >/dev/null 2>&1; then
+    local output
+    if output=$(cd "$REPO" && nix build .#familiar-viewer --print-out-paths --no-link); then
+      executable="${output##*$'\n'}/bin/familiar-viewer"
+    fi
+  fi
+  if [ -z "$executable" ]; then
+    executable=$(command -v familiar-viewer 2>/dev/null || true)
+  fi
+  if [ -z "$executable" ]; then
+    echo "familiar: could not build or find familiar-viewer on PATH" >&2
+    return 1
+  fi
+  export FAMILIAR_VIEWER_BIN="$executable"
+  # Recolor the boot mark + F A M I L I A R wordmark from the active Familiar
+  # theme's `accent` role (honors [theme] overrides / FAMILIAR_THEME_ACCENT).
+  # The viewer tints the mark PNG and styles the wordmark text from this one
+  # value, so a cold restart after a [theme] change recolors both. Non-fatal:
+  # if resolution fails the viewer falls back to its baked default accent.
+  if accent=$(bash "$REPO/scripts/familiar-theme.sh" accent 2>/dev/null); then
+    export FAMILIAR_MARK_ACCENT="$accent"
+  fi
+  exec "$FAMILIAR_PRESENCE_CTL" viewer
+}
+
 client() {
   ensure_devshell client "$@"
-  local dir="$REPO/client"
+  local dir="$REPO/apps/desktop"
   cd "$dir" || { echo "no client dir at $dir" >&2; return 1; }
   if [ ! -d node_modules ] || [ package-lock.json -nt node_modules ]; then
     npm install || return 1
@@ -913,45 +823,79 @@ client() {
   npm start
 }
 
-start() {
-  local client_status
-  ensure_devshell pi "$@"
-  if [ "${HERDR_ENV:-}" = 1 ]; then
-    echo "Familiar is already running inside Herdr session $HERDR_SESSION" >&2
+provision_server_model() {
+  local label=$1 file=$2 url=$3
+  if [ -z "$file" ] || [ -z "$url" ]; then
+    echo "familiar: local $label requires a model file and URL" >&2
     return 1
   fi
-  setup_llama; setup_stt; setup_tts
-  write_herdr_config
+  [ -f "$MODEL_DIR/$file" ] && return 0
+  mkdir -p "$MODEL_DIR"
+  echo "familiar: provisioning $label model" >&2
+  curl -fL --retry 5 -C - -o "$MODEL_DIR/$file.part" "$url" \
+    && mv "$MODEL_DIR/$file.part" "$MODEL_DIR/$file"
+}
 
-  while true; do
-    start_herdr_server
-    ensure_familiar_workspace
-    if herdr --session "$HERDR_SESSION"; then
-      client_status=0
-    else
-      client_status=$?
-    fi
-    if [ ! -f "$FAMILIAR_RELOAD_REQUEST_PATH" ]; then
-      return "$client_status"
-    fi
-    mv -f "$FAMILIAR_RELOAD_REQUEST_PATH" "$FAMILIAR_RELOAD_COMPLETE_PATH"
-    # Re-enter through the updated script and flake, not this process's stale
-    # function definitions or dev shell. The replacement server will restore
-    # the workspace, resume Pi, and consume reload-complete.
-    exec env -u FAMILIAR_SHELL -u FAMILIAR_INTERACTIVE_SHELL "$SELF"
-  done
+server_local_url() {
+  case "$1" in
+    "http://localhost:$2"|"http://localhost:$2/"|"http://127.0.0.1:$2"|"http://127.0.0.1:$2/"|"http://[::1]:$2"|"http://[::1]:$2/") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+server() {
+  shift || true
+  prepare_plugin
+  local canonical="$REPO/services/server/familiar-server.toml.example"
+  local config="${FAMILIAR_SERVER_CONFIG:-$canonical}"
+  if [ "$config" = "$canonical" ] && [ "$(uname -s)" != Linux ]; then
+    echo "familiar: the canonical five-child server deployment is Linux-only (set FAMILIAR_SERVER_CONFIG for a platform-specific deployment)" >&2
+    return 2
+  fi
+
+  # The pi shell supplies pinned model defaults and download tooling. Re-entry
+  # retains familiar.toml/ambient overrides loaded above.
+  ensure_devshell pi server "$@"
+  prepare_tmux_theme
+  export FAMILIAR_MODEL_DIR="$MODEL_DIR"
+
+  # User-facing endpoint settings describe backends. Children always consume
+  # the stable local proxies, so bridge configured endpoints into proxy-specific
+  # upstream variables before replacing the public URLs.
+  if [ -z "${FAMILIAR_LLM_UPSTREAM:-}" ] && [ -n "${LLAMA_BASE_URL:-}" ] && ! server_local_url "$LLAMA_BASE_URL" 9931; then
+    export FAMILIAR_LLM_UPSTREAM="$LLAMA_BASE_URL"
+  fi
+  if [ -z "${STT_UPSTREAM_URL:-}" ] && [ -n "${FAMILIAR_STT_URL:-}" ] && ! server_local_url "$FAMILIAR_STT_URL" 9932; then
+    export STT_UPSTREAM_URL="$FAMILIAR_STT_URL"
+  fi
+  if [ -z "${FAMILIAR_TTS_UPSTREAM:-}" ] && [ -n "${FAMILIAR_TTS_URL:-}" ] && ! server_local_url "$FAMILIAR_TTS_URL" 9933; then
+    export FAMILIAR_TTS_UPSTREAM="$FAMILIAR_TTS_URL"
+  fi
+
+  if [ -z "${FAMILIAR_LLM_UPSTREAM:-}" ]; then
+    provision_server_model llm "${FAMILIAR_MODEL_FILE:-}" "${FAMILIAR_MODEL_URL:-}"
+  fi
+  if [ -z "${STT_UPSTREAM_URL:-}" ]; then
+    provision_server_model stt "${FAMILIAR_STT_MODEL_FILE:-}" "${FAMILIAR_STT_MODEL_URL:-}"
+    export STT_MODEL="$MODEL_DIR/$FAMILIAR_STT_MODEL_FILE"
+  fi
+
+  export LLAMA_BASE_URL="http://127.0.0.1:9931" NEED_LLAMA=1
+  export FAMILIAR_STT_URL="http://127.0.0.1:9932"
+  export FAMILIAR_TTS_URL="http://127.0.0.1:9933"
+  exec nix run "$REPO#familiar-server" -- --config "$config" "$@"
 }
 
 stop() {
   ensure_devshell pi "$@"
-  herdr session stop "$HERDR_SESSION" --json 2>/dev/null || herdr server stop 2>/dev/null || true
+  "$FAMILIAR_PRESENCE_CTL" stop || true
 }
 
 # Out-of-process enqueue (protocol path b): write an atomic envelope into the
 # worklist drop-box. The worklist extension drains state/worklist/incoming/ on
-# its timer and promotes each envelope into a queue item. Mirrors the herdr
-# marker-file pattern: no daemon, no socket, just a file the resident process
-# picks up. Envelope schema is documented in extensions/worklist/PROTOCOL.md.
+# its timer and promotes each envelope into a queue item. This is a marker-file
+# pattern: no daemon or socket, just a file the resident process picks up.
+# Envelope schema is documented in integrations/pi/extensions/worklist/PROTOCOL.md.
 #   familiar.sh worklist-add --summary "..." [--priority N] [--type notify|question|review]
 #                            [--body TEXT | --body-file F] [--source S] [--deadline EPOCH_MS]
 inbox_enqueue() {
@@ -1002,7 +946,124 @@ inbox_enqueue() {
   echo "$id"
 }
 
+run_tests() {
+  shift || true
+  if [ $# -eq 0 ]; then
+    exec nix develop "$REPO#e2e" -c "$REPO/test/e2e/run.sh"
+  fi
+  if [ "$1" != --all ] || [ $# -ne 1 ]; then
+    echo 'usage: ./familiar.sh test [--all]' >&2
+    return 2
+  fi
+
+  local failed=() name
+  run_suite() {
+    name=$1; shift
+    printf '\n========== %s ==========' "$name"
+    printf '\n'
+    if "$@"; then
+      printf '%s: PASS\n' "$name"
+    else
+      failed+=("$name")
+      printf '%s: FAIL\n' "$name"
+    fi
+  }
+
+  run_suite viewer nix shell nixpkgs#zig_0_15 -c cargo test \
+    --manifest-path "$REPO/services/viewer/Cargo.toml" --all-targets
+  run_suite gateway bash -c 'cd "$1" && exec nix shell nixpkgs#bun -c bun test' _ \
+    "$REPO/services/gateway"
+  run_suite presence bash "$REPO/services/presence/test.sh"
+  run_suite e2e nix develop "$REPO#e2e" -c "$REPO/test/e2e/run.sh"
+
+  printf '\n========== SUMMARY ==========\n'
+  if [ "${#failed[@]}" -eq 0 ]; then
+    echo 'All suites passed: viewer gateway presence e2e'
+    return 0
+  fi
+  printf 'Failed suites:'
+  printf ' %s' "${failed[@]}"
+  printf '\n'
+  return 1
+}
+
+init_instance() {
+  local target=${2:-}
+  [ -n "$target" ] || { echo 'Usage: ./familiar.sh init PATH' >&2; return 2; }
+  target="$(mkdir -p "$target" && cd "$target" && pwd -P)"
+  [ -e "$target/familiar.toml" ] && { echo "familiar: refusing to overwrite $target/familiar.toml" >&2; return 1; }
+  for entry in "$target"/* "$target"/.[!.]*; do
+    [ -e "$entry" ] || continue
+    case "$(basename "$entry")" in .git) continue ;; identity|voices|state|skills|extensions|.gitignore) continue ;; *)
+      echo "familiar: refusing non-empty conflict at $entry" >&2; return 1 ;;
+    esac
+  done
+  install -d -m 700 "$target/identity" "$target/voices" "$target/state" "$target/skills" "$target/extensions"
+  (umask 077; cp "$REPO/familiar.toml.example" "$target/familiar.toml")
+  chmod 600 "$target/familiar.toml"
+  if [ ! -e "$target/.gitignore" ]; then
+    cat > "$target/.gitignore" <<'EOF'
+# Private instance policy: version configuration, identity, voices, and substantive memory.
+# High-volume runtime output and generated/private workspace data.
+state/log.jsonl*
+state/age.key
+state/pi/
+state/pi/auth.json
+state/presence/
+state/subagents/
+state/herdr/
+state/inbox/
+state/voices/
+state/theme/
+state/uploads/
+state/*.sock
+state/*.pid
+state/*.tmp
+models/
+
+# Runtime credentials and payloads in otherwise substantive artifacts.
+state/artifacts/**/auth.json
+state/artifacts/**/credentials.json
+state/artifacts/**/token.json
+state/artifacts/**/secret.json
+state/artifacts/**/key.json
+state/artifacts/**/token
+state/artifacts/**/secret
+state/artifacts/**/credential
+state/artifacts/**/key
+state/artifacts/**/config-token-evidence.md
+state/artifacts/**/config-token-review.md
+state/artifacts/**/integration-key-lines.txt
+state/artifacts/**/repair-integration-key-lines.txt
+
+# Nested artifact worktrees and their git metadata are generated runtime state.
+state/artifacts/**/.git/
+state/artifacts/**/.git-worktree/
+state/artifacts/**/worktree/
+state/artifacts/**/*-worktree/
+state/artifacts/**/*-review-tree/
+state/artifacts/**/alpha-review-tree/
+state/artifacts/**/integration-main/
+state/artifacts/**/repair-review-tree/
+state/artifacts/**/review-tree/
+EOF
+  fi
+  git -C "$target" init >/dev/null 2>&1 || true
+  echo "familiar: initialized private instance at $target"
+}
+
 config_check() {
+  if [ "${2:-}" = --plugin ]; then
+    [ "$CONFIG_LOAD_FAILED" -eq 0 ] || return 1
+    prepare_plugin
+    printf '%s\n' "plugin_root=${FAMILIAR_PLUGIN_ROOT:-}" "render_url=${FAMILIAR_RENDER_URL:-}"
+    return 0
+  fi
+  if [ "${2:-}" = --paths ]; then
+    [ "$CONFIG_LOAD_FAILED" -eq 0 ] || { echo 'familiar: familiar.toml validation failed (contents suppressed)' >&2; return 1; }
+    printf '%s\n' "config_dir=$CONFIG_DIR" "identity=$FAMILIAR_IDENTITY_PATH" "handoff=$FAMILIAR_HANDOFF_PATH" "handoff_prompt=${FAMILIAR_HANDOFF_PROMPT_PATH:-}" "worklist=$FAMILIAR_WORKLIST_DIR" "inbox=${FAMILIAR_INBOX_DIR:-}" "log=$FAMILIAR_LOG_PATH" "voices=${FAMILIAR_TTS_VOICES_SOURCE:-}" "model=$FAMILIAR_MODEL_DIR" "artifact=${FAMILIAR_ARTIFACT_DIR:-}" "subagent=${FAMILIAR_SUBAGENT_DIR:-}" "sessions=${FAMILIAR_SUBAGENT_SESSION_DIR:-}" "pi=$PI_CODING_AGENT_DIR" "presence=$FAMILIAR_PRESENCE_STATE_DIR"
+    return 0
+  fi
   if [ "$CONFIG_LOAD_FAILED" -ne 0 ]; then
     echo 'familiar: familiar.toml validation failed (contents suppressed)' >&2
     return 1
@@ -1011,7 +1072,9 @@ config_check() {
 }
 
 case ${1:-} in
-  config-check) config_check ;;
+  init)        init_instance "$@" ;;
+  config-check) config_check "$@" ;;
+  test)       run_tests "$@" ;;
   pi)         run_pi "$@" ;;
   llama)      run_llama "$@" ;;
   stt)        run_stt "$@" ;;
@@ -1019,10 +1082,11 @@ case ${1:-} in
   kill)          stop "$@" ;;
   worklist-add)  inbox_enqueue "$@" ;;
   inbox-enqueue) inbox_enqueue "$@" ;;  # bounded compat alias (one release)
+  server)     server "$@" ;;
   client)     client "$@" ;;
-  age)        handle_age "$@" ;;
-  connect)    connect "$@" ;;
+  connect)    viewer_connect "$@" ;;
+  ssh)        ssh_connect "$@" ;;
   drop-serve) drop_serve "$@" ;;
   drop-fetch) drop_fetch "$@" ;;
-  *)          start "$@" ;;
+  *)          usage >&2; exit 2 ;;
 esac

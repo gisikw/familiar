@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # Familiar unified theme — boot-time generator (bash/jq side).
 #
-# Reads the CANONICAL default palette (server/src/theme/defaults.json) and
+# Reads the CANONICAL default palette (services/gateway/src/theme/defaults.json) and
 # overlays FAMILIAR_THEME_* env (the flattened [theme] TOML section; the generic
 # familiar.toml loader is a SEPARATE agent — we only consume the env contract).
 # Emits consumer-specific artifacts so no color literal is duplicated:
 #
-#   theme_herdr_fragment   -> a [theme]/[theme.custom] TOML block for config.toml
 #   theme_pi_json          -> a pi theme JSON (themes/familiar.json)
-#   theme_sidebar_accent   -> the sidebar mark accent hex (for herdr-sidebar.sh)
 #   theme_ansi_env         -> FAMILIAR_ANSI_0..15 exports (pane palette handoff)
+#   theme_pane_borders     -> shell assignments for tmux pane border roles
+#   theme_tmux             -> tmux copy-mode styling configuration
 #
-# Env contract (matches server/src/theme/resolve.ts exactly):
+# Env contract (matches services/gateway/src/theme/resolve.ts exactly):
 #   role  background   -> FAMILIAR_THEME_BACKGROUND
 #   role  selectionBg  -> FAMILIAR_THEME_SELECTION_BG
 #   ansi  brightBlack  -> FAMILIAR_THEME_ANSI_BRIGHT_BLACK
@@ -20,9 +20,17 @@
 
 set -euo pipefail
 
+# jq is a hard dependency for palette resolution. Fail fast and clearly —
+# without this guard a missing jq surfaces as unbound-variable noise deep in
+# eval'd resolution instead of an actionable message.
+command -v jq >/dev/null 2>&1 || {
+  echo "familiar-theme: jq is required but not on PATH" >&2
+  exit 4
+}
+
 _theme_defaults_path() {
   local here; here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  echo "$here/../server/src/theme/defaults.json"
+  echo "$here/../services/gateway/src/theme/defaults.json"
 }
 
 # camelCase -> SNAKE_UPPER (background->BACKGROUND, selectionBg->SELECTION_BG).
@@ -76,40 +84,6 @@ _theme_resolve_all() {
     printf 'A_%s=%q\n' "$k" "$got"
   done
 }
-
-# --- consumer: herdr [theme] TOML fragment ---------------------------------
-# Maps Familiar semantic roles onto herdr's theme.custom token set (the exact
-# keys herdr 0.8.x accepts; see `strings herdr | grep theme.custom`). Only the
-# intersection is emitted — herdr has no ANSI-16 knob, so pane palette is
-# handled via TERM/env, not here.
-theme_herdr_fragment() {
-  local _resolved; _resolved="$(_theme_resolve_all)" || exit 3; eval "$_resolved"
-  cat <<EOF
-[theme]
-# Familiar unified theme (generated — edit [theme] in familiar.toml, not here).
-name = "catppuccin"
-
-[theme.custom]
-accent = "$R_accent"
-panel_bg = "$R_background"
-sidebar_bg = "$R_surface"
-active_row_bg = "$R_selectionBg"
-selection_bg = "$R_selectionBg"
-surface0 = "$R_overlay"
-surface1 = "$R_borderMuted"
-surface_dim = "$R_surfaceDim"
-text = "$R_text"
-subtext0 = "$R_muted"
-green = "$A_green"
-yellow = "$A_yellow"
-red = "$A_red"
-blue = "$A_blue"
-teal = "$R_accent"
-peach = "$A_yellow"
-mauve = "$A_magenta"
-EOF
-}
-
 # --- consumer: pi theme JSON -----------------------------------------------
 # Builds a full pi theme (all 51 required tokens) from Familiar roles + ANSI.
 # Written to $PI_CODING_AGENT_DIR/themes/familiar.json; settings.json selects
@@ -164,11 +138,28 @@ theme_sidebar_accent() {
   printf '%s' "$R_accent"
 }
 
+# --- consumer: tmux pane borders -------------------------------------------
+# Shell-escaped assignments retained for legacy theme consumers. This keeps
+# canonical defaults and FAMILIAR_THEME_* override resolution in one place.
+theme_pane_borders() {
+  local _resolved; _resolved="$(_theme_resolve_all)" || exit 3; eval "$_resolved"
+  printf 'border=%q\nborder_muted=%q\n' "$R_border" "$R_borderMuted"
+}
+
+# --- consumer: tmux copy mode ----------------------------------------------
+# Selection uses the ordinary text role on selectionBg. The compact position
+# indicator is accent on background so it matches Familiar chrome without the
+# stock tmux yellow. tmux 3.6 supports the two copy-mode-specific options.
+theme_tmux() {
+  local _resolved; _resolved="$(_theme_resolve_all)" || exit 3; eval "$_resolved"
+  printf "set-option -g mode-style 'fg=%s,bg=%s'\n" "$R_text" "$R_selectionBg"
+  printf "set-option -g copy-mode-mark-style 'fg=%s,bg=%s'\n" "$R_text" "$R_selectionBg"
+  printf "set-option -g copy-mode-position-style 'fg=%s,bg=%s'\n" "$R_accent" "$R_background"
+}
+
 # --- consumer: ANSI env for new panes --------------------------------------
-# herdr/restty have no per-pane ANSI-16 config key, so newly opened panes inherit
-# the palette via env the shell/TUI can honor. We export FAMILIAR_ANSI_0..15 so a
-# pane's rc can emit OSC 4 sequences if desired. This is the honest limit: it is
-# env handoff, not a herdr-native palette setting (none exists in 0.8.x).
+# Terminal consumers may inherit the palette through the environment. We export FAMILIAR_ANSI_0..15 so a
+# A shell or TUI can use these values to emit OSC 4 sequences if desired.
 theme_ansi_env() {
   local _resolved; _resolved="$(_theme_resolve_all)" || exit 3; eval "$_resolved"
   local order=(black red green yellow blue magenta cyan white \
@@ -185,10 +176,11 @@ theme_ansi_env() {
 # Standalone dispatch so tests / familiar.sh can call one action.
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
   case "${1:-}" in
-    herdr)   theme_herdr_fragment ;;
     pi)      theme_pi_json ;;
     accent)  theme_sidebar_accent ;;
     ansi)    theme_ansi_env ;;
-    *) echo "usage: familiar-theme.sh {herdr|pi|accent|ansi}" >&2; exit 2 ;;
+    pane-borders) theme_pane_borders ;;
+    tmux) theme_tmux ;;
+    *) echo "usage: familiar-theme.sh {pi|accent|ansi|pane-borders|tmux}" >&2; exit 2 ;;
   esac
 fi

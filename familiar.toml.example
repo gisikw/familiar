@@ -15,13 +15,13 @@ skip_version_check = 1
 # Cross-cutting Familiar paths/policy use [familiar]; its prefix is not doubled.
 [familiar]
 # identity_path = "./identity"
-# age_key = "./state/age.key"
 # handoff_path = "./state/handoffs"
-# handoff_prompt_path = "/private/path/prompt.md.age"
+# handoff_prompt_path = "./state/handoff-prompt.md"
 # worklist_dir = "./state/worklist" # canonical queue path
 # inbox_dir = "./state/worklist"    # bounded compatibility alias (one release)
 # log_path = "./state/log.jsonl"
-# model_dir = "./models"
+# tts_voices_source = "./voices/kokoro"
+# model_dir = "./models" # relative paths are anchored at this file
 # default_provider = "llama.cpp"
 # default_model = "provider/model-id"
 # artifact_dir = "./state/artifacts"
@@ -30,8 +30,24 @@ skip_version_check = 1
 # debug_level = "debug"
 
 [herdr]
+# Legacy/current herdr session settings (kept as a public contract for existing instances).
 # session = "familiar"
 # config_path = "./state/herdr/config.toml"
+
+[server]
+# config = "./services/server/familiar-server.toml.example"
+# listen = "127.0.0.1:9940"
+
+# Optional trusted plugin source. Choose a mutable local path OR immutable Git
+# URL plus exact 40-character commit. A private instance supplies real values.
+# [plugins.golem]
+# path = "/absolute/path/to/golem"
+# git = "https://example.invalid/golem.git"
+# rev = "0123456789abcdef0123456789abcdef01234567"
+# [plugins.golem.env]
+# GOLEM_DB = "/absolute/private-instance/state/golem/service.db"
+# Golem's [pi.env] supplies its structured CLI environment; instance values in
+# [plugins.golem.env] deliberately override manifest defaults.
 
 [model]
 # file = "model.gguf"                       # set file + URL together
@@ -51,15 +67,25 @@ skip_version_check = 1
 # model_file = "tts.gguf"
 # model_url = "https://models.example.invalid/tts.gguf"
 
-# Anthropic-compatible traffic belongs behind the dedicated external gateway.
+# Optional credentials for pi's native Anthropic provider. Tiamat does not use them.
+# Choose exactly one Claude credential form when using Claude Code integration.
 [anthropic]
-# base_url = "https://gateway.example.invalid"
 # api_key = "replace-locally"
 # auth_token = "replace-locally"
+# claude_credentials_json = '''{"claudeAiOauth":{"accessToken":"replace-locally","refreshToken":"replace-locally","expiresAt":0}}'''
+# claude_oauth_token = "setup-token-placeholder"
 
 [openai]
 # base_url = "https://api.openai.example.invalid/v1"
 # api_key = "replace-locally"
+
+# Tiamat inference gateway. Keep the bearer token in a mode-0600 file; Familiar
+# exports only its path, never the token value. Set poll_seconds = 0 to disable
+# background HEAD/ETag polling (pi-initiated model refresh remains available).
+[tiamat]
+# url = "https://tiamat-router.gisi.network"
+# token_file = "/run/secrets/tiamat-router-token"
+# poll_seconds = 300
 
 [searxng]
 # url = "https://search.example.invalid"
@@ -80,48 +106,47 @@ skip_version_check = 1
 # model = "anthropic/claude-haiku-4-5"
 
 # The landed unified theme owns this section and is preserved alongside the
-# generic schema. Omit any key to keep the built-in Spectrum default.
+# generic schema. Omit any key to keep the built-in gruvbox default.
 # Colors accept #rgb, #rrggbb, or #rrggbbaa; invalid colors fail boot loudly.
 # See docs/THEME.md for the full role × consumer matrix.
 
 [theme]
-name = "familiar-monokai-pro-spectrum"
+name = "familiar-gruvbox"
 
 # --- Semantic roles --------------------------------------------------------
-background  = "#222222"  # Ghostty Spectrum app/terminal backdrop
-surface     = "#191919"  # raised panels (local Spectrum UI level)
-surface_dim = "#131313"  # deepest recess
-overlay     = "#363537"  # hairlines / raised-on-surface
-text        = "#f7f1ff"  # primary foreground
-muted       = "#bab6c0"  # secondary text
-accent      = "#5ad4e6"  # Spectrum cyan; legible Familiar mark
-success     = "#7bd88f"
-warning     = "#fce566"
-error       = "#fc618d"
-border       = "#363537"
-border_muted = "#525053"
-selection_bg = "#525053"  # Ghostty selection background
-cursor       = "#bab6c0"  # Ghostty cursor
-cursor_text  = "#222222"  # adapted for readable glyph contrast
+background  = "#282828"  # gruvbox dark bg0 (medium contrast)
+surface     = "#1d2021"  # raised panels (bg0_h)
+surface_dim = "#141617"  # deepest recess (bg_dim)
+overlay     = "#3c3836"  # hairlines / raised-on-surface (bg1)
+text        = "#ebdbb2"  # primary foreground (fg1)
+muted       = "#bdae93"  # secondary text (fg3)
+accent      = "#8ec07c"  # gruvbox aqua; legible Familiar mark
+success     = "#b8bb26"
+warning     = "#fabd2f"
+error       = "#ea6962"  # gruvbox-material red; #fb4934 misses the contrast floor
+border       = "#3c3836"
+border_muted = "#504945"
+selection_bg = "#504945"  # bg2 selection background
+cursor       = "#bdae93"
+cursor_text  = "#282828"  # adapted for readable glyph contrast
 
 # --- Terminal ANSI 16-color palette ---------------------------------------
 # Drives restty browser panes (colors.palette[0..15]) and is exported as
-# FAMILIAR_ANSI_0..15 for newly opened herdr panes (env handoff; herdr has no
-# native per-pane ANSI-16 key).
+# FAMILIAR_ANSI_0..15 for terminal palette handoff.
 [theme.ansi]
-black   = "#222222"
-red     = "#fc618d"
-green   = "#7bd88f"
-yellow  = "#fce566"
-blue    = "#fd9353"  # Ghostty Spectrum's intentional ANSI mapping
-magenta = "#948ae3"
-cyan    = "#5ad4e6"
-white   = "#f7f1ff"
-bright_black   = "#69676c"
-bright_red     = "#fc618d"
-bright_green   = "#7bd88f"
-bright_yellow  = "#fce566"
-bright_blue    = "#fd9353"
-bright_magenta = "#948ae3"
-bright_cyan    = "#5ad4e6"
-bright_white   = "#f7f1ff"
+black   = "#282828"
+red     = "#cc241d"
+green   = "#98971a"
+yellow  = "#d79921"
+blue    = "#458588"
+magenta = "#b16286"
+cyan    = "#689d6a"
+white   = "#a89984"
+bright_black   = "#928374"
+bright_red     = "#fb4934"
+bright_green   = "#b8bb26"
+bright_yellow  = "#fabd2f"
+bright_blue    = "#83a598"
+bright_magenta = "#d3869b"
+bright_cyan    = "#8ec07c"
+bright_white   = "#ebdbb2"

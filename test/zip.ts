@@ -1,7 +1,7 @@
 process.env.FAMILIAR_LOG_PATH = "/tmp/familiar-test-log";
 process.env.FAMILIAR_DEBUG_LEVEL = "off";
 
-import zip from "../extensions/zip/index.ts";
+import zip from "../integrations/pi/extensions/zip/index.ts";
 import { ExtensionRunner } from "@earendil-works/pi-coding-agent";
 
 let failures = 0;

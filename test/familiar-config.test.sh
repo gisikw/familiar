@@ -63,8 +63,7 @@ assert_eq "$out" 'a path with spaces/devshell' "recursive precedence"
 # (secret-suppressed) diagnostic rather than exporting anything.
 for flat in 'pi_offline = 1' \
             'anthropic_base_url = "https://example.invalid/v1"' \
-            'tts_url = "DO_NOT_PRINT_FLAT_SECRET_a91"' \
-            'herdr_session = "config-test"'; do
+            'tts_url = "DO_NOT_PRINT_FLAT_SECRET_a91"'; do
   printf '%s\n' "$flat" >"$CONFIG"; chmod 600 "$CONFIG"
   set +e
   err=$(env -i PATH="$PATH" HOME="${HOME:-/tmp}" FAMILIAR_CONFIG_PATH="$CONFIG" bash -c \
@@ -90,17 +89,15 @@ api_key = "openai-placeholder"
 url = "http://localhost:19932"
 [tts]
 voice = "af_test"
-[herdr]
-session = "grouped-session"
 TOML
 chmod 600 "$CONFIG"
 out=$(env -i PATH="$PATH" HOME="${HOME:-/tmp}" FAMILIAR_CONFIG_PATH="$CONFIG" ANTHROPIC_BASE_URL=ambient bash -c '
   set -eu; source "$1/scripts/familiar-config.sh"; familiar_config_load "$1"
-  printf "%s|%s|%s|%s|%s|%s|%s|%s" "$FAMILIAR_IDENTITY_PATH" "$PI_OFFLINE" \
+  printf "%s|%s|%s|%s|%s|%s|%s" "$FAMILIAR_IDENTITY_PATH" "$PI_OFFLINE" \
     "$ANTHROPIC_BASE_URL" "$OPENAI_BASE_URL" "$OPENAI_API_KEY" \
-    "$FAMILIAR_STT_URL" "$FAMILIAR_TTS_VOICE" "$HERDR_SESSION"
+    "$FAMILIAR_STT_URL" "$FAMILIAR_TTS_VOICE"
 ' bash "$REPO")
-assert_eq "$out" './identity-grouped|0|ambient|https://openai.example.invalid|openai-placeholder|http://localhost:19932|af_test|grouped-session' "grouped mapping, aliases, and precedence"
+assert_eq "$out" './identity-grouped|0|ambient|https://openai.example.invalid|openai-placeholder|http://localhost:19932|af_test' "grouped mapping, aliases, and precedence"
 
 secret='DO_NOT_PRINT_CONFIG_SECRET_7e21'
 printf 'token = "unterminated %s\n' "$secret" >"$CONFIG"
@@ -175,16 +172,6 @@ err=$(env -i PATH="$PATH" HOME="${HOME:-/tmp}" FAMILIAR_CONFIG_PATH="$CONFIG" \
 set -e
 [ "$status" -ne 0 ] || fail "ordinary launch accepted malformed TOML"
 [[ $err == *'startup refused'* && $err != *DO_NOT_PRINT_RECOVERY_SECRET* ]] || fail "ordinary launch failure policy"
-# age is intentionally not a recovery bypass: without parsed FAMILIAR_AGE_KEY it
-# could create a default key and overwrite an arbitrary requested target.
-AGE_TARGET="$TMP/must-not-be-created.age"
-set +e
-err=$(printf 'placeholder' | env -i PATH="$PATH" HOME="${HOME:-/tmp}" FAMILIAR_CONFIG_PATH="$CONFIG" \
-  "$REPO/familiar.sh" age "$AGE_TARGET" 2>&1); status=$?
-set -e
-[ "$status" -ne 0 ] || fail "age bypassed malformed config"
-[ ! -e "$AGE_TARGET" ] || fail "blocked age created its target"
-[[ $err == *'startup refused'* && $err != *"continuing 'age'"* && $err != *DO_NOT_PRINT_RECOVERY_SECRET* ]] || fail "age failure policy"
 mkdir -p "$TMP/bin"
 cat >"$TMP/bin/jq" <<'SH'
 #!/usr/bin/env bash

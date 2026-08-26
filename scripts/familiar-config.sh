@@ -13,13 +13,13 @@ familiar_config_name_is_explicit() {
 familiar_config_capture_explicit() {
   local name names=""
   # On the first entry, shell variables matching these names came from the
-  # process environment. Preserve that set through nix-develop/refamiliarize
-  # recursion; values loaded from TOML may then be refreshed on every entry.
+  # process environment. Preserve that set through nix-develop recursion;
+  # values loaded from TOML may then be refreshed on every entry.
   while IFS= read -r name; do
     name=${name#declare -x }
     name=${name%%=*}
     case "$name" in
-      FAMILIAR_*|PI_TELEMETRY|PI_OFFLINE|PI_SKIP_VERSION_CHECK|PI_CODING_AGENT_DIR|ANTHROPIC_BASE_URL|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|OPENAI_BASE_URL|OPENAI_API_KEY|LLAMA_BASE_URL|HERDR_SESSION|HERDR_CONFIG_PATH)
+      FAMILIAR_*|PI_TELEMETRY|PI_OFFLINE|PI_SKIP_VERSION_CHECK|PI_CODING_AGENT_DIR|ANTHROPIC_BASE_URL|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|OPENAI_BASE_URL|OPENAI_API_KEY|LLAMA_BASE_URL)
         names="${names:+$names:}$name" ;;
     esac
   done < <(export -p)
@@ -128,6 +128,4 @@ familiar_config_load() {
   familiar_config_alias OPENAI_BASE_URL FAMILIAR_OPENAI_BASE_URL
   familiar_config_alias OPENAI_API_KEY FAMILIAR_OPENAI_API_KEY
   familiar_config_alias LLAMA_BASE_URL FAMILIAR_LLAMA_BASE_URL
-  familiar_config_alias HERDR_SESSION FAMILIAR_HERDR_SESSION
-  familiar_config_alias HERDR_CONFIG_PATH FAMILIAR_HERDR_CONFIG_PATH
 }

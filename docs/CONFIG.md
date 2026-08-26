@@ -1,8 +1,10 @@
 # Local configuration
 
-Familiar reads the private repo-local `familiar.toml` before applying defaults
-and before its first `nix develop` recursion. Copy the committed schema and
-protect it before adding credentials:
+Familiar reads `familiar.toml` before applying defaults and before its first
+`nix develop` recursion. Use `./familiar.sh --config /path/to/private/familiar.toml`
+as shorthand for `FAMILIAR_CONFIG_PATH`. Relative `[familiar]` paths are anchored
+at the TOML file's directory. Copy the committed schema and protect it before
+adding credentials:
 
 ```sh
 cp familiar.toml.example familiar.toml
@@ -58,9 +60,9 @@ Precedence, highest first:
 The loader records which variables were truly ambient, exports file values, and
 reloads on every recursive entry. Consequently file values survive a dev shell
 that sets the same name, while an explicit ambient override remains untouched.
-The provenance marker and all loaded values survive `nix develop` and
-`/refamiliarize` execs. The loader also records its own exports separately. On
-each successful reload it clears that prior set (including upstream aliases)
+The provenance marker and all loaded values survive `nix develop` recursion.
+The loader also records its own exports separately. On each successful reload
+it clears that prior set (including upstream aliases)
 before applying the new snapshot, so removing a key really removes its stale
 value while the original ambient set remains untouched. This includes a
 same-session JSON-to-setup-token cutover.
@@ -68,8 +70,10 @@ same-session JSON-to-setup-token cutover.
 ## Canonical groups and migration
 
 Use tables whose names match the established environment prefix: `[pi]`,
-`[anthropic]`, `[openai]`, `[model]`, `[llama]`, `[stt]`, `[tts]`, `[herdr]`,
-`[searxng]`, `[brave]`, `[fetch]`, `[subagent]`, `[zip]`, and `[theme]`. Cross-cutting
+`[anthropic]`, `[openai]`, `[tiamat]`, `[server]`, `[plugins]`, `[herdr]`,
+`[subagent]`, `[model]`, `[llama]`, `[stt]`, `[tts]`, `[searxng]`, `[brave]`,
+`[fetch]`, `[zip]`, and `[theme]`.
+Cross-cutting
 paths and runtime policy live under `[familiar]`; the loader deliberately does
 not double that prefix. These are the mechanical moves from the retired flat
 spellings to the canonical tables (the effective export name is unchanged):
@@ -81,8 +85,13 @@ spellings to the canonical tables (the effective export name is unchanged):
 | `anthropic_base_url` | `[anthropic] base_url` | `FAMILIAR_ANTHROPIC_BASE_URL` |
 | `stt_url` | `[stt] url` | `FAMILIAR_STT_URL` |
 | `tts_voice` | `[tts] voice` | `FAMILIAR_TTS_VOICE` |
-| `herdr_session` | `[herdr] session` | `FAMILIAR_HERDR_SESSION` |
 | `brave_api_key` | `[brave] api_key` | `FAMILIAR_BRAVE_API_KEY` |
+
+The `[herdr]` and `[subagent]` tables are retained for the current
+worker/session integration. See `familiar.toml.example` for their complete
+key list. `[plugins.golem]` is the sole reduced boot-time source enrollment;
+see [PLUGIN-HOST.md](PLUGIN-HOST.md). Anthropic also accepts `claude_credentials_json` or
+`claude_oauth_token`; never put real credentials in the committed example.
 
 Flat top-level keys are no longer supported: the loader rejects any key that is
 not under a table, so the old and new spellings cannot both exist. `chmod 600
@@ -96,22 +105,21 @@ A few upstream programs require established non-Familiar names. Familiar maps
 their `PI_*` counterparts, and maps `FAMILIAR_ANTHROPIC_BASE_URL`,
 `FAMILIAR_ANTHROPIC_API_KEY`, and `FAMILIAR_ANTHROPIC_AUTH_TOKEN` to
 `ANTHROPIC_*`. It maps `[openai]` URL/key to `OPENAI_BASE_URL` and
-`OPENAI_API_KEY`, and covers `LLAMA_BASE_URL`, `HERDR_SESSION`, and
-`HERDR_CONFIG_PATH`. An upstream name that was explicitly ambient is preserved.
+`OPENAI_API_KEY`, and covers `LLAMA_BASE_URL`. An upstream name that was explicitly ambient is preserved.
 Local configuration should always use the
 generic Familiar names shown in `familiar.toml.example`.
 
 ## Changes and failures
 
-After editing, keep mode 0600, run `./familiar.sh config-check`, and use
-`/refamiliarize` or stop and rerun `./familiar.sh`. A cold restart regenerates
+After editing, keep mode 0600, run `./familiar.sh config-check`, then stop and
+rerun `./familiar.sh`. A cold restart regenerates
 the unified theme and restarts services with the new exports. Malformed TOML,
 unsupported types, normalized-key collisions, and insecure permissions abort
 ordinary startup with a secret-suppressed error. They do not brick the bounded
 recovery/operational verbs `kill` and `worklist-add` (`inbox-enqueue` alias):
-those continue using ambient values and defaults after a loud warning. The
-`age` verb fails closed because bypassing config could select the wrong key or
-target. `config-check` remains runnable and returns nonzero until the optional file is
+those continue using ambient values and defaults after a loud warning. Identity
+and voices are ordinary files in the private instance; public-transit
+ciphertext remains the responsibility of its owning integration. `config-check` remains runnable and returns nonzero until the optional file is
 fixed or moved aside. Other launch verbs fail closed and do not silently ignore
 the file.
 

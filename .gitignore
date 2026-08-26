@@ -1,12 +1,8 @@
-models
-state
-# Local configuration may contain credentials. The legacy .env name remains
-# ignored defensively, but Familiar no longer reads it.
-familiar.toml
+# Private configuration, identity, and runtime state belong to the external private instance.
+models/
+state/
 .env
-
-# Transient research/design/settlement/verdict artifacts
-# (should be relocated to state/artifacts, not committed to repo root)
+familiar.toml
 RESEARCH-*.md
 VERDICT-*.md
 SETTLEMENT-*.md
