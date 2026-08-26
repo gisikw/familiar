@@ -25,8 +25,9 @@ EOF
 chmod 700 "$FAKE"
 
 state="$TMP/main"; socket="$state/tmux.sock"; pids="$state/pids"
+project="$TMP/project"; mkdir "$project"
 BASH_BIN=$(command -v bash)
-runp() { FAMILIAR_PRESENCE_STATE_DIR="$state" FAMILIAR_PRESENCE_SOCKET="$socket" FAMILIAR_PRESENCE_COMMAND="exec $BASH_BIN $FAKE" WORKER_PIDS="$pids" bash "$PRESENCE" "$@"; }
+runp() { FAMILIAR_PRESENCE_STATE_DIR="$state" FAMILIAR_PRESENCE_SOCKET="$socket" FAMILIAR_PRESENCE_CWD="$project" FAMILIAR_PRESENCE_COMMAND="exec $BASH_BIN $FAKE" WORKER_PIDS="$pids" bash "$PRESENCE" "$@"; }
 
 # An owned config is the entire inner-session policy; user config cannot leak.
 home="$TMP/home"; mkdir -m 700 "$home"
@@ -35,6 +36,8 @@ HOME="$home" runp ensure >/dev/null
 [ ! -e "$TMP/hostile-loaded" ] || fail "user config leaked"
 [ "$(tmux -S "$socket" list-sessions -F '#{session_name}')" = presence ] \
   || fail "ensure created a session other than presence"
+[ "$(tmux -S "$socket" display-message -p -t presence '#{pane_current_path}')" = "$project" ] \
+  || fail "presence did not preserve the Familiar invocation directory"
 [ "$(tmux -S "$socket" show-options -gv status)" = off ] || fail "inner status chrome enabled"
 [ "$(tmux -S "$socket" show-options -gv prefix)" = C-b ] || fail "inner prefix unavailable"
 [ "$(tmux -S "$socket" show-options -gv remain-on-exit)" = off ] || fail "dead panes linger"

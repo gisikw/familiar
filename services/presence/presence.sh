@@ -8,6 +8,7 @@ REPO=${FAMILIAR_REPO:-$(CDPATH='' cd -- "$HERE/../.." && pwd -P)}
 STATE=${FAMILIAR_PRESENCE_STATE_DIR:-$REPO/state/presence}
 SOCKET=${FAMILIAR_PRESENCE_SOCKET:-$STATE/tmux.sock}
 SESSION=${FAMILIAR_PRESENCE_SESSION:-presence}
+PRESENCE_CWD=${FAMILIAR_PRESENCE_CWD:-$PWD}
 TARGET="$SESSION:0.0"
 RUNTIME_CONFIG="$STATE/tmux.conf"
 THEME_CONFIG=${FAMILIAR_TMUX_THEME_CONFIG:-$STATE/tmux-theme.conf}
@@ -80,7 +81,7 @@ worker_command() {
 start_session() {
   # -S selects only our socket. -f is supplied on server creation, preventing
   # both /etc/tmux.conf and ~/.tmux.conf from being loaded.
-  tmux -S "$SOCKET" -f "$RUNTIME_CONFIG" new-session -d -s "$SESSION" -n presence \
+  tmux -S "$SOCKET" -f "$RUNTIME_CONFIG" new-session -d -c "$PRESENCE_CWD" -s "$SESSION" -n presence \
     "exec $(printf %q "$BASH_EXE") $(printf %q "$SELF") run-worker"
 }
 

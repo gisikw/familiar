@@ -40,6 +40,7 @@ esac
 
 SELF="$(realpath "$0" 2>/dev/null || { cd "$(dirname "$0")" && printf '%s/%s' "$(pwd -P)" "$(basename "$0")"; })"
 REPO="$(dirname "$SELF")"
+export FAMILIAR_PRESENCE_CWD="${FAMILIAR_PRESENCE_CWD:-$PWD}"
 if [ -n "${FAMILIAR_CONFIG_PATH:-}" ] && [[ "$FAMILIAR_CONFIG_PATH" != /* ]]; then
   FAMILIAR_CONFIG_PATH="$(cd "$(dirname "$FAMILIAR_CONFIG_PATH")" && pwd -P)/$(basename "$FAMILIAR_CONFIG_PATH")"
   export FAMILIAR_CONFIG_PATH
