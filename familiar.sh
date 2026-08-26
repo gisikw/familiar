@@ -117,7 +117,7 @@ prepare_tmux_theme() {
 ensure_devshell() {
   local shell=$1; shift
   if [ "${FAMILIAR_SHELL:-}" != "$shell" ]; then
-    exec nix develop ".#$shell" -c "$SELF" "$@"; 
+    exec nix develop "$REPO#$shell" -c "$SELF" "$@";
   fi
 }
 
