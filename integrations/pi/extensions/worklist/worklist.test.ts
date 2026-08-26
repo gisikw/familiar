@@ -4,7 +4,7 @@
  *   (bun is available in the .#stt dev shell; there is no node in .#pi)
  * ============================================================================
  */
-import { expect, test, describe, beforeEach } from "bun:test";
+import { expect, test, describe, beforeEach, mock } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -398,6 +398,83 @@ describe("store: persistence + atomic + drain + migration", () => {
     const summaries = conflictFiles.map((n) => readJSON<QueueItem>(path.join(WP.root, "migration-conflicts", n))?.summary).sort();
     expect(summaries).toEqual(["old conflicting copy", "second conflicting copy"]);
     expect(fs.existsSync(path.join(legacy, "items", "same.json"))).toBe(false);
+  });
+});
+
+describe("runtime scheduler wiring", () => {
+  test("open P2 surfaces once without requiring a next turn", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "worklist-runtime-test-"));
+    const priorRoot = process.env.FAMILIAR_WORKLIST_DIR;
+    const realNow = Date.now;
+    let now = 10_000_000;
+    process.env.FAMILIAR_WORKLIST_DIR = dir;
+    Date.now = () => now;
+
+    const handlers = new Map<string, Array<(...args: any[]) => any>>();
+    const sent: Array<{ message: any; options: any }> = [];
+    const pi = {
+      on(event: string, handler: (...args: any[]) => any) {
+        const list = handlers.get(event) ?? [];
+        list.push(handler);
+        handlers.set(event, list);
+      },
+      events: { on() {} },
+      registerCommand() {},
+      registerTool() {},
+      sendMessage(message: any, options: any) { sent.push({ message, options }); },
+    };
+    const ctx = {
+      hasUI: true,
+      ui: { setStatus() {}, setWidget() {}, notify() {} },
+    };
+
+    try {
+      // index.ts registers one TypeBox tool; the scheduler test does not need
+      // the external schema package, so keep this headless suite self-contained.
+      mock.module("typebox", () => ({
+        Type: {
+          Object: (v: unknown) => v,
+          Union: (v: unknown) => v,
+          Literal: (v: unknown) => v,
+          Optional: (v: unknown) => v,
+          Number: (v: unknown) => v,
+        },
+      }));
+      // Cache-bust so WORKLIST_ROOT observes this test's isolated env.
+      const mod = await import(`./index.ts?runtime-test=${Date.now()}`);
+      const runtime = mod.default(pi as any);
+      await handlers.get("session_start")?.[0]?.({ type: "session_start", reason: "startup" }, ctx);
+      const item = runtime.enqueue({
+        id: "runtime-open-p2",
+        priority: 2,
+        type: "notify",
+        summary: "idle settlement",
+        body: "full verdict",
+        source: "test",
+      });
+
+      // No input or agent turn occurs. Long idle promotes P2 wait → nudge.
+      now += CFG.settleToOpenMs + 1;
+      runtime.tick();
+
+      expect(sent).toHaveLength(1);
+      expect(sent[0].message.customType).toBe("worklist-nudge");
+      expect(sent[0].message.display).toBe(true);
+      expect(sent[0].message.content).toContain("idle settlement");
+      expect(sent[0].options).toBeUndefined(); // visible append, no model wake
+      expect(getItem(worklistPaths(dir), item.id)?.surfacedCount).toBe(1);
+      expect(getItem(worklistPaths(dir), item.id)?.acked).not.toBe(true);
+
+      // The 15s scheduler may tick forever while open; do not spam the nudge.
+      runtime.tick();
+      expect(sent).toHaveLength(1);
+      await handlers.get("session_shutdown")?.[0]?.({ type: "session_shutdown", reason: "quit" }, ctx);
+    } finally {
+      Date.now = realNow;
+      if (priorRoot === undefined) delete process.env.FAMILIAR_WORKLIST_DIR;
+      else process.env.FAMILIAR_WORKLIST_DIR = priorRoot;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

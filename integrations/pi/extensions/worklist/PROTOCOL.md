@@ -108,7 +108,7 @@ conversation, never *whether* it is tracked.
 | Tier | Behavior |
 |------|----------|
 | **steer** | deliver ASAP via `deliverAs:"steer"` + `triggerTurn`. **Auto-acks.** |
-| **nudge** | inject a one-line summary prefix into the NEXT turn; full body only on `/ack`. Rides `before_agent_start`. |
+| **nudge** | inject a one-line summary prefix into the NEXT turn; full body only on `/ack`. Rides `before_agent_start`. If attention is already `open` and there may be no next turn, the scheduler visibly appends the summary once without waking the model. |
 | **wait** | deliver + auto-ack only after settled ≥ `waitSettleMs` (5 min) AND attention allows. Focused holds entirely. |
 | **linger** | never delivered individually. A single digest line for ALL lingering items after sustained idle (5 min) or on `/peek`. |
 
@@ -121,7 +121,7 @@ conversation, never *whether* it is tracked.
 | **P2** | nudge | wait | linger→hold | **hold** |
 | **P3** | wait | linger | linger→hold | **hold** |
 
-- **open** promotes one tier (except P0, already steer): idle pulls work forward.
+- **open** promotes one tier (except P0, already steer): idle pulls work forward. An open-state nudge is surfaced visibly once by the scheduler, so promotion cannot become turn-gated silence.
 - **available** is the base mapping.
 - **focused** demotes one tier except P0; `wait`/`linger` then *hold entirely*.
 - **protected** is a total floor: **all → hold**, P0 included, the "driving

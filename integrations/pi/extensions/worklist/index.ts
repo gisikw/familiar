@@ -227,6 +227,21 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
+  /** Surface a one-line nudge without waking the model or delivering its body.
+   *  Normally nudges ride before_agent_start. Under `open`, however, there may
+   *  be no next turn; append one visible nudge so long-idle promotion cannot
+   *  turn into permanent silence. surfacedCount makes the idle path one-shot. */
+  const deliverIdleNudge = (item: QueueItem) => {
+    const line = `📋 worklist: ${item.summary} — /ack ${item.id} for details`;
+    pi.sendMessage({
+      customType: "worklist-nudge",
+      content: `<worklist-nudge id="${item.id}" priority="${PRI_LABEL(item.priority)}">\n${line}\n</worklist-nudge>`,
+      display: true,
+    });
+    item.surfacedCount = (item.surfacedCount ?? 0) + 1;
+    putItem(P, item);
+  };
+
   // The linger digest: a single line for ALL lingering items, never one-per.
   const deliverDigest = (items: QueueItem[]) => {
     const lines = items.map(
@@ -285,6 +300,14 @@ export default function (pi: ExtensionAPI) {
           lingerBatch.push(item);
           break;
         case "nudge":
+          // `open` means solicit during long idle. before_agent_start cannot
+          // help when there is no next turn, so visibly surface the summary
+          // once without waking the model or auto-acking the body.
+          if (attention === "open" && (item.surfacedCount ?? 0) === 0) {
+            deliverIdleNudge(item);
+            dirtySurfaces = true;
+          }
+          break;
         case "hold":
           break;
       }
@@ -795,8 +818,9 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  // Returned for rare SDK embeds that hold the ExtensionAPI directly.
-  return { enqueue, sink };
+  // Returned for rare SDK embeds that hold the ExtensionAPI directly. Exposing
+  // tick also lets the runtime wiring (not just pure policy) be tested headlessly.
+  return { enqueue, sink, tick };
 }
 
 export type { EnqueueEnvelope } from "./store.ts";
