@@ -15,13 +15,25 @@
  * A fresh instance owns nothing, so replaying since=0 history enqueues nothing;
  * jobs from unrelated clients are never claimed. See README for the semantics.
  *
- * EXACTLY-ONCE (best-effort, three layers):
- *   1. stable worklist item id → the sink dedupes on it.
- *   2. local `done/<jid>` tombstone → skip already-relayed settlements.
- *   3. `pending/<jid>` durable envelope → the retriable work item; survives
- *      restart and sink-unavailability. Cursor is an optimization only:
- *      startup + failure reconciliation over owned-unsettled jobs backstops any
- *      event missed below the persisted cursor.
+ * TWO ITEM KINDS (both flow through the same neutral sink + drop-box fallback):
+ *   • TERMINAL SETTLEMENTS — a `golem-settle-<jid>` notify, relayed once the
+ *     job reaches a terminal state. Exactly-once (best-effort, three layers):
+ *       1. stable worklist item id → the sink dedupes on it.
+ *       2. local `done/<jid>` tombstone → skip already-relayed settlements.
+ *       3. `pending/<jid>` durable envelope → the retriable work item; survives
+ *          restart and sink-unavailability. Cursor is an optimization only:
+ *          startup + failure reconciliation over owned-unsettled jobs backstops
+ *          any event missed below the persisted cursor.
+ *   • BLOCKED QUESTIONS — a `golem-blocked-<jid>-<episode>` question (P0),
+ *     enqueued promptly when an owned job transitions to `blocked` (SSE event,
+ *     or the periodic reconcile backstop) and WITHDRAWN (sink.withdraw) when the
+ *     job leaves `blocked` (answered / unblocked / went terminal). The id is
+ *     stable per block-episode (keyed on the question id when the API provides
+ *     one, else a content hash of the prompt) so duplicate events and restarts
+ *     dedup to one item, while a re-block with a NEW question gets a NEW id and
+ *     is not suppressed by the prior episode's withdraw tombstone. A
+ *     `blocked/<jid>` marker records the live episode so restarts neither
+ *     re-deliver nor strand it.
  *
  * LOADER ISOLATION FALLBACK: pi's extension loader can hand this external
  * contrib plugin and the built-in worklist extension SEPARATE module instances,
@@ -36,16 +48,19 @@
  * pending/owned. This is still never a direct pi.sendMessage; attention is
  * preserved because worklist owns delivery.
  *
- * This client has NO await/claim tool, so there is no await-race to dedup and
- * we deliberately do NOT call sink.withdraw() or fake a partial claim protocol.
+ * Settlements have NO await/claim tool, so there is no await-race to dedup;
+ * the sink.withdraw() above is used ONLY for blocked questions (to pull a
+ * superseded/stale question once its job unblocks), never for settlements.
  *
  * Durable state (never in source): base dir passed in by the extension, derived
  * from PI_CODING_AGENT_DIR. Files: cursor.json, owned/<jid>.json,
- * pending/<jid>.json, done/<jid>.json — all atomic temp+rename, one file per id.
+ * pending/<jid>.json, done/<jid>.json, blocked/<jid>.json — all atomic
+ * temp+rename, one file per id.
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { createHash } from "node:crypto";
 import type {
   DurableSink,
   DurableEnqueueEnvelope,
@@ -74,6 +89,10 @@ export interface JobDetail {
   } | null;
   /** Legacy/top-level fallback only; prefer settlement.usage. */
   usage?: unknown;
+  /** Present while the job is blocked on an operator question. The live
+   *  golemd detail carries the question (prompt + options) and, when the API
+   *  provides one, a stable question id that identifies the block episode. */
+  question?: { id?: string; prompt?: string; text?: string; options?: unknown[] } | null;
 }
 
 /** The Golem transport subset the relay needs. Injectable for tests. */
@@ -193,11 +212,78 @@ export function buildEnvelope(jobId: string, job: JobDetail): DurableEnqueueEnve
   };
 }
 
+/** Short stable content hash (12 hex) — a discriminator when the API gives no
+ *  explicit question id, so a distinct question still yields a distinct id. */
+function shortHash(s: string): string {
+  return createHash("sha256").update(s).digest("hex").slice(0, 12);
+}
+
+/**
+ * Stable, per-block-episode worklist id for a blocked job.
+ *
+ * The episode discriminator is the question id when the API provides one (a
+ * fresh question id per block, so a re-block is a NEW id and is not suppressed
+ * by the prior episode's withdraw tombstone). When no question id is present we
+ * fall back to a content hash of the prompt so a distinct question still maps
+ * to a distinct id. Either way the id is deterministic, so duplicate SSE events
+ * and process restarts dedup to the SAME single item.
+ */
+export function blockedItemId(jobId: string, question: unknown): string {
+  const q = (question && typeof question === "object") ? (question as Record<string, unknown>) : {};
+  const qid = typeof q.id === "string" && q.id ? q.id : null;
+  const disc = qid
+    ? safeJobId(qid)
+    : "q" + shortHash(
+        (typeof q.prompt === "string" ? q.prompt : "") ||
+        (typeof q.text === "string" ? q.text : "") ||
+        "no-prompt",
+      );
+  return `golem-blocked-${safeJobId(jobId)}-${disc}`;
+}
+
+/** Build a concise, actionable worklist QUESTION for a blocked job: the job
+ *  identity plus the full operator question and its options, with a hint for
+ *  how to answer. P0 so it steers promptly (held only under `protected`). */
+export function buildBlockedEnvelope(jobId: string, job: JobDetail): DurableEnqueueEnvelope {
+  const q = (job.question && typeof job.question === "object") ? (job.question as Record<string, unknown>) : {};
+  const prompt =
+    (typeof q.prompt === "string" ? q.prompt : "") ||
+    (typeof q.text === "string" ? q.text : "") ||
+    "(no question text)";
+  const options = Array.isArray(q.options)
+    ? (q.options as unknown[]).filter((o) => typeof o === "string" || typeof o === "number")
+    : [];
+  const short = prompt.replace(/\s+/g, " ").trim().slice(0, 80);
+  const summary = `agent blocked: ${short}`;
+  const lines: string[] = [`job ${jobId} — BLOCKED (needs an answer)`];
+  if (job.harness || job.model) lines.push(`harness/model: ${job.harness ?? "?"}/${job.model ?? "?"}`);
+  const ws = job.workspace || undefined;
+  if (ws) {
+    const wsStr = (ws.project as string) || (ws.repo as string) || (ws.worktree as string) || (ws.path as string);
+    if (wsStr) lines.push(`workspace: ${wsStr}`);
+  }
+  lines.push("", "question:", prompt.slice(0, 4000));
+  if (options.length) {
+    lines.push("", "options:");
+    options.slice(0, 20).forEach((o, i) => lines.push(`  ${i + 1}. ${String(o)}`));
+    if (options.length > 20) lines.push(`  … +${options.length - 20} more`);
+  }
+  lines.push("", `answer with: agents_answer { id: "${jobId}", text: "<your answer>" }`);
+  return {
+    id: blockedItemId(jobId, q),
+    priority: 0,
+    type: "question",
+    summary: summary.slice(0, 200),
+    body: lines.join("\n"),
+    source: "golem",
+  };
+}
+
 /* --- the relay ------------------------------------------------------------ */
 
 export class SettlementRelay {
   private readonly d: Required<Pick<RelayDeps, "client" | "stateDir" | "resolveSink">> & RelayDeps;
-  private readonly dir: { cursor: string; owned: string; pending: string; done: string };
+  private readonly dir: { cursor: string; owned: string; pending: string; done: string; blocked: string };
   private cursor = 0;
   private maxSeq = 0;
   private stopped = true;
@@ -219,6 +305,7 @@ export class SettlementRelay {
       owned: path.join(deps.stateDir, "owned"),
       pending: path.join(deps.stateDir, "pending"),
       done: path.join(deps.stateDir, "done"),
+      blocked: path.join(deps.stateDir, "blocked"),
     };
   }
 
@@ -231,7 +318,7 @@ export class SettlementRelay {
   }
 
   private ensureDirs(): void {
-    for (const dir of [this.d.stateDir, this.dir.owned, this.dir.pending, this.dir.done]) {
+    for (const dir of [this.d.stateDir, this.dir.owned, this.dir.pending, this.dir.done, this.dir.blocked]) {
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     }
   }
@@ -239,6 +326,7 @@ export class SettlementRelay {
   private ownedFile = (jid: string) => path.join(this.dir.owned, `${safeJobId(jid)}.json`);
   private pendingFile = (jid: string) => path.join(this.dir.pending, `${safeJobId(jid)}.json`);
   private doneFile = (jid: string) => path.join(this.dir.done, `${safeJobId(jid)}.json`);
+  private blockedFile = (jid: string) => path.join(this.dir.blocked, `${safeJobId(jid)}.json`);
 
   private isOwned = (jid: string) => fs.existsSync(this.ownedFile(jid));
   private isDone = (jid: string) => fs.existsSync(this.doneFile(jid));
@@ -251,6 +339,16 @@ export class SettlementRelay {
     const dir = this.d.dropboxDir;
     if (!dir) return undefined;
     return path.join(dir, `golem-settle-${safeJobId(jid)}.json`);
+  }
+
+  /** Worklist drop-box target for a BLOCKED question, keyed on the stable item
+   *  id (per block-episode) so a re-block with a new question does not clobber
+   *  a not-yet-drained drop for the prior episode. The envelope's stable `id`
+   *  field remains authoritative for worklist's dedup. */
+  private dropboxFileBlocked(itemId: string): string | undefined {
+    const dir = this.d.dropboxDir;
+    if (!dir) return undefined;
+    return path.join(dir, `golem-blocked-${safeJobId(itemId)}.json`);
   }
 
   /** Record that THIS extension dispatched a job. Idempotent. Immediately
@@ -269,11 +367,13 @@ export class SettlementRelay {
     await this.enqueueOp("recordDispatch", () => this.reconcileJob(jobId), true);
   }
 
-  /** The single idempotent settlement unit. Fetches authoritative detail and,
-   *  if the owned job is terminal, persists a pending envelope and flushes it. */
+  /** The single idempotent reconcile unit for an owned job. Fetches
+   *  authoritative detail and, depending on state: enqueues/retains a BLOCKED
+   *  question (and withdraws a stale one when the job unblocks), or persists a
+   *  pending terminal settlement envelope and flushes it. */
   private async reconcileJob(jobId: string): Promise<void> {
     if (!this.isOwned(jobId)) return; // not ours — anti-flood
-    if (this.isDone(jobId)) return; // already relayed
+    if (this.isDone(jobId)) return; // already relayed (terminal)
     // A pending envelope already built (e.g. sink was down) — just flush it.
     if (fs.existsSync(this.pendingFile(jobId))) {
       await this.flushOne(jobId);
@@ -287,7 +387,17 @@ export class SettlementRelay {
       return;
     }
     const state = job?.settlement?.state || job?.state;
-    if (!isTerminal(state)) return; // still running/blocked — nothing to do
+    if (state === "blocked") {
+      // Promptly surface (or retain) the operator question; idempotent per
+      // block-episode so duplicate events / restarts do not re-deliver.
+      await this.ensureBlocked(jobId, job);
+      return;
+    }
+    // Not blocked: withdraw any live blocked question for this job (answered,
+    // unblocked, or went terminal while blocked) so a stale question cannot
+    // surface. Idempotent; a no-op when no live marker exists.
+    await this.withdrawBlockedIfLive(jobId);
+    if (!isTerminal(state)) return; // still running — nothing to settle yet
     writeAtomic(this.pendingFile(jobId), buildEnvelope(jobId, job));
     await this.flushOne(jobId);
   }
@@ -339,16 +449,14 @@ export class SettlementRelay {
     this.log({ relay: "flushOne.retained", jobId, hadSink: !!sink, dropbox: !!this.d.dropboxDir });
   }
 
-  /** Atomically drop the stable-id envelope into worklist's incoming dir. Returns
-   *  true iff a durable file now exists for this settlement (fresh write OR an
-   *  already-present drop for the same stable id — worklist dedups either way,
-   *  so both are "accepted"). Never overwrites a conflicting envelope silently:
-   *  a temp+rename lands the file, and an existing same-id drop is left intact.
-   *  Returns false on any I/O failure (absent/unwritable dir) so pending is
-   *  retained. */
-  private writeDropbox(jobId: string, env: DurableEnqueueEnvelope): boolean {
-    const dest = this.dropboxFile(jobId);
-    if (!dest) return false;
+  /** Atomically drop the stable-id envelope into worklist's incoming dir at
+   *  `dest`. Returns true iff a durable file now exists for this envelope (fresh
+   *  write OR an already-present drop for the same stable id — worklist dedups
+   *  either way, so both are "accepted"). Never overwrites a conflicting
+   *  envelope silently: a temp+link lands the file, and an existing same-id drop
+   *  is left intact. Returns false on any I/O failure (absent/unwritable dir) so
+   *  the caller retains the item. */
+  private writeDropboxTo(dest: string, env: DurableEnqueueEnvelope): boolean {
     try {
       // If a drop for this exact stable id is already queued (e.g. a prior crash
       // between the atomic write and the tombstone), it is durable acceptance —
@@ -374,9 +482,101 @@ export class SettlementRelay {
         throw err;
       }
     } catch (err) {
-      this.log({ relay: "writeDropbox.failed", jobId, err: String(err) });
+      this.log({ relay: "writeDropbox.failed", dest, err: String(err) });
       return false;
     }
+  }
+
+  /** Drop-box fallback for a terminal settlement (see writeDropboxTo). */
+  private writeDropbox(jobId: string, env: DurableEnqueueEnvelope): boolean {
+    const dest = this.dropboxFile(jobId);
+    if (!dest) return false;
+    return this.writeDropboxTo(dest, env);
+  }
+
+  /* --- blocked-question lifecycle -----------------------------------------
+   * A blocked owned job surfaces a P0 worklist QUESTION promptly (SSE event or
+   * the periodic reconcile backstop) and withdraws it when the job leaves
+   * `blocked`. Idempotent per block-episode: the stable item id dedups at the
+   * sink/drain, and a local `blocked/<jid>` marker records the live episode so
+   * restarts neither re-deliver nor strand it. */
+
+  /** Ensure the current block-episode's question is durably enqueued (sink,
+   *  else drop-box). No-op when the marker already records this same episode.
+   *  Writes the marker only after a durable acceptance, so a failed flush is
+   *  retried on the next reconcile. */
+  private async ensureBlocked(jobId: string, job: JobDetail): Promise<void> {
+    const itemId = blockedItemId(jobId, job.question);
+    const markerFile = this.blockedFile(jobId);
+    const existing = readJSON<{ itemId?: string }>(markerFile);
+    if (existing?.itemId === itemId) return; // same episode already enqueued
+    // The episode changed (re-block with a different question): withdraw the
+    // prior episode's item so a stale question does not linger.
+    if (existing?.itemId && existing.itemId !== itemId) {
+      await this.withdrawItem(existing.itemId);
+    }
+    const env = buildBlockedEnvelope(jobId, job);
+    if (await this.flushBlocked(itemId, env)) {
+      writeAtomic(markerFile, { jobId, itemId, ts: this.d.now!() });
+    }
+  }
+
+  /** Hand one blocked-question envelope to the worklist. Same two-channel
+   *  policy as settlements: in-process sink first, else the official drop-box.
+   *  Returns true iff durably accepted (sink accepted/superseded, or a durable
+   *  drop-box file) so the caller may record the live marker. */
+  private async flushBlocked(itemId: string, env: DurableEnqueueEnvelope): Promise<boolean> {
+    const sink = this.d.resolveSink();
+    if (sink) {
+      let acc;
+      try {
+        acc = await sink.enqueue(env);
+      } catch (err) {
+        this.log({ relay: "flushBlocked.enqueueThrew", itemId, err: String(err) });
+        acc = undefined; // fall through to the drop-box fallback below
+      }
+      if (acc && (acc.accepted || acc.superseded)) return true;
+      if (acc && !acc.accepted && !acc.superseded) {
+        // An explicit, durable refusal from a REAL sink. Do not shadow-write a
+        // drop-box copy behind the sink's back; retain (no marker) so the next
+        // reconcile retries.
+        this.log({ relay: "flushBlocked.rejected", itemId, reason: acc.reason });
+        return false;
+      }
+      // acc === undefined: sink threw. Try the durable drop-box fallback.
+    }
+    const dest = this.dropboxFileBlocked(itemId);
+    if (dest && this.writeDropboxTo(dest, env)) return true;
+    this.log({ relay: "flushBlocked.retained", itemId, hadSink: !!sink, dropbox: !!this.d.dropboxDir });
+    return false;
+  }
+
+  /** Withdraw this job's live blocked question (if any) and clear the marker.
+   *  Idempotent; a no-op when no live marker exists. Called when an owned job
+   *  leaves `blocked` (answered / unblocked / went terminal). */
+  private async withdrawBlockedIfLive(jobId: string): Promise<void> {
+    const markerFile = this.blockedFile(jobId);
+    const marker = readJSON<{ itemId?: string }>(markerFile);
+    if (!marker?.itemId) return;
+    await this.withdrawItem(marker.itemId);
+    rm(markerFile);
+  }
+
+  /** Withdraw one blocked-question item by its stable id. The in-process sink
+   *  is the load-bearing path (it also catches a drop-box drop that worklist has
+   *  since drained into its store). Best-effort: also remove an undrained
+   *  drop-box file so a stale question cannot surface. Never throws. */
+  private async withdrawItem(itemId: string): Promise<void> {
+    const sink = this.d.resolveSink();
+    if (sink) {
+      try {
+        await sink.withdraw(itemId);
+      } catch (err) {
+        this.log({ relay: "withdrawItem.sinkError", itemId, err: String(err) });
+      }
+    }
+    const dest = this.dropboxFileBlocked(itemId);
+    if (dest) rm(dest);
   }
 
   /** Commit a settlement as delivered: tombstone FIRST (so a crash after this
@@ -478,9 +678,11 @@ export class SettlementRelay {
     if (typeof e?.seq === "number" && e.seq > this.maxSeq) this.maxSeq = e.seq;
     const jid = e?.job_id;
     if (!jid || !this.isOwned(jid) || this.isDone(jid)) return;
-    // Only chase terminal transitions; running/blocked churn is ignored here
-    // (reconcileJob re-checks authoritative state anyway).
-    if (e.state && !isTerminal(e.state)) return;
+    // Chase terminal transitions (settle) AND `blocked` transitions (surface the
+    // operator question promptly). Running churn is ignored here; reconcileJob
+    // re-checks authoritative state anyway, so a stale `blocked` event is a
+    // no-op once the job has moved on.
+    if (e.state && !isTerminal(e.state) && e.state !== "blocked") return;
     if (!this.queue.includes(jid)) this.queue.push(jid);
     this.pump();
   };

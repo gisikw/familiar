@@ -1,22 +1,27 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import { SettlementRelay, buildEnvelope, safeJobId, type JobDetail, type RelayClient } from "./relay.ts";
+import { SettlementRelay, buildEnvelope, buildBlockedEnvelope, blockedItemId, safeJobId, type JobDetail, type RelayClient } from "./relay.ts";
 import { createCapabilityRegistry, WORKLIST_SINK, WORKLIST_SINK_VERSION, type DurableSink, type DurableEnqueueEnvelope, type DurableAcceptance } from "../../../../integrations/pi/extensions/lib/capabilities.ts";
 
-/* A durable sink test double: records enqueues and dedupes on id, like worklist. */
+/* A durable sink test double: records enqueues (deduping on id, like worklist)
+ * and counts every enqueue/withdraw call so tests can assert exactly-once and
+ * withdrawal behavior. */
 function fakeSink() {
   const seen = new Map<string, DurableEnqueueEnvelope>();
+  const withdrawn: string[] = [];
+  let calls = 0;
   const sink: DurableSink = {
     async enqueue(env: DurableEnqueueEnvelope): Promise<DurableAcceptance> {
+      calls++;
       const id = env.id ?? `mint-${seen.size}`;
       if (!seen.has(id)) seen.set(id, env);
       return { accepted: true, id };
     },
-    async withdraw() { return true; },
+    async withdraw(id: string) { withdrawn.push(id); return true; },
   };
-  return { sink, seen };
+  return { sink, seen, withdrawn, calls: () => calls };
 }
 
 /* A controllable Golem client double. `jobs` maps id→detail; `events` is an
@@ -56,6 +61,11 @@ const settled = (id: string, state = "done", verdict = "all good"): JobDetail =>
   id, state, harness: "pi", model: "op/m", workspace: { project: "familiar", worktree: "wt" },
   settlement: { state, verdict, artifacts: [{ path: "out.txt", size: 12 }] },
   usage: { input: 10, output: 20 },
+});
+
+const blocked = (id: string, question?: Record<string, unknown>): JobDetail => ({
+  id, state: "blocked", harness: "pi", model: "op/m", workspace: { project: "familiar", worktree: "wt" },
+  question: question ?? { id: `q-${id}`, prompt: "Which branch should I rebase onto?", options: ["main", "release/1.0"] },
 });
 
 const tick = (ms = 40) => new Promise((r) => setTimeout(r, ms));
@@ -298,5 +308,185 @@ describe("settlement relay", () => {
     expect(maxInFlight).toBe(1); // never two concurrent sink calls for one id
     // Tombstone written after the first acceptance → no further submissions.
     expect(calls).toBe(1);
+  });
+});
+
+describe("blocked-question relay", () => {
+  const q = (id: string, prompt = "Which branch should I rebase onto?", options: unknown[] = ["main", "release/1.0"]) =>
+    ({ id, prompt, options } as Record<string, unknown>);
+
+  test("buildBlockedEnvelope: P0 question with job identity, full prompt, options, answer hint", () => {
+    const env = buildBlockedEnvelope("job-9", blocked("job-9", q("q9", "Rebase onto main or release?", ["main", "release/1.0"])));
+    expect(env.priority).toBe(0);
+    expect(env.type).toBe("question");
+    expect(env.id).toBe("golem-blocked-job-9-q9");
+    expect(env.source).toBe("golem");
+    expect(env.body).toContain("job job-9 — BLOCKED");
+    expect(env.body).toContain("Rebase onto main or release?");
+    expect(env.body).toContain("1. main");
+    expect(env.body).toContain("2. release/1.0");
+    expect(env.body).toContain('agents_answer { id: "job-9"');
+    expect(env.summary).toContain("agent blocked:");
+  });
+
+  test("blockedItemId: stable per episode, question-id keyed, content-hash fallback", () => {
+    expect(blockedItemId("j", q("q-1"))).toBe(blockedItemId("j", q("q-1"))); // stable
+    expect(blockedItemId("j", q("q-1"))).toBe("golem-blocked-j-q-1");
+    expect(blockedItemId("j", q("q-1"))).not.toBe(blockedItemId("j", q("q-2"))); // distinct episode
+    // No question id → content hash: stable for the same prompt, distinct otherwise.
+    const h1 = blockedItemId("j", { prompt: "ship it?" });
+    const h2 = blockedItemId("j", { prompt: "ship it?" });
+    const h3 = blockedItemId("j", { prompt: "hold on?" });
+    expect(h1).toBe(h2);
+    expect(h1).not.toBe(h3);
+    expect(h1.startsWith("golem-blocked-j-q")).toBe(true);
+    expect(blockedItemId("j", undefined)).toBe(blockedItemId("j", null)); // no question → same fallback
+  });
+
+  test("blocked job at dispatch: surfaces a P0 question promptly via the sink", async () => {
+    const { client, jobs } = fakeClient();
+    const { sink, seen, withdrawn } = fakeSink();
+    jobs.set("b", blocked("b"));
+    const stateDir = newDir();
+    const relay = new SettlementRelay({ client, stateDir, resolveSink: () => sink });
+    await relay.recordDispatch("b"); // already blocked → ensureBlocked runs immediately
+    const itemId = blockedItemId("b", jobs.get("b")!.question!);
+    expect(seen.has(itemId)).toBe(true);
+    const env = seen.get(itemId)!;
+    expect(env.type).toBe("question");
+    expect(env.priority).toBe(0);
+    expect(env.body).toContain("job b — BLOCKED");
+    expect(env.body).toContain("Which branch should I rebase onto?");
+    expect(env.body).toContain("1. main");
+    expect(env.body).toContain("agents_answer");
+    expect(withdrawn).toEqual([]); // not withdrawn while still blocked
+    // Live marker records the episode (restart/dedup anchor).
+    const marker = JSON.parse(readFileSync(path.join(stateDir, "blocked", "b.json"), "utf8")) as { itemId: string };
+    expect(marker.itemId).toBe(itemId);
+    await relay.stop();
+  });
+
+  test("duplicate blocked events + ticks do not re-deliver (idempotent per episode)", async () => {
+    const { client, jobs, push } = fakeClient();
+    const { sink, seen, calls } = fakeSink();
+    jobs.set("b", blocked("b"));
+    const relay = new SettlementRelay({ client, stateDir: newDir(), resolveSink: () => sink, backoffMs: 1, tickMs: 15 });
+    await relay.recordDispatch("b");
+    await relay.start();
+    const itemId = blockedItemId("b", jobs.get("b")!.question!);
+    expect(seen.has(itemId)).toBe(true);
+    const afterFirst = calls();
+    // Re-fire the same blocked transition several times + let ticks reconcile.
+    push({ seq: 1, job_id: "b", state: "blocked" });
+    push({ seq: 2, job_id: "b", state: "blocked" });
+    await tick(80);
+    await relay.stop();
+    expect(calls()).toBe(afterFirst); // the live marker suppresses every re-enqueue
+  });
+
+  test("restart does not re-deliver a still-blocked job (marker dedups across processes)", async () => {
+    const stateDir = newDir();
+    const registry = createCapabilityRegistry();
+    const { sink, seen, calls } = fakeSink();
+    registry.register(WORKLIST_SINK, WORKLIST_SINK_VERSION, sink);
+    const resolveSink = () => registry.resolve<DurableSink>(WORKLIST_SINK, WORKLIST_SINK_VERSION);
+    const c1 = fakeClient();
+    c1.jobs.set("b", blocked("b"));
+    const r1 = new SettlementRelay({ client: c1.client, stateDir, resolveSink, backoffMs: 1 });
+    await r1.recordDispatch("b");
+    await r1.stop();
+    const itemId = blockedItemId("b", c1.jobs.get("b")!.question!);
+    expect(seen.has(itemId)).toBe(true);
+    const afterFirst = calls();
+    // Fresh process, same durable dir, job STILL blocked → must not re-enqueue.
+    const c2 = fakeClient();
+    c2.jobs.set("b", blocked("b"));
+    const r2 = new SettlementRelay({ client: c2.client, stateDir, resolveSink, backoffMs: 1, tickMs: 15 });
+    await r2.start(); // startup reconcile: still blocked → marker matches → skip
+    await tick(60);
+    await r2.stop();
+    expect(calls()).toBe(afterFirst);
+  });
+
+  test("job leaves blocked (answered→running): the question is withdrawn and marker cleared", async () => {
+    const { client, jobs } = fakeClient();
+    const { sink, seen, withdrawn } = fakeSink();
+    jobs.set("b", blocked("b"));
+    const stateDir = newDir();
+    const relay = new SettlementRelay({ client, stateDir, resolveSink: () => sink, backoffMs: 1, tickMs: 15 });
+    await relay.recordDispatch("b");
+    await relay.start();
+    const itemId = blockedItemId("b", jobs.get("b")!.question!);
+    expect(seen.has(itemId)).toBe(true);
+    // Operator answers → job returns to running. No SSE event for running, so
+    // the periodic reconcile backstop detects the transition and withdraws.
+    jobs.set("b", { id: "b", state: "running" });
+    await tick(70);
+    await relay.stop();
+    expect(withdrawn).toContain(itemId);
+    expect(existsSync(path.join(stateDir, "blocked", "b.json"))).toBe(false);
+  });
+
+  test("job goes terminal while blocked: question withdrawn AND settlement relayed", async () => {
+    const { client, jobs, push } = fakeClient();
+    const { sink, seen, withdrawn } = fakeSink();
+    jobs.set("b", blocked("b"));
+    const relay = new SettlementRelay({ client, stateDir: newDir(), resolveSink: () => sink, backoffMs: 1, tickMs: 15 });
+    await relay.recordDispatch("b");
+    await relay.start();
+    const itemId = blockedItemId("b", jobs.get("b")!.question!);
+    expect(seen.has(itemId)).toBe(true);
+    // Job is cancelled while blocked → terminal event.
+    jobs.set("b", settled("b", "cancelled", "aborted"));
+    push({ seq: 1, job_id: "b", state: "cancelled" });
+    await tick(80);
+    await relay.stop();
+    expect(withdrawn).toContain(itemId); // stale question pulled
+    expect(seen.has("golem-settle-b")).toBe(true); // and the settlement still surfaces
+  });
+
+  test("re-block with a NEW question: prior episode withdrawn, new id enqueued", async () => {
+    const { client, jobs } = fakeClient();
+    const { sink, seen, withdrawn } = fakeSink();
+    jobs.set("b", blocked("b", q("q1", "first question?")));
+    const relay = new SettlementRelay({ client, stateDir: newDir(), resolveSink: () => sink, backoffMs: 1, tickMs: 15 });
+    await relay.recordDispatch("b");
+    await relay.start();
+    const id1 = blockedItemId("b", q("q1"));
+    expect(seen.has(id1)).toBe(true);
+    // Unblocks, then re-blocks with a DIFFERENT question (new episode id).
+    jobs.set("b", { id: "b", state: "running" });
+    await tick(50);
+    expect(withdrawn).toContain(id1);
+    jobs.set("b", blocked("b", q("q2", "second question?")));
+    await tick(50);
+    const id2 = blockedItemId("b", q("q2"));
+    expect(id1).not.toBe(id2);
+    expect(seen.has(id2)).toBe(true);
+    await relay.stop();
+  });
+
+  test("drop-box fallback: blocked drop written when sink absent, removed on unblock", async () => {
+    const dropboxDir = newDir(); // stands in for $FAMILIAR_WORKLIST_DIR/incoming
+    const stateDir = newDir();
+    const { client, jobs } = fakeClient();
+    jobs.set("b", blocked("b"));
+    const relay = new SettlementRelay({ client, stateDir, resolveSink: () => undefined, dropboxDir, backoffMs: 1, tickMs: 15 });
+    await relay.recordDispatch("b");
+    await relay.start();
+    const itemId = blockedItemId("b", jobs.get("b")!.question!);
+    const dropFile = path.join(dropboxDir, `golem-blocked-${safeJobId(itemId)}.json`);
+    expect(existsSync(dropFile)).toBe(true);
+    const env = JSON.parse(readFileSync(dropFile, "utf8")) as DurableEnqueueEnvelope;
+    expect(env.id).toBe(itemId);
+    expect(env.type).toBe("question");
+    expect(env.priority).toBe(0);
+    // Live marker written even on the drop-box path.
+    expect(existsSync(path.join(stateDir, "blocked", "b.json"))).toBe(true);
+    // Job leaves blocked → the undrained drop is removed.
+    jobs.set("b", { id: "b", state: "running" });
+    await tick(70);
+    await relay.stop();
+    expect(existsSync(dropFile)).toBe(false);
   });
 });

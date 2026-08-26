@@ -187,4 +187,43 @@ describe("settlement relay ↔ real worklist drop-box (loader-isolation fallback
     expect(readdirSync(P.incoming).filter((n) => n.endsWith(".json")).length).toBe(0);
     expect(existsSync(path.join(base, "golem-settlement", "done", "viasink.json"))).toBe(true);
   });
+
+  test("blocked job → dropbox → real drain → exactly one P0 question item; restart dedupes", async () => {
+    const base = newDir();
+    const P = worklistPaths(path.join(base, "worklist"));
+    ensureDirs(P); // worklist owns creating its tree (incoming/ + items/)
+    const { client, jobs } = fakeClient();
+    const q = { id: "q777", prompt: "Deploy to prod now?", options: ["yes", "no"] };
+    jobs.set("job-777", { id: "job-777", state: "blocked", harness: "pi", model: "op/m", question: q });
+    const stateDir = path.join(base, "golem-settlement");
+    // resolveSink undefined — the live loader-isolation symptom; blocked uses the drop-box.
+    const relay = new SettlementRelay({ client, stateDir, dropboxDir: P.incoming, resolveSink: () => undefined, backoffMs: 1 });
+    await relay.recordDispatch("job-777"); // blocked → durable drop
+    await relay.stop();
+
+    const drops = readdirSync(P.incoming).filter((n) => n.endsWith(".json"));
+    expect(drops.length).toBe(1);
+
+    // The REAL worklist drain promotes it to exactly one P0 question item.
+    const created = drainIncoming(P);
+    expect(created.length).toBe(1);
+    const item = created[0];
+    expect(item.id).toBe("golem-blocked-job-777-q777");
+    expect(item.type).toBe("question");
+    expect(item.priority).toBe(0);
+    expect(item.source).toBe("golem");
+    expect(item.body).toContain("job job-777 — BLOCKED");
+    expect(item.body).toContain("Deploy to prod now?");
+    expect(item.body).toContain("1. yes");
+    expect(item.body).toContain("2. no");
+    expect(listItems(P).map((i) => i.id)).toEqual(["golem-blocked-job-777-q777"]);
+
+    // Restart: job STILL blocked → the live marker dedups; no second drop, and
+    // the real store already owns the one item (drained above).
+    const relay2 = new SettlementRelay({ client, stateDir, dropboxDir: P.incoming, resolveSink: () => undefined, backoffMs: 1 });
+    await relay2.start();
+    await relay2.stop();
+    expect(readdirSync(P.incoming).filter((n) => n.endsWith(".json")).length).toBe(0);
+    expect(listItems(P).map((i) => i.id)).toEqual(["golem-blocked-job-777-q777"]); // still exactly one
+  });
 });
