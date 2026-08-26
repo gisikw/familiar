@@ -352,17 +352,27 @@ export class SettlementRelay {
     try {
       // If a drop for this exact stable id is already queued (e.g. a prior crash
       // between the atomic write and the tombstone), it is durable acceptance —
-      // worklist will drain+dedup it. Do not rewrite/overwrite it.
-      if (fs.existsSync(dest)) return true;
+      // worklist will drain+dedup it. Never accept an unrelated conflicting file.
+      const existing = readJSON<DurableEnqueueEnvelope>(dest);
+      if (existing) return existing.id === env.id;
+
       const tmp = `${dest}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
       fs.writeFileSync(tmp, JSON.stringify(env), { mode: 0o600 });
       try {
-        fs.renameSync(tmp, dest);
+        // Publish without replacement: hard-linking the fully-written temp file
+        // is atomic and fails with EEXIST if another writer won the destination.
+        // Plain rename(2) would silently replace on POSIX, violating the durable
+        // drop-box's no-clobber promise.
+        fs.linkSync(tmp, dest);
+        rm(tmp);
+        return true;
       } catch (err) {
         rm(tmp);
+        if ((err as NodeJS.ErrnoException).code === "EEXIST") {
+          return readJSON<DurableEnqueueEnvelope>(dest)?.id === env.id;
+        }
         throw err;
       }
-      return true;
     } catch (err) {
       this.log({ relay: "writeDropbox.failed", jobId, err: String(err) });
       return false;

@@ -7,7 +7,7 @@
  * to worklist's official incoming/ drop-box (PROTOCOL.md §Enqueue paths (b)). */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, existsSync, chmodSync, readdirSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, chmodSync, readdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { SettlementRelay, type JobDetail, type RelayClient } from "./relay.ts";
@@ -144,6 +144,26 @@ describe("settlement relay ↔ real worklist drop-box (loader-isolation fallback
     await r2.stop();
     expect(existsSync(path.join(stateDir, "pending", "held.json"))).toBe(true);
     expect(existsSync(path.join(stateDir, "done", "held.json"))).toBe(false);
+  });
+
+  test("an unrelated conflicting drop is never overwritten or accepted", async () => {
+    const base = newDir();
+    const P = worklistPaths(path.join(base, "worklist"));
+    ensureDirs(P);
+    const conflict = path.join(P.incoming, "golem-settle-conflict.json");
+    const unrelated = { id: "some-other-item", summary: "do not clobber" };
+    writeFileSync(conflict, JSON.stringify(unrelated), { mode: 0o600 });
+
+    const { client, jobs } = fakeClient();
+    jobs.set("conflict", settled("conflict", "done", "held safely"));
+    const stateDir = path.join(base, "golem-settlement");
+    const relay = new SettlementRelay({ client, stateDir, dropboxDir: P.incoming, resolveSink: () => undefined, backoffMs: 1 });
+    await relay.recordDispatch("conflict");
+    await relay.stop();
+
+    expect(JSON.parse(readFileSync(conflict, "utf8"))).toEqual(unrelated);
+    expect(existsSync(path.join(stateDir, "pending", "conflict.json"))).toBe(true);
+    expect(existsSync(path.join(stateDir, "done", "conflict.json"))).toBe(false);
   });
 
   test("sink-available path still wins: no dropbox file is written", async () => {
