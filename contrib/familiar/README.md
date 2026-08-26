@@ -51,11 +51,51 @@ credentials. Tools cover capabilities, dispatch, list/status, answer, steer,
 cancel, artifact listing, and bounded base64 artifact fetch. Blocked status includes golemd's
 question object.
 
+## Settlement relay (jobs → worklist)
+
+The Pi extension also runs a resilient background **settlement relay**. When a
+job dispatched through `agents_dispatch` reaches a terminal state
+(`done`/`failed`/`cancelled`/`timeout`), the relay fetches its authoritative
+detail and enqueues a concise worklist item through the neutral
+`worklist.durable-sink@1` capability (`WORKLIST_SINK`). This respects the
+worklist's ATTENTION policy — it NEVER calls `pi.sendMessage`. If the sink is
+unavailable the built envelope is retained and retried until the sink accepts;
+delivery is never forced past attention.
+
+The item's stable id is `golem-settle-<sanitized job id>` so replay is
+idempotent. Priority is P1 for a non-success settlement and P2 for `done`. The
+body carries job id, state, verdict, workspace/harness/model, artifact list, and
+usage when present.
+
+**Ownership (anti-flood).** Only jobs THIS extension dispatched are relayed. A
+dispatch records a durable ownership marker; a fresh instance owns nothing, so
+following the durable SSE feed from `since=0` on first start enqueues no
+historical host jobs. Jobs dispatched by unrelated clients are deliberately not
+claimed (they belong to whichever client dispatched them).
+
+**Durability & exactly-once.** State lives under
+`FAMILIAR_AGENTS_STATE_DIR` (or `$PI_CODING_AGENT_DIR/golem-settlement`), never
+in source: a cursor, per-job `owned/`, `pending/` (retriable envelope), and
+`done/` (tombstone) — all atomic temp+rename. Exactly-once is best-effort across
+replay/restart via three layers: the sink dedupes on the stable id, a local
+tombstone skips already-relayed jobs, and a durable pending envelope survives
+restart and sink outages. The cursor is only an optimization; on start and after
+repeated SSE failures the relay reconciles every owned-unsettled job so an event
+missed below the cursor (or a very fast job that settles around dispatch
+registration) still settles.
+
+**Not covered (by design).** This client exposes no `await`/claim tool, so there
+is no await-race to dedup against — the relay does not call `sink.withdraw()` or
+simulate a partial claim protocol. If the durable state directory is wiped, the
+ownership marker for an in-flight job is lost and that settlement will not be
+relayed (ownership is the anti-flood contract). The relay is disabled if no
+state directory can be derived; the tools remain fully functional.
+
 ## Tests
 
 ```sh
 (cd contrib/familiar/render && go test ./...)
-bun test contrib/familiar/pi/agents
+bun test contrib/familiar/pi/agents   # includes the settlement relay suite
 go test ./...                    # from services/server
 ```
 
