@@ -23,6 +23,19 @@
  *      startup + failure reconciliation over owned-unsettled jobs backstops any
  *      event missed below the persisted cursor.
  *
+ * LOADER ISOLATION FALLBACK: pi's extension loader can hand this external
+ * contrib plugin and the built-in worklist extension SEPARATE module instances,
+ * so the process-local capability registry singleton does not always cross that
+ * boundary and `resolveSink()` can stay undefined indefinitely even when
+ * worklist is loaded. When the in-process sink is unresolvable we therefore use
+ * worklist's OFFICIAL out-of-process durable drop-box (PROTOCOL.md §Enqueue
+ * paths (b)): atomically write the same stable-id envelope to
+ * `$FAMILIAR_WORKLIST_DIR/incoming/<safe-id>.json`. Worklist drains it on its
+ * timer and dedupes on the stable id against live+archive. A successful atomic
+ * rename IS durable acceptance — only then do we write the tombstone and clear
+ * pending/owned. This is still never a direct pi.sendMessage; attention is
+ * preserved because worklist owns delivery.
+ *
  * This client has NO await/claim tool, so there is no await-race to dedup and
  * we deliberately do NOT call sink.withdraw() or fake a partial claim protocol.
  *
@@ -80,6 +93,11 @@ export interface RelayDeps {
   stateDir: string;
   /** Lazily resolve the worklist sink from the registry at flush time. */
   resolveSink: () => DurableSink | undefined;
+  /** Worklist's out-of-process drop-box directory ($FAMILIAR_WORKLIST_DIR/
+   *  incoming). Used as the durable cross-loader fallback when resolveSink()
+   *  returns undefined. Must already exist (worklist owns creating its tree);
+   *  an absent/unwritable dir makes the relay retain pending instead. */
+  dropboxDir?: string;
   now?: () => number;
   log?: (o: unknown) => void;
   /** Periodic tick (cursor persist + pending flush) in ms. */
@@ -225,6 +243,16 @@ export class SettlementRelay {
   private isOwned = (jid: string) => fs.existsSync(this.ownedFile(jid));
   private isDone = (jid: string) => fs.existsSync(this.doneFile(jid));
 
+  /** The worklist drop-box target for a job, or undefined if no valid dropbox
+   *  dir is configured. The filename is derived from OUR sanitized job id
+   *  (independent of any untrusted external id); the envelope's stable `id`
+   *  field remains authoritative for worklist's dedup. */
+  private dropboxFile(jid: string): string | undefined {
+    const dir = this.d.dropboxDir;
+    if (!dir) return undefined;
+    return path.join(dir, `golem-settle-${safeJobId(jid)}.json`);
+  }
+
   /** Record that THIS extension dispatched a job. Idempotent. Immediately
    *  reconciles so a very fast job that settled around dispatch registration is
    *  not missed (the fast-settle race). */
@@ -264,10 +292,14 @@ export class SettlementRelay {
     await this.flushOne(jobId);
   }
 
-  /** Attempt to hand one pending envelope to the sink. On durable acceptance
-   *  (or supersession) write the done tombstone and clear pending+owned. If the
-   *  sink is absent/refuses, RETAIN pending for a later retry — never fall back
-   *  to a direct relay. */
+  /** Attempt to hand one pending envelope to the worklist. FIRST choice is the
+   *  in-process durable sink (fast path). If it is unresolvable across the
+   *  extension-loader module boundary (or throws), FALL BACK to worklist's
+   *  official out-of-process drop-box: an atomic write of the same stable-id
+   *  envelope to $FAMILIAR_WORKLIST_DIR/incoming. A successful atomic rename is
+   *  durable acceptance. On acceptance (sink or dropbox) write the done
+   *  tombstone and clear pending+owned. If neither is available, RETAIN pending
+   *  for a later retry — NEVER a direct pi.sendMessage relay. */
   private async flushOne(jobId: string): Promise<void> {
     const env = readJSON<DurableEnqueueEnvelope>(this.pendingFile(jobId));
     if (!env) return;
@@ -275,26 +307,74 @@ export class SettlementRelay {
       rm(this.pendingFile(jobId));
       return;
     }
+    // Fast path: the in-process capability sink, when the registry singleton
+    // actually crosses the loader boundary.
     const sink = this.d.resolveSink();
-    if (!sink) {
-      this.log({ relay: "flushOne.noSink", jobId });
-      return; // retained; retried on tick/reconnect
+    if (sink) {
+      let acc;
+      try {
+        acc = await sink.enqueue(env);
+      } catch (err) {
+        this.log({ relay: "flushOne.enqueueThrew", jobId, err: String(err) });
+        acc = undefined; // fall through to the dropbox fallback below
+      }
+      if (acc && (acc.accepted || acc.superseded)) {
+        this.commitDone(jobId, { via: "sink", acceptedId: acc.id, superseded: !!acc.superseded });
+        return;
+      }
+      if (acc && !acc.accepted && !acc.superseded) {
+        // An explicit, durable refusal from a REAL sink (e.g. tombstoned). Do
+        // not shadow-write a dropbox copy behind the sink's back; retain.
+        this.log({ relay: "flushOne.rejected", jobId, reason: acc.reason });
+        return;
+      }
+      // acc === undefined: sink threw. Try the durable dropbox fallback.
     }
-    let acc;
+    // Fallback path: worklist's official cross-process/cross-loader drop-box.
+    if (this.writeDropbox(jobId, env)) {
+      this.commitDone(jobId, { via: "dropbox" });
+      return;
+    }
+    // Neither channel available → retain pending; retried on tick/reconnect.
+    this.log({ relay: "flushOne.retained", jobId, hadSink: !!sink, dropbox: !!this.d.dropboxDir });
+  }
+
+  /** Atomically drop the stable-id envelope into worklist's incoming dir. Returns
+   *  true iff a durable file now exists for this settlement (fresh write OR an
+   *  already-present drop for the same stable id — worklist dedups either way,
+   *  so both are "accepted"). Never overwrites a conflicting envelope silently:
+   *  a temp+rename lands the file, and an existing same-id drop is left intact.
+   *  Returns false on any I/O failure (absent/unwritable dir) so pending is
+   *  retained. */
+  private writeDropbox(jobId: string, env: DurableEnqueueEnvelope): boolean {
+    const dest = this.dropboxFile(jobId);
+    if (!dest) return false;
     try {
-      acc = await sink.enqueue(env);
+      // If a drop for this exact stable id is already queued (e.g. a prior crash
+      // between the atomic write and the tombstone), it is durable acceptance —
+      // worklist will drain+dedup it. Do not rewrite/overwrite it.
+      if (fs.existsSync(dest)) return true;
+      const tmp = `${dest}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(env), { mode: 0o600 });
+      try {
+        fs.renameSync(tmp, dest);
+      } catch (err) {
+        rm(tmp);
+        throw err;
+      }
+      return true;
     } catch (err) {
-      this.log({ relay: "flushOne.enqueueThrew", jobId, err: String(err) });
-      return; // retained
+      this.log({ relay: "writeDropbox.failed", jobId, err: String(err) });
+      return false;
     }
-    if (acc?.accepted || acc?.superseded) {
-      // Tombstone FIRST so a crash after this cannot re-enqueue.
-      writeAtomic(this.doneFile(jobId), { id: jobId, ts: this.d.now!(), acceptedId: acc.id, superseded: !!acc.superseded });
-      rm(this.pendingFile(jobId));
-      rm(this.ownedFile(jobId));
-    } else {
-      this.log({ relay: "flushOne.rejected", jobId, reason: acc?.reason });
-    }
+  }
+
+  /** Commit a settlement as delivered: tombstone FIRST (so a crash after this
+   *  cannot re-enqueue), then clear pending + owned. */
+  private commitDone(jobId: string, meta: Record<string, unknown>): void {
+    writeAtomic(this.doneFile(jobId), { id: jobId, ts: this.d.now!(), ...meta });
+    rm(this.pendingFile(jobId));
+    rm(this.ownedFile(jobId));
   }
 
   /** Flush every retained pending envelope (sink-recovered path). */
