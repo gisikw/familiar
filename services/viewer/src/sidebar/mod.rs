@@ -374,7 +374,12 @@ pub fn rows_for(m: &SidebarModel, target: &ViewerTarget, height: u16, width: u16
         );
         let text = format!("{prefix}{} {}", item.label, item.status);
         let mut style = state_style(&item.status);
-        if item.activation.is_none() {
+        // Fade rows the user cannot act on, and settled rows that are still
+        // clickable during their retained tmux lifetime: a done-but-not-reaped
+        // row reads as inactive (DIM + its state color) while staying
+        // clickable, but failure/cancel colors survive so distinctions remain.
+        // Active/running rows with a live terminal keep their bright color.
+        if item.activation.is_none() || item.terminal() {
             style = style.add_modifier(Modifier::DIM)
         }
         rows.push(FrameRow {
@@ -516,5 +521,88 @@ mod tests {
             plan_activation(Some(current.clone()), &current, |_, _| true),
             ActivationPlan::Ignore
         );
+    }
+
+    fn item(id: &str, status: &str, activation: bool) -> Item {
+        Item {
+            id: id.into(),
+            workspace: "alpha".into(),
+            label: "task".into(),
+            status: status.into(),
+            activation: activation.then(|| Activation {
+                kind: "terminal".into(),
+                socket: "/run/g.sock".into(),
+                session: format!("worker-{id}"),
+            }),
+        }
+    }
+
+    fn model(items: Vec<Item>) -> SidebarModel {
+        SidebarModel {
+            label: Some("agents".into()),
+            items,
+            available: true,
+        }
+    }
+
+    // A running job with a live terminal is visible, clickable, and visually
+    // active (its bright state color, no DIM).
+    #[test]
+    fn running_live_row_is_active_and_clickable() {
+        let m = model(vec![item("j", "running", true)]);
+        let r = rows_for(&m, &ViewerTarget::Presence, 20, 40);
+        let row = &r.rows[2];
+        assert!(matches!(row.kind, FrameRowKind::Item { target: Some(_) }));
+        assert!(!row.style.add_modifier.contains(Modifier::DIM));
+    }
+
+    // A settled job whose retained tmux session is still live keeps its
+    // activation: it must remain visible and clickable, but faded (DIM) to read
+    // as inactive.
+    #[test]
+    fn settled_retained_row_is_faded_but_clickable() {
+        let m = model(vec![item("j", "done", true)]);
+        let r = rows_for(&m, &ViewerTarget::Presence, 20, 40);
+        let row = &r.rows[2];
+        assert!(matches!(row.kind, FrameRowKind::Item { target: Some(_) }));
+        assert!(r.target_for_row(2).is_some());
+        assert!(row.style.add_modifier.contains(Modifier::DIM));
+    }
+
+    // Once the tmux session is reaped the poller strips activation; a terminal
+    // row then disappears entirely under the terminal-row policy.
+    #[test]
+    fn reaped_settled_row_disappears() {
+        let m = model(vec![item("j", "done", false)]);
+        let r = rows_for(&m, &ViewerTarget::Presence, 20, 40);
+        // Only the heading remains; no workspace or item rows for the reaped job.
+        assert!(r
+            .rows
+            .iter()
+            .all(|row| !matches!(row.kind, FrameRowKind::Item { .. })));
+    }
+
+    // A running job that never has a live terminal stays visible but is not
+    // clickable, and is dimmed.
+    #[test]
+    fn running_without_terminal_visible_nonclickable() {
+        let m = model(vec![item("j", "running", false)]);
+        let r = rows_for(&m, &ViewerTarget::Presence, 20, 40);
+        let row = r
+            .rows
+            .iter()
+            .find(|row| matches!(row.kind, FrameRowKind::Item { .. }))
+            .expect("running row stays visible");
+        assert!(matches!(row.kind, FrameRowKind::Item { target: None }));
+        assert!(row.style.add_modifier.contains(Modifier::DIM));
+    }
+
+    // Failure and cancel keep their distinct treatment even when faded.
+    #[test]
+    fn terminal_states_keep_failure_distinction() {
+        let failed = state_style("failed");
+        let cancelled = state_style("cancelled");
+        assert_eq!(failed.fg, Some(Color::Indexed(1)));
+        assert_ne!(failed.fg, cancelled.fg);
     }
 }
