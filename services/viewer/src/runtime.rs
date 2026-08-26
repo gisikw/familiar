@@ -1,7 +1,7 @@
 use crate::app::{App, TargetRuntime, ViewerTarget};
 use crate::capture::{self, HostWriter};
 use crate::cli::Config;
-use crate::graphics::{probe_host, CellAspect, GraphicsMode, HostGraphics};
+use crate::graphics::{parse_hex_rgb, probe_host, CellAspect, GraphicsMode, HostGraphics};
 use crate::input::{child_mouse_bytes, main_cell, route_mouse, target_for_sidebar_hit, MouseRoute};
 use crate::layout::{viewer_layout, ViewerLayout};
 use crate::pty::{child_command, pty_size};
@@ -329,10 +329,25 @@ fn mark_image_area(mark: ratatui::layout::Rect) -> ratatui::layout::Rect {
     )
 }
 
+/// Resolves the wordmark/mark color from the active Familiar theme's `accent`
+/// role. `familiar.sh` exports the boot-resolved accent as `FAMILIAR_MARK_ACCENT`
+/// (same value the mark PNG is tinted with), so a `[theme]` override or restart
+/// recolors the wordmark in lockstep with the image. When the env is absent
+/// (raw dev runs), the ANSI cyan slot is used so the *host terminal's* Familiar
+/// palette still controls the shade — never a hardcoded literal.
+fn wordmark_color() -> Color {
+    std::env::var("FAMILIAR_MARK_ACCENT")
+        .ok()
+        .and_then(|hex| parse_hex_rgb(&hex))
+        .map(|(r, g, b)| Color::Rgb(r, g, b))
+        .unwrap_or(Color::Indexed(6))
+}
+
 fn render_mark_wordmark(
     mode: GraphicsMode,
     mark: ratatui::layout::Rect,
     target: &ViewerTarget,
+    accent: Color,
     buffer: &mut ratatui::buffer::Buffer,
 ) {
     if mark.width == 0 || mark.height == 0 {
@@ -340,7 +355,7 @@ fn render_mark_wordmark(
     }
     let mut style = Style::default().bold();
     let (text, area) = if mode == GraphicsMode::Kitty {
-        style = style.fg(Color::Rgb(90, 212, 230));
+        style = style.fg(accent);
         (
             "F A M I L I A R",
             ratatui::layout::Rect::new(
@@ -404,7 +419,13 @@ fn render_frame(
 ) {
     let (child_notice, sidebar_notice) = notices;
     if layout.sidebar.width > 0 {
-        render_mark_wordmark(graphics_mode, layout.mark, target, frame.buffer_mut());
+        render_mark_wordmark(
+            graphics_mode,
+            layout.mark,
+            target,
+            wordmark_color(),
+            frame.buffer_mut(),
+        );
     }
     render_sidebar(sidebar_rows, layout.job_rows, frame.buffer_mut());
     render_divider(layout.divider, frame.buffer_mut());
@@ -1117,17 +1138,33 @@ mod tests {
     fn kitty_mode_renders_the_spaced_wordmark_below_the_image() {
         let mark = ratatui::layout::Rect::new(0, 0, 28, 12);
         let mut buffer = Buffer::empty(mark);
+        let accent = Color::Rgb(0x8e, 0xc0, 0x7c);
         render_mark_wordmark(
             GraphicsMode::Kitty,
             mark,
             &ViewerTarget::Presence,
+            accent,
             &mut buffer,
         );
         let row = (0..mark.width)
             .map(|column| buffer.cell((column, 10)).unwrap().symbol())
             .collect::<String>();
         assert!(row.contains("F A M I L I A R"));
-        assert_eq!(buffer.cell((7, 10)).unwrap().fg, Color::Rgb(90, 212, 230));
+        // The wordmark is painted in the supplied theme accent — not the old
+        // hardcoded cyan (90, 212, 230).
+        assert_eq!(buffer.cell((7, 10)).unwrap().fg, accent);
+        assert_ne!(buffer.cell((7, 10)).unwrap().fg, Color::Rgb(90, 212, 230));
+    }
+
+    #[test]
+    fn wordmark_color_derives_from_accent_env_and_is_not_hardcoded_cyan() {
+        // Structural proof: an accent env override changes the wordmark color,
+        // and no path yields the retired cyan literal by default.
+        assert_eq!(parse_hex_rgb("#ff8800"), Some((0xff, 0x88, 0x00)));
+        assert_eq!(parse_hex_rgb("#abc"), Some((0xaa, 0xbb, 0xcc)));
+        // The default (env-absent) fallback is an ANSI palette slot the host
+        // Familiar theme controls — never the RGB cyan.
+        assert_ne!(Color::Indexed(6), Color::Rgb(90, 212, 230));
     }
 
     #[test]

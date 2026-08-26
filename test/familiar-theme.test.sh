@@ -47,6 +47,12 @@ def_accent="$(jq -r '.roles.accent' "$DEFAULTS")"
 # 5. env override propagates + #rgb expands.
 ov="$(FAMILIAR_THEME_ACCENT='#abc' bash "$GEN" accent)"
 [ "$ov" = "#aabbcc" ] && ok "override + #rgb expansion" || bad "override (got $ov)"
+# 5b. The sidebar mark/wordmark color is the `accent` role — NOT the retired
+# hardcoded cyan (#5ad4e6 / rgb 90,212,230) — and a [theme] override recolors it.
+[ "$got" != "#5ad4e6" ] && ok "mark accent is not the retired cyan" || bad "mark accent still cyan"
+ovm="$(FAMILIAR_THEME_ACCENT='#ff8800' bash "$GEN" accent)"
+[ "$ovm" = "#ff8800" ] && [ "$ovm" != "$got" ] \
+  && ok "mark accent honors FAMILIAR_THEME_ACCENT override" || bad "mark accent override (got $ovm)"
 ovh="$(FAMILIAR_THEME_ANSI_RED='#00ff00' bash "$GEN" ansi | sed -n 's/^export FAMILIAR_ANSI_1=//p')"
 [ "$ovh" = "#00ff00" ] && ok "ansi override propagates" || bad "ansi override (got $ovh)"
 

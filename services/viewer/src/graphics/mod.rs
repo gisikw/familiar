@@ -601,7 +601,80 @@ fn load_mark_png() -> Option<Vec<u8>> {
                 }
             }
         });
-    path.and_then(|p| fs::read(p).ok())
+    let bytes = path.and_then(|p| fs::read(p).ok())?;
+    // The mark ships pre-rasterized (RGB baked in). When the boot path exports
+    // the theme-resolved accent as FAMILIAR_MARK_ACCENT, retint the mark to that
+    // color — the wordmark text derives from the same env, so image and text stay
+    // in lockstep and a `[theme]` accent override recolors both on restart.
+    let tinted = std::env::var("FAMILIAR_MARK_ACCENT")
+        .ok()
+        .and_then(|hex| parse_hex_rgb(&hex))
+        .and_then(|rgb| tint_rgba_png(&bytes, rgb));
+    Some(tinted.unwrap_or(bytes))
+}
+
+/// Parses `#rgb`, `#rrggbb`, or `#rrggbbaa` into an RGB triple (alpha ignored:
+/// the mark carries its own alpha). Returns None for any malformed value so
+/// callers fall back to the untinted asset rather than panicking at boot.
+pub fn parse_hex_rgb(value: &str) -> Option<(u8, u8, u8)> {
+    let hex = value.strip_prefix('#')?;
+    let expand = |c: u8| (c << 4) | c;
+    let h = |s: &str| u8::from_str_radix(s, 16).ok();
+    match hex.len() {
+        3 => {
+            let b = hex.as_bytes();
+            let d = |c: u8| h(std::str::from_utf8(&[c]).ok()?).map(expand);
+            Some((d(b[0])?, d(b[1])?, d(b[2])?))
+        }
+        6 | 8 => Some((h(&hex[0..2])?, h(&hex[2..4])?, h(&hex[4..6])?)),
+        _ => None,
+    }
+}
+
+/// Recolors an RGBA PNG to a single accent, preserving each pixel's alpha so
+/// antialiased edges stay smooth. Deterministic and rsvg-free: the mark is a
+/// monochrome silhouette, so flattening RGB to the accent is the intended look.
+/// Returns None (caller keeps the original bytes) if the PNG can't be decoded.
+pub fn tint_rgba_png(bytes: &[u8], (r, g, b): (u8, u8, u8)) -> Option<Vec<u8>> {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder.read_info().ok()?;
+    let mut buffer = vec![0u8; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buffer).ok()?;
+    let frame = &buffer[..info.buffer_size()];
+    let mut rgba: Vec<u8> = Vec::with_capacity(info.width as usize * info.height as usize * 4);
+    match info.color_type {
+        png::ColorType::Rgba => {
+            for p in frame.chunks_exact(4) {
+                rgba.extend_from_slice(&[r, g, b, p[3]]);
+            }
+        }
+        png::ColorType::Rgb => {
+            for _ in frame.chunks_exact(3) {
+                rgba.extend_from_slice(&[r, g, b, 255]);
+            }
+        }
+        png::ColorType::GrayscaleAlpha => {
+            for p in frame.chunks_exact(2) {
+                rgba.extend_from_slice(&[r, g, b, p[1]]);
+            }
+        }
+        png::ColorType::Grayscale => {
+            for _ in frame {
+                rgba.extend_from_slice(&[r, g, b, 255]);
+            }
+        }
+        png::ColorType::Indexed => return None,
+    }
+    let mut out = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut out, info.width, info.height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().ok()?;
+        writer.write_image_data(&rgba).ok()?;
+    }
+    Some(out)
 }
 
 #[allow(dead_code)]
@@ -634,6 +707,47 @@ mod tests {
         let mut p = ProbeParser::default();
         assert_eq!(p.feed(b"\x1b_Gi=4000000001;O"), ProbeResult::Pending);
         assert_eq!(p.feed(b"K\x1b\\"), ProbeResult::Kitty);
+    }
+    fn encode_rgba(width: u32, height: u32, pixels: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut enc = png::Encoder::new(&mut out, width, height);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()
+            .unwrap()
+            .write_image_data(pixels)
+            .unwrap();
+        out
+    }
+    #[test]
+    fn parse_hex_rgb_handles_all_supported_forms() {
+        assert_eq!(parse_hex_rgb("#8ec07c"), Some((0x8e, 0xc0, 0x7c)));
+        assert_eq!(parse_hex_rgb("#abc"), Some((0xaa, 0xbb, 0xcc)));
+        assert_eq!(parse_hex_rgb("#8ec07cff"), Some((0x8e, 0xc0, 0x7c)));
+        assert_eq!(parse_hex_rgb("8ec07c"), None);
+        assert_eq!(parse_hex_rgb("#zz0011"), None);
+    }
+    #[test]
+    fn tint_rgba_png_recolors_rgb_and_preserves_alpha() {
+        // Two pixels with distinct colors and alphas; the tint must flatten RGB
+        // to the accent while carrying each pixel's original alpha through.
+        let src = encode_rgba(2, 1, &[10, 20, 30, 40, 200, 100, 50, 255]);
+        let accent = (0x8e, 0xc0, 0x7c);
+        let out = tint_rgba_png(&src, accent).expect("tinting a valid RGBA PNG succeeds");
+        // Decode the result structurally rather than snapshotting bytes.
+        let mut dec = png::Decoder::new(std::io::Cursor::new(&out));
+        dec.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+        let mut r = dec.read_info().unwrap();
+        let mut buf = vec![0u8; r.output_buffer_size()];
+        let info = r.next_frame(&mut buf).unwrap();
+        assert_eq!(info.color_type, png::ColorType::Rgba);
+        let px = &buf[..info.buffer_size()];
+        assert_eq!(&px[0..4], &[0x8e, 0xc0, 0x7c, 40]);
+        assert_eq!(&px[4..8], &[0x8e, 0xc0, 0x7c, 255]);
+    }
+    #[test]
+    fn tint_rgba_png_rejects_non_png() {
+        assert_eq!(tint_rgba_png(b"not a png", (1, 2, 3)), None);
     }
     #[test]
     fn probe_da_first_is_text() {
