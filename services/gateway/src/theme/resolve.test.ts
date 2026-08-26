@@ -133,3 +133,41 @@ test("default parity: every role and ansi entry is a valid 6-digit hex", () => {
     assert.match(v, /^#[0-9a-f]{6}$/, `ansi ${k}`);
   }
 });
+
+// The pi tool-execution box backgrounds are the operator's primary signal for
+// whether a tool call is still running, succeeded, or failed. They must be
+// (a) the canonical defaults, (b) pairwise distinct, and (c) overridable.
+test("tool backgrounds: canonical defaults are distinct, dark tints", () => {
+  const t = resolveTheme(cleanEnv());
+  const pending = t.roles.toolPendingBg;
+  const success = t.roles.toolSuccessBg;
+  const error = t.roles.toolErrorBg;
+  // Canonical gruvbox 14% tints over bg0 (#282828).
+  assert.equal(pending, "#2c3535"); // cool blue-running
+  assert.equal(success, "#383826"); // dark green
+  assert.equal(error, "#3f2726");   // dark red
+  // Pairwise distinct — success and error were identical ("overlay") before.
+  const set = new Set([pending, success, error]);
+  assert.equal(set.size, 3, `expected 3 distinct backgrounds, got ${[pending, success, error].join(", ")}`);
+  // Restrained: each must sit at/below the surface layer (no bright blocks).
+  const lum = (hex: string) =>
+    [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+      .map((v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4))
+      .reduce((acc, v, i) => acc + v * [0.2126, 0.7152, 0.0722][i], 0);
+  for (const c of [pending, success, error]) {
+    assert.ok(lum(c) < lum(t.roles.overlay), `${c} should be a restrained tint (darker than overlay)`);
+  }
+});
+
+test("tool backgrounds: FAMILIAR_THEME_* env overrides win (camel->SNAKE)", () => {
+  const t = resolveTheme(
+    cleanEnv({
+      FAMILIAR_THEME_TOOL_PENDING_BG: "#111111",
+      FAMILIAR_THEME_TOOL_SUCCESS_BG: "#222222",
+      FAMILIAR_THEME_TOOL_ERROR_BG: "#333333",
+    }),
+  );
+  assert.equal(t.roles.toolPendingBg, "#111111");
+  assert.equal(t.roles.toolSuccessBg, "#222222");
+  assert.equal(t.roles.toolErrorBg, "#333333");
+});

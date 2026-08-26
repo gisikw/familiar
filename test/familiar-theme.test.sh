@@ -32,6 +32,29 @@ done
 # pi accent var must resolve to the theme accent.
 [ "$(echo "$pi" | jq -r .vars.accent)" = "#8ec07c" ] && ok "pi accent var" || bad "pi accent var"
 
+# 2b. pi tool-state backgrounds: distinct, wired from canonical roles, overridable.
+#     These are the operator's pending/success/error signal, so they must not
+#     collapse (success and error were both "overlay" before this fix).
+pb="$(echo "$pi" | jq -r .colors.toolPendingBg)"
+sb="$(echo "$pi" | jq -r .colors.toolSuccessBg)"
+eb="$(echo "$pi" | jq -r .colors.toolErrorBg)"
+[ "$pb" = "$(jq -r '.roles.toolPendingBg' "$DEFAULTS")" ] \
+  && [ "$sb" = "$(jq -r '.roles.toolSuccessBg' "$DEFAULTS")" ] \
+  && [ "$eb" = "$(jq -r '.roles.toolErrorBg' "$DEFAULTS")" ] \
+  && ok "pi tool backgrounds match canonical roles" || bad "pi tool backgrounds ($pb/$sb/$eb)"
+[ "$pb" != "$sb" ] && [ "$sb" != "$eb" ] && [ "$pb" != "$eb" ] \
+  && ok "pi tool backgrounds are pairwise distinct" || bad "pi tool backgrounds collide ($pb/$sb/$eb)"
+# each resolves to a concrete 6-digit hex (not a bare var name or empty)
+hexok=1
+for c in "$pb" "$sb" "$eb"; do
+  case "$c" in "#"[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) : ;; *) hexok=0; bad "pi tool background not hex: $c" ;; esac
+done
+[ "$hexok" -eq 1 ] && ok "pi tool backgrounds are concrete hex"
+# overrides flow through FAMILIAR_THEME_* (camel->SNAKE)
+pbov="$(FAMILIAR_THEME_TOOL_PENDING_BG='#111111' FAMILIAR_THEME_TOOL_SUCCESS_BG='#222222' FAMILIAR_THEME_TOOL_ERROR_BG='#333333' bash "$GEN" pi | jq -r '.colors.toolPendingBg + "/" + .colors.toolSuccessBg + "/" + .colors.toolErrorBg')"
+[ "$pbov" = "#111111/#222222/#333333" ] \
+  && ok "pi tool background overrides propagate" || bad "pi tool background override (got $pbov)"
+
 # 3. ANSI env: 16 exports, index 0 == ansi.black default, all hex.
 ansi="$(bash "$GEN" ansi)"
 n="$(echo "$ansi" | grep -c '^export FAMILIAR_ANSI_')"

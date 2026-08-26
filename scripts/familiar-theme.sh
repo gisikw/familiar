@@ -96,6 +96,7 @@ theme_pi_json() {
     --arg overlay "$R_overlay" --arg border "$R_border" --arg borderMuted "$R_borderMuted" \
     --arg sel "$R_selectionBg" \
     --arg success "$R_success" --arg warning "$R_warning" --arg error "$R_error" \
+    --arg toolPendingBg "$R_toolPendingBg" --arg toolSuccessBg "$R_toolSuccessBg" --arg toolErrorBg "$R_toolErrorBg" \
     --arg red "$A_red" --arg green "$A_green" --arg yellow "$A_yellow" \
     --arg blue "$A_blue" --arg magenta "$A_magenta" --arg cyan "$A_cyan" \
     --arg white "$A_white" --arg brightBlack "$A_brightBlack" \
@@ -106,7 +107,8 @@ theme_pi_json() {
     accent: $accent, text: $text, muted: $muted, dim: $brightBlack,
     bg: $bg, surface: $surface, overlay: $overlay, sel: $sel,
     red: $red, green: $green, yellow: $yellow, blue: $blue,
-    magenta: $magenta, cyan: $cyan
+    magenta: $magenta, cyan: $cyan,
+    toolPendingBg: $toolPendingBg, toolSuccessBg: $toolSuccessBg, toolErrorBg: $toolErrorBg
   },
   colors: {
     accent: "accent", border: "blue", borderAccent: "accent", borderMuted: "overlay",
@@ -115,7 +117,7 @@ theme_pi_json() {
     selectedBg: "sel", scrollbarThumb: "overlay",
     userMessageBg: "surface", userMessageText: "text",
     customMessageBg: "overlay", customMessageText: "text", customMessageLabel: "magenta",
-    toolPendingBg: $surface, toolSuccessBg: "overlay", toolErrorBg: "overlay",
+    toolPendingBg: $toolPendingBg, toolSuccessBg: $toolSuccessBg, toolErrorBg: $toolErrorBg,
     toolTitle: "text", toolOutput: "muted",
     mdHeading: "yellow", mdLink: "blue", mdLinkUrl: "dim", mdCode: "accent",
     mdCodeBlock: "green", mdCodeBlockBorder: "muted", mdQuote: "muted",

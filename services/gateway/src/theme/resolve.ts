@@ -25,6 +25,11 @@ const DEFAULTS_PATH = path.join(HERE, "defaults.json");
 
 export type ThemeRoles = {
   background: string;
+  /** pi tool-execution box backgrounds: restrained gruvbox tints (pending=cool
+   *  blue-running, success=dark green, error=dark red) — must stay distinct. */
+  toolPendingBg: string;
+  toolSuccessBg: string;
+  toolErrorBg: string;
   surface: string;
   surfaceDim: string;
   overlay: string;
