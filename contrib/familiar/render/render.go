@@ -174,15 +174,15 @@ func (c *Client) Stream(ctx context.Context, since int64, receive func(Event)) e
 	return scan.Err()
 }
 
-// sessionProbe reports whether the exact tmux target is live on the local
-// server. problem is non-nil only for diagnosable failures (permission denied,
-// tmux missing) — not for the ordinary "session absent / server gone" case,
-// which is reported as live=false, problem=nil.
-type sessionProbe func(socket, session string) (live bool, problem error)
+// socketProbe lists the live tmux sessions on one local socket as an exact-name
+// set. problem is non-nil only for diagnosable failures (permission denied,
+// tmux missing) — not for the ordinary "no server running" case, which is an
+// empty set with problem=nil.
+type socketProbe func(socket string) (sessions map[string]bool, problem error)
 
 type Server struct {
 	client      *Client
-	sessionLive sessionProbe
+	socketLive  socketProbe
 	invalidate  string
 	mu          sync.Mutex
 	jobs        map[string]Job
@@ -194,41 +194,49 @@ type Server struct {
 }
 
 func New(c *Client, invalidate string) *Server {
-	return &Server{client: c, invalidate: invalidate, jobs: map[string]Job{}, revision: 1, now: time.Now, sessionLive: tmuxHasSession, problemSeen: map[string]time.Time{}}
+	return &Server{client: c, invalidate: invalidate, jobs: map[string]Job{}, revision: 1, now: time.Now, socketLive: tmuxListSessions, problemSeen: map[string]time.Time{}}
 }
 
-// SetSessionCheck overrides the tmux liveness probe (tests inject a stub).
-func (s *Server) SetSessionCheck(f sessionProbe) { s.sessionLive = f }
+// SetSocketProbe overrides the per-socket tmux liveness snapshot (tests inject a
+// stub).
+func (s *Server) SetSocketProbe(f socketProbe) { s.socketLive = f }
 
-// tmuxHasSession verifies the exact tmux session on a per-job local socket via
-// `tmux -S <socket> has-session -t =<session>`. The `=` forces exact-name
-// matching so a prefix collision cannot masquerade as a live target. A missing
-// server or unknown session is a normal negative; only permission/tooling
-// failures surface as a problem to diagnose.
-func tmuxHasSession(socket, session string) (bool, error) {
-	if socket == "" || session == "" {
-		return false, nil
+// tmuxListSessions snapshots every live session on a local socket with one
+// `tmux -S <socket> list-sessions -F '#{session_name}'`. Exact set membership
+// then decides each job's activation without a process per row. A missing server
+// is a normal empty negative; only permission/tooling failures surface as a
+// problem to diagnose.
+func tmuxListSessions(socket string) (map[string]bool, error) {
+	if socket == "" {
+		return nil, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "tmux", "-S", socket, "has-session", "-t", "="+session)
-	var stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, "tmux", "-S", socket, "list-sessions", "-F", "#{session_name}")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
 	if err == nil {
-		return true, nil
+		set := map[string]bool{}
+		for _, line := range strings.Split(stdout.String(), "\n") {
+			if line = strings.TrimRight(line, "\r"); line != "" {
+				set[line] = true
+			}
+		}
+		return set, nil
 	}
 	msg := strings.ToLower(stderr.String())
-	// tmux exits non-zero for a missing session or absent server; those are the
-	// expected steady-state negatives, not problems.
+	// tmux exits non-zero with "no server running on ..." when nothing is live;
+	// that is the expected steady-state negative, not a problem.
 	if strings.Contains(msg, "permission denied") || strings.Contains(msg, "access") {
-		return false, fmt.Errorf("tmux -S %s: %s", socket, strings.TrimSpace(stderr.String()))
+		return nil, fmt.Errorf("tmux -S %s: %s", socket, strings.TrimSpace(stderr.String()))
 	}
 	if _, ok := err.(*exec.Error); ok {
 		// tmux binary not found / not executable.
-		return false, fmt.Errorf("tmux unavailable: %w", err)
+		return nil, fmt.Errorf("tmux unavailable: %w", err)
 	}
-	return false, nil
+	return nil, nil
 }
 
 // logProblem records a tmux probe failure at most once per socket per minute so
@@ -291,8 +299,9 @@ func branch(j Job) string {
 	return x
 }
 func (s *Server) project() Node {
+	// Snapshot jobs and now under the lock, then release it before running any
+	// external tmux process. No command executes while s.mu is held.
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	now := s.now()
 	jobs := make([]Job, 0, len(s.jobs))
 	for _, j := range s.jobs {
@@ -301,10 +310,30 @@ func (s *Server) project() Node {
 		}
 		jobs = append(jobs, j)
 	}
+	s.mu.Unlock()
+
 	sort.Slice(jobs, func(i, k int) bool { return jobs[i].UpdatedAt.After(jobs[k].UpdatedAt) })
 	if len(jobs) > 20 {
 		jobs = jobs[:20]
 	}
+
+	// Probe each unique socket at most once per projection: one
+	// `tmux list-sessions` snapshot, then exact set membership per job. This
+	// preserves exact matching without a process per row.
+	live := map[string]map[string]bool{}
+	for _, j := range jobs {
+		if j.Terminal == nil || j.Terminal.Socket == "" || j.Terminal.Target == "" {
+			continue
+		}
+		sock := j.Terminal.Socket
+		if _, done := live[sock]; done {
+			continue
+		}
+		sessions, problem := s.socketLive(sock)
+		s.logProblem(sock, problem)
+		live[sock] = sessions
+	}
+
 	groups := map[string][]Node{}
 	for _, j := range jobs {
 		label := brief(j)
@@ -315,18 +344,16 @@ func (s *Server) project() Node {
 		// A live local tmux session activates any job — running or settled. Golem
 		// retains a settled tmux session for its linger window, so a settled row
 		// stays attachable until the exact session is reaped. Only the exact
-		// target counts, verified per job.
-		live := false
+		// normalized session name counts, tested against the per-socket snapshot.
+		activated := false
 		if j.Terminal != nil && j.Terminal.Socket != "" && j.Terminal.Target != "" {
 			sess := session(j.Terminal.Target)
-			ok, problem := s.sessionLive(j.Terminal.Socket, sess)
-			s.logProblem(j.Terminal.Socket, problem)
-			if ok {
-				live = true
+			if live[j.Terminal.Socket][sess] {
+				activated = true
 				n.Activation = &Activation{Type: "terminal", Socket: j.Terminal.Socket, Session: sess}
 			}
 		}
-		if !live && !terminalState(j.State) && j.Activation != nil && j.Activation.Type == "ssh" {
+		if !activated && !terminalState(j.State) && j.Activation != nil && j.Activation.Type == "ssh" {
 			n.Label += fmt.Sprintf(" [ssh %s@%s:%d; use golem attach]", j.Activation.User, j.Activation.Host, j.Activation.Port)
 		}
 		groups[branch(j)] = append(groups[branch(j)], n)

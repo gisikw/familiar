@@ -36,10 +36,12 @@ list on every retry, so polling is the degraded fallback. Settled rows remain
 for 24 hours (up to 20 total rows).
 
 Terminal activation is emitted for **any** job — running or settled — whenever
-the exact local tmux session is still live. The renderer verifies the precise
-target with `tmux -S <socket> has-session -t =<session>` (exact-name match),
-not mere socket existence, and reduces `worker-…:0.0` to the exact session name
-attached unchanged. Golem retains a settled tmux session for its linger window
+the exact local tmux session is still live. Each projection takes one
+`tmux -S <socket> list-sessions -F '#{session_name}'` snapshot per unique
+socket (never a process per row) and decides activation by exact set membership
+of the normalized session name (`worker-…:0.0` → `worker-…`, attached
+unchanged). External tmux probes run *after* the job snapshot is copied out and
+the internal lock released, so rendering never blocks state updates. Golem retains a settled tmux session for its linger window
 (default 1h, `--linger` / `GOLEM_LINGER_SECONDS`), so a done/failed/cancelled/
 timeout job stays visible and **clickable** for its retained lifetime; once the
 exact session is reaped the activation drops and the viewer removes the row
