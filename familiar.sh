@@ -801,6 +801,14 @@ viewer_connect() {
     return 1
   fi
   export FAMILIAR_VIEWER_BIN="$executable"
+  # Recolor the boot mark + F A M I L I A R wordmark from the active Familiar
+  # theme's `accent` role (honors [theme] overrides / FAMILIAR_THEME_ACCENT).
+  # The viewer tints the mark PNG and styles the wordmark text from this one
+  # value, so a cold restart after a [theme] change recolors both. Non-fatal:
+  # if resolution fails the viewer falls back to its baked default accent.
+  if accent=$(bash "$REPO/scripts/familiar-theme.sh" accent 2>/dev/null); then
+    export FAMILIAR_MARK_ACCENT="$accent"
+  fi
   exec "$FAMILIAR_PRESENCE_CTL" viewer
 }
 
