@@ -23,13 +23,25 @@ function settlementStateDir():string|undefined{
  if(pi)return path.join(pi,"golem-settlement");
  return undefined;
 }
+// Worklist's official out-of-process drop-box, used as the durable fallback when
+// the in-process capability sink is unresolvable across pi's extension-loader
+// module boundary (external contrib plugin vs built-in worklist get isolated
+// module instances, so the process-local registry singleton may not cross it).
+// Mirrors worklist's own root resolution (FAMILIAR_WORKLIST_DIR, then legacy
+// FAMILIAR_INBOX_DIR). Undefined → no dropbox → relay retains pending.
+function worklistDropboxDir():string|undefined{
+ const root=process.env.FAMILIAR_WORKLIST_DIR||process.env.FAMILIAR_INBOX_DIR;
+ return root?path.join(root,"incoming"):undefined;
+}
 export default function(pi:ExtensionAPI){const api=new GolemClient();
  // Background settlement relay: surfaces terminal settlements of jobs dispatched
- // through THIS extension into the worklist via the neutral durable sink. Sink
- // is resolved lazily so worklist/agents loader order is irrelevant. If no
- // durable state dir is derivable, the relay is disabled (tools still work).
+ // through THIS extension into the worklist. FIRST choice is the neutral durable
+ // sink (resolved lazily so loader order is irrelevant); if that module boundary
+ // isolates the registry, it falls back to worklist's durable incoming drop-box.
+ // Never a direct pi.sendMessage. If no durable state dir is derivable, the relay
+ // is disabled (tools still work).
  const stateDir=settlementStateDir();
- const relay=stateDir?new SettlementRelay({client:api,stateDir,resolveSink:()=>registry.resolve<DurableSink>(WORKLIST_SINK,WORKLIST_SINK_VERSION)}):undefined;
+ const relay=stateDir?new SettlementRelay({client:api,stateDir,dropboxDir:worklistDropboxDir(),resolveSink:()=>registry.resolve<DurableSink>(WORKLIST_SINK,WORKLIST_SINK_VERSION)}):undefined;
  pi.on("session_start",async()=>{if(relay)try{await relay.start()}catch{/* relay start is best-effort; tools remain usable */}});
  pi.on("session_shutdown",async()=>{if(relay)try{await relay.stop()}catch{/* nothing to recover */}});
  pi.registerTool({name:"agents_capabilities",label:"Agent Capabilities",description:"List golemd's advertised harness/model and project choices.",parameters:Type.Object({}),execute:()=>run(()=>api.capabilities())});
