@@ -91,7 +91,7 @@ discarded on load. Expiry is **lazy**: `resolveAttention` compares `now` to
 
 ### Inference (auto mode)
 
-- agent working **or** activity within `settleToAvailableMs` (2 min) → **focused**
+- agent working **or** activity within `settleToAvailableMs` (30 sec) → **focused**
 - activity within `settleToOpenMs` (30 min) → **available**
 - longer idle → **open**
 
@@ -108,8 +108,8 @@ conversation, never *whether* it is tracked.
 | Tier | Behavior |
 |------|----------|
 | **steer** | deliver ASAP via `deliverAs:"steer"` + `triggerTurn`. **Auto-acks.** |
-| **nudge** | inject a one-line summary prefix into the NEXT turn; full body only on `/ack`. Rides `before_agent_start`. If attention is already `open` and there may be no next turn, the scheduler visibly appends the summary once without waking the model. |
-| **wait** | deliver + auto-ack only after settled ≥ `waitSettleMs` (5 min) AND attention allows. Focused holds entirely. |
+| **nudge** | inject a one-line summary prefix into the NEXT active turn. If no foreground turn comes, sustained quiet dynamically upgrades it to a full-body wake; arrival-time policy never strands it as a permanent follow-up. |
+| **wait** | after settled ≥ `waitSettleMs` (30 sec) AND attention allows, wake the model with the full body and auto-ack. Focused holds entirely. |
 | **linger** | never delivered individually. A single digest line for ALL lingering items after sustained idle (5 min) or on `/peek`. |
 
 ### Priority × attention matrix (the full policy)
@@ -121,8 +121,8 @@ conversation, never *whether* it is tracked.
 | **P2** | nudge | wait | linger→hold | **hold** |
 | **P3** | wait | linger | linger→hold | **hold** |
 
-- **open** promotes one tier (except P0, already steer): idle pulls work forward. An open-state nudge is surfaced visibly once by the scheduler, so promotion cannot become turn-gated silence.
-- **available** is the base mapping.
+- **open** promotes one tier (except P0, already steer): idle pulls work forward. A nudge that has already sat through the quiet threshold becomes a full wake, so promotion cannot become turn-gated silence.
+- **available** is the base mapping. Nudges can ride live conversation unobtrusively, but after 30 seconds of continuous quiet they wake with the full body.
 - **focused** demotes one tier except P0; `wait`/`linger` then *hold entirely*.
 - **protected** is a total floor: **all → hold**, P0 included, the "driving
   home" guarantee. The queue stays durable; delivery resumes on expiry. This is

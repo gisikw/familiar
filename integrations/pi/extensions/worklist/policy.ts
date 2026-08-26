@@ -31,8 +31,9 @@ export type Priority = 0 | 1 | 2 | 3;
  * durable queue; delivery is a courtesy layered on top (presence.md).
  *
  *  steer  — deliver ASAP (next tool boundary), wake if idle, auto-ack.
- *  nudge  — one-line summary prefix on the next turn; body only on /ack.
- *  wait   — deliver+auto-ack once settled N min AND attention allows; else hold.
+ *  nudge  — one-line summary prefix on the next turn; if no turn arrives,
+ *           wake with the full body once the conversation has settled.
+ *  wait   — wake with full body + auto-ack once settled AND attention allows.
  *  linger — never delivered alone; folded into a single idle digest / /peek.
  */
 export type Tier = "steer" | "nudge" | "wait" | "linger";
@@ -141,8 +142,8 @@ export interface AttentionConfig {
 /** Sane defaults, editable later (the config is a plain table on purpose). */
 export const DEFAULT_CONFIG: AttentionConfig = {
   baseTier: { 0: "steer", 1: "nudge", 2: "wait", 3: "linger" },
-  waitSettleMs: 5 * 60 * 1000,
-  settleToAvailableMs: 2 * 60 * 1000,
+  waitSettleMs: 30 * 1000,
+  settleToAvailableMs: 30 * 1000,
   settleToOpenMs: 30 * 60 * 1000,
   lingerDigestMs: 5 * 60 * 1000,
   maxOverrideMs: 8 * 60 * 60 * 1000,
@@ -313,8 +314,9 @@ export function sanitizeOverride(
  * whole delivery ladder is testable; the extension performs the returned verb.
  *
  *   deliver-steer  — sendMessage steer + triggerTurn, then auto-ack
- *   deliver-wait   — sendMessage (no wake), then auto-ack
- *   nudge          — eligible to be surfaced as a one-line prefix next turn
+ *   deliver-wait   — settled delivery: sendMessage steer + wake, then auto-ack
+ *   nudge          — eligible for a one-line prefix next turn; if quiet persists,
+ *                    dynamically becomes deliver-wait rather than waiting forever
  *   digest         — fold into the linger digest
  *   hold           — do nothing this tick
  */
@@ -343,7 +345,11 @@ export function decideAction(
     case "steer":
       return item.delivered ? "hold" : "deliver-steer";
     case "nudge":
-      return item.delivered ? "hold" : "nudge";
+      if (item.delivered) return "hold";
+      // A nudge may ride an already-active conversation without interrupting it,
+      // but its transport is not decided forever at arrival time. If no next
+      // foreground turn comes, sustained quiet upgrades it to a full wake.
+      return input.idleForMs >= cfg.waitSettleMs ? "deliver-wait" : "nudge";
     case "wait":
       if (item.delivered) return "hold";
       // Focused attention holds "wait" entirely; only deliver once genuinely

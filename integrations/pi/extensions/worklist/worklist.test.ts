@@ -189,14 +189,16 @@ describe("decideAction: full policy matrix (4 attention × 4 priority)", () => {
     expect(act(0, "focused")).toBe("deliver-steer");
     expect(act(0, "available", 0, { delivered: true })).toBe("hold");
   });
-  test("open pulls work forward: P1 steers, P2 nudges, P3 waits-then-delivers", () => {
+  test("open pulls work forward; a nudge becomes a wake after sustained quiet", () => {
     expect(act(1, "open")).toBe("deliver-steer");
-    expect(act(2, "open")).toBe("nudge");
+    expect(act(2, "open", CFG.waitSettleMs - 1)).toBe("nudge");
+    expect(act(2, "open", CFG.waitSettleMs)).toBe("deliver-wait");
     expect(act(3, "open", 0)).toBe("hold");
     expect(act(3, "open", CFG.waitSettleMs)).toBe("deliver-wait"); // linger→wait under open
   });
   test("available base ladder", () => {
-    expect(act(1, "available")).toBe("nudge");
+    expect(act(1, "available", CFG.waitSettleMs - 1)).toBe("nudge");
+    expect(act(1, "available", CFG.waitSettleMs)).toBe("deliver-wait");
     expect(act(2, "available", 0)).toBe("hold");
     expect(act(2, "available", CFG.waitSettleMs)).toBe("deliver-wait");
     expect(act(3, "available", 0)).toBe("hold");
@@ -402,7 +404,7 @@ describe("store: persistence + atomic + drain + migration", () => {
 });
 
 describe("runtime scheduler wiring", () => {
-  test("open P2 surfaces once without requiring a next turn", async () => {
+  test("P2 wait and P1 nudge both become one-shot wakes after 30s idle", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "worklist-runtime-test-"));
     const priorRoot = process.env.FAMILIAR_WORKLIST_DIR;
     const realNow = Date.now;
@@ -453,21 +455,52 @@ describe("runtime scheduler wiring", () => {
         source: "test",
       });
 
-      // No input or agent turn occurs. Long idle promotes P2 wait → nudge.
-      now += CFG.settleToOpenMs + 1;
+      // It arrived while attention was focused. Do not interrupt immediately,
+      // and do not irrevocably queue a followUp that needs Kevin's next turn.
       runtime.tick();
+      expect(sent).toHaveLength(0);
+      now += CFG.waitSettleMs - 1;
+      runtime.tick();
+      expect(sent).toHaveLength(0);
 
+      // At 30s of continuous quiet, auto-attention relaxes to available and the
+      // scheduler wakes the model with the full item exactly once.
+      now += 1;
+      runtime.tick();
       expect(sent).toHaveLength(1);
-      expect(sent[0].message.customType).toBe("worklist-nudge");
+      expect(sent[0].message.customType).toBe("worklist-item");
       expect(sent[0].message.display).toBe(true);
-      expect(sent[0].message.content).toContain("idle settlement");
-      expect(sent[0].options).toBeUndefined(); // visible append, no model wake
-      expect(getItem(worklistPaths(dir), item.id)?.surfacedCount).toBe(1);
-      expect(getItem(worklistPaths(dir), item.id)?.acked).not.toBe(true);
+      expect(sent[0].message.content).toContain("full verdict");
+      expect(sent[0].options).toEqual({ deliverAs: "steer", triggerTurn: true });
+      expect(getItem(worklistPaths(dir), item.id)).toBeNull();
 
-      // The 15s scheduler may tick forever while open; do not spam the nudge.
+      // Auto-ack/archive makes repeated scheduler ticks idempotent.
       runtime.tick();
       expect(sent).toHaveLength(1);
+
+      // Exercise the canonical nudge path too: P1/available remains optional
+      // while conversation can carry it, then uses the same delayed wake path.
+      await handlers.get("agent_settled")?.[0]?.({ type: "agent_settled" }, ctx);
+      const p1 = runtime.enqueue({
+        id: "runtime-available-p1",
+        priority: 1,
+        type: "notify",
+        summary: "important review",
+        body: "review verdict",
+        source: "test",
+      });
+      runtime.tick();
+      expect(sent).toHaveLength(1);
+      now += CFG.waitSettleMs;
+      runtime.tick();
+      expect(sent).toHaveLength(2);
+      expect(sent[1].message.customType).toBe("worklist-item");
+      expect(sent[1].message.content).toContain("review verdict");
+      expect(sent[1].options).toEqual({ deliverAs: "steer", triggerTurn: true });
+      expect(getItem(worklistPaths(dir), p1.id)).toBeNull();
+      runtime.tick();
+      expect(sent).toHaveLength(2);
+
       await handlers.get("session_shutdown")?.[0]?.({ type: "session_shutdown", reason: "quit" }, ctx);
     } finally {
       Date.now = realNow;

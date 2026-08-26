@@ -293,7 +293,9 @@ export default function (pi: ExtensionAPI) {
           dirtySurfaces = true;
           break;
         case "deliver-wait":
-          deliverBody(item, { steer: false, autoAck: true });
+          // Waiting is a timing policy, not a permanent transport choice. Once
+          // quiet has lasted long enough, wake the model with the full body.
+          deliverBody(item, { steer: true, autoAck: true });
           dirtySurfaces = true;
           break;
         case "digest":
