@@ -232,7 +232,28 @@ run_tts() {
   done
 }
 
+project_plugin_pi_environment() {
+  local name value entry key prefix=FAMILIAR_PLUGINS_GOLEM_ENV_
+  while IFS= read -r entry; do
+    name=${entry%%=*}; value=${entry#*=}
+    case "$name" in
+      "$prefix"*)
+        key=${name#$prefix}
+        [[ $key =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { echo "familiar: invalid plugin environment key: $key" >&2; return 1; }
+        # The host uses FAMILIAR_PLUGIN_ENV_* to merge operator overrides into
+        # declared service environments. Presence is now independently owned,
+        # so its resident Pi process must also receive the direct variables
+        # consumed by client extensions (for example GOLEM_ENDPOINT).
+        export "FAMILIAR_PLUGIN_ENV_$key=$value" "$key=$value"
+        ;;
+    esac
+  done < <(env)
+}
+
 prepare_plugin() {
+  # Projection is required even when an enclosing launcher already prepared
+  # the plugin root before handing control to the independently owned Presence.
+  project_plugin_pi_environment
   [ -z "${FAMILIAR_PLUGIN_ROOT:-}" ] || return 0
   local path=${FAMILIAR_PLUGINS_GOLEM_PATH:-} git=${FAMILIAR_PLUGINS_GOLEM_GIT:-} rev=${FAMILIAR_PLUGINS_GOLEM_REV:-}
   if [ -z "$path$git$rev" ]; then return 0; fi
@@ -270,11 +291,6 @@ prepare_plugin() {
   local api
   api=$(FAMILIAR_PLUGIN_MANIFEST="$path/contrib/familiar/plugin.toml" nix eval --impure --raw --expr 'toString (builtins.fromTOML (builtins.readFile (builtins.getEnv "FAMILIAR_PLUGIN_MANIFEST"))).familiar_api') || return 1
   [ "$api" = 1 ] || { echo "familiar: plugin requires familiar_api = 1 (got $api)" >&2; return 1; }
-  local name value entry prefix=FAMILIAR_PLUGINS_GOLEM_ENV_
-  while IFS= read -r entry; do
-    name=${entry%%=*}; value=${entry#*=}
-    case "$name" in "$prefix"*) export "FAMILIAR_PLUGIN_ENV_${name#$prefix}=$value" ;; esac
-  done < <(env)
   local server_listen=${FAMILIAR_SERVER_LISTEN:-127.0.0.1:9940}
   # The viewer consumes only the generic host-owned aggregate render endpoint.
   # No plugin-specific path leaks into the viewer contract.
@@ -1052,10 +1068,24 @@ EOF
   echo "familiar: initialized private instance at $target"
 }
 
+verify_plugin_pi_environment() {
+  local name value entry key prefix=FAMILIAR_PLUGIN_ENV_
+  while IFS= read -r entry; do
+    name=${entry%%=*}; value=${entry#*=}
+    case "$name" in
+      "$prefix"*)
+        key=${name#$prefix}
+        [ "${!key-}" = "$value" ] || { echo "familiar: plugin Pi environment was not projected: $key" >&2; return 1; }
+        ;;
+    esac
+  done < <(env)
+}
+
 config_check() {
   if [ "${2:-}" = --plugin ]; then
     [ "$CONFIG_LOAD_FAILED" -eq 0 ] || return 1
     prepare_plugin
+    verify_plugin_pi_environment
     printf '%s\n' "plugin_root=${FAMILIAR_PLUGIN_ROOT:-}" "render_url=${FAMILIAR_RENDER_URL:-}"
     return 0
   fi
