@@ -151,7 +151,7 @@ export type SubmitPayload =
 export const INGRESS_DISPOSITION = "steer";
 
 // Turn initiators whose assistant output must never reach the firehose.
-export const PRIVATE_TYPES = new Set(["handoff-request", "orientation"]);
+export const PRIVATE_TYPES = new Set(["handoff-request", "orientation", "handoff-orientation"]);
 
 export const TOOL_ARGS_MAX = 300;
 export const HISTORY_MAX = 500;
