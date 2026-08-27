@@ -79,7 +79,9 @@ paths and runtime policy live under `[familiar]`; the loader deliberately does
 not double that prefix. When `[familiar] use_stuff = true`, the identity
 extension adds one compact system-prompt nudge that the `stuff` CLI exists and
 can explain itself with `stuff --help`; it does not load a separate skill or
-turn Stuff into an orchestrator. These are the mechanical moves from the retired flat
+turn Stuff into an orchestrator. In the main Pi editor, `Ctrl+S` (or
+`/stuff-capture`) opens a quick capture flow for an Item title and optional
+linked Note. These are the mechanical moves from the retired flat
 spellings to the canonical tables (the effective export name is unchanged):
 
 | Retired flat key | Canonical key | Effective export |
