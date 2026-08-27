@@ -28,6 +28,7 @@ skip_version_check = 1
 # subscriber_port = 1692
 # tz = "America/Chicago"
 # debug_level = "debug"
+# use_stuff = false # nudge the resident agent to discover the Stuff CLI
 
 [herdr]
 # Legacy/current herdr session settings (kept as a public contract for existing instances).

@@ -3,6 +3,7 @@ import { formatSkillsForPrompt } from "@earendil-works/pi-coding-agent";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { errorLog } from "../lib/debug.ts";
+import { stuffGuidance } from "./guidance.ts";
 export default function(pi: ExtensionAPI) {
   // Last successfully built prompt. This handler runs before *every* turn and
   // reassembles identity from disk each time — which is what lets identity
@@ -53,6 +54,8 @@ export default function(pi: ExtensionAPI) {
       .map(t => `- ${t}: ${toolSnippets[t]}`)
       .join("\n");
 
+    const stuff = stuffGuidance();
+
     const guidelines = `
         Guidelines:
         - Use bash for file operations like ls, rg, find; use read to examine files instead of cat or sed
@@ -72,6 +75,7 @@ export default function(pi: ExtensionAPI) {
       identity,
       formatSkillsForPrompt(skills).trim(),
       `Available Tools:\n${tools || "(none)"}`,
+      stuff,
       guidelines,
       orientation
     ].filter(Boolean).join("\n\n");

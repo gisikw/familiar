@@ -25,6 +25,7 @@ added unless the flattened name already starts with it. Examples:
 | `accent = "x"` under `[theme]` | `FAMILIAR_THEME_ACCENT=x` |
 | `api-key = "x"` under `[brave]` | `FAMILIAR_BRAVE_API_KEY=x` |
 | `debug_level = "off"` under `[familiar]` | `FAMILIAR_DEBUG_LEVEL=off` |
+| `use_stuff = true` under `[familiar]` | `FAMILIAR_USE_STUFF=true` |
 
 Every key must live under a canonical table (`[pi]`, `[anthropic]`, `[familiar]`,
 etc.). Bare top-level keys are rejected: flat spellings such as `pi_offline`,
@@ -75,7 +76,10 @@ Use tables whose names match the established environment prefix: `[pi]`,
 `[fetch]`, `[zip]`, and `[theme]`.
 Cross-cutting
 paths and runtime policy live under `[familiar]`; the loader deliberately does
-not double that prefix. These are the mechanical moves from the retired flat
+not double that prefix. When `[familiar] use_stuff = true`, the identity
+extension adds one compact system-prompt nudge that the `stuff` CLI exists and
+can explain itself with `stuff --help`; it does not load a separate skill or
+turn Stuff into an orchestrator. These are the mechanical moves from the retired flat
 spellings to the canonical tables (the effective export name is unchanged):
 
 | Retired flat key | Canonical key | Effective export |

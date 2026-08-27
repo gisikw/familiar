@@ -78,6 +78,7 @@ done
 cat >"$CONFIG" <<'TOML'
 [familiar]
 identity_path = "./identity-grouped"
+use_stuff = true
 [pi]
 offline = 0
 [anthropic]
@@ -93,11 +94,11 @@ TOML
 chmod 600 "$CONFIG"
 out=$(env -i PATH="$PATH" HOME="${HOME:-/tmp}" FAMILIAR_CONFIG_PATH="$CONFIG" ANTHROPIC_BASE_URL=ambient bash -c '
   set -eu; source "$1/scripts/familiar-config.sh"; familiar_config_load "$1"
-  printf "%s|%s|%s|%s|%s|%s|%s" "$FAMILIAR_IDENTITY_PATH" "$PI_OFFLINE" \
+  printf "%s|%s|%s|%s|%s|%s|%s|%s" "$FAMILIAR_IDENTITY_PATH" "$FAMILIAR_USE_STUFF" "$PI_OFFLINE" \
     "$ANTHROPIC_BASE_URL" "$OPENAI_BASE_URL" "$OPENAI_API_KEY" \
     "$FAMILIAR_STT_URL" "$FAMILIAR_TTS_VOICE"
 ' bash "$REPO")
-assert_eq "$out" './identity-grouped|0|ambient|https://openai.example.invalid|openai-placeholder|http://localhost:19932|af_test' "grouped mapping, aliases, and precedence"
+assert_eq "$out" './identity-grouped|true|0|ambient|https://openai.example.invalid|openai-placeholder|http://localhost:19932|af_test' "grouped mapping, aliases, and precedence"
 
 secret='DO_NOT_PRINT_CONFIG_SECRET_7e21'
 printf 'token = "unterminated %s\n' "$secret" >"$CONFIG"
