@@ -346,7 +346,7 @@ run_pi() {
         compaction: { enabled: true, reserveTokens: 4096 },
         # Keep the live extension set explicit.
         extensions: (([
-          "handoff", "identity", "subscriber", "telemetry",
+          "handoff", "identity", "stuff", "subscriber", "telemetry",
           "tiamat", "timegap", "web", "worklist", "zip"
         ] | map($ext + "/" + .)) + $pluginExts | unique)
       }
