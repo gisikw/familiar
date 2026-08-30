@@ -50,7 +50,7 @@ printf '%s\n' "$aliases" | grep -Fqx 'hsplit=split-window -h' || fail "hsplit co
 printf '%s\n' "$aliases" | grep -Fqx 'vsplit=split-window -v' || fail "vsplit command alias missing"
 [ "$(tmux -S "$socket" show-options -gv mode-style)" = 'fg=#ebdbb2,bg=#504945' ] || fail "copy-mode selection is not themed"
 [ "$(tmux -S "$socket" show-options -gv copy-mode-position-style)" = 'fg=#8ec07c,bg=#282828' ] || fail "copy-mode position is not themed"
-tmux -S "$socket" list-keys -T root PageUp | grep -Fq '#{alternate_on}' \
+tmux -S "$socket" list-keys -T root | grep -E ' (PageUp|PPage) ' | grep -Fq '#{alternate_on}' \
   || fail "PageUp alternate-screen arbitration missing"
 case $(tmux -S "$socket" show-options -gv terminal-features) in
   *tmux\*:RGB:extkeys*ghostty\*:RGB:clipboard:ccolour:cstyle:focus:title:extkeys*) ;;
