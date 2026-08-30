@@ -45,6 +45,8 @@ struct Node {
     status: String,
     children: Option<Vec<Node>>,
     activation: Option<Activation>,
+    #[serde(default)]
+    reaped: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -62,6 +64,7 @@ pub struct Item {
     pub label: String,
     pub status: String,
     pub activation: Option<Activation>,
+    pub reaped: bool,
 }
 impl Item {
     fn terminal(&self) -> bool {
@@ -222,6 +225,7 @@ pub fn parse_render(bytes: &[u8]) -> io::Result<SidebarModel> {
                     label: n.label.clone(),
                     status: n.status.clone(),
                     activation: n.activation.clone(),
+                    reaped: n.reaped,
                 })
             }
             _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "node kind")),
@@ -480,10 +484,24 @@ pub fn rows_for(m: &SidebarModel, target: &ViewerTarget, height: u16, width: u16
     // Retained settled jobs can outnumber the viewport. Project live/current
     // rows before settled history so a busy earlier workspace cannot push a
     // newly dispatched job in a later workspace below the hard truncation.
-    // Stable sorting preserves renderer order within both groups.
+    // Sort whole workspace groups, never individual rows. Moving only the
+    // viewed row to the front makes its project appear twice when another
+    // workspace lies between it and its siblings. Keep the workspace key in
+    // the sort key so every group remains contiguous.
+    let viewed_workspace = if let ViewerTarget::Terminal { id, .. } = target {
+        visible.iter().find(|item| item.id == *id).map(|item| item.workspace.clone())
+    } else {
+        None
+    };
     visible.sort_by_key(|item| {
-        let active = matches!(target, ViewerTarget::Terminal { id, .. } if id == &item.id);
-        usize::from(!active && item.terminal())
+        let group_rank = if viewed_workspace.as_deref() == Some(item.workspace.as_str()) {
+            0
+        } else if !item.terminal() {
+            1
+        } else {
+            2
+        };
+        (group_rank, item.workspace.clone())
     });
     for (i, item) in visible.iter().enumerate() {
         if item.workspace != prior {
@@ -506,7 +524,8 @@ pub fn rows_for(m: &SidebarModel, target: &ViewerTarget, height: u16, width: u16
         let text = match status_suffix(&item.status) {
             Some(status) => format!("{prefix}{} {status}", item.label),
             None if item.terminal() && item.activation.is_none() => {
-                format!("{prefix}{} (reaped)", item.label)
+                let reason = if item.reaped { "reaped" } else { "not attachable" };
+                format!("{prefix}{} ({reason})", item.label)
             }
             None => format!("{prefix}{}", item.label),
         };
@@ -728,6 +747,7 @@ mod tests {
                 session: format!("worker-{id}"),
                 action: String::new(),
             }),
+            reaped: !activation && matches!(status, "done" | "error" | "failed" | "cancelled" | "timeout"),
         }
     }
 
@@ -787,6 +807,7 @@ mod tests {
             workspace: String::new(),
             label: "Retire Golems".into(),
             status: String::new(),
+            reaped: false,
             activation: Some(Activation {
                 kind: "action".into(),
                 socket: String::new(),
@@ -823,6 +844,23 @@ mod tests {
     }
 
     #[test]
+    fn viewed_settled_job_does_not_split_its_workspace_group() {
+        let mut viewed = item("viewed", "done", false);
+        viewed.workspace = "familiar".into();
+        let mut sibling = item("sibling", "done", false);
+        sibling.workspace = "familiar".into();
+        let mut other = item("other", "running", true);
+        other.workspace = "other".into();
+        let r = rows_for(&model(vec![viewed, other, sibling]), &ViewerTarget::Terminal {
+            id: "viewed".into(), socket: "/run/g.sock".into(), session: "worker-viewed".into(),
+        }, 20, 40);
+        let groups: Vec<_> = r.rows.iter().filter_map(|row| {
+            matches!(row.kind, FrameRowKind::Workspace).then_some(row.text.as_str())
+        }).collect();
+        assert_eq!(groups, vec!["familiar", "other"]);
+    }
+
+    #[test]
     fn live_jobs_are_projected_ahead_of_settled_history_before_truncation() {
         let mut items = Vec::new();
         for n in 0..8 {
@@ -845,6 +883,7 @@ mod tests {
             workspace: String::new(),
             label: "Retire Golems".into(),
             status: String::new(),
+            reaped: false,
             activation: Some(Activation {
                 kind: "action".into(),
                 socket: String::new(),

@@ -91,6 +91,7 @@ type Node struct {
 	Status     string      `json:"status,omitempty"`
 	Children   *[]Node     `json:"children,omitempty"`
 	Activation *Activation `json:"activation,omitempty"`
+	Reaped     bool        `json:"reaped,omitempty"`
 }
 type Document struct {
 	RenderAPI int    `json:"render_api"`
@@ -377,6 +378,7 @@ func (s *Server) project() Node {
 	// `tmux list-sessions` snapshot, then exact set membership per job. This
 	// preserves exact matching without a process per row.
 	live := map[string]map[string]bool{}
+	probeFailed := map[string]bool{}
 	for _, j := range jobs {
 		if j.Terminal == nil || j.Terminal.Socket == "" || j.Terminal.Target == "" {
 			continue
@@ -387,6 +389,7 @@ func (s *Server) project() Node {
 		}
 		sessions, problem := s.socketLive(sock)
 		s.logProblem(sock, problem)
+		probeFailed[sock] = problem != nil
 		live[sock] = sessions
 	}
 
@@ -411,6 +414,9 @@ func (s *Server) project() Node {
 				activated = true
 				n.Activation = &Activation{Type: "terminal", Socket: j.Terminal.Socket, Session: sess}
 			}
+		}
+		if !activated && terminalState(j.State) && j.Terminal != nil && j.Terminal.Socket != "" && j.Terminal.Target != "" && !probeFailed[j.Terminal.Socket] {
+			n.Reaped = true
 		}
 		if !activated && !terminalState(j.State) && j.Activation != nil && j.Activation.Type == "ssh" {
 			n.Label += fmt.Sprintf(" [ssh %s@%s:%d; use golem attach]", j.Activation.User, j.Activation.Host, j.Activation.Port)
@@ -522,6 +528,7 @@ func (s *Server) Run(ctx context.Context) {
 		}
 	}
 }
+
 type retireResult struct {
 	Retired int `json:"retired"`
 	Failed  int `json:"failed"`
