@@ -811,6 +811,18 @@ mod tests {
     }
 
     #[test]
+    fn viewed_job_stays_in_its_existing_workspace_group() {
+        let mut viewed = item("viewed", "running", true);
+        viewed.workspace = "familiar".into();
+        let mut sibling = item("sibling", "running", true);
+        sibling.workspace = "familiar".into();
+        let r = rows_for(&model(vec![viewed, sibling]), &ViewerTarget::Terminal {
+            id: "viewed".into(), socket: "/run/g.sock".into(), session: "worker-viewed".into(),
+        }, 20, 40);
+        assert_eq!(r.rows.iter().filter(|row| row.kind == FrameRowKind::Workspace).count(), 1);
+    }
+
+    #[test]
     fn live_jobs_are_projected_ahead_of_settled_history_before_truncation() {
         let mut items = Vec::new();
         for n in 0..8 {
