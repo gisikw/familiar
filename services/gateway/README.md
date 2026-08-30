@@ -29,6 +29,46 @@ Binds `127.0.0.1:1692`. See `DESIGN.md` for the full protocol rationale.
   Electron client's local-shell dance. Fonts + mouse + emoji-completer ported
   from the client renderer.
 
+## Hearth stream decoding
+
+`GET /stream` remains the compatible SSE endpoint: each non-comment frame has
+one JSON object on its `data:` line. An attach is also the authoritative
+snapshot. Frames arrive in this exact order:
+
+1. `{"event":"session","id":"<uuid>"}`;
+2. the retained locked-event history, in production order;
+3. when an assistant message is mutable, its latest complete `message` revision.
+
+A changed session `id` resets the message-id namespace, so Hearth must discard
+its old projection before applying the following snapshot. Within one session,
+decode these fields as follows:
+
+- `message.id` is the transcript key. A present `message.revision` marks a
+  mutable value and a higher revision **replaces the whole prior value**. A
+  message with no `revision` is locked and replaces any draft with the same id.
+- For an assistant message, a present `message.parts` is authoritative and is
+  replaced as a whole, not delta-applied. Each ordered part is exactly one of
+  `{"type":"text","text":string}` or
+  `{"type":"tool","id":string,"name":string,"args":string}`. Concatenating
+  the `text` fields produces legacy `message.content`. `args` is a JSON string
+  when serialization succeeds, not an embedded JSON value, and is capped at
+  300 characters plus `…`.
+- If `message.parts` is absent (an older Familiar producer), fall back to one
+  text part containing `message.content`.
+- A live `tool` event has `id`, `name`, `args`, and additive `message_id`.
+  Upsert it by tool `id` under that assistant message; do not duplicate a tool
+  already present in authoritative `message.parts`. Producers predating this
+  extension may omit `message_id`, in which case it remains display-only
+  liveness as before.
+
+Thus a client attaching between tool calls receives all retained completed
+messages/tools and the latest already-produced text/tool parts of the mutable
+assistant message. Familiar folds a tool that races an attach into that latest
+revision. The snapshot is deliberately bounded to the current in-memory
+session: at most 500 locked events, one full mutable message, and 300 characters
+of arguments per tool. Existing `session`, `message`, and `tool` discriminators
+and all old fields retain their meanings; the new fields are additive.
+
 ## Run
 
     cd services/gateway
