@@ -494,6 +494,71 @@ export class SettlementRelay {
     return this.writeDropboxTo(dest, env);
   }
 
+  /* --- direct-receipt ack ---------------------------------------------------
+   * Opening a Golem's response directly (agents_status on the job, artifact
+   * listing/fetch) IS the receipt — the operator/agent has the full settlement
+   * in-conversation, so the sidecar worklist settlement must not later
+   * interrupt with the same news. This acks ONLY on direct consumption; a
+   * settlement that surfaces as a worklist nudge still requires an explicit
+   * ack (nudges never call this). Blocked questions are untouched: seeing a
+   * question is not answering it. */
+
+  /** Record that this job's terminal response was received directly. Serialized
+   *  on the shared chain (force: usable before start()) and never throws into
+   *  the calling tool. A non-terminal or unowned-and-unrelayed job is a no-op. */
+  async noteDirectReceipt(jobId: string, detail?: JobDetail): Promise<void> {
+    if (!jobId) return;
+    await this.enqueueOp("noteDirectReceipt", () => this.directReceipt(jobId, detail), true);
+  }
+
+  private async directReceipt(jobId: string, detail?: JobDetail): Promise<void> {
+    this.ensureDirs();
+    // Already relayed: the settlement sits in (or passed through) the worklist.
+    // Withdraw it if it has not yet been delivered; a delivered/acked item is
+    // left alone (withdraw refuses, which is correct — it already surfaced).
+    if (this.isDone(jobId)) {
+      await this.withdrawSettleItem(jobId);
+      return;
+    }
+    if (!this.isOwned(jobId)) return; // not ours — no settlement item exists
+    let job = detail;
+    if (!job) {
+      try {
+        job = await this.d.client.status(jobId);
+      } catch (err) {
+        this.log({ relay: "directReceipt.status", jobId, err: String(err) });
+        return;
+      }
+    }
+    const state = job?.settlement?.state || job?.state;
+    if (!isTerminal(state)) return; // running/blocked — nothing settled to ack
+    // Terminal and directly received: any live blocked question is stale.
+    await this.withdrawBlockedIfLive(jobId);
+    // A retained-but-unflushed envelope must not be delivered later; a drop
+    // written just before a crash (pre-tombstone) must not be drained later.
+    rm(this.pendingFile(jobId));
+    await this.withdrawSettleItem(jobId);
+    this.commitDone(jobId, { via: "direct-receipt" });
+  }
+
+  /** Withdraw a settlement worklist item by its stable id — sink first (also
+   *  catches a drained drop), then remove any undrained drop-box file. Used
+   *  ONLY by the direct-receipt path; ordinary settlements are never withdrawn
+   *  (a nudged settlement still requires an explicit ack). Never throws. */
+  private async withdrawSettleItem(jobId: string): Promise<void> {
+    const itemId = `golem-settle-${safeJobId(jobId)}`;
+    const sink = this.d.resolveSink();
+    if (sink) {
+      try {
+        await sink.withdraw(itemId);
+      } catch (err) {
+        this.log({ relay: "withdrawSettleItem.sinkError", itemId, err: String(err) });
+      }
+    }
+    const dest = this.dropboxFile(jobId);
+    if (dest) rm(dest);
+  }
+
   /* --- blocked-question lifecycle -----------------------------------------
    * A blocked owned job surfaces a P0 worklist QUESTION promptly (SSE event or
    * the periodic reconcile backstop) and withdraws it when the job leaves
