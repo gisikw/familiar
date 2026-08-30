@@ -44,14 +44,10 @@ unchanged). External tmux probes run *after* the job snapshot is copied out and
 the internal lock released, so rendering never blocks state updates. Golem retains a settled tmux session for its linger window
 (default 1h, `--linger` / `GOLEM_LINGER_SECONDS`), so a done/failed/cancelled/
 timeout job stays visible and **clickable** for its retained lifetime; once the
-exact session is reaped the activation drops and the row becomes
-non-actionable, but it remains visible for the full 24-hour settled window. In
-the sidebar, settled-but-retained rows render
+exact session is reaped the activation drops and the viewer removes the row
+under its terminal-row policy. In the sidebar, settled-but-retained rows render
 faded (DIM + their state color) to read as inactive while remaining clickable,
-and failure/cancel colors are preserved. While any settled row exists the
-viewer shows a clickable ASCII-bordered **Retire Golems** button; clicking it
-hides the settled rows for that viewer session (daemon state and the 24-hour
-retention are untouched). A running job with no live terminal
+and failure/cancel colors are preserved. A running job with no live terminal
 stays visible but non-actionable. Diagnosable tmux faults (permission denied,
 tmux missing) are logged at most once per socket per minute so a fault stays
 observable without flooding the log under frequent polling.

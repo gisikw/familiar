@@ -60,10 +60,7 @@ pub struct Item {
     pub activation: Option<Activation>,
 }
 impl Item {
-    /// A settled (terminal-state) Golem. Retained by the render service for
-    /// 24 hours; the viewer keeps it visible for that window and offers the
-    /// Retire Golems action to dismiss settled rows locally.
-    pub fn terminal(&self) -> bool {
+    fn terminal(&self) -> bool {
         matches!(
             self.status.as_str(),
             "done" | "error" | "failed" | "cancelled" | "timeout"
@@ -88,9 +85,6 @@ pub enum FrameRowKind {
     Heading,
     Workspace,
     Item { target: Option<ViewerTarget> },
-    /// One row of the clickable ASCII-bordered Retire Golems button, present
-    /// only while settled rows exist.
-    Retire,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FrameRow {
@@ -106,7 +100,6 @@ impl RowModel {
     pub fn hit(&self, row: usize) -> SidebarHit {
         match self.rows.get(row).map(|x| &x.kind) {
             Some(FrameRowKind::Item { target: Some(_) }) => SidebarHit::JobRow(row),
-            Some(FrameRowKind::Retire) => SidebarHit::Retire,
             _ => SidebarHit::Dead,
         }
     }
@@ -339,13 +332,7 @@ fn fetch(endpoint: &str) -> io::Result<(Vec<u8>, u64)> {
         .unwrap_or(0);
     Ok((r[end + 4..].to_vec(), rev))
 }
-pub fn rows_for(
-    m: &SidebarModel,
-    target: &ViewerTarget,
-    height: u16,
-    width: u16,
-    retired: &HashSet<String>,
-) -> RowModel {
+pub fn rows_for(m: &SidebarModel, target: &ViewerTarget, height: u16, width: u16) -> RowModel {
     if height == 0 || width == 0 || m.items.is_empty() && m.label.is_none() {
         return RowModel::default();
     }
@@ -362,10 +349,11 @@ pub fn rows_for(
         })
     }
     let mut prior = "";
-    // Settled rows stay visible for their full retained lifetime (the render
-    // service prunes them at 24h) even after the tmux session is reaped — they
-    // just lose clickability. Only a local Retire dismisses them earlier.
-    let visible: Vec<_> = m.items.iter().filter(|i| !retired.contains(&i.id)).collect();
+    let visible: Vec<_> = m
+        .items
+        .iter()
+        .filter(|i| !i.terminal() || i.activation.is_some())
+        .collect();
     for (i, item) in visible.iter().enumerate() {
         if item.workspace != prior {
             rows.push(FrameRow {
@@ -405,29 +393,8 @@ pub fn rows_for(
             style,
         })
     }
-    if visible.iter().any(|i| i.terminal()) {
-        rows.extend(retire_button_rows(width));
-    }
     rows.truncate(height as usize);
     RowModel { rows }
-}
-const RETIRE_LABEL: &str = "Retire Golems";
-/// The clickable, ASCII-bordered Retire Golems button (three rows, all
-/// clickable). Rendered only while settled rows exist.
-fn retire_button_rows(width: u16) -> Vec<FrameRow> {
-    let inner = RETIRE_LABEL.len() + 2;
-    [
-        format!("+{}+", "-".repeat(inner)),
-        format!("| {RETIRE_LABEL} |"),
-        format!("+{}+", "-".repeat(inner)),
-    ]
-    .into_iter()
-    .map(|text| FrameRow {
-        kind: FrameRowKind::Retire,
-        text: truncate(&text, width as usize),
-        style: Style::default().add_modifier(Modifier::BOLD),
-    })
-    .collect()
 }
 fn state_style(s: &str) -> Style {
     match s {
@@ -470,9 +437,6 @@ pub fn render(rows: &RowModel, area: Rect, b: &mut ratatui::buffer::Buffer) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn none() -> HashSet<String> {
-        HashSet::new()
-    }
     const OK: &str = r#"{"render_api":1,"revision":2,"ttl_ms":1000,"target":"left-nav","content":{"kind":"tree","id":"root","label":"agents","children":[{"kind":"branch","id":"w","label":"alpha","children":[{"kind":"item","id":"j","label":"Fix sidebar","status":"running","activation":{"type":"terminal","socket":"/run/g.sock","session":"worker-j"}}]}]}}"#;
     #[test]
     fn semantic_tree_parses() {
@@ -491,7 +455,7 @@ mod tests {
     fn dead_item_nonclickable() {
         let mut m = parse_render(OK.as_bytes()).unwrap();
         m.items[0].activation = None;
-        let r = rows_for(&m, &ViewerTarget::Presence, 20, 28, &none());
+        let r = rows_for(&m, &ViewerTarget::Presence, 20, 28);
         assert!(r.target_for_row(2).is_none())
     }
 
@@ -600,7 +564,7 @@ mod tests {
     #[test]
     fn running_live_row_is_active_and_clickable() {
         let m = model(vec![item("j", "running", true)]);
-        let r = rows_for(&m, &ViewerTarget::Presence, 20, 40, &none());
+        let r = rows_for(&m, &ViewerTarget::Presence, 20, 40);
         let row = &r.rows[2];
         assert!(matches!(row.kind, FrameRowKind::Item { target: Some(_) }));
         assert!(!row.style.add_modifier.contains(Modifier::DIM));
@@ -612,34 +576,24 @@ mod tests {
     #[test]
     fn settled_retained_row_is_faded_but_clickable() {
         let m = model(vec![item("j", "done", true)]);
-        let r = rows_for(&m, &ViewerTarget::Presence, 20, 40, &none());
+        let r = rows_for(&m, &ViewerTarget::Presence, 20, 40);
         let row = &r.rows[2];
         assert!(matches!(row.kind, FrameRowKind::Item { target: Some(_) }));
         assert!(r.target_for_row(2).is_some());
         assert!(row.style.add_modifier.contains(Modifier::DIM));
     }
 
-    // Once the tmux session is reaped the poller strips activation, but the
-    // settled row STAYS VISIBLE (dimmed, nonclickable) for its retained 24h
-    // window — only the render service's prune or a local Retire removes it.
+    // Once the tmux session is reaped the poller strips activation; a terminal
+    // row then disappears entirely under the terminal-row policy.
     #[test]
-    fn reaped_settled_row_stays_visible_until_retired() {
+    fn reaped_settled_row_disappears() {
         let m = model(vec![item("j", "done", false)]);
-        let r = rows_for(&m, &ViewerTarget::Presence, 20, 40, &none());
-        let row = r
-            .rows
-            .iter()
-            .find(|row| matches!(row.kind, FrameRowKind::Item { .. }))
-            .expect("settled row is retained");
-        assert!(matches!(row.kind, FrameRowKind::Item { target: None }));
-        assert!(row.style.add_modifier.contains(Modifier::DIM));
-        // Retiring it removes the row (and, with no settled rows left, the button).
-        let retired: HashSet<String> = ["j".to_string()].into();
-        let r = rows_for(&m, &ViewerTarget::Presence, 20, 40, &retired);
+        let r = rows_for(&m, &ViewerTarget::Presence, 20, 40);
+        // Only the heading remains; no workspace or item rows for the reaped job.
         assert!(r
             .rows
             .iter()
-            .all(|row| !matches!(row.kind, FrameRowKind::Item { .. } | FrameRowKind::Retire)));
+            .all(|row| !matches!(row.kind, FrameRowKind::Item { .. })));
     }
 
     // A running job that never has a live terminal stays visible but is not
@@ -647,7 +601,7 @@ mod tests {
     #[test]
     fn running_without_terminal_visible_nonclickable() {
         let m = model(vec![item("j", "running", false)]);
-        let r = rows_for(&m, &ViewerTarget::Presence, 20, 40, &none());
+        let r = rows_for(&m, &ViewerTarget::Presence, 20, 40);
         let row = r
             .rows
             .iter()
@@ -678,7 +632,7 @@ mod tests {
             item("d", "cancelled", true),
             item("e", "blocked", true),
         ]);
-        let r = rows_for(&m, &ViewerTarget::Presence, 20, 60, &none());
+        let r = rows_for(&m, &ViewerTarget::Presence, 20, 60);
         let texts: Vec<&str> = r
             .rows
             .iter()
@@ -692,56 +646,5 @@ mod tests {
         assert!(texts[2].contains("failed"), "red is shared; failed keeps text");
         assert!(texts[3].contains("cancelled"), "cancelled has no color of its own");
         assert!(texts[4].contains("blocked"), "blocked is actionable");
-    }
-
-    // The ASCII-bordered Retire Golems button appears exactly when settled rows
-    // exist, and every one of its rows is clickable.
-    #[test]
-    fn retire_button_appears_only_with_settled_rows_and_is_clickable() {
-        // No settled rows → no button.
-        let running = model(vec![item("j", "running", true)]);
-        let r = rows_for(&running, &ViewerTarget::Presence, 20, 40, &none());
-        assert!(r
-            .rows
-            .iter()
-            .all(|row| !matches!(row.kind, FrameRowKind::Retire)));
-
-        // A settled row (retained or reaped) → bordered, clickable button.
-        let settled = model(vec![item("j", "done", false)]);
-        let r = rows_for(&settled, &ViewerTarget::Presence, 20, 40, &none());
-        let button: Vec<(usize, &FrameRow)> = r
-            .rows
-            .iter()
-            .enumerate()
-            .filter(|(_, row)| matches!(row.kind, FrameRowKind::Retire))
-            .collect();
-        assert_eq!(button.len(), 3, "top border, label, bottom border");
-        assert!(button[0].1.text.starts_with("+--"));
-        assert!(button[1].1.text.contains("Retire Golems"));
-        assert!(button[2].1.text.starts_with("+--"));
-        for (index, _) in button {
-            assert_eq!(r.hit(index), SidebarHit::Retire);
-            assert!(r.target_for_row(index).is_none());
-        }
-    }
-
-    // Retiring hides only settled Golems; live rows survive, and with settled
-    // rows gone the button disappears too.
-    #[test]
-    fn retiring_hides_settled_but_not_live_rows() {
-        let m = model(vec![item("live", "running", true), item("old", "failed", false)]);
-        let retired: HashSet<String> = ["old".to_string()].into();
-        let r = rows_for(&m, &ViewerTarget::Presence, 20, 40, &retired);
-        let items: Vec<&FrameRow> = r
-            .rows
-            .iter()
-            .filter(|row| matches!(row.kind, FrameRowKind::Item { .. }))
-            .collect();
-        assert_eq!(items.len(), 1, "only the live row remains");
-        assert!(matches!(items[0].kind, FrameRowKind::Item { target: Some(_) }));
-        assert!(r
-            .rows
-            .iter()
-            .all(|row| !matches!(row.kind, FrameRowKind::Retire)));
     }
 }

@@ -2,9 +2,7 @@ use crate::app::{App, TargetRuntime, ViewerTarget};
 use crate::capture::{self, HostWriter};
 use crate::cli::Config;
 use crate::graphics::{parse_hex_rgb, probe_host, CellAspect, GraphicsMode, HostGraphics};
-use crate::input::{
-    child_mouse_bytes, main_cell, route_mouse, target_for_sidebar_hit, MouseRoute, SidebarHit,
-};
+use crate::input::{child_mouse_bytes, main_cell, route_mouse, target_for_sidebar_hit, MouseRoute};
 use crate::layout::{viewer_layout, ViewerLayout};
 use crate::pty::{child_command, pty_size};
 use crate::selection::{osc52_clipboard, selected_text, Selection};
@@ -634,17 +632,11 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let mut app = App::default();
     let sidebar_rx = spawn_poller(config.render_url.clone());
     let mut sidebar_model = SidebarModel::default();
-    // Golem ids locally dismissed via the Retire Golems button. Session-local
-    // by design: the render service retains settled rows for 24h, and retiring
-    // hides them in THIS viewer without touching daemon state. Pruned against
-    // each snapshot so the set stays bounded.
-    let mut retired: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut sidebar_rows = rows_for(
         &sidebar_model,
         app.target(),
         layout.job_rows.height,
         layout.job_rows.width,
-        &retired,
     );
     let (tx, rx): (Sender<PtyMessage>, Receiver<PtyMessage>) = mpsc::channel();
     let mut child = ChildManager::new(config, tx, dimensions(layout))?;
@@ -746,7 +738,6 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                                                 app.target(),
                                                 layout.job_rows.height,
                                                 layout.job_rows.width,
-                                                &retired,
                                             );
                                             damaged = true;
                                         }
@@ -760,28 +751,6 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                             }
-                        }
-                        MouseRoute::Sidebar(SidebarHit::Retire)
-                            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) =>
-                        {
-                            // Retire every currently-settled Golem: hide the rows
-                            // locally for the rest of this session (daemon state
-                            // and the 24h retention are untouched).
-                            retired.extend(
-                                sidebar_model
-                                    .items
-                                    .iter()
-                                    .filter(|item| item.terminal())
-                                    .map(|item| item.id.clone()),
-                            );
-                            sidebar_rows = rows_for(
-                                &sidebar_model,
-                                app.target(),
-                                layout.job_rows.height,
-                                layout.job_rows.width,
-                                &retired,
-                            );
-                            damaged = true;
                         }
                         MouseRoute::Sidebar(_) => {}
                         MouseRoute::HostSelect => {
@@ -838,7 +807,6 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                         app.target(),
                         layout.job_rows.height,
                         layout.job_rows.width,
-                        &retired,
                     );
                     damaged = true;
                 }
@@ -849,15 +817,11 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         while let Ok(snapshot) = sidebar_rx.try_recv() {
             if snapshot != sidebar_model {
                 sidebar_model = snapshot;
-                // Bound the retired set: an id the render no longer reports
-                // (24h prune, or reuse) has nothing left to hide.
-                retired.retain(|id| sidebar_model.items.iter().any(|item| &item.id == id));
                 sidebar_rows = rows_for(
                     &sidebar_model,
                     app.target(),
                     layout.job_rows.height,
                     layout.job_rows.width,
-                    &retired,
                 );
                 damaged = true;
             }
