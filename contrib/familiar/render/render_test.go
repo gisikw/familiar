@@ -346,6 +346,27 @@ func TestRetireActionDeletesOnlySettledJobs(t *testing.T) {
 	}
 }
 
+func TestRetireActionContinuesAfterOneDeleteFails(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("DELETE /v1/jobs/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("id") == "bad" { http.Error(w, "busy", http.StatusConflict); return }
+		w.WriteHeader(http.StatusNoContent)
+	})
+	stub := httptest.NewServer(mux)
+	defer stub.Close()
+	c, _ := NewClient(stub.URL, "")
+	s := New(c, "")
+	now := time.Now()
+	s.replace([]Job{{ID: "bad", State: "done", UpdatedAt: now}, {ID: "good", State: "done", UpdatedAt: now}, {ID: "blocked", State: "blocked", UpdatedAt: now}})
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v1/action/retire-settled", nil))
+	if rr.Code != http.StatusOK { t.Fatalf("action: %d %s", rr.Code, rr.Body.String()) }
+	var got retireResult
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil { t.Fatal(err) }
+	if got != (retireResult{Retired: 1, Failed: 1}) { t.Fatalf("result: %+v", got) }
+	if findJob(s.project(), "job:good") != nil || findJob(s.project(), "job:bad") == nil { t.Fatal("partial retirement state is wrong") }
+}
+
 func TestSSERefreshesRenderFromFakeGolemd(t *testing.T) {
 	now := time.Now().UTC()
 	calls := make(chan struct{}, 1)

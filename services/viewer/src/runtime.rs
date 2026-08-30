@@ -7,7 +7,7 @@ use crate::layout::{viewer_layout, ViewerLayout};
 use crate::pty::{child_command, pty_size};
 use crate::selection::{osc52_clipboard, selected_text, Selection};
 use crate::sidebar::{
-    invoke_action, plan_activation, render as render_sidebar, rows_for, spawn_poller,
+    invoke_action, plan_activation, render as render_sidebar, rows_for, spawn_poller, ActionOutcome,
     terminal_live, Activation, ActivationPlan, RowModel, SidebarModel,
 };
 use crate::terminal::ghostty::GhosttyTerminal;
@@ -710,10 +710,10 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                                     .ok_or_else(|| io::Error::other("action unavailable"))
                                     .and_then(|(endpoint, action)| invoke_action(endpoint, action));
                                 sidebar_notice = Some((
-                                    if outcome.is_ok() {
-                                        "Settled Golems retired".into()
-                                    } else {
-                                        "Could not retire Golems".into()
+                                    match outcome {
+                                        Ok(ActionOutcome::Complete) => "Settled Golems retired".into(),
+                                        Ok(ActionOutcome::Partial) => "Some Golems could not be retired".into(),
+                                        Err(_) => "Could not retire Golems".into(),
                                     },
                                     Instant::now() + Duration::from_secs(3),
                                 ));

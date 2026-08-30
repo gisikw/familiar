@@ -321,7 +321,10 @@ pub fn spawn_poller(endpoint: Option<String>) -> Receiver<SidebarModel> {
     });
     rx
 }
-pub fn invoke_action(endpoint: &str, action: &str) -> io::Result<()> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ActionOutcome { Complete, Partial }
+
+pub fn invoke_action(endpoint: &str, action: &str) -> io::Result<ActionOutcome> {
     if action.is_empty()
         || !action
             .chars()
@@ -352,13 +355,18 @@ pub fn invoke_action(endpoint: &str, action: &str) -> io::Result<()> {
     let mut s = TcpStream::connect_timeout(&addr, REQUEST_TIMEOUT)?;
     s.set_read_timeout(Some(REQUEST_TIMEOUT))?;
     write!(s, "POST {path} HTTP/1.1\r\nHost: {authority}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")?;
-    let mut response = [0_u8; 64];
-    let n = s.read(&mut response)?;
-    let status = String::from_utf8_lossy(&response[..n]);
+    let mut response = Vec::new();
+    s.take(4096).read_to_end(&mut response)?;
+    let end = response.windows(4).position(|x| x == b"\r\n\r\n")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "action response"))?;
+    let status = String::from_utf8_lossy(&response[..end]);
     if !status.starts_with("HTTP/1.1 2") && !status.starts_with("HTTP/1.0 2") {
         return Err(io::Error::other("action failed"));
     }
-    Ok(())
+    #[derive(Deserialize)]
+    struct ResultBody { #[serde(default)] failed: usize }
+    let body: ResultBody = serde_json::from_slice(&response[end + 4..]).unwrap_or(ResultBody { failed: 0 });
+    Ok(if body.failed > 0 { ActionOutcome::Partial } else { ActionOutcome::Complete })
 }
 
 fn fetch(endpoint: &str) -> io::Result<(Vec<u8>, u64)> {

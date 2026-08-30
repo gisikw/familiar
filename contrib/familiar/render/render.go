@@ -522,7 +522,12 @@ func (s *Server) Run(ctx context.Context) {
 		}
 	}
 }
-func (s *Server) retireSettled(ctx context.Context) (int, error) {
+type retireResult struct {
+	Retired int `json:"retired"`
+	Failed  int `json:"failed"`
+}
+
+func (s *Server) retireSettled(ctx context.Context) retireResult {
 	s.mu.Lock()
 	ids := make([]string, 0)
 	for id, j := range s.jobs {
@@ -532,24 +537,26 @@ func (s *Server) retireSettled(ctx context.Context) (int, error) {
 	}
 	s.mu.Unlock()
 	sort.Strings(ids)
-	retired := 0
+	result := retireResult{}
 	defer func() {
-		if retired > 0 {
+		if result.Retired > 0 {
 			s.poke()
 		}
 	}()
 	for _, id := range ids {
 		if err := s.client.Retire(ctx, id); err != nil {
-			return retired, err
+			// One stale or malformed record must not strand the rest.
+			result.Failed++
+			continue
 		}
 		s.mu.Lock()
 		delete(s.jobs, id)
 		s.revision++
 		s.cacheFresh = false
 		s.mu.Unlock()
-		retired++
+		result.Retired++
 	}
-	return retired, nil
+	return result
 }
 
 func (s *Server) Handler() http.Handler {
@@ -560,12 +567,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("POST /v1/action/retire-settled", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
-		count, err := s.retireSettled(ctx)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
-		json.NewEncoder(w).Encode(map[string]int{"retired": count})
+		json.NewEncoder(w).Encode(s.retireSettled(ctx))
 	})
 	m.HandleFunc("GET /v1/render", func(w http.ResponseWriter, r *http.Request) {
 		root := s.project()
