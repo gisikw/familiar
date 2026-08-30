@@ -372,7 +372,10 @@ pub fn rows_for(m: &SidebarModel, target: &ViewerTarget, height: u16, width: u16
             if last { "└─" } else { "├─" },
             if active { '◉' } else { '●' }
         );
-        let text = format!("{prefix}{} {}", item.label, item.status);
+        let text = match status_suffix(&item.status) {
+            Some(status) => format!("{prefix}{} {status}", item.label),
+            None => format!("{prefix}{}", item.label),
+        };
         let mut style = state_style(&item.status);
         // Fade rows the user cannot act on, and settled rows that are still
         // clickable during their retained tmux lifetime: a done-but-not-reaped
@@ -400,6 +403,17 @@ fn state_style(s: &str) -> Style {
         "error" | "failed" | "timeout" => Style::default().fg(Color::Indexed(1)),
         "cancelled" => Style::default().add_modifier(Modifier::DIM),
         _ => Style::default().fg(Color::Indexed(3)),
+    }
+}
+/// The colored dot alone conveys `running` (green) and `done` (cyan), so their
+/// textual labels are redundant and dropped. States that share or lack a
+/// distinctive color keep their text: error/failed/timeout all render red,
+/// cancelled has no color of its own, and blocked/unknown states carry
+/// actionable information the dot cannot.
+fn status_suffix(s: &str) -> Option<&str> {
+    match s {
+        "running" | "done" | "" => None,
+        other => Some(other),
     }
 }
 fn truncate(s: &str, w: usize) -> String {
@@ -604,5 +618,33 @@ mod tests {
         let cancelled = state_style("cancelled");
         assert_eq!(failed.fg, Some(Color::Indexed(1)));
         assert_ne!(failed.fg, cancelled.fg);
+    }
+
+    // The colored dot conveys running/done, so their textual labels vanish;
+    // ambiguous or actionable states (failure flavors, cancelled, blocked)
+    // keep their text.
+    #[test]
+    fn dot_conveyed_statuses_drop_redundant_text() {
+        let m = model(vec![
+            item("a", "running", true),
+            item("b", "done", true),
+            item("c", "failed", true),
+            item("d", "cancelled", true),
+            item("e", "blocked", true),
+        ]);
+        let r = rows_for(&m, &ViewerTarget::Presence, 20, 60);
+        let texts: Vec<&str> = r
+            .rows
+            .iter()
+            .filter(|row| matches!(row.kind, FrameRowKind::Item { .. }))
+            .map(|row| row.text.as_str())
+            .collect();
+        assert_eq!(texts.len(), 5);
+        assert!(!texts[0].contains("running"), "green dot conveys running: {}", texts[0]);
+        assert!(!texts[1].contains("done"), "cyan dot conveys done: {}", texts[1]);
+        assert!(texts[0].ends_with("task") && texts[1].ends_with("task"));
+        assert!(texts[2].contains("failed"), "red is shared; failed keeps text");
+        assert!(texts[3].contains("cancelled"), "cancelled has no color of its own");
+        assert!(texts[4].contains("blocked"), "blocked is actionable");
     }
 }
