@@ -9,6 +9,8 @@ use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 pub enum SidebarHit {
     Mark,
     JobRow(usize),
+    /// The ASCII-bordered Retire Golems button (any of its rows).
+    Retire,
     Dead,
 }
 
@@ -33,7 +35,7 @@ where
     match hit {
         SidebarHit::Mark => Some(ViewerTarget::Presence),
         SidebarHit::JobRow(index) => target_for_row(index),
-        SidebarHit::Dead => None,
+        SidebarHit::Retire | SidebarHit::Dead => None,
     }
 }
 
