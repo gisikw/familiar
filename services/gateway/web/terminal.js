@@ -6,6 +6,7 @@ import { STATES as VOICE_STATES } from "/app/voice-state.js";
 import { installVoiceKeyRouter, VOICE_KEY_LABEL } from "/app/voice-key-routing.js";
 import { TerminalReplyGate } from "/app/terminal-replies.js";
 import { createOsc52Bridge } from "/app/osc52.js";
+import { createReconnectPtyTransport } from "/app/reconnect-transport.js";
 
 // Browser terminal for the familiar server. Unlike the Electron client (which
 // bridges restty to node-pty over IPC), here restty talks to the server's /pty
@@ -135,7 +136,7 @@ window.__familiarProbe = runProbe;
 // geometry from resize. Mirrors apps/desktop/src/renderer's IPC transport shape.
 // ---------------------------------------------------------------------------
 function createTappedWsTransport() {
-  const inner = createWebSocketPtyTransport();
+  const inner = createReconnectPtyTransport(createWebSocketPtyTransport);
   return {
     connect(options) {
       const userCbs = options.callbacks || {};

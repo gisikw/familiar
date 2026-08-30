@@ -41,6 +41,7 @@ export { attachCommand } from "./attach.ts";
 // >0: time-window batching via setTimeout(ms). <=0/unset: same-tick coalescing
 // via setImmediate (near-zero added latency, still merges redraw bursts).
 const FLUSH_MS = Number(process.env.FAMILIAR_PTY_FLUSH_MS ?? 0);
+const HEARTBEAT_MS = Number(process.env.FAMILIAR_PTY_HEARTBEAT_MS ?? 30_000);
 
 const REPOSITORY_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
 
@@ -112,6 +113,7 @@ function startPty(cols: number, rows: number): IPty {
 
 export class PtyBridge {
   private wss: WebSocketServer;
+  private heartbeat: NodeJS.Timeout | null = null;
 
   constructor() {
     // The native viewer intentionally does not own Presence lifecycle. Ensure
@@ -122,6 +124,20 @@ export class PtyBridge {
     // /pty coexists with the HTTP surface on the same port.
     this.wss = new WebSocketServer({ noServer: true });
     this.wss.on("connection", (ws) => this.onConnection(ws));
+    if (HEARTBEAT_MS > 0) {
+      this.heartbeat = setInterval(() => {
+        for (const client of this.wss.clients) {
+          const live = client as WebSocket & { familiarAlive?: boolean };
+          if (live.familiarAlive === false) {
+            live.terminate();
+            continue;
+          }
+          live.familiarAlive = false;
+          try { live.ping(); } catch { live.terminate(); }
+        }
+      }, HEARTBEAT_MS);
+      this.heartbeat.unref?.();
+    }
   }
 
   handleUpgrade(req: http.IncomingMessage, socket: any, head: Buffer) {
@@ -135,6 +151,10 @@ export class PtyBridge {
   }
 
   private onConnection(ws: WebSocket) {
+    const live = ws as WebSocket & { familiarAlive?: boolean };
+    live.familiarAlive = true;
+    ws.on("pong", () => { live.familiarAlive = true; });
+
     let pty: IPty | null = null;
     let exited = false;
 
@@ -226,6 +246,8 @@ export class PtyBridge {
   }
 
   close() {
+    if (this.heartbeat) clearInterval(this.heartbeat);
+    this.heartbeat = null;
     try { this.wss.close(); } catch { /* ignore */ }
   }
 }
