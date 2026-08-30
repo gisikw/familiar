@@ -280,10 +280,30 @@ func brief(j Job) string {
 	}
 	return p
 }
+
+// repoName reduces a repository locator (https URL, scp-like, plain path) to
+// its final path segment without a ".git" suffix, so every worktree of one
+// repository lands in one sidebar group.
+func repoName(repo string) string {
+	x := strings.TrimRight(repo, "/")
+	x = strings.TrimSuffix(x, ".git")
+	if i := strings.LastIndexAny(x, "/:"); i >= 0 {
+		x = x[i+1:]
+	}
+	return x
+}
+
+// branch groups jobs by project/repository — never by worktree when a project
+// or repo identity exists, so all worktrees of one codebase share one group.
 func branch(j Job) string {
 	if j.Workspace != nil {
 		if j.Workspace.Project != "" {
 			return j.Workspace.Project
+		}
+		if j.Workspace.Repo != "" {
+			if r := repoName(j.Workspace.Repo); r != "" {
+				return r
+			}
 		}
 		if j.Workspace.Worktree != "" {
 			return j.Workspace.Worktree
@@ -297,6 +317,19 @@ func branch(j Job) string {
 		return "unknown"
 	}
 	return x
+}
+
+// worktreeTag names the worktree a job runs in when it differs from the group
+// label, so rows inside a project/repo group stay distinguishable across
+// worktrees without reintroducing per-worktree groups.
+func worktreeTag(j Job) string {
+	if j.Workspace == nil || j.Workspace.Worktree == "" {
+		return ""
+	}
+	if j.Workspace.Worktree == branch(j) {
+		return ""
+	}
+	return j.Workspace.Worktree
 }
 func (s *Server) project() Node {
 	// Snapshot jobs and now under the lock, then release it before running any
@@ -337,6 +370,9 @@ func (s *Server) project() Node {
 	groups := map[string][]Node{}
 	for _, j := range jobs {
 		label := brief(j)
+		if wt := worktreeTag(j); wt != "" {
+			label += " · " + wt
+		}
 		if j.State == "blocked" && j.Question != nil {
 			label += " — " + brief(Job{Prompt: j.Question.Prompt})
 		}

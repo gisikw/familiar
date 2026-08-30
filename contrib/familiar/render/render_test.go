@@ -79,6 +79,72 @@ func findJob(root Node, id string) *Node {
 	return nil
 }
 
+// Golems for one project/repository must share ONE sidebar group regardless of
+// worktree; the worktree survives as a per-row suffix so rows stay
+// distinguishable.
+func TestGroupsByProjectAcrossWorktrees(t *testing.T) {
+	c, _ := NewClient("http://127.0.0.1:1", "")
+	s := New(c, "")
+	now := time.Now()
+	s.now = func() time.Time { return now }
+	s.SetSocketProbe(liveSockets(nil))
+	s.replace([]Job{
+		{ID: "a", Prompt: "one", State: "running", UpdatedAt: now, Workspace: &Workspace{Project: "familiar", Worktree: "wt-alpha"}},
+		{ID: "b", Prompt: "two", State: "running", UpdatedAt: now.Add(-time.Second), Workspace: &Workspace{Project: "familiar", Worktree: "wt-beta"}},
+		{ID: "c", Prompt: "three", State: "running", UpdatedAt: now.Add(-2 * time.Second), Workspace: &Workspace{Repo: "https://example.com/org/golem.git", Ref: "main", Worktree: "wt-gamma"}},
+	})
+	root := s.project()
+	branches := map[string]int{}
+	for _, b := range kids(root) {
+		branches[b.Label] = len(kids(b))
+	}
+	if branches["familiar"] != 2 {
+		t.Fatalf("project worktrees not grouped together: %+v", branches)
+	}
+	if branches["golem"] != 1 {
+		t.Fatalf("repo URL not reduced to repository name: %+v", branches)
+	}
+	if len(branches) != 2 {
+		t.Fatalf("expected exactly two groups, got %+v", branches)
+	}
+	a := findJob(root, "job:a")
+	if a == nil || !strings.Contains(a.Label, "wt-alpha") {
+		t.Fatalf("worktree tag missing from row label: %+v", a)
+	}
+	b := findJob(root, "job:b")
+	if b == nil || !strings.Contains(b.Label, "wt-beta") {
+		t.Fatalf("worktree tag missing from row label: %+v", b)
+	}
+}
+
+func TestRepoNameReduction(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://github.com/org/repo.git": "repo",
+		"git@github.com:org/repo.git":     "repo",
+		"/srv/git/repo":                   "repo",
+		"repo.git":                        "repo",
+		"repo":                            "repo",
+	} {
+		if got := repoName(in); got != want {
+			t.Fatalf("repoName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A worktree named identically to its group label gets no redundant suffix.
+func TestWorktreeTagOmittedWhenSameAsGroup(t *testing.T) {
+	c, _ := NewClient("http://127.0.0.1:1", "")
+	s := New(c, "")
+	now := time.Now()
+	s.now = func() time.Time { return now }
+	s.SetSocketProbe(liveSockets(nil))
+	s.replace([]Job{{ID: "j", Prompt: "task", State: "running", UpdatedAt: now, Workspace: &Workspace{Project: "familiar", Worktree: "familiar"}}})
+	n := findJob(s.project(), "job:j")
+	if n == nil || strings.Contains(n.Label, "·") {
+		t.Fatalf("redundant worktree tag rendered: %+v", n)
+	}
+}
+
 // A settled job whose exact tmux session is still retained must keep terminal
 // activation so the viewer can show it as clickable, and it must drop that
 // activation the instant the exact session is reaped.
