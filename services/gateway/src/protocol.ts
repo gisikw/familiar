@@ -42,10 +42,14 @@
  *                    mutable (a newer revision of the same id supersedes it);
  *                    revision ABSENT means locked. No delta replay, no abort
  *                    signal: an interrupted turn locks at its final partial.
- *                    `created_at` is the ISO time the message began, stable
- *                    across revisions. `correlation_id` on a user message
- *                    echoes the client-chosen submit id that produced it.
- *   ToolEvent      — tool call liveness. Name + truncated args, no results.
+ *                    Assistant `parts`, when present, are the authoritative
+ *                    ordered text/tool-call projection; `content` remains its
+ *                    legacy text-only projection. `created_at` is the ISO time
+ *                    the message began, stable across revisions.
+ *                    `correlation_id` on a user message echoes the
+ *                    client-chosen submit id that produced it.
+ *   ToolEvent      — tool call liveness. Name + truncated args, no results;
+ *                    `message_id` associates it with its assistant message.
  *   SegmentEvent   — a synthesizable chunk was detected. `synthesizing`
  *                    reports whether synthesis was proactively started
  *                    (true when any audio listener is attached) — decided by
@@ -65,11 +69,18 @@ export interface SessionEvent {
   id: string;
 }
 
+export type MessagePart =
+  | { type: "text"; text: string }
+  | { type: "tool"; id: string; name: string; args: string };
+
 export interface MessageEvent {
   event: "message";
   id: number;
   role: "user" | "assistant";
+  /** Legacy text-only projection; concatenate text parts to obtain this value. */
   content: string;
+  /** Authoritative ordered assistant content, additive for wire compatibility. */
+  parts?: MessagePart[];
   revision?: number;
   /** ISO timestamp of message creation; stable across revisions. */
   created_at?: string;
@@ -82,6 +93,8 @@ export interface ToolEvent {
   id: string;
   name: string;
   args: string; // JSON, truncated
+  /** Assistant message that owns this call; absent on legacy producers. */
+  message_id?: number;
 }
 
 export interface SegmentEvent {

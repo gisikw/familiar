@@ -63,3 +63,39 @@ describe("private continuity egress", () => {
     expect(f.segments).toEqual(["This ordinary answer is long enough to become a spoken segment."]);
   });
 });
+
+describe("authoritative assistant parts", () => {
+  test("revisions and locked messages preserve ordered text/tool/text parts", () => {
+    const f = fixture();
+    f.firehose.onMessageStart(assistant(""));
+    const partial = {
+      role: "assistant",
+      content: [
+        { type: "text", text: "checking" },
+        { type: "toolCall", id: "call-1", name: "bash", arguments: { command: "pwd" } },
+        { type: "text", text: "done" },
+      ],
+    };
+    f.firehose.onMessageUpdate(partial, { type: "text_end", partial });
+    f.firehose.onMessageEnd(partial);
+
+    const expected = [
+      { type: "text", text: "checking" },
+      { type: "tool", id: "call-1", name: "bash", args: '{"command":"pwd"}' },
+      { type: "text", text: "done" },
+    ];
+    expect(f.revised[0]).toMatchObject({ content: "checkingdone", parts: expected });
+    expect(f.published.find(event => event.event === "message")).toMatchObject({
+      content: "checkingdone", parts: expected,
+    });
+  });
+
+  test("tool liveness identifies its owning assistant message", () => {
+    const f = fixture();
+    f.firehose.onMessageStart(assistant(""));
+    f.firehose.onToolStart("call-2", "read", { path: "/tmp/x" });
+    expect(f.published).toEqual([{
+      event: "tool", id: "call-2", name: "read", args: '{"path":"/tmp/x"}', message_id: 1,
+    }]);
+  });
+});

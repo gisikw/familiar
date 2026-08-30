@@ -1,9 +1,9 @@
 import {
   PRIVATE_TYPES,
   SEGMENT_MIN_CHARS,
-  TOOL_ARGS_MAX,
+  type MessagePart,
 } from "./protocol.ts";
-import { messageText, speakable } from "./text.ts";
+import { messageParts, messageText, speakable, toolArgs } from "./text.ts";
 import type { RelayHub, NoopAudio } from "./relay.ts";
 import type { PendingEchoes } from "./echo.ts";
 
@@ -54,13 +54,16 @@ export class Firehose {
     if (this.privateTurn) return;
     if (!this.streamingAssistant) this.beginAssistant();
 
-    const content = messageText(assistantMessageEvent.partial ?? message);
-    if (content.trim()) {
+    const partial = assistantMessageEvent.partial ?? message;
+    const content = messageText(partial);
+    const parts = messageParts(partial);
+    if (content.trim() || parts.some(part => part.type === "tool")) {
       this.hub.revise({
         event: "message",
         id: this.messageId,
         role: "assistant",
         content,
+        parts,
         revision: this.revisionId++,
         created_at: this.startedAt,
       });
@@ -74,14 +77,14 @@ export class Firehose {
 
   onMessageEnd(message: any) {
     if (message?.role !== "assistant") return;
-    this.finishAssistant(messageText(message));
+    this.finishAssistant(messageText(message), messageParts(message));
   }
 
   // Safety net for turns that never see message_end (interruption): lock
   // whatever we have. Locked-without-revision is the whole abort protocol.
   onAgentEnd() {
     if (this.streamingAssistant && this.hub.inflight) {
-      this.finishAssistant(this.hub.inflight.content);
+      this.finishAssistant(this.hub.inflight.content, this.hub.inflight.parts);
     }
     this.streamingAssistant = false;
     this.privateTurn = false;
@@ -89,14 +92,10 @@ export class Firehose {
 
   onToolStart(toolCallId: string, toolName: string, args: any) {
     if (this.privateTurn) return;
-    let summary = "";
-    try {
-      summary = JSON.stringify(args) ?? "";
-    } catch {
-      summary = String(args);
-    }
-    if (summary.length > TOOL_ARGS_MAX) summary = summary.slice(0, TOOL_ARGS_MAX) + "…";
-    this.hub.publish({ event: "tool", id: toolCallId, name: toolName, args: summary });
+    this.hub.publish({
+      event: "tool", id: toolCallId, name: toolName, args: toolArgs(args),
+      message_id: this.messageId || undefined,
+    });
   }
 
   private beginAssistant() {
@@ -108,14 +107,17 @@ export class Firehose {
     this.startedAt = new Date().toISOString();
   }
 
-  private finishAssistant(content: string) {
+  private finishAssistant(content: string, parts?: MessagePart[]) {
     if (!this.streamingAssistant) return;
     this.streamingAssistant = false;
     this.hub.lockInflight();
     if (!this.privateTurn) {
       this.chunkSegments(content, true);
-      if (content.trim()) {
-        this.hub.publish({ event: "message", id: this.messageId, role: "assistant", content, created_at: this.startedAt });
+      if (content.trim() || parts?.some(part => part.type === "tool")) {
+        this.hub.publish({
+          event: "message", id: this.messageId, role: "assistant", content,
+          parts: parts ?? [{ type: "text", text: content }], created_at: this.startedAt,
+        });
       }
     }
     this.revisionId = 1;

@@ -66,8 +66,19 @@ export class StreamHub {
     return false;
   }
 
-  // Locked events: recorded in history and broadcast.
+  // Locked events: recorded in history and broadcast. If a tool begins while
+  // its assistant message is still mutable, fold it into the attach-time
+  // revision too; the standalone tool event remains unchanged for old clients.
   publish(event: StreamEvent) {
+    if (event.event === "tool" && this.inflight && event.message_id === this.inflight.id) {
+      const tool = { type: "tool" as const, id: event.id, name: event.name, args: event.args };
+      const parts = this.inflight.parts ? [...this.inflight.parts] :
+        (this.inflight.content ? [{ type: "text" as const, text: this.inflight.content }] : []);
+      const at = parts.findIndex(part => part.type === "tool" && part.id === event.id);
+      if (at >= 0) parts[at] = tool;
+      else parts.push(tool);
+      this.inflight = { ...this.inflight, parts };
+    }
     this.history.push(event);
     if (this.history.length > HISTORY_MAX) this.history.splice(0, this.history.length - HISTORY_MAX);
     this.broadcast(event);
