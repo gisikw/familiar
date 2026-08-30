@@ -9,6 +9,7 @@ use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 pub enum SidebarHit {
     Mark,
     JobRow(usize),
+    ActionRow(usize),
     Dead,
 }
 
@@ -33,7 +34,7 @@ where
     match hit {
         SidebarHit::Mark => Some(ViewerTarget::Presence),
         SidebarHit::JobRow(index) => target_for_row(index),
-        SidebarHit::Dead => None,
+        SidebarHit::ActionRow(_) | SidebarHit::Dead => None,
     }
 }
 

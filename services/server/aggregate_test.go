@@ -66,6 +66,33 @@ func collectIDs(n renderNode, out *[]string) {
 	}
 }
 
+func TestAggregateNamespacesAndProxiesAdvertisedAction(t *testing.T) {
+	called := false
+	plugin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/action/retire-settled" {
+			t.Fatalf("unexpected action request %s %s", r.Method, r.URL.Path)
+		}
+		called = true
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"retired":2}`))
+	}))
+	defer plugin.Close()
+	fixture := `{"render_api":1,"revision":1,"ttl_ms":5000,"target":"left-nav","content":{"kind":"tree","id":"root","children":[{"kind":"item","id":"retire","label":"Retire Golems","activation":{"type":"action","action":"retire-settled"}}]}}`
+	h := hubWithDoc(t, "golem", fixture)
+	h.cfg.URL = plugin.URL + "/v1/render"
+	a := newRenderAggregator([]*renderHub{h}, nil)
+	env := aggregateDoc(t, a)
+	action := (*env.Content.Children)[0].Children
+	if action == nil || (*action)[0].Activation.Action != "golem/retire-settled" {
+		t.Fatalf("action not namespaced: %+v", env.Content)
+	}
+	w := httptest.NewRecorder()
+	a.actionHandler(w, httptest.NewRequest(http.MethodPost, "/v1/render/action/golem/retire-settled", nil), "golem/retire-settled")
+	if w.Code != http.StatusOK || !called {
+		t.Fatalf("action proxy status=%d called=%v", w.Code, called)
+	}
+}
+
 // Two plugins compose under one host tree, in deterministic config order, with
 // per-plugin namespacing that resolves colliding IDs while preserving the exact
 // terminal activation session identifiers.

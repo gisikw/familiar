@@ -7,8 +7,8 @@ use crate::layout::{viewer_layout, ViewerLayout};
 use crate::pty::{child_command, pty_size};
 use crate::selection::{osc52_clipboard, selected_text, Selection};
 use crate::sidebar::{
-    plan_activation, render as render_sidebar, rows_for, spawn_poller, terminal_live, Activation,
-    ActivationPlan, RowModel, SidebarModel,
+    invoke_action, plan_activation, render as render_sidebar, rows_for, spawn_poller,
+    terminal_live, Activation, ActivationPlan, RowModel, SidebarModel,
 };
 use crate::terminal::ghostty::GhosttyTerminal;
 use crate::terminal::{CellAttributes, GridSize, TerminalColor, TerminalCore, TerminalModes};
@@ -630,7 +630,8 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let mut layout = viewer_layout(width, height);
     let mut core = GhosttyTerminal::new(dimensions(layout))?;
     let mut app = App::default();
-    let sidebar_rx = spawn_poller(config.render_url.clone());
+    let render_url = config.render_url.clone();
+    let sidebar_rx = spawn_poller(render_url.clone());
     let mut sidebar_model = SidebarModel::default();
     let mut sidebar_rows = rows_for(
         &sidebar_model,
@@ -702,6 +703,23 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                         MouseRoute::Sidebar(hit)
                             if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) =>
                         {
+                            if let crate::input::SidebarHit::ActionRow(row) = hit {
+                                let outcome = render_url
+                                    .as_deref()
+                                    .zip(sidebar_rows.action_for_row(row))
+                                    .ok_or_else(|| io::Error::other("action unavailable"))
+                                    .and_then(|(endpoint, action)| invoke_action(endpoint, action));
+                                sidebar_notice = Some((
+                                    if outcome.is_ok() {
+                                        "Settled Golems retired".into()
+                                    } else {
+                                        "Could not retire Golems".into()
+                                    },
+                                    Instant::now() + Duration::from_secs(3),
+                                ));
+                                damaged = true;
+                                continue;
+                            }
                             let target =
                                 target_for_sidebar_hit(hit, |row| sidebar_rows.target_for_row(row));
                             // Actionable clicks route through a pure plan so a dead
@@ -711,6 +729,7 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                                     kind: "terminal".into(),
                                     socket: socket.to_owned(),
                                     session: session.to_owned(),
+                                    action: String::new(),
                                 })
                             }) {
                                 ActivationPlan::Ignore => {}

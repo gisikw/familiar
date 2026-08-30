@@ -41,8 +41,9 @@ type renderNode struct {
 }
 type renderActivation struct {
 	Type    string `json:"type"`
-	Socket  string `json:"socket"`
-	Session string `json:"session"`
+	Socket  string `json:"socket,omitempty"`
+	Session string `json:"session,omitempty"`
+	Action  string `json:"action,omitempty"`
 }
 
 type renderHub struct {
@@ -178,8 +179,17 @@ func validateRender(doc *renderEnvelope) error {
 			}
 			if n.Activation != nil {
 				a := n.Activation
-				if a.Type != "terminal" || !filepath.IsAbs(a.Socket) || a.Session == "" || len(a.Socket) > 4096 || len(a.Session) > 128 || strings.ContainsAny(a.Socket+a.Session, "\x00\r\n") {
-					return fmt.Errorf("unsafe terminal activation")
+				switch a.Type {
+				case "terminal":
+					if !filepath.IsAbs(a.Socket) || a.Session == "" || a.Action != "" || len(a.Socket) > 4096 || len(a.Session) > 128 || strings.ContainsAny(a.Socket+a.Session, "\x00\r\n") {
+						return fmt.Errorf("unsafe terminal activation")
+					}
+				case "action":
+					if a.Socket != "" || a.Session != "" || a.Action == "" || len(a.Action) > 128 || strings.ContainsAny(a.Action, "/\\\x00\r\n") {
+						return fmt.Errorf("unsafe action activation")
+					}
+				default:
+					return fmt.Errorf("unsafe activation type")
 				}
 			}
 			return nil
@@ -294,11 +304,18 @@ func newRenderAggregator(hubs []*renderHub, log *slog.Logger) *renderAggregator 
 	return a
 }
 
-// namespaceNode prefixes every node ID with "<plugin>/" recursively. Activation
-// (socket/session) is deliberately left unchanged: it is the exact same-host
-// tmux target the viewer must re-check and attach.
+// namespaceNode prefixes every node ID with "<plugin>/" recursively. Terminal
+// targets remain exact; action names gain the plugin namespace so the host can
+// route a click only to the contribution that advertised it.
 func namespaceNode(n renderNode, plugin string) renderNode {
 	n.ID = plugin + "/" + n.ID
+	if n.Activation != nil {
+		activation := *n.Activation
+		n.Activation = &activation
+	}
+	if n.Activation != nil && n.Activation.Type == "action" {
+		n.Activation.Action = plugin + "/" + n.Activation.Action
+	}
 	if n.Children != nil {
 		kids := make([]renderNode, len(*n.Children))
 		for i, c := range *n.Children {
@@ -333,6 +350,75 @@ func (a *renderAggregator) recompose() {
 		a.changed = make(chan struct{})
 	}
 	a.mu.Unlock()
+}
+
+func (a *renderAggregator) actionHandler(w http.ResponseWriter, r *http.Request, action string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	parts := strings.Split(action, "/")
+	if len(parts) != 2 {
+		http.NotFound(w, r)
+		return
+	}
+	var hub *renderHub
+	for _, candidate := range a.hubs {
+		if candidate.cfg.Plugin == parts[0] {
+			hub = candidate
+			break
+		}
+	}
+	if hub == nil {
+		http.NotFound(w, r)
+		return
+	}
+	// Only proxy an action currently advertised by this plugin's validated tree.
+	env, ok := hub.snapshot()
+	advertised := false
+	var walk func(renderNode)
+	walk = func(n renderNode) {
+		if n.Activation != nil && n.Activation.Type == "action" && n.Activation.Action == parts[1] {
+			advertised = true
+		}
+		if n.Children != nil {
+			for _, c := range *n.Children {
+				walk(c)
+			}
+		}
+	}
+	if ok {
+		walk(env.Content)
+	}
+	if !advertised {
+		http.NotFound(w, r)
+		return
+	}
+	u, err := url.Parse(hub.cfg.URL)
+	if err != nil {
+		http.Error(w, "action unavailable", http.StatusBadGateway)
+		return
+	}
+	u.Path = strings.TrimSuffix(u.Path, "/v1/render") + "/v1/action/" + parts[1]
+	req, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, u.String(), http.NoBody)
+	res, err := hub.client.Do(req)
+	if err != nil {
+		http.Error(w, "action unavailable", http.StatusBadGateway)
+		return
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+	if res.StatusCode/100 != 2 {
+		http.Error(w, "action failed", http.StatusBadGateway)
+		return
+	}
+	select {
+	case hub.invalidate <- struct{}{}:
+	default:
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(res.StatusCode)
+	_, _ = w.Write(body)
 }
 
 func (a *renderAggregator) viewerHandler(w http.ResponseWriter, r *http.Request) {

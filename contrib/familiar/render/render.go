@@ -80,8 +80,9 @@ type Event struct {
 }
 type Activation struct {
 	Type    string `json:"type"`
-	Socket  string `json:"socket"`
-	Session string `json:"session"`
+	Socket  string `json:"socket,omitempty"`
+	Session string `json:"session,omitempty"`
+	Action  string `json:"action,omitempty"`
 }
 type Node struct {
 	Kind       string      `json:"kind"`
@@ -146,6 +147,24 @@ func (c *Client) Job(ctx context.Context, id string) (Job, error) {
 	var j Job
 	err := c.request(ctx, "GET", "/v1/jobs/"+url.PathEscape(id), &j)
 	return j, err
+}
+func (c *Client) Retire(ctx context.Context, id string) error {
+	// golemd retirement is DELETE of one settled job. Callers deliberately
+	// select terminal ids first; running/blocked jobs are never submitted.
+	req, _ := http.NewRequestWithContext(ctx, http.MethodDelete, c.base+"/v1/jobs/"+url.PathEscape(id), nil)
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	res, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode/100 != 2 {
+		b, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+		return fmt.Errorf("golemd %s: %s", res.Status, strings.TrimSpace(string(b)))
+	}
+	return nil
 }
 func (c *Client) Stream(ctx context.Context, since int64, receive func(Event)) error {
 	req, _ := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/v1/events?since=%d", c.base, since), nil)
@@ -337,7 +356,11 @@ func (s *Server) project() Node {
 	s.mu.Lock()
 	now := s.now()
 	jobs := make([]Job, 0, len(s.jobs))
+	hasSettled := false
 	for _, j := range s.jobs {
+		if terminalState(j.State) {
+			hasSettled = true
+		}
 		if terminalState(j.State) && now.Sub(j.UpdatedAt) > settledAge {
 			continue
 		}
@@ -403,6 +426,9 @@ func (s *Server) project() Node {
 	for _, x := range names {
 		v := groups[x]
 		kids = append(kids, Node{Kind: "branch", ID: "workspace:" + x, Label: x, Children: &v})
+	}
+	if hasSettled {
+		kids = append(kids, Node{Kind: "item", ID: "action:retire", Label: "Retire Golems", Activation: &Activation{Type: "action", Action: "retire-settled"}})
 	}
 	return Node{Kind: "tree", ID: "golem:jobs", Label: "agents", Children: &kids}
 }
@@ -496,10 +522,50 @@ func (s *Server) Run(ctx context.Context) {
 		}
 	}
 }
+func (s *Server) retireSettled(ctx context.Context) (int, error) {
+	s.mu.Lock()
+	ids := make([]string, 0)
+	for id, j := range s.jobs {
+		if terminalState(j.State) {
+			ids = append(ids, id)
+		}
+	}
+	s.mu.Unlock()
+	sort.Strings(ids)
+	retired := 0
+	defer func() {
+		if retired > 0 {
+			s.poke()
+		}
+	}()
+	for _, id := range ids {
+		if err := s.client.Retire(ctx, id); err != nil {
+			return retired, err
+		}
+		s.mu.Lock()
+		delete(s.jobs, id)
+		s.revision++
+		s.cacheFresh = false
+		s.mu.Unlock()
+		retired++
+	}
+	return retired, nil
+}
+
 func (s *Server) Handler() http.Handler {
 	m := http.NewServeMux()
 	m.HandleFunc("GET /live", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+	m.HandleFunc("POST /v1/action/retire-settled", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		count, err := s.retireSettled(ctx)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]int{"retired": count})
 	})
 	m.HandleFunc("GET /v1/render", func(w http.ResponseWriter, r *http.Request) {
 		root := s.project()

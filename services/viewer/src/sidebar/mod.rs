@@ -27,8 +27,12 @@ const MAX_DEPTH: usize = 8;
 pub struct Activation {
     #[serde(rename = "type")]
     pub kind: String,
+    #[serde(default)]
     pub socket: String,
+    #[serde(default)]
     pub session: String,
+    #[serde(default)]
+    pub action: String,
 }
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -67,11 +71,14 @@ impl Item {
         )
     }
     pub fn target(&self) -> Option<ViewerTarget> {
-        self.activation.as_ref().map(|a| ViewerTarget::Terminal {
-            id: self.id.clone(),
-            socket: a.socket.clone(),
-            session: a.session.clone(),
-        })
+        self.activation
+            .as_ref()
+            .filter(|a| a.kind == "terminal")
+            .map(|a| ViewerTarget::Terminal {
+                id: self.id.clone(),
+                socket: a.socket.clone(),
+                session: a.session.clone(),
+            })
     }
 }
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -85,6 +92,7 @@ pub enum FrameRowKind {
     Heading,
     Workspace,
     Item { target: Option<ViewerTarget> },
+    Action { action: String },
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FrameRow {
@@ -100,12 +108,19 @@ impl RowModel {
     pub fn hit(&self, row: usize) -> SidebarHit {
         match self.rows.get(row).map(|x| &x.kind) {
             Some(FrameRowKind::Item { target: Some(_) }) => SidebarHit::JobRow(row),
+            Some(FrameRowKind::Action { .. }) => SidebarHit::ActionRow(row),
             _ => SidebarHit::Dead,
         }
     }
     pub fn target_for_row(&self, row: usize) -> Option<ViewerTarget> {
         match self.rows.get(row).map(|x| &x.kind) {
             Some(FrameRowKind::Item { target }) => target.clone(),
+            _ => None,
+        }
+    }
+    pub fn action_for_row(&self, row: usize) -> Option<&str> {
+        match self.rows.get(row).map(|x| &x.kind) {
+            Some(FrameRowKind::Action { action }) => Some(action),
             _ => None,
         }
     }
@@ -176,11 +191,25 @@ pub fn parse_render(bytes: &[u8]) -> io::Result<SidebarModel> {
                     return Err(io::Error::new(io::ErrorKind::InvalidData, "item children"));
                 }
                 if let Some(a) = &n.activation {
-                    if a.kind != "terminal"
-                        || !Path::new(&a.socket).is_absolute()
-                        || a.session.is_empty()
-                        || a.session.len() > 128
-                    {
+                    let valid = match a.kind.as_str() {
+                        "terminal" => {
+                            Path::new(&a.socket).is_absolute()
+                                && !a.session.is_empty()
+                                && a.session.len() <= 128
+                                && a.action.is_empty()
+                        }
+                        "action" => {
+                            a.socket.is_empty()
+                                && a.session.is_empty()
+                                && !a.action.is_empty()
+                                && a.action.len() <= 256
+                                && a.action.chars().all(|c| {
+                                    c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/')
+                                })
+                        }
+                        _ => false,
+                    };
+                    if !valid {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
                             "unsafe activation",
@@ -272,7 +301,10 @@ pub fn spawn_poller(endpoint: Option<String>) -> Receiver<SidebarModel> {
             match fetch(&path).and_then(|(b, r)| parse_render(&b).map(|m| (m, r))) {
                 Ok((mut m, r)) => {
                     for i in &mut m.items {
-                        if i.activation.as_ref().is_some_and(|a| !terminal_live(a)) {
+                        if i.activation
+                            .as_ref()
+                            .is_some_and(|a| a.kind == "terminal" && !terminal_live(a))
+                        {
                             i.activation = None
                         }
                     }
@@ -289,6 +321,46 @@ pub fn spawn_poller(endpoint: Option<String>) -> Receiver<SidebarModel> {
     });
     rx
 }
+pub fn invoke_action(endpoint: &str, action: &str) -> io::Result<()> {
+    if action.is_empty()
+        || !action
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'))
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "unsafe action"));
+    }
+    let base = endpoint
+        .split('?')
+        .next()
+        .unwrap_or(endpoint)
+        .trim_end_matches('/');
+    let target = format!("{base}/action/{action}");
+    let rest = target
+        .strip_prefix("http://")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "only http action URLs"))?;
+    let split = rest.find('/').unwrap_or(rest.len());
+    let authority = &rest[..split];
+    let path = &rest[split..];
+    let (host, port) = authority
+        .rsplit_once(':')
+        .and_then(|(h, p)| p.parse().ok().map(|p| (h, p)))
+        .unwrap_or((authority, 80));
+    let addr = (host, port)
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::AddrNotAvailable, "no address"))?;
+    let mut s = TcpStream::connect_timeout(&addr, REQUEST_TIMEOUT)?;
+    s.set_read_timeout(Some(REQUEST_TIMEOUT))?;
+    write!(s, "POST {path} HTTP/1.1\r\nHost: {authority}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")?;
+    let mut response = [0_u8; 64];
+    let n = s.read(&mut response)?;
+    let status = String::from_utf8_lossy(&response[..n]);
+    if !status.starts_with("HTTP/1.1 2") && !status.starts_with("HTTP/1.0 2") {
+        return Err(io::Error::other("action failed"));
+    }
+    Ok(())
+}
+
 fn fetch(endpoint: &str) -> io::Result<(Vec<u8>, u64)> {
     let rest = endpoint
         .strip_prefix("http://")
@@ -352,7 +424,7 @@ pub fn rows_for(m: &SidebarModel, target: &ViewerTarget, height: u16, width: u16
     let visible: Vec<_> = m
         .items
         .iter()
-        .filter(|i| !i.terminal() || i.activation.is_some())
+        .filter(|i| i.activation.as_ref().is_none_or(|a| a.kind != "action"))
         .collect();
     for (i, item) in visible.iter().enumerate() {
         if item.workspace != prior {
@@ -392,6 +464,33 @@ pub fn rows_for(m: &SidebarModel, target: &ViewerTarget, height: u16, width: u16
             text: truncate(&text, width as usize),
             style,
         })
+    }
+    if let Some(action) = m.items.iter().find_map(|i| {
+        i.activation
+            .as_ref()
+            .filter(|a| a.kind == "action")
+            .map(|a| a.action.clone())
+    }) {
+        // Reserve the bottom three rows so the manual retirement control is
+        // present even when the bounded job list fills the sidebar.
+        rows.truncate(height.saturating_sub(3) as usize);
+        let inner = width.saturating_sub(2) as usize;
+        let label = "Retire Golems";
+        rows.push(FrameRow {
+            kind: FrameRowKind::Workspace,
+            text: format!("+{}+", "-".repeat(inner)),
+            style: Style::default().add_modifier(Modifier::DIM),
+        });
+        rows.push(FrameRow {
+            kind: FrameRowKind::Action { action },
+            text: truncate(&format!("|{:^inner$}|", label), width as usize),
+            style: Style::default().add_modifier(Modifier::BOLD),
+        });
+        rows.push(FrameRow {
+            kind: FrameRowKind::Workspace,
+            text: format!("+{}+", "-".repeat(inner)),
+            style: Style::default().add_modifier(Modifier::DIM),
+        });
     }
     rows.truncate(height as usize);
     RowModel { rows }
@@ -547,6 +646,7 @@ mod tests {
                 kind: "terminal".into(),
                 socket: "/run/g.sock".into(),
                 session: format!("worker-{id}"),
+                action: String::new(),
             }),
         }
     }
@@ -583,17 +683,47 @@ mod tests {
         assert!(row.style.add_modifier.contains(Modifier::DIM));
     }
 
-    // Once the tmux session is reaped the poller strips activation; a terminal
-    // row then disappears entirely under the terminal-row policy.
+    // Settled jobs remain inspectable for the renderer's 24-hour retention even
+    // after their tmux session is reaped; the row is dim and non-clickable.
     #[test]
-    fn reaped_settled_row_disappears() {
+    fn reaped_settled_row_remains_inspectable() {
         let m = model(vec![item("j", "done", false)]);
         let r = rows_for(&m, &ViewerTarget::Presence, 20, 40);
-        // Only the heading remains; no workspace or item rows for the reaped job.
-        assert!(r
+        let row = r
             .rows
             .iter()
-            .all(|row| !matches!(row.kind, FrameRowKind::Item { .. })));
+            .find(|row| matches!(row.kind, FrameRowKind::Item { .. }))
+            .expect("settled row retained");
+        assert!(matches!(row.kind, FrameRowKind::Item { target: None }));
+        assert!(row.style.add_modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn settled_jobs_add_ascii_bordered_retire_action() {
+        let mut m = model(vec![item("j", "done", false)]);
+        m.items.push(Item {
+            id: "retire".into(),
+            workspace: String::new(),
+            label: "Retire Golems".into(),
+            status: String::new(),
+            activation: Some(Activation {
+                kind: "action".into(),
+                socket: String::new(),
+                session: String::new(),
+                action: "golem/retire-settled".into(),
+            }),
+        });
+        let r = rows_for(&m, &ViewerTarget::Presence, 20, 28);
+        let index = r
+            .rows
+            .iter()
+            .position(|row| matches!(row.kind, FrameRowKind::Action { .. }))
+            .unwrap();
+        assert!(r.rows[index - 1].text.starts_with('+'));
+        assert!(r.rows[index].text.contains("Retire Golems"));
+        assert!(r.rows[index + 1].text.starts_with('+'));
+        assert_eq!(r.hit(index), SidebarHit::ActionRow(index));
+        assert_eq!(r.action_for_row(index), Some("golem/retire-settled"));
     }
 
     // A running job that never has a live terminal stays visible but is not

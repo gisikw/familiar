@@ -302,6 +302,50 @@ func TestTmuxProblemLoggedOncePerMinute(t *testing.T) {
 	}
 }
 
+func TestRetireActionDeletesOnlySettledJobs(t *testing.T) {
+	deleted := []string{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("DELETE /v1/jobs/{id}", func(w http.ResponseWriter, r *http.Request) {
+		deleted = append(deleted, r.PathValue("id"))
+		w.WriteHeader(http.StatusNoContent)
+	})
+	stub := httptest.NewServer(mux)
+	defer stub.Close()
+	c, _ := NewClient(stub.URL, "")
+	s := New(c, "")
+	now := time.Now()
+	s.replace([]Job{
+		{ID: "running", State: "running", UpdatedAt: now},
+		{ID: "blocked", State: "blocked", UpdatedAt: now},
+		{ID: "done", State: "done", UpdatedAt: now},
+		{ID: "failed", State: "failed", UpdatedAt: now},
+	})
+	root := s.project()
+	foundAction := false
+	for _, n := range kids(root) {
+		if n.Activation != nil && n.Activation.Type == "action" {
+			foundAction = n.Label == "Retire Golems"
+		}
+	}
+	if !foundAction {
+		t.Fatal("settled jobs must advertise Retire Golems")
+	}
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v1/action/retire-settled", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("action: %d %s", rr.Code, rr.Body.String())
+	}
+	if strings.Join(deleted, ",") != "done,failed" {
+		t.Fatalf("deleted %v", deleted)
+	}
+	if s.jobs["running"].State != "running" || s.jobs["blocked"].State != "blocked" {
+		t.Fatal("active jobs were affected")
+	}
+	if findJob(s.project(), "job:done") != nil {
+		t.Fatal("retired job remains projected")
+	}
+}
+
 func TestSSERefreshesRenderFromFakeGolemd(t *testing.T) {
 	now := time.Now().UTC()
 	calls := make(chan struct{}, 1)

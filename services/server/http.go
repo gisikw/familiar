@@ -44,8 +44,11 @@ func (s *Supervisor) Handler() http.Handler {
 	mux.HandleFunc("/v1/render", func(w http.ResponseWriter, r *http.Request) {
 		s.aggregator.viewerHandler(w, r)
 	})
-	// Viewer data is read-only. Invalidation URLs carry a boot-random scoped
-	// token and only coalesce a refetch; they never expose plugin data.
+	// Actions are opaque, validated plugin contributions routed through the host;
+	// viewers never receive plugin service URLs or golemd credentials.
+	mux.HandleFunc("/v1/render/action/", func(w http.ResponseWriter, r *http.Request) {
+		s.aggregator.actionHandler(w, r, strings.TrimPrefix(r.URL.Path, "/v1/render/action/"))
+	})
 	// Per-plugin GET is retained for bounded compatibility/debugging only.
 	mux.HandleFunc("/v1/render/", func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(r.URL.Path, "/v1/render/")
