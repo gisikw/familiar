@@ -1,4 +1,6 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getMarkdownTheme, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Markdown } from "@earendil-works/pi-tui";
+import { searchResultsMarkdown } from "./render.ts";
 import { Type } from "typebox";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
@@ -356,7 +358,17 @@ export default function (pi: ExtensionAPI) {
       const requested = params.count ?? SEARCH_DEFAULT_COUNT;
       const count = Math.min(Math.max(requested, 1), SEARCH_MAX_COUNT);
       const out = boundSearchOutput(await searchProvider()(params.query, count, signal), count, requested);
-      return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] };
+      return {
+        content: [{ type: "text", text: JSON.stringify(out, null, 2) }],
+        details: { results: out.results },
+      };
+    },
+    renderResult(result, { expanded }) {
+      const results = result.details?.results;
+      if (!Array.isArray(results)) return new Markdown("No results.", 0, 0, getMarkdownTheme());
+      // Pi's Markdown component emits OSC 8 hyperlinks. Using that public TUI
+      // API keeps URLs clickable without terminal-specific mouse handling.
+      return new Markdown(searchResultsMarkdown(results, expanded), 0, 0, getMarkdownTheme());
     },
   });
 
