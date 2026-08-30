@@ -397,12 +397,55 @@ fn fetch(endpoint: &str) -> io::Result<(Vec<u8>, u64)> {
     if h.split(|x| *x == b' ').nth(1) != Some(b"200") {
         return Err(io::Error::other("render unavailable"));
     }
-    let rev = String::from_utf8_lossy(h)
-        .lines()
-        .find_map(|x| x.strip_prefix("X-Familiar-Revision: "))
-        .and_then(|x| x.trim().parse().ok())
+    let headers = String::from_utf8_lossy(h);
+    let rev = header_value(&headers, "x-familiar-revision")
+        .and_then(|x| x.parse().ok())
         .unwrap_or(0);
-    Ok((r[end + 4..].to_vec(), rev))
+    let body = &r[end + 4..];
+    let body = if header_value(&headers, "transfer-encoding")
+        .is_some_and(|value| value.split(',').any(|part| part.trim().eq_ignore_ascii_case("chunked")))
+    {
+        decode_chunked(body)?
+    } else {
+        body.to_vec()
+    };
+    if body.len() > MAX_BYTES {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "render too large"));
+    }
+    Ok((body, rev))
+}
+
+fn header_value<'a>(headers: &'a str, name: &str) -> Option<&'a str> {
+    headers.lines().find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        key.eq_ignore_ascii_case(name).then(|| value.trim())
+    })
+}
+
+fn decode_chunked(mut input: &[u8]) -> io::Result<Vec<u8>> {
+    let mut output = Vec::new();
+    loop {
+        let line_end = input
+            .windows(2)
+            .position(|bytes| bytes == b"\r\n")
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "HTTP chunk size"))?;
+        let size_text = std::str::from_utf8(&input[..line_end])
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let size = usize::from_str_radix(size_text.split(';').next().unwrap_or(""), 16)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        input = &input[line_end + 2..];
+        if size == 0 {
+            return Ok(output);
+        }
+        if size > MAX_BYTES.saturating_sub(output.len())
+            || input.len() < size + 2
+            || &input[size..size + 2] != b"\r\n"
+        {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "HTTP chunk body"));
+        }
+        output.extend_from_slice(&input[..size]);
+        input = &input[size + 2..];
+    }
 }
 pub fn rows_for(m: &SidebarModel, target: &ViewerTarget, height: u16, width: u16) -> RowModel {
     if height == 0 || width == 0 || m.items.is_empty() && m.label.is_none() {
@@ -421,11 +464,19 @@ pub fn rows_for(m: &SidebarModel, target: &ViewerTarget, height: u16, width: u16
         })
     }
     let mut prior = "";
-    let visible: Vec<_> = m
+    let mut visible: Vec<_> = m
         .items
         .iter()
         .filter(|i| i.activation.as_ref().is_none_or(|a| a.kind != "action"))
         .collect();
+    // Retained settled jobs can outnumber the viewport. Project live/current
+    // rows before settled history so a busy earlier workspace cannot push a
+    // newly dispatched job in a later workspace below the hard truncation.
+    // Stable sorting preserves renderer order within both groups.
+    visible.sort_by_key(|item| {
+        let active = matches!(target, ViewerTarget::Terminal { id, .. } if id == &item.id);
+        usize::from(!active && item.terminal())
+    });
     for (i, item) in visible.iter().enumerate() {
         if item.workspace != prior {
             rows.push(FrameRow {
@@ -537,6 +588,24 @@ pub fn render(rows: &RowModel, area: Rect, b: &mut ratatui::buffer::Buffer) {
 mod tests {
     use super::*;
     const OK: &str = r#"{"render_api":1,"revision":2,"ttl_ms":1000,"target":"left-nav","content":{"kind":"tree","id":"root","label":"agents","children":[{"kind":"branch","id":"w","label":"alpha","children":[{"kind":"item","id":"j","label":"Fix sidebar","status":"running","activation":{"type":"terminal","socket":"/run/g.sock","session":"worker-j"}}]}]}}"#;
+    #[test]
+    fn chunked_render_body_decodes_before_json_parsing() {
+        let split = OK.len() / 2;
+        let wire = format!(
+            "{:x}\r\n{}\r\n{:x};ext=ignored\r\n{}\r\n0\r\n\r\n",
+            split,
+            &OK[..split],
+            OK.len() - split,
+            &OK[split..]
+        );
+        let decoded = decode_chunked(wire.as_bytes()).unwrap();
+        assert_eq!(parse_render(&decoded).unwrap().items[0].id, "j");
+        assert_eq!(
+            header_value("Transfer-Encoding: chunked\r\n", "transfer-encoding"),
+            Some("chunked")
+        );
+    }
+
     #[test]
     fn semantic_tree_parses() {
         let m = parse_render(OK.as_bytes()).unwrap();
@@ -726,6 +795,47 @@ mod tests {
         assert_eq!(r.action_for_row(index), Some("golem/retire-settled"));
     }
 
+    #[test]
+    fn live_jobs_are_projected_ahead_of_settled_history_before_truncation() {
+        let mut items = Vec::new();
+        for n in 0..8 {
+            let mut settled = item(&format!("old-{n}"), "done", false);
+            settled.workspace = "familiar".into();
+            settled.label = format!("settled {n}");
+            items.push(settled);
+        }
+        let mut fort = item("live-fort", "running", true);
+        fort.workspace = "fort-nix".into();
+        fort.label = "repair apple site".into();
+        items.push(fort);
+        let mut stuff = item("live-stuff", "running", true);
+        stuff.workspace = "stuff".into();
+        stuff.label = "generic mutations".into();
+        items.push(stuff);
+        let mut m = model(items);
+        m.items.push(Item {
+            id: "retire".into(),
+            workspace: String::new(),
+            label: "Retire Golems".into(),
+            status: String::new(),
+            activation: Some(Activation {
+                kind: "action".into(),
+                socket: String::new(),
+                session: String::new(),
+                action: "golem/retire-settled".into(),
+            }),
+        });
+
+        // A 24-row terminal leaves 12 sidebar rows below the mark and the
+        // action reserves three. Both later-workspace live jobs must fit in the
+        // remaining projection despite the earlier retained history.
+        let r = rows_for(&m, &ViewerTarget::Presence, 12, 28);
+        let text: Vec<_> = r.rows.iter().map(|row| row.text.as_str()).collect();
+        assert!(text.iter().any(|row| row.contains("repair apple site")));
+        assert!(text.iter().any(|row| row.contains("generic mutations")));
+        assert!(text.iter().any(|row| row.contains("Retire Golems")));
+    }
+
     // A running job that never has a live terminal stays visible but is not
     // clickable, and is dimmed.
     #[test]
@@ -770,11 +880,12 @@ mod tests {
             .map(|row| row.text.as_str())
             .collect();
         assert_eq!(texts.len(), 5);
-        assert!(!texts[0].contains("running"), "green dot conveys running: {}", texts[0]);
-        assert!(!texts[1].contains("done"), "cyan dot conveys done: {}", texts[1]);
-        assert!(texts[0].ends_with("task") && texts[1].ends_with("task"));
-        assert!(texts[2].contains("failed"), "red is shared; failed keeps text");
-        assert!(texts[3].contains("cancelled"), "cancelled has no color of its own");
-        assert!(texts[4].contains("blocked"), "blocked is actionable");
+        assert_eq!(status_suffix("running"), None);
+        assert_eq!(status_suffix("done"), None);
+        assert!(texts.iter().all(|text| !text.contains("running")));
+        assert!(texts.iter().all(|text| !text.contains("done")));
+        assert!(texts.iter().any(|text| text.contains("failed")));
+        assert!(texts.iter().any(|text| text.contains("cancelled")));
+        assert!(texts.iter().any(|text| text.contains("blocked")));
     }
 }
