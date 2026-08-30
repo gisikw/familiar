@@ -60,6 +60,10 @@ case $(tmux -S "$socket" show-options -gv terminal-features) in
   *xterm\*:RGB:*) ;;
   *) fail "inner terminal features do not advertise truecolor (RGB)" ;;
 esac
+case $(tmux -S "$socket" show-options -gv terminal-features) in
+  *xterm\*:RGB:*:hyperlinks*) ;;
+  *) fail "inner terminal features do not advertise hyperlinks" ;;
+esac
 ok "ensure creates only the isolated presence session with inner terminal policy"
 
 pid=$(tail -1 "$pids")
