@@ -505,6 +505,9 @@ pub fn rows_for(m: &SidebarModel, target: &ViewerTarget, height: u16, width: u16
         );
         let text = match status_suffix(&item.status) {
             Some(status) => format!("{prefix}{} {status}", item.label),
+            None if item.terminal() && item.activation.is_none() => {
+                format!("{prefix}{} (reaped)", item.label)
+            }
             None => format!("{prefix}{}", item.label),
         };
         let mut style = state_style(&item.status);
@@ -537,17 +540,17 @@ pub fn rows_for(m: &SidebarModel, target: &ViewerTarget, height: u16, width: u16
         let label = "Retire Golems";
         rows.push(FrameRow {
             kind: FrameRowKind::Workspace,
-            text: format!("+{}+", "-".repeat(inner)),
+            text: format!("┌{}┐", "─".repeat(inner)),
             style: Style::default().add_modifier(Modifier::DIM),
         });
         rows.push(FrameRow {
             kind: FrameRowKind::Action { action },
-            text: truncate(&format!("|{:^inner$}|", label), width as usize),
+            text: truncate(&format!("│{:^inner$}│", label), width as usize),
             style: Style::default().add_modifier(Modifier::BOLD),
         });
         rows.push(FrameRow {
             kind: FrameRowKind::Workspace,
-            text: format!("+{}+", "-".repeat(inner)),
+            text: format!("└{}┘", "─".repeat(inner)),
             style: Style::default().add_modifier(Modifier::DIM),
         });
     }
@@ -773,10 +776,11 @@ mod tests {
             .expect("settled row retained");
         assert!(matches!(row.kind, FrameRowKind::Item { target: None }));
         assert!(row.style.add_modifier.contains(Modifier::DIM));
+        assert!(row.text.contains("(reaped)"));
     }
 
     #[test]
-    fn settled_jobs_add_ascii_bordered_retire_action() {
+    fn settled_jobs_add_box_drawing_bordered_retire_action() {
         let mut m = model(vec![item("j", "done", false)]);
         m.items.push(Item {
             id: "retire".into(),
@@ -796,9 +800,12 @@ mod tests {
             .iter()
             .position(|row| matches!(row.kind, FrameRowKind::Action { .. }))
             .unwrap();
-        assert!(r.rows[index - 1].text.starts_with('+'));
+        assert!(r.rows[index - 1].text.starts_with('┌'));
+        assert!(r.rows[index - 1].text.contains('─'));
+        assert!(r.rows[index].text.starts_with('│'));
+        assert!(r.rows[index].text.ends_with('│'));
         assert!(r.rows[index].text.contains("Retire Golems"));
-        assert!(r.rows[index + 1].text.starts_with('+'));
+        assert!(r.rows[index + 1].text.starts_with('└'));
         assert_eq!(r.hit(index), SidebarHit::ActionRow(index));
         assert_eq!(r.action_for_row(index), Some("golem/retire-settled"));
     }
