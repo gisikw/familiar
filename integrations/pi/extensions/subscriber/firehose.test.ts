@@ -90,6 +90,21 @@ describe("authoritative assistant parts", () => {
     });
   });
 
+  test("tool-call streaming alone updates the attach-time projection", () => {
+    const f = fixture();
+    f.firehose.onMessageStart(assistant(""));
+    const partial = {
+      role: "assistant",
+      content: [{ type: "toolCall", id: "forming", name: "read", arguments: { path: "/tmp" } }],
+    };
+    f.firehose.onMessageUpdate(partial, { type: "toolcall_delta", partial });
+    expect(f.revised).toEqual([{
+      event: "message", id: 1, role: "assistant", content: "",
+      parts: [{ type: "tool", id: "forming", name: "read", args: '{"path":"/tmp"}' }],
+      revision: 1, created_at: expect.any(String),
+    }]);
+  });
+
   test("tool liveness identifies its owning assistant message", () => {
     const f = fixture();
     f.firehose.onMessageStart(assistant(""));

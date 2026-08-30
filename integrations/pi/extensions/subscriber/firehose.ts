@@ -50,7 +50,9 @@ export class Firehose {
 
   onMessageUpdate(message: any, assistantMessageEvent: any) {
     const type = assistantMessageEvent?.type;
-    if (type !== "text_start" && type !== "text_delta" && type !== "text_end") return;
+    const textUpdate = type === "text_start" || type === "text_delta" || type === "text_end";
+    const toolUpdate = type === "toolcall_start" || type === "toolcall_delta" || type === "toolcall_end";
+    if (!textUpdate && !toolUpdate) return;
     if (this.privateTurn) return;
     if (!this.streamingAssistant) this.beginAssistant();
 
@@ -72,7 +74,7 @@ export class Firehose {
     // finishing) — pending text is complete by definition, so flush it all.
     // No idle timer: a token-stream pause is cadence, not structure, and
     // slow local models pause mid-sentence all the time.
-    this.chunkSegments(content, type === "text_end");
+    if (textUpdate) this.chunkSegments(content, type === "text_end");
   }
 
   onMessageEnd(message: any) {
