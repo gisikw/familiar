@@ -45,6 +45,9 @@ HOME="$home" runp ensure >/dev/null
   || fail "inner passthrough is not enabled"
 [ "$(tmux -S "$socket" show-options -gv extended-keys)" = on ] || fail "extended keys disabled"
 [ "$(tmux -S "$socket" show-options -gv mouse)" = on ] || fail "inner mouse arbitration disabled"
+aliases=$(tmux -S "$socket" show-options -sv command-alias)
+printf '%s\n' "$aliases" | grep -Fqx 'hsplit=split-window -h' || fail "hsplit command alias missing"
+printf '%s\n' "$aliases" | grep -Fqx 'vsplit=split-window -v' || fail "vsplit command alias missing"
 [ "$(tmux -S "$socket" show-options -gv mode-style)" = 'fg=#ebdbb2,bg=#504945' ] || fail "copy-mode selection is not themed"
 [ "$(tmux -S "$socket" show-options -gv copy-mode-position-style)" = 'fg=#8ec07c,bg=#282828' ] || fail "copy-mode position is not themed"
 tmux -S "$socket" list-keys -T root PageUp | grep -Fq '#{alternate_on}' \
