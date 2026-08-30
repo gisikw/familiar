@@ -23,7 +23,9 @@ import {
   type QueueItem,
 } from "./policy.ts";
 import {
+  acknowledgeItem,
   archiveItem,
+  drainAcknowledgements,
   drainIncoming,
   ensureDirs,
   enqueueEnvelopeIdempotent,
@@ -291,11 +293,15 @@ export default function (pi: ExtensionAPI) {
   const tick = () => {
     ensureDirs(P, LEGACY_ROOT);
     const created = drainIncoming(P);
+    // Process after incoming so an ack request and its enqueue observed in the
+    // same tick resolve deterministically. Unknown ids are still consumed: the
+    // producer's durable claimed marker prevents a later enqueue.
+    const acknowledged = drainAcknowledgements(P);
     const now = Date.now();
     const elapsed = expireIfElapsed(now);
     const attention = currentAttention(now);
 
-    let dirtySurfaces = created.length > 0 || elapsed;
+    let dirtySurfaces = created.length > 0 || acknowledged.length > 0 || elapsed;
     const items = listItems(P).filter(isPending);
     const lingerBatch: QueueItem[] = [];
 
@@ -397,6 +403,14 @@ export default function (pi: ExtensionAPI) {
       });
       if (created) refreshSurfaces();
       return { accepted: true, id: item.id };
+    },
+    async acknowledge(id: string): Promise<boolean> {
+      // Explicit foreground receipt owns this stable id, including if it races
+      // the relay enqueue. Ambient sidecars never call this path.
+      tombstones.add(id);
+      const acknowledged = acknowledgeItem(P, id);
+      refreshSurfaces();
+      return acknowledged;
     },
     async withdraw(id: string): Promise<boolean> {
       // Set the tombstone FIRST so an enqueue that is still in-flight for this

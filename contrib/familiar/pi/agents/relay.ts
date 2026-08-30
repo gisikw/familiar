@@ -341,6 +341,12 @@ export class SettlementRelay {
     return path.join(dir, `golem-settle-${safeJobId(jid)}.json`);
   }
 
+  private acknowledgementFile(jid: string): string | undefined {
+    const incoming = this.d.dropboxDir;
+    if (!incoming) return undefined;
+    return path.join(path.dirname(incoming), "acknowledgements", `golem-settle-${safeJobId(jid)}.json`);
+  }
+
   /** Worklist drop-box target for a BLOCKED question, keyed on the stable item
    *  id (per block-episode) so a re-block with a new question does not clobber
    *  a not-yet-drained drop for the prior episode. The envelope's stable `id`
@@ -577,6 +583,34 @@ export class SettlementRelay {
     }
     const dest = this.dropboxFileBlocked(itemId);
     if (dest) rm(dest);
+  }
+
+  /** Acknowledge a terminal response explicitly opened by the foreground.
+   * This is intentionally never called by the background relay or a <btw>
+   * sidecar: only the tool result flow may claim the stable settlement id. */
+  async acknowledgeSettlement(jobId: string): Promise<void> {
+    if (!jobId) return;
+    await this.enqueueOp("acknowledgeSettlement", async () => {
+      this.ensureDirs();
+      const itemId = `golem-settle-${safeJobId(jobId)}`;
+      // Claim locally first, closing races with reconciliation/restart.
+      this.commitDone(jobId, { via: "foreground", acknowledged: true });
+      const sink = this.d.resolveSink();
+      if (sink) {
+        try {
+          if (sink.acknowledge) await sink.acknowledge(itemId);
+          else await sink.withdraw(itemId);
+        } catch (err) {
+          this.log({ relay: "acknowledgeSettlement.sinkError", jobId, err: String(err) });
+        }
+      }
+      // The durable cross-loader path resolves both an undrained incoming drop
+      // and an item already promoted by worklist. Stable id joins both flows.
+      const incoming = this.dropboxFile(jobId);
+      if (incoming) rm(incoming);
+      const request = this.acknowledgementFile(jobId);
+      if (request) writeAtomic(request, { id: itemId, ts: this.d.now!(), source: "golem-foreground" });
+    }, true);
   }
 
   /** Commit a settlement as delivered: tombstone FIRST (so a crash after this

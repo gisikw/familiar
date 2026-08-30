@@ -34,6 +34,7 @@ export interface WorklistPaths {
   items: string;
   archive: string;
   incoming: string;
+  acknowledgements: string;
   attention: string;
 }
 
@@ -43,6 +44,7 @@ export function worklistPaths(root: string): WorklistPaths {
     items: path.join(root, "items"),
     archive: path.join(root, "items", "archive"),
     incoming: path.join(root, "incoming"),
+    acknowledgements: path.join(root, "acknowledgements"),
     attention: path.join(root, "attention.json"),
   };
 }
@@ -52,7 +54,7 @@ export function worklistPaths(root: string): WorklistPaths {
  * migration a one-shot event. Legacy sources are removed only after the
  * destination is durable (or already known), so old writers remain supported. */
 export function ensureDirs(p: WorklistPaths, legacyRoot?: string): void {
-  for (const d of [p.root, p.items, p.archive, p.incoming]) {
+  for (const d of [p.root, p.items, p.archive, p.incoming, p.acknowledgements]) {
     fs.mkdirSync(d, { recursive: true, mode: 0o700 });
   }
   if (legacyRoot && fs.existsSync(legacyRoot) && path.resolve(legacyRoot) !== path.resolve(p.root)) {
@@ -206,6 +208,37 @@ export function archiveItem(p: WorklistPaths, id: string): void {
   } catch {
     /* already gone */
   }
+}
+
+/** Resolve a stable item id whether it is live or already archived. This is the
+ * explicit-result counterpart to withdraw: a foreground tool has shown the
+ * authoritative result, so even a previously digested item is now acked. */
+export function acknowledgeItem(p: WorklistPaths, id: string): boolean {
+  if (!isValidItemId(id)) return false;
+  const item = getKnownItem(p, id);
+  if (!item) return true; // an explicit ack may win the enqueue race
+  item.delivered = true;
+  item.acked = true;
+  putItemAt(p, item, true);
+  try { fs.unlinkSync(itemFile(p, id)); } catch { /* already archived */ }
+  return true;
+}
+
+/** Drain cross-loader acknowledgement requests written by result producers. */
+export function drainAcknowledgements(p: WorklistPaths): string[] {
+  let names: string[];
+  try { names = fs.readdirSync(p.acknowledgements); } catch { return []; }
+  const acked: string[] = [];
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue;
+    const file = path.join(p.acknowledgements, name);
+    const request = readJSON<{ id?: unknown }>(file);
+    if (!isValidItemId(request?.id)) continue;
+    acknowledgeItem(p, request.id);
+    acked.push(request.id);
+    try { fs.unlinkSync(file); } catch { /* retry is idempotent */ }
+  }
+  return acked;
 }
 
 /* --- enqueue envelope ------------------------------------------------------

@@ -227,6 +227,31 @@ describe("settlement relay", () => {
     expect(c2.statusCalls).not.toContain("d"); // tombstone short-circuits before status
   });
 
+  test("explicit foreground receipt acknowledges the stable settlement id", async () => {
+    const { client, jobs } = fakeClient();
+    const { sink, seen, withdrawn } = fakeSink();
+    jobs.set("opened", settled("opened"));
+    const stateDir = newDir();
+    const relay = new SettlementRelay({ client, stateDir, resolveSink: () => sink });
+    await relay.recordDispatch("opened");
+    expect(seen.has("golem-settle-opened")).toBe(true);
+    await relay.acknowledgeSettlement("opened");
+    // Older sinks use withdraw as the compatibility path; the exact stable id
+    // is what joins foreground receipt to relay delivery.
+    expect(withdrawn).toContain("golem-settle-opened");
+    const marker = JSON.parse(readFileSync(path.join(stateDir, "done", "opened.json"), "utf8"));
+    expect(marker.acknowledged).toBe(true);
+  });
+
+  test("ambient settlement relay does not acknowledge its worklist item", async () => {
+    const { client, jobs } = fakeClient();
+    const { sink, withdrawn } = fakeSink();
+    jobs.set("sidecar", settled("sidecar"));
+    const relay = new SettlementRelay({ client, stateDir: newDir(), resolveSink: () => sink });
+    await relay.recordDispatch("sidecar");
+    expect(withdrawn).toEqual([]);
+  });
+
   test("stop is clean and idempotent; no work after stop", async () => {
     const { client, jobs, push } = fakeClient();
     const { sink, seen } = fakeSink();

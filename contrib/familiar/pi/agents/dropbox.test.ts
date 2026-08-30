@@ -13,6 +13,7 @@ import * as path from "node:path";
 import { SettlementRelay, type JobDetail, type RelayClient } from "./relay.ts";
 import {
   ensureDirs,
+  drainAcknowledgements,
   drainIncoming,
   listItems,
   worklistPaths,
@@ -72,6 +73,26 @@ describe("settlement relay ↔ real worklist drop-box (loader-isolation fallback
     expect(created[0].body).toContain("shipped");
     const items = listItems(P);
     expect(items.map((i) => i.id)).toEqual(["golem-settle-job-591754"]);
+  });
+
+  test("foreground receipt resolves a dropbox-promoted item across loader isolation", async () => {
+    const base = newDir();
+    const P = worklistPaths(path.join(base, "worklist"));
+    ensureDirs(P);
+    const { client, jobs } = fakeClient();
+    jobs.set("opened", settled("opened"));
+    const relay = new SettlementRelay({ client, stateDir: path.join(base, "golem-settlement"), dropboxDir: P.incoming, resolveSink: () => undefined });
+    await relay.recordDispatch("opened");
+    expect(drainIncoming(P).map((item) => item.id)).toEqual(["golem-settle-opened"]);
+
+    // Equivalent to agents_status({id:"opened"}) having returned the terminal
+    // detail: it writes an acknowledgement request keyed by the same stable id.
+    await relay.acknowledgeSettlement("opened");
+    expect(listItems(P).map((item) => item.id)).toEqual(["golem-settle-opened"]);
+    expect(drainAcknowledgements(P)).toEqual(["golem-settle-opened"]);
+    expect(listItems(P)).toEqual([]);
+    const archived = JSON.parse(readFileSync(path.join(P.archive, "golem-settle-opened.json"), "utf8"));
+    expect(archived.acked).toBe(true);
   });
 
   test("duplicate/restart via dropbox remains a single item (stable-id dedup)", async () => {

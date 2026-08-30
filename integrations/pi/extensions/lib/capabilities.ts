@@ -184,4 +184,11 @@ export interface DurableSink {
    * exists AND has already been delivered (too late to withdraw).
    */
   withdraw(id: string): Promise<boolean>;
+  /**
+   * Resolve an item because the foreground explicitly received the same result
+   * through another UI flow. Unlike withdraw(), this may acknowledge an item
+   * that was already nudged/digested; it must not be used for ambient sidecars.
+   * Optional for compatibility with older v1 sinks.
+   */
+  acknowledge?(id: string): Promise<boolean>;
 }
