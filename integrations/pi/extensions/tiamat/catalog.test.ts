@@ -9,7 +9,11 @@ import {
 const records: TiamatCatalogRecord[] = [
   { model: "claude-sonnet", api: "/anthropic/v1/messages", provider: "personal", fidelity: "native", availability: "available" },
   { model: "claude-sonnet", api: "/anthropic/v1/messages", provider: "work", fidelity: "native", availability: "degraded" },
-  { model: "gpt-next", api: "/responses/v1/responses", provider: "codex/personal", fidelity: "native", availability: "available" },
+  {
+    model: "gpt-next", api: "/responses/v1/responses", provider: "codex/personal", fidelity: "native", availability: "available",
+    context_window: 272_000, max_output_tokens: 128_000, reasoning: true, input: ["text", "image"],
+    thinking_level_map: { minimal: "low", xhigh: "xhigh", max: "max" },
+  },
   { model: "gone", api: "/openai/v1/chat/completions", provider: "metered", fidelity: "native", availability: "unavailable" },
 ];
 
@@ -24,6 +28,13 @@ describe("Tiamat catalog mapping", () => {
     expect(groups[0].models[0].id).toBe("claude-sonnet");
     expect(groups[0].models[0].baseUrl).toBe("https://router.example/anthropic/personal");
     expect(groups[2].baseUrl).toBe("https://router.example/responses/codex%2Fpersonal/v1");
+    expect(groups[2].models[0]).toMatchObject({
+      reasoning: true,
+      input: ["text", "image"],
+      contextWindow: 272_000,
+      maxTokens: 128_000,
+      thinkingLevelMap: { minimal: "low", xhigh: "xhigh", max: "max" },
+    });
   });
 
   test("shapes each base URL for the path appended by its pi API client", () => {

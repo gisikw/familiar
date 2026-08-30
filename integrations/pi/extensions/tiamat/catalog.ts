@@ -10,6 +10,10 @@ export interface TiamatCatalogRecord {
   resetsIn?: string;
   context_window?: number;
   max_output_tokens?: number;
+  reasoning?: boolean;
+  input?: Array<"text" | "image">;
+  thinking_level_map?: Partial<Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max", string | null>>;
+  force_adaptive_thinking?: boolean;
 }
 
 export interface PiModelDefinition {
@@ -21,6 +25,8 @@ export interface PiModelDefinition {
   cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
   contextWindow: number;
   maxTokens: number;
+  thinkingLevelMap?: Partial<Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max", string | null>>;
+  compat?: { forceAdaptiveThinking?: boolean };
 }
 
 export interface ProviderGroup {
@@ -55,7 +61,11 @@ export function isCatalog(value: unknown): value is TiamatCatalogRecord[] {
       typeof item.fidelity === "string" && item.api in WIRES &&
       ["available", "degraded", "unavailable"].includes(String(item.availability)) &&
       (item.context_window === undefined || (Number.isInteger(item.context_window) && Number(item.context_window) > 0)) &&
-      (item.max_output_tokens === undefined || (Number.isInteger(item.max_output_tokens) && Number(item.max_output_tokens) > 0));
+      (item.max_output_tokens === undefined || (Number.isInteger(item.max_output_tokens) && Number(item.max_output_tokens) > 0)) &&
+      (item.reasoning === undefined || typeof item.reasoning === "boolean") &&
+      (item.input === undefined || (Array.isArray(item.input) && item.input.every((value) => value === "text" || value === "image"))) &&
+      (item.thinking_level_map === undefined || (item.thinking_level_map !== null && typeof item.thinking_level_map === "object")) &&
+      (item.force_adaptive_thinking === undefined || typeof item.force_adaptive_thinking === "boolean");
   });
 }
 
@@ -88,11 +98,13 @@ export function catalogToProviderGroups(catalog: TiamatCatalogRecord[], rawBaseU
       id: record.model,
       name: `${record.model} via ${record.provider}${record.availability === "degraded" ? " (degraded)" : ""}`,
       baseUrl: group.baseUrl,
-      reasoning: false,
-      input: ["text"],
+      reasoning: record.reasoning ?? false,
+      input: record.input?.length ? record.input : ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: record.context_window ?? 128_000,
       maxTokens: record.max_output_tokens ?? 16_384,
+      ...(record.thinking_level_map ? { thinkingLevelMap: record.thinking_level_map } : {}),
+      ...(record.force_adaptive_thinking === undefined ? {} : { compat: { forceAdaptiveThinking: record.force_adaptive_thinking } }),
     });
   }
   return [...groups.values()].sort((a, b) => a.id.localeCompare(b.id)).map((group) => ({
