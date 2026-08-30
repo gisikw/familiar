@@ -4,7 +4,7 @@
   "roles": {
     "background": "#282828",
     "toolPendingBg": "#2c3535",
-    "toolSuccessBg": "#383826",
+    "toolSuccessBg": "#313831",
     "toolErrorBg": "#3f2726",
     "surface": "#1d2021",
     "surfaceDim": "#141617",

@@ -142,10 +142,13 @@ test("tool backgrounds: canonical defaults are distinct, dark tints", () => {
   const pending = t.roles.toolPendingBg;
   const success = t.roles.toolSuccessBg;
   const error = t.roles.toolErrorBg;
-  // Canonical gruvbox 14% tints over bg0 (#282828).
+  // Canonical restrained tints over bg0 (#282828). Success uses gruvbox
+  // neutral green rather than its olive ANSI green, so it cannot read yellow.
   assert.equal(pending, "#2c3535"); // cool blue-running
-  assert.equal(success, "#383826"); // dark green
+  assert.equal(success, "#313831"); // dark neutral green
   assert.equal(error, "#3f2726");   // dark red
+  const successRgb = [1, 3, 5].map((i) => parseInt(success.slice(i, i + 2), 16));
+  assert.ok(successRgb[1] > successRgb[0] && successRgb[1] > successRgb[2], "success tint should be green-dominant");
   // Pairwise distinct — success and error were identical ("overlay") before.
   const set = new Set([pending, success, error]);
   assert.equal(set.size, 3, `expected 3 distinct backgrounds, got ${[pending, success, error].join(", ")}`);
