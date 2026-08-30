@@ -38,6 +38,8 @@
  *                    session restarts (the extension announces a new session
  *                    on /ingest). A changed id means the message-id space
  *                    reset — drop any cached transcript, take replay as truth.
+ *                    `saturation`, when known, snapshots the latest context
+ *                    ratio (0..1) reported after a completed Pi turn.
  *   MessageEvent   — assistant/user message content. `revision` present means
  *                    mutable (a newer revision of the same id supersedes it);
  *                    revision ABSENT means locked. No delta replay, no abort
@@ -55,6 +57,9 @@
  *                    (true when any audio listener is attached) — decided by
  *                    the SERVER, which owns the audio listener registry.
  *   SegmentAudioEvent — synthesis finished; fetch via the segments URL.
+ *   SaturationEvent — latest Pi context-window usage as a ratio (0..1).
+ *                     It is live telemetry, not transcript history; the latest
+ *                     value is repeated on SessionEvent at every attach.
  *
  * Reconnect: the full in-memory session history (locked events) is replayed
  * on attach, followed by the in-flight revision if a message is mid-stream.
@@ -67,6 +72,14 @@ export interface SessionEvent {
   event: "session";
   /** Epoch id, re-minted per pi session. Never appears in history. */
   id: string;
+  /** Latest known context-window usage ratio (0..1); absent until measured. */
+  saturation?: number;
+}
+
+export interface SaturationEvent {
+  event: "saturation";
+  /** Context tokens divided by the active model's context window, clamped to 0..1. */
+  saturation: number;
 }
 
 export type MessagePart =
@@ -112,7 +125,7 @@ export interface SegmentAudioEvent {
   ok: boolean;
 }
 
-export type StreamEvent = MessageEvent | ToolEvent | SegmentEvent | SegmentAudioEvent;
+export type StreamEvent = MessageEvent | ToolEvent | SegmentEvent | SegmentAudioEvent | SaturationEvent;
 
 /* --- extension ⇄ server wire envelopes ------------------------------------ */
 

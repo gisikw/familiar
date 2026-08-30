@@ -69,6 +69,44 @@ session: at most 500 locked events, one full mutable message, and 300 characters
 of arguments per tool. Existing `session`, `message`, and `tool` discriminators
 and all old fields retain their meanings; the new fields are additive.
 
+## Context saturation wire telemetry
+
+`GET /stream` exposes Pi's context-window pressure without changing any existing
+event or field. The value is a JSON number in the closed `0...1` interval (not
+a `0...100` percentage):
+
+```json
+{"event":"saturation","saturation":0.625}
+```
+
+The subscriber emits this event after each `turn_end`, using Pi's
+`ctx.getContextUsage()` after the assistant usage has been committed. The ratio
+is `tokens / contextWindow`, clamped to `0...1`. If that API is unavailable or
+has no token value, the compatibility fallback uses the completed assistant's
+provider token usage (`totalTokens`, or input + output + cacheRead + cacheWrite)
+divided by the active `model.contextWindow`; it never estimates from message
+text. If neither
+a direct measurement nor valid completed-turn usage exists (for example after
+compaction but before a successful response), no event is emitted. The attach
+snapshot continues to mean “latest known measurement,” never a fabricated one.
+
+Saturation is replaceable telemetry, not transcript history. The gateway keeps
+only the latest value for the current Pi session and adds it to the first
+attach frame:
+
+```json
+{"event":"session","id":"<uuid>","saturation":0.625}
+```
+
+That `session` frame remains first, before locked-history replay and any
+in-flight message. `saturation` is absent until Pi has supplied a measurement,
+and a new Pi session clears it. While attached, clients apply each live
+`saturation` event as a whole-value replacement. On reconnect they initialize
+the same value from `session.saturation`. This maps directly to Hearth's
+`MawRoomAttach.saturation` and `MawLiveEvent.saturation` paths. Older clients
+remain compatible because the session field and event discriminator are
+additive; clients that do not recognize them can ignore them.
+
 ## Run
 
     cd services/gateway

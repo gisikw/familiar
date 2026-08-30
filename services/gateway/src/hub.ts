@@ -16,6 +16,8 @@ export class StreamHub {
   private history: StreamEvent[] = [];
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   inflight: MessageEvent | null = null;
+  /** Latest context telemetry is snapshot state, not bounded transcript history. */
+  saturation: number | undefined;
   // Epoch identity. Re-minted on newSession(): clients compare across attaches
   // to detect a message-id-space reset (stale-cache poisoning).
   session: string = randomUUID();
@@ -29,7 +31,10 @@ export class StreamHub {
     res.write(":connected\n\n");
     // First event on EVERY attach, before replay — deliberately outside
     // history so it can never scroll off or be skipped by partial replay.
-    this.write(res, { event: "session", id: this.session });
+    this.write(res, {
+      event: "session", id: this.session,
+      ...(this.saturation === undefined ? {} : { saturation: this.saturation }),
+    });
     for (const event of this.history) this.write(res, event);
     if (this.inflight) this.write(res, this.inflight);
 
@@ -57,6 +62,7 @@ export class StreamHub {
     this.session = randomUUID();
     this.history = [];
     this.inflight = null;
+    this.saturation = undefined;
     const evt: SessionEvent = { event: "session", id: this.session };
     for (const c of this.clients) this.write(c.res, evt);
   }
@@ -66,10 +72,17 @@ export class StreamHub {
     return false;
   }
 
-  // Locked events: recorded in history and broadcast. If a tool begins while
-  // its assistant message is still mutable, fold it into the attach-time
-  // revision too; the standalone tool event remains unchanged for old clients.
+  // Locked events are recorded in history. Saturation is replaceable telemetry:
+  // broadcast it live and retain only the latest value for the attach snapshot.
+  // If a tool begins while its assistant message is mutable, also fold it into
+  // the attach-time revision; the standalone event remains for old clients.
   publish(event: StreamEvent) {
+    if (event.event === "saturation") {
+      if (!Number.isFinite(event.saturation)) return;
+      this.saturation = Math.max(0, Math.min(1, event.saturation));
+      this.broadcast({ ...event, saturation: this.saturation });
+      return;
+    }
     if (event.event === "tool" && this.inflight && event.message_id === this.inflight.id) {
       const tool = { type: "tool" as const, id: event.id, name: event.name, args: event.args };
       const parts = this.inflight.parts ? [...this.inflight.parts] :

@@ -3,6 +3,7 @@ import { errorLog } from "../lib/debug.ts";
 import { RelayHub, NoopAudio, RelayClient } from "./relay.ts";
 import { Firehose } from "./firehose.ts";
 import { PendingEchoes } from "./echo.ts";
+import { contextSaturation } from "./saturation.ts";
 
 // Subscriber: thin relay between pi and the standalone familiar server
 // (localhost:1692), which now owns all HTTP. The firehose still turns pi
@@ -28,6 +29,8 @@ export default function(pi: ExtensionAPI) {
     guard(() => {
       client.ctx = ctx;
       hub.announceSession();
+      const saturation = contextSaturation(ctx);
+      if (saturation !== undefined) firehose.onSaturation(saturation);
       client.start();
     });
   });
@@ -36,6 +39,13 @@ export default function(pi: ExtensionAPI) {
   pi.on("message_start", async (event) => guard(() => firehose.onMessageStart(event.message)));
   pi.on("message_update", async (event) => guard(() => firehose.onMessageUpdate(event.message, event.assistantMessageEvent)));
   pi.on("message_end", async (event) => guard(() => firehose.onMessageEnd(event.message)));
+  // turn_end runs after Pi has committed the assistant usage. Its
+  // getContextUsage() value is therefore the authoritative latest-after-turn
+  // context, including compaction semantics and trailing messages.
+  pi.on("turn_end", async (event, ctx) => guard(() => {
+    const saturation = contextSaturation(ctx, event.message);
+    if (saturation !== undefined) firehose.onSaturation(saturation);
+  }));
   pi.on("agent_end", async () => guard(() => firehose.onAgentEnd()));
   pi.on("tool_execution_start", async (event) => guard(() => firehose.onToolStart(event.toolCallId, event.toolName, event.args)));
 }

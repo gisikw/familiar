@@ -92,6 +92,10 @@ export class Firehose {
     this.privateTurn = false;
   }
 
+  onSaturation(saturation: number) {
+    this.hub.publish({ event: "saturation", saturation });
+  }
+
   onToolStart(toolCallId: string, toolName: string, args: any) {
     if (this.privateTurn) return;
     this.hub.publish({

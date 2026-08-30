@@ -14,6 +14,7 @@ export {
 
 export type {
   SessionEvent,
+  SaturationEvent,
   MessagePart,
   MessageEvent,
   ToolEvent,
