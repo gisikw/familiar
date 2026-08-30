@@ -17,6 +17,10 @@ export function createReconnectPtyTransport(createTransport, {
   let connecting = false;
   let stopped = true;
   let destroyed = false;
+  // Restty can continue calling sendInput while its canvas is alive after the
+  // old socket has been closed. Keep those keystrokes until the replacement
+  // socket is connected instead of silently writing to the dead transport.
+  const pendingInput = [];
 
   const clearRetry = () => {
     if (retryTimer !== null) clearTimer(retryTimer);
@@ -34,6 +38,10 @@ export function createReconnectPtyTransport(createTransport, {
         connecting = false;
         retryMs = DEFAULT_RETRY_MS;
         userCallbacks.onConnect?.();
+        while (pendingInput.length && inner.isConnected()) {
+          const data = pendingInput.shift();
+          if (data !== undefined) inner.sendInput(data);
+        }
       },
       onDisconnect: () => {
         connecting = false;
@@ -58,7 +66,7 @@ export function createReconnectPtyTransport(createTransport, {
     }, delay);
   };
 
-  const onFocus = () => {
+  const recover = () => {
     if (!stopped && !connecting && !inner.isConnected()) {
       clearRetry();
       inner.destroy?.();
@@ -66,7 +74,13 @@ export function createReconnectPtyTransport(createTransport, {
       open();
     }
   };
+  const onFocus = () => recover();
+  const onVisibility = () => {
+    if (focusTarget?.document?.visibilityState === "visible") recover();
+  };
   focusTarget?.addEventListener?.("focus", onFocus);
+  focusTarget?.addEventListener?.("visibilitychange", onVisibility);
+  focusTarget?.addEventListener?.("pageshow", recover);
 
   return {
     connect(nextOptions) {
@@ -81,7 +95,14 @@ export function createReconnectPtyTransport(createTransport, {
       clearRetry();
       inner.disconnect();
     },
-    sendInput(data) { return inner.sendInput(data); },
+    sendInput(data) {
+      if (inner.isConnected()) return inner.sendInput(data);
+      if (!stopped && !destroyed) {
+        pendingInput.push(data);
+        recover();
+      }
+      return false;
+    },
     resize(cols, rows, meta) { return inner.resize(cols, rows, meta); },
     isConnected() { return inner.isConnected(); },
     destroy() {
@@ -90,6 +111,9 @@ export function createReconnectPtyTransport(createTransport, {
       connecting = false;
       clearRetry();
       focusTarget?.removeEventListener?.("focus", onFocus);
+      focusTarget?.removeEventListener?.("visibilitychange", onVisibility);
+      focusTarget?.removeEventListener?.("pageshow", recover);
+      pendingInput.length = 0;
       return inner.destroy?.();
     },
   };
