@@ -36,6 +36,7 @@ type renderNode struct {
 	ID         string            `json:"id"`
 	Label      string            `json:"label,omitempty"`
 	Status     string            `json:"status,omitempty"`
+	Reaped     bool              `json:"reaped,omitempty"`
 	Children   *[]renderNode     `json:"children,omitempty"`
 	Activation *renderActivation `json:"activation,omitempty"`
 }
