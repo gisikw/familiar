@@ -1,0 +1,87 @@
+name: Familiar Desktop release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/desktop/**'
+      - '.github/workflows/desktop-release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - name: Read and validate client version
+        id: version
+        working-directory: apps/desktop
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          node scripts/check-version.js
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=desktop-v$VERSION" >> "$GITHUB_OUTPUT"
+      - name: Stop when this version is already released
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "released=true" >> "$GITHUB_OUTPUT"
+            echo "$TAG already has a release; nothing to do."
+          else
+            echo "released=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Create version tag (only once)
+        if: steps.gate.outputs.released != 'true'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "$TAG already exists; continuing to build its release."
+          else
+            git tag "$TAG" "$GITHUB_SHA"
+            git push origin "$TAG"
+          fi
+      - name: Install dependencies
+        if: steps.gate.outputs.released != 'true'
+        working-directory: apps/desktop
+        run: npm ci
+      - name: Desktop self-test
+        if: steps.gate.outputs.released != 'true'
+        working-directory: apps/desktop
+        run: npm run selftest
+      - name: Build unsigned DMG
+        if: steps.gate.outputs.released != 'true'
+        working-directory: apps/desktop
+        run: npm run dist:mac
+      - name: Checksum DMG
+        if: steps.gate.outputs.released != 'true'
+        working-directory: apps/desktop
+        run: shasum -a 256 "dist/Familiar-${{ steps.version.outputs.version }}.dmg" > "dist/Familiar-${{ steps.version.outputs.version }}.dmg.sha256"
+      - name: Publish GitHub Release
+        if: steps.gate.outputs.released != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        working-directory: apps/desktop
+        run: |
+          gh release create "$TAG" \
+            "dist/Familiar-$VERSION.dmg" \
+            "dist/Familiar-$VERSION.dmg.sha256" \
+            --title "Familiar Desktop $VERSION" \
+            --notes "Unsigned macOS DMG for Familiar Desktop $VERSION. See the desktop README for the one-time Gatekeeper step."

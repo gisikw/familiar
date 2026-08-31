@@ -60,9 +60,15 @@ from that origin by the served page — no paths are hard-coded here.
 
 Resolution order (first hit wins):
 
-1. `FAMILIAR_BASE_URL` environment variable
+1. `FAMILIAR_BASE_URL` environment variable (development/terminal launches)
 2. `"baseUrl"` in `<userData>/config.json`
 3. Default: `http://localhost:1692`
+
+Packaged apps launched from Finder, Spotlight, or the Dock do not inherit a
+terminal environment. Use **Familiar → Configure Server URL…** in the menu at
+any time (including when the server is offline), then choose **Save and
+connect**. This writes the URL to the persistent config file and reloads the
+window, so no terminal is needed on first run.
 
 `config.json` (in Electron's `userData` dir — e.g. `~/Library/Application
 Support/familiar-client/config.json` on macOS) also stores window `bounds`.
@@ -80,6 +86,15 @@ Point it at a local server for development:
 ```bash
 FAMILIAR_BASE_URL=http://localhost:1692 npm start
 ```
+
+## Installing the unsigned DMG
+
+Releases contain an unsigned macOS DMG. Drag **Familiar** to `/Applications`.
+The first time macOS blocks an app downloaded from GitHub, open **System
+Settings → Privacy & Security**, find the message that Familiar was blocked,
+and click **Open Anyway** (confirm **Open**). This one-time Gatekeeper approval
+removes the quarantine block for this app; signing and notarization are
+intentionally deferred.
 
 ## Auth
 

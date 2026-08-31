@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"><title>Familiar Server</title>
+<style>body{background:#282828;color:#ebdbb2;font:14px -apple-system,sans-serif;padding:24px}h1{font-size:18px;margin:0 0 18px}label{display:block;margin-bottom:7px;color:#bdae93}input{width:100%;box-sizing:border-box;background:#1d2021;color:#ebdbb2;border:1px solid #665c54;border-radius:5px;padding:9px;font:inherit}button{margin-top:18px;background:#8ec07c;color:#282828;border:0;border-radius:5px;padding:9px 18px;font-weight:600;cursor:pointer}#status{margin-left:10px;color:#fb4934}</style></head>
+<body><h1>Familiar server</h1><label for="url">Server URL</label><input id="url" type="url" placeholder="https://familiar.example.com" autofocus><div><button id="save">Save and connect</button><span id="status"></span></div>
+<script>
+(async()=>{document.getElementById('url').value=await window.familiar.baseUrl()})();
+document.getElementById('save').onclick=async()=>{const status=document.getElementById('status');status.textContent='';const result=await window.familiar.saveBaseUrl(document.getElementById('url').value);if(result.ok){window.close()}else status.textContent=result.error};
+document.getElementById('url').onkeydown=e=>{if(e.key==='Enter')document.getElementById('save').click()};
+</script></body></html>

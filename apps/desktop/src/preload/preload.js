@@ -12,4 +12,5 @@ contextBridge.exposeInMainWorld("familiar", {
   retry: () => ipcRenderer.send("app:retry"),
   // Offline page: fetch the resolved base URL (for display).
   baseUrl: () => ipcRenderer.invoke("app:baseUrl"),
+  saveBaseUrl: (value) => ipcRenderer.invoke("app:saveBaseUrl", value),
 });

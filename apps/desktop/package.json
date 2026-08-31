@@ -8,16 +8,39 @@
     "prestart": "node scripts/ensure-app-name.js",
     "start": "electron .",
     "selftest": "electron . --selftest",
-    "make-icns": "bash scripts/make-icns.sh"
+    "check-version": "node scripts/check-version.js",
+    "make-icns": "bash scripts/make-icns.sh",
+    "dist:mac": "electron-builder --mac dmg"
   },
   "build": {
     "appId": "network.gisi.familiar",
     "productName": "Familiar",
-    "mac": { "icon": "build/icon.icns" },
-    "win": { "icon": "../../assets/icons/icon_256.png" },
-    "linux": { "icon": "../../assets/icons" }
+    "mac": {
+      "icon": "build/icon.icns",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["universal"]
+        }
+      ]
+    },
+    "artifactName": "Familiar-${version}.dmg",
+    "files": [
+      "src/main/**/*",
+      "src/preload/**/*",
+      "src/selftest/**/*",
+      "build/icon.icns",
+      "package.json"
+    ],
+    "win": {
+      "icon": "../../assets/icons/icon_256.png"
+    },
+    "linux": {
+      "icon": "../../assets/icons"
+    }
   },
   "devDependencies": {
-    "electron": "^43.4.1"
+    "electron": "^43.4.1",
+    "electron-builder": "^26.15.3"
   }
 }

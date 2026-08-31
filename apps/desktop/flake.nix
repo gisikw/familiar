@@ -10,7 +10,8 @@
         pkgs = nixpkgs.legacyPackages.${system};
         desktop = pkgs.stdenvNoCC.mkDerivation {
           pname = "familiar-desktop";
-          version = "0.2.0";
+          # package.json is the single source of truth for the client version.
+          version = (builtins.fromJSON (builtins.readFile ./package.json)).version;
           src = ./.;
           nativeBuildInputs = [ pkgs.makeWrapper ];
           installPhase = ''

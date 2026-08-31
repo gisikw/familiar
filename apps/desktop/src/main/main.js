@@ -39,6 +39,7 @@ const PARTITION = "persist:familiar";
 const OFFLINE_PAGE = path.join(__dirname, "offline.html");
 
 let mainWindow = null;
+let settingsWindow = null;
 let baseUrl = null;
 
 // Reconnect backoff state for the "server unreachable" path.
@@ -92,6 +93,29 @@ function persistBounds() {
   } catch (_) {
     /* best-effort */
   }
+}
+
+function openSettings() {
+  if (settingsWindow && !settingsWindow.isDestroyed()) {
+    settingsWindow.focus();
+    return;
+  }
+  settingsWindow = new BrowserWindow({
+    width: 520,
+    height: 260,
+    resizable: false,
+    parent: mainWindow || undefined,
+    modal: !!mainWindow,
+    title: "Familiar Server",
+    webPreferences: {
+      preload: path.join(__dirname, "..", "preload", "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  settingsWindow.loadFile(path.join(__dirname, "settings.html"));
+  settingsWindow.on("closed", () => { settingsWindow = null; });
 }
 
 function createWindow() {
@@ -190,6 +214,8 @@ function installMenu() {
               { role: "hideOthers" },
               { role: "unhide" },
               { type: "separator" },
+              { label: "Configure Server URL…", click: openSettings },
+              { type: "separator" },
               { role: "quit" },
             ],
           },
@@ -241,6 +267,19 @@ app.whenReady().then(() => {
   });
   // Expose the resolved base URL to the offline page if it asks.
   ipcMain.handle("app:baseUrl", () => baseUrl);
+  ipcMain.handle("app:saveBaseUrl", (event, raw) => {
+    // Only the bundled settings page may change the persisted destination;
+    // never let a remote server loaded in the shell rewrite local config.
+    if (!event.senderFrame || !event.senderFrame.url.startsWith("file:")) {
+      return { ok: false, error: "Settings can only be changed from Familiar." };
+    }
+    const normalized = require("./config").normalizeBaseUrl(raw);
+    if (!normalized) return { ok: false, error: "Enter a valid http:// or https:// URL." };
+    baseUrl = normalized;
+    writeConfigFile(app, { baseUrl });
+    loadApp();
+    return { ok: true, baseUrl };
+  });
 
   // macOS dock icon (runtime, since we launch unpackaged via `npm start`).
   // Guarded: app.dock only exists on darwin.
