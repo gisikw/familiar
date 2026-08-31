@@ -5,10 +5,11 @@ use crate::layout::ViewerLayout;
 use crate::terminal::{MouseEncoding, MouseTracking, TerminalModes};
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SidebarHit {
     Mark,
     JobRow(usize),
+    Group(String),
     ActionRow(usize),
     Dead,
 }
@@ -34,7 +35,7 @@ where
     match hit {
         SidebarHit::Mark => Some(ViewerTarget::Presence),
         SidebarHit::JobRow(index) => target_for_row(index),
-        SidebarHit::ActionRow(_) | SidebarHit::Dead => None,
+        SidebarHit::Group(_) | SidebarHit::ActionRow(_) | SidebarHit::Dead => None,
     }
 }
 

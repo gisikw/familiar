@@ -94,6 +94,7 @@ pub struct SidebarModel {
 pub enum FrameRowKind {
     Heading,
     Workspace,
+    Group { workspace: String },
     Item { target: Option<ViewerTarget> },
     Action { action: String },
 }
@@ -111,6 +112,7 @@ impl RowModel {
     pub fn hit(&self, row: usize) -> SidebarHit {
         match self.rows.get(row).map(|x| &x.kind) {
             Some(FrameRowKind::Item { target: Some(_) }) => SidebarHit::JobRow(row),
+            Some(FrameRowKind::Group { workspace }) => SidebarHit::Group(workspace.clone()),
             Some(FrameRowKind::Action { .. }) => SidebarHit::ActionRow(row),
             _ => SidebarHit::Dead,
         }
@@ -460,6 +462,16 @@ fn decode_chunked(mut input: &[u8]) -> io::Result<Vec<u8>> {
     }
 }
 pub fn rows_for(m: &SidebarModel, target: &ViewerTarget, height: u16, width: u16) -> RowModel {
+    rows_for_expanded(m, target, height, width, &HashSet::new())
+}
+
+pub fn rows_for_expanded(
+    m: &SidebarModel,
+    target: &ViewerTarget,
+    height: u16,
+    width: u16,
+    expanded: &HashSet<String>,
+) -> RowModel {
     if height == 0 || width == 0 || m.items.is_empty() && m.label.is_none() {
         return RowModel::default();
     }
@@ -475,46 +487,23 @@ pub fn rows_for(m: &SidebarModel, target: &ViewerTarget, height: u16, width: u16
             style: Style::default().add_modifier(Modifier::DIM),
         })
     }
-    let mut prior = "";
-    let mut visible: Vec<_> = m
-        .items
-        .iter()
+    let mut groups: Vec<String> = m.items.iter()
         .filter(|i| i.activation.as_ref().is_none_or(|a| a.kind != "action"))
-        .collect();
-    // Retained settled jobs can outnumber the viewport. Project live/current
-    // rows before settled history so a busy earlier workspace cannot push a
-    // newly dispatched job in a later workspace below the hard truncation.
-    // Sort whole workspace groups, never individual rows. Moving only the
-    // viewed row to the front makes its project appear twice when another
-    // workspace lies between it and its siblings. Keep the workspace key in
-    // the sort key so every group remains contiguous.
-    let viewed_workspace = if let ViewerTarget::Terminal { id, .. } = target {
-        visible.iter().find(|item| item.id == *id).map(|item| item.workspace.clone())
-    } else {
-        None
-    };
-    visible.sort_by_key(|item| {
-        let group_rank = if viewed_workspace.as_deref() == Some(item.workspace.as_str()) {
-            0
-        } else if !item.terminal() {
-            1
-        } else {
-            2
-        };
-        (group_rank, item.workspace.clone())
-    });
-    for (i, item) in visible.iter().enumerate() {
-        if item.workspace != prior {
-            rows.push(FrameRow {
-                kind: FrameRowKind::Workspace,
-                text: truncate(&item.workspace, width as usize),
-                style: Style::default(),
-            });
-            prior = &item.workspace
-        }
-        let last = visible
-            .get(i + 1)
-            .is_none_or(|n| n.workspace != item.workspace);
+        .map(|i| i.workspace.clone()).collect();
+    groups.sort();
+    groups.dedup();
+    for workspace in groups {
+        let all: Vec<_> = m.items.iter().filter(|i| i.workspace == workspace &&
+            i.activation.as_ref().is_none_or(|a| a.kind != "action")).collect();
+        let is_expanded = expanded.contains(&workspace);
+        rows.push(FrameRow {
+            kind: FrameRowKind::Group { workspace: workspace.clone() },
+            text: format!("{} {} ({})", if is_expanded { '▼' } else { '▶' }, truncate(&workspace, width.saturating_sub(7) as usize), all.len()),
+            style: Style::default(),
+        });
+        let visible: Vec<_> = all.into_iter().filter(|i| is_expanded || !i.terminal()).collect();
+        for (i, item) in visible.iter().enumerate() {
+        let last = visible.get(i + 1).is_none();
         let active = matches!(target,ViewerTarget::Terminal{id,..}if id==&item.id);
         let prefix = format!(
             "{} {} ",
@@ -531,10 +520,7 @@ pub fn rows_for(m: &SidebarModel, target: &ViewerTarget, height: u16, width: u16
         };
         let mut style = state_style(&item.status);
         // Fade rows the user cannot act on, and settled rows that are still
-        // clickable during their retained tmux lifetime: a done-but-not-reaped
-        // row reads as inactive (DIM + its state color) while staying
-        // clickable, but failure/cancel colors survive so distinctions remain.
-        // Active/running rows with a live terminal keep their bright color.
+        // clickable during their retained tmux lifetime.
         if item.activation.is_none() || item.terminal() {
             style = style.add_modifier(Modifier::DIM)
         }
@@ -545,6 +531,7 @@ pub fn rows_for(m: &SidebarModel, target: &ViewerTarget, height: u16, width: u16
             text: truncate(&text, width as usize),
             style,
         })
+        }
     }
     if let Some(action) = m.items.iter().find_map(|i| {
         i.activation
@@ -774,13 +761,16 @@ mod tests {
     // activation: it must remain visible and clickable, but faded (DIM) to read
     // as inactive.
     #[test]
-    fn settled_retained_row_is_faded_but_clickable() {
+    fn settled_retained_row_is_hidden_until_group_expanded() {
         let m = model(vec![item("j", "done", true)]);
         let r = rows_for(&m, &ViewerTarget::Presence, 20, 40);
-        let row = &r.rows[2];
+        assert!(!r.rows.iter().any(|row| matches!(row.kind, FrameRowKind::Item { .. })));
+        let mut expanded = HashSet::from(["alpha".to_string()]);
+        let r = rows_for_expanded(&m, &ViewerTarget::Presence, 20, 40, &expanded);
+        let row = r.rows.iter().find(|row| matches!(row.kind, FrameRowKind::Item { .. })).unwrap();
         assert!(matches!(row.kind, FrameRowKind::Item { target: Some(_) }));
-        assert!(r.target_for_row(2).is_some());
         assert!(row.style.add_modifier.contains(Modifier::DIM));
+        expanded.clear();
     }
 
     // Settled jobs remain inspectable for the renderer's 24-hour retention even
@@ -788,12 +778,9 @@ mod tests {
     #[test]
     fn reaped_settled_row_remains_inspectable() {
         let m = model(vec![item("j", "done", false)]);
-        let r = rows_for(&m, &ViewerTarget::Presence, 20, 40);
-        let row = r
-            .rows
-            .iter()
-            .find(|row| matches!(row.kind, FrameRowKind::Item { .. }))
-            .expect("settled row retained");
+        let mut expanded = HashSet::from(["alpha".to_string()]);
+        let r = rows_for_expanded(&m, &ViewerTarget::Presence, 20, 40, &expanded);
+        let row = r.rows.iter().find(|row| matches!(row.kind, FrameRowKind::Item { .. })).expect("settled row retained");
         assert!(matches!(row.kind, FrameRowKind::Item { target: None }));
         assert!(row.style.add_modifier.contains(Modifier::DIM));
         assert!(row.text.contains("(reaped)"));
@@ -822,6 +809,7 @@ mod tests {
             .position(|row| matches!(row.kind, FrameRowKind::Action { .. }))
             .unwrap();
         assert!(r.rows[index - 1].text.starts_with('┌'));
+        assert!(index >= 2, "button has a blank row above it");
         assert!(r.rows[index - 1].text.contains('─'));
         assert!(r.rows[index].text.starts_with('│'));
         assert!(r.rows[index].text.ends_with('│'));
@@ -829,6 +817,26 @@ mod tests {
         assert!(r.rows[index + 1].text.starts_with('└'));
         assert_eq!(r.hit(index), SidebarHit::ActionRow(index));
         assert_eq!(r.action_for_row(index), Some("golem/retire-settled"));
+    }
+
+    #[test]
+    fn groups_are_alphabetical_counted_and_expand_all_rows() {
+        let mut done = item("done", "done", false);
+        done.workspace = "alpha".into();
+        let mut live = item("live", "running", true);
+        live.workspace = "zeta".into();
+        let mut m = model(vec![live, done]);
+        let r = rows_for(&m, &ViewerTarget::Presence, 20, 40);
+        let groups: Vec<_> = r.rows.iter().filter(|row| matches!(row.kind, FrameRowKind::Group { .. })).collect();
+        assert!(groups[0].text.contains("alpha (1)"));
+        assert!(groups[0].text.starts_with("▶"));
+        assert!(groups[1].text.contains("zeta (1)"));
+        let expanded = HashSet::from(["alpha".to_string()]);
+        let r = rows_for_expanded(&m, &ViewerTarget::Presence, 20, 40, &expanded);
+        assert!(r.rows.iter().any(|row| matches!(row.kind, FrameRowKind::Item { target: None })));
+        assert!(r.rows[1].text.starts_with("▼"));
+        m.items.reverse();
+        let _ = m;
     }
 
     #[test]
@@ -840,7 +848,8 @@ mod tests {
         let r = rows_for(&model(vec![viewed, sibling]), &ViewerTarget::Terminal {
             id: "viewed".into(), socket: "/run/g.sock".into(), session: "worker-viewed".into(),
         }, 20, 40);
-        assert_eq!(r.rows.iter().filter(|row| row.kind == FrameRowKind::Workspace).count(), 1);
+        assert_eq!(r.rows.iter().filter(|row| matches!(row.kind, FrameRowKind::Group { .. })).count(), 1);
+        assert!(r.rows[1].text.contains("familiar"));
     }
 
     #[test]
@@ -855,9 +864,11 @@ mod tests {
             id: "viewed".into(), socket: "/run/g.sock".into(), session: "worker-viewed".into(),
         }, 20, 40);
         let groups: Vec<_> = r.rows.iter().filter_map(|row| {
-            matches!(row.kind, FrameRowKind::Workspace).then_some(row.text.as_str())
+            matches!(row.kind, FrameRowKind::Group { .. }).then_some(row.text.as_str())
         }).collect();
-        assert_eq!(groups, vec!["familiar", "other"]);
+        assert_eq!(groups.len(), 2);
+        assert!(groups[0].contains("familiar"));
+        assert!(groups[1].contains("other"));
     }
 
     #[test]
@@ -938,7 +949,8 @@ mod tests {
             item("d", "cancelled", true),
             item("e", "blocked", true),
         ]);
-        let r = rows_for(&m, &ViewerTarget::Presence, 20, 60);
+        let expanded = HashSet::from(["alpha".to_string()]);
+        let r = rows_for_expanded(&m, &ViewerTarget::Presence, 20, 60, &expanded);
         let texts: Vec<&str> = r
             .rows
             .iter()

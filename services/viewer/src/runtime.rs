@@ -7,7 +7,7 @@ use crate::layout::{viewer_layout, ViewerLayout};
 use crate::pty::{child_command, pty_size};
 use crate::selection::{osc52_clipboard, selected_text, Selection};
 use crate::sidebar::{
-    invoke_action, plan_activation, render as render_sidebar, rows_for, spawn_poller, ActionOutcome,
+    invoke_action, plan_activation, render as render_sidebar, rows_for_expanded, spawn_poller, ActionOutcome,
     terminal_live, Activation, ActivationPlan, RowModel, SidebarModel,
 };
 use crate::terminal::ghostty::GhosttyTerminal;
@@ -28,6 +28,7 @@ use ratatui::widgets::{Paragraph, Widget};
 use ratatui::Terminal;
 use signal_hook::consts::signal::{SIGHUP, SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
+use std::collections::HashSet;
 use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -633,11 +634,13 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let render_url = config.render_url.clone();
     let sidebar_rx = spawn_poller(render_url.clone());
     let mut sidebar_model = SidebarModel::default();
-    let mut sidebar_rows = rows_for(
+    let mut expanded_groups = HashSet::new();
+    let mut sidebar_rows = rows_for_expanded(
         &sidebar_model,
         app.target(),
         layout.job_rows.height,
         layout.job_rows.width,
+        &expanded_groups,
     );
     let (tx, rx): (Sender<PtyMessage>, Receiver<PtyMessage>) = mpsc::channel();
     let mut child = ChildManager::new(config, tx, dimensions(layout))?;
@@ -703,6 +706,20 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                         MouseRoute::Sidebar(hit)
                             if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) =>
                         {
+                            if let crate::input::SidebarHit::Group(workspace) = hit {
+                                if !expanded_groups.remove(&workspace) {
+                                    expanded_groups.insert(workspace);
+                                }
+                                sidebar_rows = rows_for_expanded(
+                                    &sidebar_model,
+                                    app.target(),
+                                    layout.job_rows.height,
+                                    layout.job_rows.width,
+                                    &expanded_groups,
+                                );
+                                damaged = true;
+                                continue;
+                            }
                             if let crate::input::SidebarHit::ActionRow(row) = hit {
                                 let outcome = render_url
                                     .as_deref()
@@ -752,11 +769,12 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                                             pending_click = None;
                                             child_notice = None;
                                             sidebar_notice = None;
-                                            sidebar_rows = rows_for(
+                                            sidebar_rows = rows_for_expanded(
                                                 &sidebar_model,
                                                 app.target(),
                                                 layout.job_rows.height,
                                                 layout.job_rows.width,
+                                                &expanded_groups,
                                             );
                                             damaged = true;
                                         }
@@ -821,11 +839,12 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                     cell_aspect = host_cell_aspect();
                     child.resize(size)?;
                     host.resize(ratatui::layout::Rect::new(0, 0, width, height))?;
-                    sidebar_rows = rows_for(
+                    sidebar_rows = rows_for_expanded(
                         &sidebar_model,
                         app.target(),
                         layout.job_rows.height,
                         layout.job_rows.width,
+                        &expanded_groups,
                     );
                     damaged = true;
                 }
@@ -836,11 +855,12 @@ pub fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         while let Ok(snapshot) = sidebar_rx.try_recv() {
             if snapshot != sidebar_model {
                 sidebar_model = snapshot;
-                sidebar_rows = rows_for(
+                sidebar_rows = rows_for_expanded(
                     &sidebar_model,
                     app.target(),
                     layout.job_rows.height,
                     layout.job_rows.width,
+                    &expanded_groups,
                 );
                 damaged = true;
             }
