@@ -539,9 +539,14 @@ pub fn rows_for_expanded(
             .filter(|a| a.kind == "action")
             .map(|a| a.action.clone())
     }) {
-        // Reserve the bottom three rows so the manual retirement control is
-        // present even when the job list fills the sidebar.
-        rows.truncate(height.saturating_sub(3) as usize);
+        // Reserve the bottom four rows so the manual retirement control and
+        // its breathing room are present even when the job list fills the sidebar.
+        rows.truncate(height.saturating_sub(4) as usize);
+        rows.push(FrameRow {
+            kind: FrameRowKind::Workspace,
+            text: String::new(),
+            style: Style::default(),
+        });
         let inner = width.saturating_sub(2) as usize;
         let label = "Retire Golems";
         rows.push(FrameRow {
@@ -552,7 +557,7 @@ pub fn rows_for_expanded(
         rows.push(FrameRow {
             kind: FrameRowKind::Action { action },
             text: truncate(&format!("│{:^inner$}│", label), width as usize),
-            style: Style::default().add_modifier(Modifier::BOLD),
+            style: Style::default().add_modifier(Modifier::DIM),
         });
         rows.push(FrameRow {
             kind: FrameRowKind::Workspace,
@@ -593,13 +598,21 @@ fn truncate(s: &str, w: usize) -> String {
     s.chars().take(w - 1).chain(std::iter::once('…')).collect()
 }
 pub fn render(rows: &RowModel, area: Rect, b: &mut ratatui::buffer::Buffer) {
-    Paragraph::new(
-        rows.rows
-            .iter()
-            .map(|r| Line::from(Span::styled(r.text.clone(), r.style)))
-            .collect::<Vec<_>>(),
-    )
-    .render(area, b)
+    let lines = rows.rows.iter().map(|r| {
+        if matches!(r.kind, FrameRowKind::Action { .. }) {
+            let chars: Vec<char> = r.text.chars().collect();
+            let end = chars.len().saturating_sub(1);
+            let label = chars.get(1..end).unwrap_or(&[]).iter().collect::<String>();
+            Line::from(vec![
+                Span::styled(chars.first().copied().into_iter().collect::<String>(), r.style),
+                Span::styled(label, r.style.add_modifier(Modifier::BOLD)),
+                Span::styled(chars.get(end..).unwrap_or(&[]).iter().collect::<String>(), r.style),
+            ])
+        } else {
+            Line::from(Span::styled(r.text.clone(), r.style))
+        }
+    }).collect::<Vec<_>>();
+    Paragraph::new(lines).render(area, b)
 }
 #[cfg(test)]
 mod tests {
@@ -811,6 +824,7 @@ mod tests {
             .iter()
             .position(|row| matches!(row.kind, FrameRowKind::Action { .. }))
             .unwrap();
+        assert!(r.rows[index - 2].text.is_empty());
         assert!(r.rows[index - 1].text.starts_with('┌'));
         assert!(r.rows[index - 1].text.contains('─'));
         assert!(r.rows[index].text.starts_with('│'));
