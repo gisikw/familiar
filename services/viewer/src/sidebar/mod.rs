@@ -831,6 +831,9 @@ mod tests {
         assert!(r.rows[index].text.ends_with('│'));
         assert!(r.rows[index].text.contains("Retire Golems"));
         assert!(r.rows[index + 1].text.starts_with('└'));
+        assert_eq!(r.rows[index - 1].style, r.rows[index].style);
+        assert_eq!(r.rows[index].style, r.rows[index + 1].style);
+        assert!(!r.rows[index].style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(r.hit(index), SidebarHit::ActionRow(index));
         assert_eq!(r.action_for_row(index), Some("golem/retire-settled"));
     }
