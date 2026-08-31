@@ -76,8 +76,10 @@ export interface JobDetail {
   state?: string;
   harness?: string;
   model?: string;
+  created_at?: string | number;
   workspace?: Record<string, unknown> | null;
   settlement?: {
+    at?: string | number;
     state?: string;
     verdict?: string;
     artifacts?: { path?: string; size?: number }[];
@@ -166,6 +168,18 @@ export function safeJobId(jobId: string): string {
   return s.slice(0, 120);
 }
 
+/** Format a non-negative duration as compact wall-clock time. */
+export function formatElapsed(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  const s = seconds % 60;
+  const minutes = Math.floor(seconds / 60);
+  const m = minutes % 60;
+  const hours = Math.floor(minutes / 60);
+  if (hours) return `${hours}h${String(m).padStart(2, "0")}m${String(s).padStart(2, "0")}s`;
+  if (minutes) return `${minutes}m${String(s).padStart(2, "0")}s`;
+  return `${s}s`;
+}
+
 /** Build a concise, useful worklist envelope from authoritative job detail. */
 export function buildEnvelope(jobId: string, job: JobDetail): DurableEnqueueEnvelope {
   const state = job.settlement?.state || job.state || "settled";
@@ -176,6 +190,9 @@ export function buildEnvelope(jobId: string, job: JobDetail): DurableEnqueueEnve
   const summary = `agent ${state}: ${short}`;
   const lines: string[] = [`job ${jobId} — ${state}`];
   if (job.harness || job.model) lines.push(`harness/model: ${job.harness ?? "?"}/${job.model ?? "?"}`);
+  const createdAt = typeof job.created_at === "number" ? job.created_at : Date.parse(String(job.created_at ?? ""));
+  const settledAt = typeof job.settlement?.at === "number" ? job.settlement.at : Date.parse(String(job.settlement?.at ?? ""));
+  if (Number.isFinite(createdAt) && Number.isFinite(settledAt)) lines.push(`elapsed: ${formatElapsed(settledAt - createdAt)}`);
   const ws = job.workspace || undefined;
   if (ws) {
     const wsStr = (ws.project as string) || (ws.repo as string) || (ws.worktree as string) || (ws.path as string);

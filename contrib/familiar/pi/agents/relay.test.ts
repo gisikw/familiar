@@ -88,6 +88,19 @@ describe("settlement relay", () => {
     expect(safeJobId("weird/../id")).not.toContain("/");
   });
 
+  test("buildEnvelope: includes elapsed wall-clock settlement time", () => {
+    const env = buildEnvelope("timed", {
+      id: "timed",
+      state: "done",
+      harness: "pi",
+      model: "gpt-5.6-luna",
+      created_at: "2025-01-01T00:00:00.000Z",
+      settlement: { state: "done", at: "2025-01-01T00:05:02.000Z" },
+    });
+    expect(env.body).toContain("elapsed: 5m02s");
+    expect(env.body).toContain("harness/model: pi/gpt-5.6-luna");
+  });
+
   test("buildEnvelope: prefers nested settlement.usage from golemd's live payload", () => {
     // Realistic golemd job payload: usage is nested UNDER settlement, not at top.
     const job: JobDetail = {
