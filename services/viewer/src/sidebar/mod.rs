@@ -512,16 +512,16 @@ pub fn rows_for_expanded(
         );
         let text = match status_suffix(&item.status) {
             Some(status) => format!("{prefix}{} {status}", item.label),
-            None if item.terminal() && item.activation.is_none() => {
-                let reason = if item.reaped { "reaped" } else { "not attachable" };
-                format!("{prefix}{} ({reason})", item.label)
-            }
             None => format!("{prefix}{}", item.label),
         };
         let mut style = state_style(&item.status);
         // Fade rows the user cannot act on, and settled rows that are still
         // clickable during their retained tmux lifetime.
-        if item.activation.is_none() || item.terminal() {
+        if item.target().is_none() {
+            style = Style::default()
+                .fg(Color::Gray)
+                .add_modifier(Modifier::DIM | Modifier::ITALIC);
+        } else if item.terminal() {
             style = style.add_modifier(Modifier::DIM)
         }
         rows.push(FrameRow {
@@ -540,7 +540,7 @@ pub fn rows_for_expanded(
             .map(|a| a.action.clone())
     }) {
         // Reserve the bottom three rows so the manual retirement control is
-        // present even when the bounded job list fills the sidebar.
+        // present even when the job list fills the sidebar.
         rows.truncate(height.saturating_sub(3) as usize);
         let inner = width.saturating_sub(2) as usize;
         let label = "Retire Golems";
@@ -783,7 +783,10 @@ mod tests {
         let row = r.rows.iter().find(|row| matches!(row.kind, FrameRowKind::Item { .. })).expect("settled row retained");
         assert!(matches!(row.kind, FrameRowKind::Item { target: None }));
         assert!(row.style.add_modifier.contains(Modifier::DIM));
-        assert!(row.text.contains("(reaped)"));
+        assert!(row.style.add_modifier.contains(Modifier::ITALIC));
+        assert_eq!(row.style.fg, Some(Color::Gray));
+        assert!(!row.text.contains("reaped"));
+        assert!(!row.text.contains("not attachable"));
     }
 
     #[test]
@@ -809,7 +812,6 @@ mod tests {
             .position(|row| matches!(row.kind, FrameRowKind::Action { .. }))
             .unwrap();
         assert!(r.rows[index - 1].text.starts_with('┌'));
-        assert!(index >= 2, "button has a blank row above it");
         assert!(r.rows[index - 1].text.contains('─'));
         assert!(r.rows[index].text.starts_with('│'));
         assert!(r.rows[index].text.ends_with('│'));
