@@ -18,7 +18,11 @@ func main() {
 	if e != nil {
 		log.Fatal(e)
 	}
-	s := render.New(c, os.Getenv("FAMILIAR_RENDER_INVALIDATE_URL"))
+	statePath := os.Getenv("FAMILIAR_RENDER_STATE")
+	if statePath == "" {
+		statePath = "/var/lib/golem/familiar-render-retired.json"
+	}
+	s := render.NewPersistent(c, os.Getenv("FAMILIAR_RENDER_INVALIDATE_URL"), statePath)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	go s.Run(ctx)

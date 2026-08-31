@@ -11,7 +11,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -150,22 +152,10 @@ func (c *Client) Job(ctx context.Context, id string) (Job, error) {
 	return j, err
 }
 func (c *Client) Retire(ctx context.Context, id string) error {
-	// golemd retirement is DELETE of one settled job. Callers deliberately
-	// select terminal ids first; running/blocked jobs are never submitted.
-	req, _ := http.NewRequestWithContext(ctx, http.MethodDelete, c.base+"/v1/jobs/"+url.PathEscape(id), nil)
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
-	res, err := c.http.Do(req)
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	if res.StatusCode/100 != 2 {
-		b, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
-		return fmt.Errorf("golemd %s: %s", res.Status, strings.TrimSpace(string(b)))
-	}
-	return nil
+	// golemd retains settled jobs; its durable retirement operation is POST
+	// /v1/jobs/:id/reap, which marks reap_requested and returns the job.
+	var ignored Job
+	return c.request(ctx, http.MethodPost, "/v1/jobs/"+url.PathEscape(id)+"/reap", &ignored)
 }
 func (c *Client) Stream(ctx context.Context, since int64, receive func(Event)) error {
 	req, _ := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/v1/events?since=%d", c.base, since), nil)
@@ -202,6 +192,8 @@ type socketProbe func(socket string) (sessions map[string]bool, problem error)
 
 type Server struct {
 	client      *Client
+	statePath   string
+	retired     map[string]bool
 	socketLive  socketProbe
 	invalidate  string
 	mu          sync.Mutex
@@ -213,8 +205,51 @@ type Server struct {
 	problemSeen map[string]time.Time
 }
 
-func New(c *Client, invalidate string) *Server {
-	return &Server{client: c, invalidate: invalidate, jobs: map[string]Job{}, revision: 1, now: time.Now, socketLive: tmuxListSessions, problemSeen: map[string]time.Time{}}
+func New(c *Client, invalidate string) *Server { return newServer(c, invalidate, "") }
+
+// NewPersistent keeps successful retirements authoritative across renderer
+// restarts and golemd cache refreshes.
+func NewPersistent(c *Client, invalidate, statePath string) *Server {
+	return newServer(c, invalidate, statePath)
+}
+
+func newServer(c *Client, invalidate, statePath string) *Server {
+	s := &Server{client: c, invalidate: invalidate, statePath: statePath, jobs: map[string]Job{}, retired: map[string]bool{}, revision: 1, now: time.Now, socketLive: tmuxListSessions, problemSeen: map[string]time.Time{}}
+	if statePath != "" {
+		var ids []string
+		if b, err := os.ReadFile(statePath); err == nil && json.Unmarshal(b, &ids) == nil {
+			for _, id := range ids {
+				s.retired[id] = true
+			}
+		}
+	}
+	return s
+}
+
+func (s *Server) saveRetired() {
+	if s.statePath == "" {
+		return
+	}
+	s.mu.Lock()
+	ids := make([]string, 0, len(s.retired))
+	for id := range s.retired {
+		ids = append(ids, id)
+	}
+	s.mu.Unlock()
+	sort.Strings(ids)
+	if err := os.MkdirAll(filepath.Dir(s.statePath), 0o700); err != nil {
+		log.Printf("golem-render: save retired IDs: %v", err)
+		return
+	}
+	b, _ := json.Marshal(ids)
+	tmp := s.statePath + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		log.Printf("golem-render: save retired IDs: %v", err)
+		return
+	}
+	if err := os.Rename(tmp, s.statePath); err != nil {
+		log.Printf("golem-render: save retired IDs: %v", err)
+	}
 }
 
 // SetSocketProbe overrides the per-socket tmux liveness snapshot (tests inject a
@@ -359,6 +394,9 @@ func (s *Server) project() Node {
 	jobs := make([]Job, 0, len(s.jobs))
 	hasSettled := false
 	for _, j := range s.jobs {
+		if s.retired[j.ID] {
+			continue
+		}
 		if terminalState(j.State) {
 			hasSettled = true
 		}
@@ -547,6 +585,7 @@ func (s *Server) retireSettled(ctx context.Context) retireResult {
 	result := retireResult{}
 	defer func() {
 		if result.Retired > 0 {
+			s.saveRetired()
 			s.poke()
 		}
 	}()
@@ -558,6 +597,7 @@ func (s *Server) retireSettled(ctx context.Context) retireResult {
 		}
 		s.mu.Lock()
 		delete(s.jobs, id)
+		s.retired[id] = true
 		s.revision++
 		s.cacheFresh = false
 		s.mu.Unlock()

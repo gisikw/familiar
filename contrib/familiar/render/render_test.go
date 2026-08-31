@@ -305,9 +305,9 @@ func TestTmuxProblemLoggedOncePerMinute(t *testing.T) {
 func TestRetireActionDeletesOnlySettledJobs(t *testing.T) {
 	deleted := []string{}
 	mux := http.NewServeMux()
-	mux.HandleFunc("DELETE /v1/jobs/{id}", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /v1/jobs/{id}/reap", func(w http.ResponseWriter, r *http.Request) {
 		deleted = append(deleted, r.PathValue("id"))
-		w.WriteHeader(http.StatusNoContent)
+		json.NewEncoder(w).Encode(Job{ID: r.PathValue("id"), State: "done"})
 	})
 	stub := httptest.NewServer(mux)
 	defer stub.Close()
@@ -348,9 +348,12 @@ func TestRetireActionDeletesOnlySettledJobs(t *testing.T) {
 
 func TestRetireActionContinuesAfterOneDeleteFails(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("DELETE /v1/jobs/{id}", func(w http.ResponseWriter, r *http.Request) {
-		if r.PathValue("id") == "bad" { http.Error(w, "busy", http.StatusConflict); return }
-		w.WriteHeader(http.StatusNoContent)
+	mux.HandleFunc("POST /v1/jobs/{id}/reap", func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("id") == "bad" {
+			http.Error(w, "busy", http.StatusConflict)
+			return
+		}
+		json.NewEncoder(w).Encode(Job{ID: r.PathValue("id"), State: "done"})
 	})
 	stub := httptest.NewServer(mux)
 	defer stub.Close()
@@ -360,11 +363,52 @@ func TestRetireActionContinuesAfterOneDeleteFails(t *testing.T) {
 	s.replace([]Job{{ID: "bad", State: "done", UpdatedAt: now}, {ID: "good", State: "done", UpdatedAt: now}, {ID: "blocked", State: "blocked", UpdatedAt: now}})
 	rr := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v1/action/retire-settled", nil))
-	if rr.Code != http.StatusOK { t.Fatalf("action: %d %s", rr.Code, rr.Body.String()) }
+	if rr.Code != http.StatusOK {
+		t.Fatalf("action: %d %s", rr.Code, rr.Body.String())
+	}
 	var got retireResult
-	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil { t.Fatal(err) }
-	if got != (retireResult{Retired: 1, Failed: 1}) { t.Fatalf("result: %+v", got) }
-	if findJob(s.project(), "job:good") != nil || findJob(s.project(), "job:bad") == nil { t.Fatal("partial retirement state is wrong") }
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != (retireResult{Retired: 1, Failed: 1}) {
+		t.Fatalf("result: %+v", got)
+	}
+	if findJob(s.project(), "job:good") != nil || findJob(s.project(), "job:bad") == nil {
+		t.Fatal("partial retirement state is wrong")
+	}
+}
+
+func TestRetiredIDsStayHiddenAcrossRefreshAndRestart(t *testing.T) {
+	var reap int
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/jobs/{id}/reap", func(w http.ResponseWriter, r *http.Request) {
+		reap++
+		json.NewEncoder(w).Encode(Job{ID: r.PathValue("id"), State: "done"})
+	})
+	stub := httptest.NewServer(mux)
+	defer stub.Close()
+	state := t.TempDir() + "/retired.json"
+	c, _ := NewClient(stub.URL, "")
+	now := time.Now()
+	job := Job{ID: "settled", State: "done", UpdatedAt: now}
+	s := NewPersistent(c, "", state)
+	s.replace([]Job{job})
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v1/action/retire-settled", nil))
+	if rr.Code != http.StatusOK || reap != 1 || findJob(s.project(), "job:settled") != nil {
+		t.Fatalf("retire code=%d reap=%d job=%v", rr.Code, reap, findJob(s.project(), "job:settled"))
+	}
+	// The normal SSE/list refresh returns the retained golemd record again.
+	s.replace([]Job{job})
+	if findJob(s.project(), "job:settled") != nil {
+		t.Fatal("retired job reappeared after refresh")
+	}
+	// The exclusion is durable, not merely a renderer-process cache effect.
+	s2 := NewPersistent(c, "", state)
+	s2.replace([]Job{job})
+	if findJob(s2.project(), "job:settled") != nil {
+		t.Fatal("retired job reappeared after renderer restart")
+	}
 }
 
 func TestSSERefreshesRenderFromFakeGolemd(t *testing.T) {
