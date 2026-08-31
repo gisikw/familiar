@@ -191,3 +191,22 @@ test("resultText(status list): count when collapsed, all jobs when expanded", ()
   expect(expanded).toContain("#j5");
   expect(expanded).not.toContain("+1 more");
 });
+
+test("resultText(status list): paginated envelope shows page size and total", () => {
+  const env = {
+    total: 42,
+    offset: 0,
+    limit: 5,
+    jobs: [
+      { id: "j1", state: "done", settlement: { verdict: "ok" } },
+      { id: "j2", state: "running" },
+    ],
+  };
+  const result: AgentsResult = { content: [{ type: "text", text: JSON.stringify(env) }], details: env };
+  const collapsed = resultText("agents_status", result, { expanded: false }, theme, {});
+  const expanded = resultText("agents_status", result, { expanded: true }, theme, {});
+  expect(collapsed).toContain("2 jobs (of 42)");
+  expect(collapsed).toContain("#j1");
+  expect(expanded).toContain("2 jobs (of 42)");
+  expect(expanded).toContain("#j2");
+});

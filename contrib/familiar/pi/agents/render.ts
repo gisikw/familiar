@@ -330,16 +330,19 @@ export function resultText(toolName: string, result: AgentsResult, options: Agen
       break;
     }
     case "agents_status": {
-      const list = arr(d);
+      const env = rec(d);
+      const list = arr(d) ?? (env && arr(env.jobs) ? arr(env.jobs) : null);
       if (list) {
+        const total = env && typeof env.total === "number" ? env.total : list.length;
+        const suffix = total > list.length ? ` (of ${total})` : "";
         if (!expanded) {
           const top = list.slice(0, 4).map((x) => summarizeJob(rec(x) ?? {}, { expanded: false }));
-          body = `${list.length} jobs` + (top.length ? `:\n${top.join("\n")}${list.length > 4 ? `\n  … +${list.length - 4} more` : ""}` : "");
+          body = `${list.length} jobs${suffix}` + (top.length ? `:\n${top.join("\n")}${list.length > 4 ? `\n  … +${list.length - 4} more` : ""}` : "");
         } else {
-          body = `${list.length} jobs:\n` + list.map((x) => "  • " + summarizeJob(rec(x) ?? {}, { expanded: true })).join("\n");
+          body = `${list.length} jobs${suffix}:\n` + list.map((x) => "  • " + summarizeJob(rec(x) ?? {}, { expanded: true })).join("\n");
         }
       } else {
-        body = rec(d) ? summarizeJob(rec(d)!, { expanded }) : summarizeGeneric(d, { expanded });
+        body = env ? summarizeJob(env, { expanded }) : summarizeGeneric(d, { expanded });
       }
       break;
     }
