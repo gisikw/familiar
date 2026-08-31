@@ -791,7 +791,7 @@ mod tests {
     #[test]
     fn reaped_settled_row_remains_inspectable() {
         let m = model(vec![item("j", "done", false)]);
-        let mut expanded = HashSet::from(["alpha".to_string()]);
+        let expanded = HashSet::from(["alpha".to_string()]);
         let r = rows_for_expanded(&m, &ViewerTarget::Presence, 20, 40, &expanded);
         let row = r.rows.iter().find(|row| matches!(row.kind, FrameRowKind::Item { .. })).expect("settled row retained");
         assert!(matches!(row.kind, FrameRowKind::Item { target: None }));
