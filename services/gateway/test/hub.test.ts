@@ -43,6 +43,34 @@ test("attach snapshot saturates an in-flight text/tool projection", () => {
   hub.close();
 });
 
+test("agent lifecycle is snapshotted and never retained as transcript history", () => {
+  const hub = new StreamHub();
+  const liveReq = new EventEmitter();
+  const liveRes = new ResponseSink();
+  hub.attach(liveReq as never, liveRes as never, false);
+
+  hub.publish({ event: "agent", active: true, after_message_id: 6 });
+  assert.equal(hub.agentActive, true);
+  assert.equal(hub.agentAfterMessageId, 6);
+  assert.deepEqual(events(liveRes).at(-1), {
+    event: "agent", active: true, after_message_id: 6,
+  });
+  liveReq.emit("close");
+
+  const replayReq = new EventEmitter();
+  const replayRes = new ResponseSink();
+  hub.attach(replayReq as never, replayRes as never, false);
+  assert.deepEqual(events(replayRes), [{
+    event: "session", id: hub.session, agent_active: true,
+    agent_after_message_id: 6,
+  }]);
+
+  hub.publish({ event: "agent", active: false });
+  assert.equal(hub.agentActive, false);
+  replayReq.emit("close");
+  hub.close();
+});
+
 test("a subsequent authoritative revision replaces rather than duplicates tool parts", () => {
   const hub = new StreamHub();
   hub.revise({

@@ -60,6 +60,9 @@
  *   SaturationEvent — latest Pi context-window usage as a ratio (0..1).
  *                     It is live telemetry, not transcript history; the latest
  *                     value is repeated on SessionEvent at every attach.
+ *   AgentEvent      — Pi agent-dispatch lifecycle, independent of assistant
+ *                     message boundaries. `active:false` means agent_settled,
+ *                     after continuations/tool loops have finished.
  *
  * Reconnect: the full in-memory session history (locked events) is replayed
  * on attach, followed by the in-flight revision if a message is mid-stream.
@@ -74,6 +77,18 @@ export interface SessionEvent {
   id: string;
   /** Latest known context-window usage ratio (0..1); absent until measured. */
   saturation?: number;
+  /** Snapshot of Pi agent-dispatch state. Additive for legacy clients. */
+  agent_active?: boolean;
+  /** Last message id before the active dispatch; reconstructs its projection. */
+  agent_after_message_id?: number;
+}
+
+export interface AgentEvent {
+  event: "agent";
+  /** True from agent_start through agent_settled, across text/tool messages. */
+  active: boolean;
+  /** Last message id before this dispatch began. Stable while active. */
+  after_message_id?: number;
 }
 
 export interface SaturationEvent {
@@ -125,7 +140,7 @@ export interface SegmentAudioEvent {
   ok: boolean;
 }
 
-export type StreamEvent = MessageEvent | ToolEvent | SegmentEvent | SegmentAudioEvent | SaturationEvent;
+export type StreamEvent = MessageEvent | ToolEvent | SegmentEvent | SegmentAudioEvent | SaturationEvent | AgentEvent;
 
 /* --- extension ⇄ server wire envelopes ------------------------------------ */
 

@@ -33,7 +33,7 @@ test("latest saturation is live and repeated on the attach snapshot", () => {
   const attachRes = new ResponseSink();
   hub.attach(attachReq as never, attachRes as never, false);
   assert.deepEqual(events(attachRes), [
-    { event: "session", id: hub.session, saturation: 0.625 },
+    { event: "session", id: hub.session, saturation: 0.625, agent_active: false },
   ]);
 
   liveReq.emit("close");
@@ -49,7 +49,9 @@ test("a new Pi session clears the saturation snapshot", () => {
   const req = new EventEmitter();
   const res = new ResponseSink();
   hub.attach(req as never, res as never, false);
-  assert.deepEqual(events(res), [{ event: "session", id: hub.session }]);
+  assert.deepEqual(events(res), [{
+    event: "session", id: hub.session, agent_active: false,
+  }]);
 
   req.emit("close");
   hub.close();

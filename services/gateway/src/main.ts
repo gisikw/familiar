@@ -131,6 +131,18 @@ function handle(req: http.IncomingMessage, res: http.ServerResponse) {
     if (pathname === "/theme.css") { res.writeHead(200, { "Content-Type": "text/css; charset=utf-8", "Cache-Control": "no-cache" }); return res.end(THEME_CSS); }
     if (pathname === "/theme.json") { res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-cache" }); return res.end(THEME_JSON); }
     if (pathname === "/health") { res.writeHead(200, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ ok: true, session: hub.session })); }
+    // Sanity-check snapshot for clients that may have missed an SSE lifecycle
+    // edge while suspended/reconnecting. Session identity prevents applying a
+    // stale response after a Pi restart.
+    if (pathname === "/agent") {
+      res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+      return res.end(JSON.stringify({
+        session: hub.session, active: hub.agentActive,
+        ...(hub.agentAfterMessageId === undefined ? {} : {
+          after_message_id: hub.agentAfterMessageId,
+        }),
+      }));
+    }
     if (pathname === "/stream") return hub.attach(req, res, searchParams.get("audio") === "1");
     if (pathname === "/relay") return relay.attach(req, res);
     if (pathname === "/voice-status") return void ingress.handleVoiceStatus(req, res).catch((err) => {

@@ -25,6 +25,9 @@ export class Firehose {
 
   constructor(private hub: RelayHub, private audio: NoopAudio, private echoes: PendingEchoes) { }
 
+  /** Last allocated transcript id; an agent_start anchor is the id before it. */
+  get cursor() { return this.messageId; }
+
   onMessageStart(message: any) {
     const customType = message?.customType;
     if (typeof customType === "string") {

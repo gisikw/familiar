@@ -18,6 +18,9 @@ export class StreamHub {
   inflight: MessageEvent | null = null;
   /** Latest context telemetry is snapshot state, not bounded transcript history. */
   saturation: number | undefined;
+  /** Pi dispatch lifecycle is control-plane state, not a message boundary. */
+  agentActive = false;
+  agentAfterMessageId: number | undefined;
   // Epoch identity. Re-minted on newSession(): clients compare across attaches
   // to detect a message-id-space reset (stale-cache poisoning).
   session: string = randomUUID();
@@ -34,6 +37,10 @@ export class StreamHub {
     this.write(res, {
       event: "session", id: this.session,
       ...(this.saturation === undefined ? {} : { saturation: this.saturation }),
+      agent_active: this.agentActive,
+      ...(this.agentAfterMessageId === undefined ? {} : {
+        agent_after_message_id: this.agentAfterMessageId,
+      }),
     });
     for (const event of this.history) this.write(res, event);
     if (this.inflight) this.write(res, this.inflight);
@@ -63,7 +70,9 @@ export class StreamHub {
     this.history = [];
     this.inflight = null;
     this.saturation = undefined;
-    const evt: SessionEvent = { event: "session", id: this.session };
+    this.agentActive = false;
+    this.agentAfterMessageId = undefined;
+    const evt: SessionEvent = { event: "session", id: this.session, agent_active: false };
     for (const c of this.clients) this.write(c.res, evt);
   }
 
@@ -81,6 +90,12 @@ export class StreamHub {
       if (!Number.isFinite(event.saturation)) return;
       this.saturation = Math.max(0, Math.min(1, event.saturation));
       this.broadcast({ ...event, saturation: this.saturation });
+      return;
+    }
+    if (event.event === "agent") {
+      this.agentActive = event.active;
+      this.agentAfterMessageId = event.active ? event.after_message_id : undefined;
+      this.broadcast(event);
       return;
     }
     if (event.event === "tool" && this.inflight && event.message_id === this.inflight.id) {
