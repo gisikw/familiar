@@ -90,10 +90,20 @@ FAMILIAR_BASE_URL=http://localhost:1692 npm start
 ## Installing the unsigned DMG
 
 Releases contain an unsigned macOS DMG. Drag **Familiar** to `/Applications`.
-The first time macOS blocks an app downloaded from GitHub, open **System
-Settings → Privacy & Security**, find the message that Familiar was blocked,
-and click **Open Anyway** (confirm **Open**). This one-time Gatekeeper approval
-removes the quarantine block for this app; signing and notarization are
+
+On recent macOS (Sonoma/Sequoia), launching an unsigned app downloaded from
+GitHub shows **“Familiar” is damaged and can’t be opened** — the app is not
+damaged; this is Gatekeeper’s message for unsigned + quarantined. The dialog
+often does **not** add an *Open Anyway* option to Privacy & Security, so clear
+the quarantine attribute directly:
+
+```bash
+xattr -cr /Applications/Familiar.app
+```
+
+Then launch normally. This is one-time per install/update. If your macOS
+version does surface the blocked-app message under **System Settings → Privacy
+& Security**, clicking **Open Anyway** works too. Signing and notarization are
 intentionally deferred.
 
 ## Auth
