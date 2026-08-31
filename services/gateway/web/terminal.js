@@ -339,6 +339,28 @@ function writePty(seq) {
 
 function wireAppMouse() {
   let pressedButton = null;
+  let linkGesture = false;
+  let replayingLinkRelease = false;
+
+  // restty 0.2.6 has OSC 8 parsing/rendering, but its link handler only opens
+  // on an unmodified primary click.  With application mouse tracking enabled
+  // our capture listener would also steal the move, so restty never gets a
+  // hover URI.  Ctrl-click is the convention used by pi: temporarily let
+  // restty own that gesture, then replay release as a plain click (the
+  // browser PointerEvent remains ctrl-modified and is deliberately ignored by
+  // restty's link predicate).  The child must not see this gesture.
+  const beginLinkGesture = (ev) => {
+    if (ev.button !== 0 || !ev.ctrlKey || ev.shiftKey || ev.altKey || ev.metaKey) return false;
+    linkGesture = true;
+    try { restty?.setMouseMode("off"); } catch (_) { /* older restty */ }
+    return true;
+  };
+  const endLinkGesture = () => {
+    linkGesture = false;
+    // The gateway owns app-mouse encoding; leave restty's own encoder off so
+    // the next ordinary gesture is not double-reported.
+    try { restty?.setMouseMode("off"); } catch (_) { /* older restty */ }
+  };
   const send = (kind, ev) => {
     if (!decset.isActive()) return false;
     const { col, row } = pointerToCell(ev);
@@ -353,16 +375,57 @@ function wireAppMouse() {
   };
 
   root.addEventListener("pointerdown", (ev) => {
+    if (replayingLinkRelease) return;
+    if (beginLinkGesture(ev)) return;
     if (!decset.isActive()) return;
     pressedButton = ev.button;
     if (send("down", ev)) { ev.preventDefault(); ev.stopPropagation(); root.setPointerCapture && root.setPointerCapture(ev.pointerId); }
   }, true);
   root.addEventListener("pointerup", (ev) => {
-    if (!decset.isActive()) return;
+    if (replayingLinkRelease) return;
+    if (linkGesture) {
+      // restty's documented link path is the plain-primary path.  Its hover
+      // state was populated while mouse mode was off; replay only the release
+      // so its handler calls openLink(), without forwarding anything to tmux.
+      replayingLinkRelease = true;
+      try {
+        const canvas = root.querySelector("canvas") || root;
+        canvas.dispatchEvent(new PointerEvent("pointerup", {
+          bubbles: true, button: 0, buttons: 0, clientX: ev.clientX, clientY: ev.clientY,
+          pointerId: ev.pointerId, pointerType: ev.pointerType, isPrimary: ev.isPrimary,
+        }));
+      } finally {
+        replayingLinkRelease = false;
+        endLinkGesture();
+      }
+      ev.preventDefault(); ev.stopPropagation();
+      return;
+    }
+    // Clear local state even if the child reset mouse tracking between down
+    // and up; otherwise the next drag is encoded as a continuation forever.
     pressedButton = null;
+    if (!decset.isActive()) return;
     if (send("up", ev)) { ev.preventDefault(); ev.stopPropagation(); }
   }, true);
+  root.addEventListener("pointercancel", () => {
+    pressedButton = null;
+    if (linkGesture) endLinkGesture();
+  }, true);
+  // Chromium may emit contextmenu/pointercancel instead of pointerup for
+  // Ctrl-click (especially on macOS).  Never leave our pressed state or the
+  // restty mouse mode latched in that path.
+  root.addEventListener("contextmenu", (ev) => {
+    if (!linkGesture) return;
+    ev.preventDefault(); ev.stopPropagation();
+    pressedButton = null;
+    endLinkGesture();
+  }, true);
+  window.addEventListener("blur", () => {
+    pressedButton = null;
+    if (linkGesture) endLinkGesture();
+  }, true);
   root.addEventListener("pointermove", (ev) => {
+    if (linkGesture) return;
     if (!decset.isActive()) return;
     const motion = decset.motion();
     if (motion === "none") return;
