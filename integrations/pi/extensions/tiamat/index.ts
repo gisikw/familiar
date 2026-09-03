@@ -88,6 +88,12 @@ export default async function tiamat(pi: ExtensionAPI) {
     if (painted === lastUsageStatus) return;
     lastUsageStatus = painted;
     context.ui.setStatus("tiamat", painted || undefined);
+    // Publish for the footer extension (custom footer replaces the built-in
+    // status line, so it re-renders provider usage itself from this event).
+    pi.events.emit("familiar:provider-usage", {
+      text: status?.text ?? "",
+      tone: status?.tone ?? "dim",
+    });
   };
   const pollUsage = async () => {
     if (!context?.hasUI || usageInFlight) return;

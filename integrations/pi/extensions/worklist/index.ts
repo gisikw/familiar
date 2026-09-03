@@ -182,6 +182,9 @@ export default function (pi: ExtensionAPI) {
       text += ` ${remainStr(override.expiresAt - now)}`;
     }
     ctxRef.ui.setStatus("attention", text);
+    // Publish for the footer extension (custom footer replaces the built-in
+    // status line, so it re-renders attention itself from this event).
+    pi.events.emit("familiar:attention", { text });
   };
 
   const renderWidget = () => {
