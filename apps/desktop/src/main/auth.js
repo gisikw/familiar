@@ -21,6 +21,13 @@ const oidc = require("./oidc");
 const REFRESH_MARGIN_MS = 60_000; // refresh a minute before expiry
 const DANCE_THROTTLE_MS = 30_000;
 
+// The client is a PUBLIC OAuth client (RFC 8252): its id is an identifier,
+// not a secret — PKCE protects the flow, so shipping the id is exactly what
+// VS Code / gh / the AWS CLI do. Registered once in the IdP; overrides in
+// config.json (oidcClientId) still win for nonstandard deployments.
+const DEFAULT_OIDC_CLIENT_ID = "familiar-desktop";
+const DEFAULT_OIDC_SCOPE = "openid profile email offline_access";
+
 function tokensPath(app) {
   return path.join(app.getPath("userData"), "tokens.bin");
 }
@@ -76,10 +83,10 @@ function createAuthManager({ app, getBaseUrl, getConfig, openExternal, getWindow
   async function refresh() {
     if (!tokens || !tokens.refreshToken) return false;
     const cfg = getConfig();
-    const doc = await oidc.discoverIssuer(cfg.oidcIssuer);
+    const doc = await oidc.discoverIssuer(cfg.oidcIssuer || tokens.issuer);
     try {
       const next = await oidc.refreshTokens(doc.token_endpoint, {
-        clientId: cfg.oidcClientId,
+        clientId: cfg.oidcClientId || DEFAULT_OIDC_CLIENT_ID,
         refreshToken: tokens.refreshToken,
       });
       tokens = {
@@ -104,10 +111,7 @@ function createAuthManager({ app, getBaseUrl, getConfig, openExternal, getWindow
    */
   async function runDance() {
     const cfg = getConfig();
-    if (!cfg.oidcClientId) {
-      log("no oidcClientId configured; cannot authenticate");
-      return false;
-    }
+    const clientId = cfg.oidcClientId || DEFAULT_OIDC_CLIENT_ID;
     let issuer = cfg.oidcIssuer;
     if (!issuer) {
       issuer = await oidc.discoverProtectedResource(getBaseUrl());
@@ -117,7 +121,7 @@ function createAuthManager({ app, getBaseUrl, getConfig, openExternal, getWindow
       }
     }
     const doc = await oidc.discoverIssuer(issuer);
-    const scope = cfg.oidcScope || "openid profile email offline_access";
+    const scope = cfg.oidcScope || DEFAULT_OIDC_SCOPE;
 
     const pkce = oidc.createPkce();
     const state = oidc.randomState();
@@ -125,7 +129,7 @@ function createAuthManager({ app, getBaseUrl, getConfig, openExternal, getWindow
 
     const result = await oidc.withLoopbackRedirect(async (redirectUri) => {
       const url = oidc.buildAuthorizeUrl(doc.authorization_endpoint, {
-        clientId: cfg.oidcClientId,
+        clientId,
         redirectUri,
         scope,
         state,
@@ -138,7 +142,7 @@ function createAuthManager({ app, getBaseUrl, getConfig, openExternal, getWindow
 
     if (result.state !== state) throw new Error("state mismatch in authorization callback");
     const exchanged = await oidc.exchangeCode(doc.token_endpoint, {
-      clientId: cfg.oidcClientId,
+      clientId,
       code: result.code,
       verifier: pkce.verifier,
       redirectUri: result.redirectUri,
@@ -149,7 +153,8 @@ function createAuthManager({ app, getBaseUrl, getConfig, openExternal, getWindow
     return true;
   }
 
-  /** Serialize: only one dance/refresh at a time. */
+
+/** Serialize: only one dance/refresh at a time. */
   function ensureAuthenticated({ forceDance = false } = {}) {
     if (inFlight) return inFlight;
     const now = Date.now();
