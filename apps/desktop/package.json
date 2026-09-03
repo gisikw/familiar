@@ -1,6 +1,6 @@
 {
   "name": "familiar-client",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Familiar — a thin Electron chrome shell around the familiar server's browser terminal.",
   "private": true,
   "main": "src/main/main.js",

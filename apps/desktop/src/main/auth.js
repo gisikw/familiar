@@ -155,7 +155,12 @@ function createAuthManager({ app, getBaseUrl, getConfig, openExternal, getWindow
       redirectUri: result.redirectUri,
     });
     tokens = { ...exchanged, issuer };
-    await saveTokens(app, tokens);
+    try {
+      await saveTokens(app, tokens);
+    } catch (err) {
+      // Non-fatal: in-memory tokens still authenticate this session.
+      log(`persisting tokens failed (${err.message}); session is memory-only`);
+    }
     log("authorization complete");
     return true;
   }
