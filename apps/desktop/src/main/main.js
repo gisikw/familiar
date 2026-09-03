@@ -96,6 +96,37 @@ function persistBounds() {
   }
 }
 
+/**
+ * Frameless overlay shown during the auth dance. BrowserWindow-level
+ * occlusion, not a navigation — it cannot be raced by redirect chains,
+ * cancelled loads, or the served page's own routing.
+ */
+function showAuthOverlay(parent) {
+  if (!parent || parent.isDestroyed()) return () => {};
+  const b = parent.getBounds();
+  const overlay = new BrowserWindow({
+    width: b.width,
+    height: b.height,
+    x: b.x,
+    y: b.y,
+    frame: false,
+    parent,
+    modal: true,
+    show: true,
+    backgroundColor: "#282828",
+    webPreferences: { sandbox: true },
+  });
+  overlay.loadURL(
+    "data:text/html," +
+      encodeURIComponent(
+        '<!doctype html><title>Familiar</title><body style="font:14px sans-serif;background:#282828;color:#d5c4a1;display:grid;place-items:center;height:100vh;margin:0"><p>Signing in&hellip;</p></body>'
+      )
+  ).catch(() => {});
+  return () => {
+    if (!overlay.isDestroyed()) overlay.close();
+  };
+}
+
 function openSettings() {
   if (settingsWindow && !settingsWindow.isDestroyed()) {
     settingsWindow.focus();
@@ -341,6 +372,9 @@ app.whenReady().then(() => {
     getConfig: () => readConfigFile(app),
     openExternal: (url) => require("electron").shell.openExternal(url),
     getWindow: () => mainWindow,
+    // Modal overlay during the dance: occludes whatever the redirect chain
+    // is doing in the web layer. Cannot be raced by navigation timing.
+    showOverlay: () => showAuthOverlay(mainWindow),
     log: (msg) => console.log(`[familiar:auth] ${msg}`),
   });
   void auth.init();

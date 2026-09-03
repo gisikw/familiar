@@ -69,7 +69,7 @@ async function clearTokens(app) {
  * Wire OIDC auth into the shell. Returns { attachHeaders, onResource401 }.
  * Call attachHeaders(session) once after the partition session exists.
  */
-function createAuthManager({ app, getBaseUrl, getConfig, openExternal, getWindow, log = () => {} }) {
+function createAuthManager({ app, getBaseUrl, getConfig, openExternal, getWindow, showOverlay, log = () => {} }) {
   let tokens = null;
   let inFlight = null;
   let lastDanceAt = 0;
@@ -251,19 +251,12 @@ function createAuthManager({ app, getBaseUrl, getConfig, openExternal, getWindow
       // cookie path for a while instead of looping.
       if (isLoginRedirect(details.url) && Date.now() > cookieFallbackUntil) {
         cookieFallbackUntil = Date.now() + FALLBACK_MS;
-        // Replace the intercepted nav with a neutral signing-in state so the
-        // user doesn't stare at a stale page (or a flash of the login flow).
-        const win = getWindow && getWindow();
-        if (win && !win.isDestroyed()) {
-          win.webContents.loadURL(
-            "data:text/html," +
-              encodeURIComponent(
-                '<!doctype html><title>Familiar</title><body style="font:14px sans-serif;background:#282828;color:#d5c4a1;display:grid;place-items:center;height:100vh;margin:0"><p>Signing in&hellip;</p></body>'
-              )
-          ).catch(() => {});
-        }
+        // Occlude with a modal overlay rather than navigating — a navigation
+        // races the redirect chain and loses; a BrowserWindow cannot.
+        const hideOverlay = showOverlay ? showOverlay() : () => {};
         ensureAuthenticated({ forceDance: true }).then((ok) => {
           log(ok ? "standard dance complete; reloading" : "dance unavailable; falling back to cookie login");
+          hideOverlay();
           const w2 = getWindow && getWindow();
           if (w2 && !w2.isDestroyed()) w2.webContents.loadURL(getBaseUrl()).catch(() => {});
         });
