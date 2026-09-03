@@ -150,8 +150,8 @@ export function formatBudgetUsage(id: string, usage: TiamatProviderUsage["usage"
     // on windowed providers); fall back to limit - remaining when the API
     // omits usage.
     const spent = credits.used ?? (credits.remaining !== undefined ? credits.limit - credits.remaining : undefined);
-    if (spent !== undefined) parts.push(`OR ${fmtMoney(spent)}/${fmtMoney(credits.limit)}`);
-    else parts.push(`OR ${fmtMoney(credits.remaining)}/${fmtMoney(credits.limit)}`);
+    if (spent !== undefined) parts.push(`${fmtMoney(spent)}/${fmtMoney(credits.limit)}`);
+    else parts.push(`${fmtMoney(credits.remaining)}/${fmtMoney(credits.limit)}`);
     if (credits.limit > 0 && credits.remaining !== undefined) {
       budgetFractionUsed = 1 - credits.remaining / credits.limit;
     }
@@ -161,7 +161,7 @@ export function formatBudgetUsage(id: string, usage: TiamatProviderUsage["usage"
     }
   } else if (credits?.remaining !== undefined) {
     // Degenerate: remaining reported but no limit to anchor it.
-    parts.push(`OR ${fmtMoney(credits.remaining)}`);
+    parts.push(fmtMoney(credits.remaining));
   }
   if (balance?.remaining !== undefined) {
     parts.push(`${fmtMoney(balance.remaining)} acct`);
