@@ -20,6 +20,7 @@ if (process.argv.includes("--selftest")) {
 }
 
 const { resolveBaseUrl, readConfigFile, writeConfigFile } = require("./config");
+const { createAuthManager } = require("./auth");
 
 // ---------------------------------------------------------------------------
 // Familiar is a DUMB CLIENT: a thin, near-chromeless Electron window that loads
@@ -330,6 +331,20 @@ app.whenReady().then(() => {
 
   createWindow();
   installMenu();
+
+  // Generic OIDC native-app auth (RFC 8252). Pop-out to the system browser on
+  // 401; tokens live in safeStorage. Inert unless the resource advertises an
+  // authorization server (RFC 9728) or config.json sets oidcIssuer+oidcClientId.
+  const auth = createAuthManager({
+    app,
+    getBaseUrl: () => baseUrl,
+    getConfig: () => readConfigFile(app),
+    openExternal: (url) => require("electron").shell.openExternal(url),
+    getWindow: () => mainWindow,
+    log: (msg) => console.log(`[familiar:auth] ${msg}`),
+  });
+  void auth.init();
+  auth.attachHeaders(session.fromPartition(PARTITION));
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
