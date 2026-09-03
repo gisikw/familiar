@@ -145,17 +145,23 @@ export function formatBudgetUsage(id: string, usage: TiamatProviderUsage["usage"
   let budgetFractionUsed: number | undefined;
   let balanceFractionUsed: number | undefined;
 
-  if (credits?.remaining !== undefined) {
-    let head = fmtMoney(credits.remaining);
-    if (credits.limit !== undefined) {
-      head += `/${fmtMoney(credits.limit)}`;
-      if (credits.limit > 0) budgetFractionUsed = 1 - credits.remaining / credits.limit;
+  if (credits?.limit !== undefined) {
+    // Numerator is *used* budget (counts up, consistent with the % convention
+    // on windowed providers); fall back to limit - remaining when the API
+    // omits usage.
+    const spent = credits.used ?? (credits.remaining !== undefined ? credits.limit - credits.remaining : undefined);
+    if (spent !== undefined) parts.push(`OR ${fmtMoney(spent)}/${fmtMoney(credits.limit)}`);
+    else parts.push(`OR ${fmtMoney(credits.remaining)}/${fmtMoney(credits.limit)}`);
+    if (credits.limit > 0 && credits.remaining !== undefined) {
+      budgetFractionUsed = 1 - credits.remaining / credits.limit;
     }
     if (credits.resetsInSeconds !== undefined) {
       const reset = formatReset(credits.resetsInSeconds, now, timeZone);
-      if (reset) head += ` ${GLYPH_REFRESH}${reset}`;
+      if (reset) parts[parts.length - 1] += ` ${GLYPH_REFRESH}${reset}`;
     }
-    parts.push(head);
+  } else if (credits?.remaining !== undefined) {
+    // Degenerate: remaining reported but no limit to anchor it.
+    parts.push(`OR ${fmtMoney(credits.remaining)}`);
   }
   if (balance?.remaining !== undefined) {
     parts.push(`${fmtMoney(balance.remaining)} acct`);

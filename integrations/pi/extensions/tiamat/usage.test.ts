@@ -48,7 +48,7 @@ describe("budget usage (OpenRouter)", () => {
 
   test("capped key with reset renders remaining/limit, countdown, and account balance", () => {
     const status = formatBudgetUsage("openrouter-personal", { ...capped }, false, Date.now(), "UTC");
-    expect(status?.text).toBe("OR $9.77/$10 ↻8h 13m · $24.77 acct");
+    expect(status?.text).toBe("OR $0.23/$10 ↻8h 13m · $24.77 acct");
     expect(status?.tone).toBe("dim");
   });
 
@@ -64,7 +64,7 @@ describe("budget usage (OpenRouter)", () => {
 
   test("capped key without reset omits the countdown", () => {
     const noReset = { ...capped, credits: { remaining: 6.2, limit: 10, used: 3.8, unit: "USD" } };
-    expect(formatBudgetUsage("openrouter-personal", noReset, false)?.text).toBe("OR $6.20/$10 · $24.77 acct");
+    expect(formatBudgetUsage("openrouter-personal", noReset, false)?.text).toBe("OR $3.80/$10 · $24.77 acct");
   });
 
   test("unlimited key degrades to balance only", () => {
@@ -72,9 +72,14 @@ describe("budget usage (OpenRouter)", () => {
     expect(status?.text).toBe("OR $24.77 acct");
   });
 
+  test("used falls back to limit - remaining when usage absent", () => {
+    const status = formatBudgetUsage("openrouter-personal", { credits: { remaining: 9.77, limit: 10 } }, false);
+    expect(status?.text).toBe("OR $0.23/$10");
+  });
+
   test("key numbers with no balance still render", () => {
-    const status = formatBudgetUsage("openrouter-personal", { credits: { remaining: 6.2, limit: 10 } }, false);
-    expect(status?.text).toBe("OR $6.20/$10");
+    const status = formatBudgetUsage("openrouter-personal", { credits: { remaining: 6.2, limit: 10, used: 3.8 } }, false);
+    expect(status?.text).toBe("OR $3.80/$10");
   });
 
   test("empty usage renders nothing", () => {
