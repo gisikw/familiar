@@ -198,6 +198,47 @@ function createAuthManager({ app, getBaseUrl, getConfig, openExternal, getWindow
       const origin = baseOrigin();
       return !!origin && url.startsWith(origin) && url.includes("/_identity/login");
     };
+
+    /**
+     * Mirror the access token into a session cookie. Chromium sends session
+     * cookies on WebSocket handshakes where webRequest header injection is
+     * unreliable; nginx maps _fort_bearer back into an Authorization header
+     * for the auth subrequest. Best-effort — headers still carry the token
+     * for everything webRequest does cover.
+     */
+    const syncBearerCookie = async () => {
+      if (!baseOrigin()) return;
+      try {
+        if (tokens && tokens.accessToken) {
+          await ses.cookies.set({
+            url: getBaseUrl(),
+            name: "_fort_bearer",
+            value: tokens.accessToken,
+            expirationDate: Math.floor((tokens.expiresAt || Date.now() + 3600_000) / 1000),
+            sameSite: "no_restriction",
+            secure: getBaseUrl().startsWith("https:"),
+          });
+        } else {
+          const existing = await ses.cookies.get({ name: "_fort_bearer" });
+          for (const c of existing) await ses.cookies.remove(getBaseUrl(), "_fort_bearer");
+        }
+      } catch (err) {
+        log(`bearer cookie sync failed: ${err.message}`);
+      }
+    };
+    const origRefresh = refresh;
+    refresh = async () => {
+      const ok = await origRefresh();
+      await syncBearerCookie();
+      return ok;
+    };
+    const origRunDance = runDance;
+    runDance = async () => {
+      const ok = await origRunDance();
+      await syncBearerCookie();
+      return ok;
+    };
+    void syncBearerCookie();
     // Cookie-path fallback: if the standard dance can't run (no advertisement,
     // no client registration), let the server's own login redirect through.
     let cookieFallbackUntil = 0;
@@ -210,10 +251,21 @@ function createAuthManager({ app, getBaseUrl, getConfig, openExternal, getWindow
       // cookie path for a while instead of looping.
       if (isLoginRedirect(details.url) && Date.now() > cookieFallbackUntil) {
         cookieFallbackUntil = Date.now() + FALLBACK_MS;
+        // Replace the intercepted nav with a neutral signing-in state so the
+        // user doesn't stare at a stale page (or a flash of the login flow).
+        const win = getWindow && getWindow();
+        if (win && !win.isDestroyed()) {
+          win.webContents.loadURL(
+            "data:text/html," +
+              encodeURIComponent(
+                '<!doctype html><title>Familiar</title><body style="font:14px sans-serif;background:#282828;color:#d5c4a1;display:grid;place-items:center;height:100vh;margin:0"><p>Signing in&hellip;</p></body>'
+              )
+          ).catch(() => {});
+        }
         ensureAuthenticated({ forceDance: true }).then((ok) => {
           log(ok ? "standard dance complete; reloading" : "dance unavailable; falling back to cookie login");
-          const win = getWindow && getWindow();
-          if (win && !win.isDestroyed()) win.webContents.loadURL(getBaseUrl()).catch(() => {});
+          const w2 = getWindow && getWindow();
+          if (w2 && !w2.isDestroyed()) w2.webContents.loadURL(getBaseUrl()).catch(() => {});
         });
         callback({ cancel: true });
         return;
