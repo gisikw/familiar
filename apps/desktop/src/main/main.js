@@ -312,10 +312,19 @@ app.whenReady().then(() => {
       const audioOnly = mediaTypes.length === 0 || mediaTypes.every((t) => t === "audio");
       return callback(audioOnly && isOwnOrigin(details && details.requestingUrl || ""));
     }
+    // Clipboard WRITES only: the gateway's OSC 52 bridge mirrors terminal
+    // drag selections into the system clipboard via navigator.clipboard
+    // .writeText, which Chromium gates behind clipboard-sanitized-write.
+    // Reads stay denied — remote output must never be able to read the
+    // browser clipboard (same security bound as the osc52.js bridge).
+    if (permission === "clipboard-sanitized-write") {
+      return callback(isOwnOrigin(details && details.requestingUrl || ""));
+    }
     return callback(false);
   });
   part.setPermissionCheckHandler((wc, permission, requestingOrigin) => {
     if (permission === "media") return isOwnOrigin(requestingOrigin);
+    if (permission === "clipboard-sanitized-write") return isOwnOrigin(requestingOrigin);
     return false;
   });
 
