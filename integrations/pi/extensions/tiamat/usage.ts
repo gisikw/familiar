@@ -5,8 +5,31 @@ export interface TiamatUsageWindow {
   resetsInSeconds: number;
 }
 
+/** OpenRouter-style per-key budget (USD). limit/reset only when the key has a cap. */
+export interface TiamatUsageCredits {
+  remaining?: number;
+  limit?: number;
+  reset?: string;
+  resetsInSeconds?: number;
+  used?: number;
+  unit?: string;
+}
+
+/** OpenRouter account-level prepaid balance (USD). */
+export interface TiamatUsageBalance {
+  total?: number;
+  used?: number;
+  remaining?: number;
+  unit?: string;
+}
+
 export interface TiamatProviderUsage {
-  usage?: { windows?: TiamatUsageWindow[] };
+  usage?: {
+    windows?: TiamatUsageWindow[];
+    credits?: TiamatUsageCredits;
+    balance?: TiamatUsageBalance;
+    fetchedAt?: string;
+  };
 }
 
 export type TiamatProviders = Record<string, TiamatProviderUsage>;
@@ -95,4 +118,62 @@ export function formatUsage(id: string, windows: TiamatUsageWindow[], stale: boo
   const tone: UsageTone = peak >= 100 ? "error" : stale || peak >= 90 ? "warning" : "dim";
   const glyph = tone === "error" ? `${GLYPH_ALERT} ` : tone === "warning" ? `${GLYPH_ALERT_OUTLINE} ` : "";
   return { text: `${glyph}${providerLabel(id)} ${parts.join(" · ")}${stale ? " · stale" : ""}`, tone };
+}
+
+const fmtMoney = (value: number | undefined): string | undefined =>
+  typeof value === "number" && Number.isFinite(value)
+    ? `$${Number.isInteger(value) ? value.toFixed(0) : value.toFixed(2)}`
+    : undefined;
+
+/**
+ * Budget-style usage (OpenRouter): per-key credit cap with optional reset
+ * policy, plus account balance. Renders e.g.:
+ *
+ *   OR $9.77/$10 ↻8h 13m · $24.77 acct     (key capped, reset configured)
+ *   OR $6.20/$10 · $18.80 acct             (key capped, no reset)
+ *   OR $24.77 acct                         (unlimited key: balance only)
+ *
+ * Tone: error at <10% key budget remaining (or <10% of balance when no cap),
+ * warning at <25% or when stale, dim otherwise.
+ */
+export function formatBudgetUsage(id: string, usage: TiamatProviderUsage["usage"], stale: boolean, now = Date.now(), timeZone?: string): { text: string; tone: UsageTone } | undefined {
+  if (!usage) return undefined;
+  const { credits, balance } = usage;
+  if (!credits && !balance) return undefined;
+
+  const parts: string[] = [];
+  let budgetFractionUsed: number | undefined;
+  let balanceFractionUsed: number | undefined;
+
+  if (credits?.remaining !== undefined) {
+    let head = fmtMoney(credits.remaining);
+    if (credits.limit !== undefined) {
+      head += `/${fmtMoney(credits.limit)}`;
+      if (credits.limit > 0) budgetFractionUsed = 1 - credits.remaining / credits.limit;
+    }
+    if (credits.resetsInSeconds !== undefined) {
+      const reset = formatReset(credits.resetsInSeconds, now, timeZone);
+      if (reset) head += ` ${GLYPH_REFRESH}${reset}`;
+    }
+    parts.push(head);
+  }
+  if (balance?.remaining !== undefined) {
+    parts.push(`${fmtMoney(balance.remaining)} acct`);
+    if (balance.total && balance.total > 0 && balance.used !== undefined) {
+      balanceFractionUsed = balance.used / balance.total;
+    }
+  }
+  if (!parts.length) return undefined;
+  const label = id.startsWith("openrouter") ? "OR" : providerLabel(id);
+
+  const keyFractionUsed = budgetFractionUsed ??
+    (balanceFractionUsed !== undefined ? balanceFractionUsed : undefined);
+  const tone: UsageTone =
+    (keyFractionUsed !== undefined && keyFractionUsed >= 0.9) || (balanceFractionUsed !== undefined && balanceFractionUsed >= 0.9)
+      ? "error"
+      : stale || (keyFractionUsed !== undefined && keyFractionUsed >= 0.75) || (balanceFractionUsed !== undefined && balanceFractionUsed >= 0.75)
+        ? "warning"
+        : "dim";
+  const glyph = tone === "error" ? `${GLYPH_ALERT} ` : tone === "warning" ? `${GLYPH_ALERT_OUTLINE} ` : "";
+  return { text: `${glyph}${label} ${parts.join(" · ")}${stale ? " · stale" : ""}`, tone };
 }

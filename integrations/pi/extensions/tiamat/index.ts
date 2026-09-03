@@ -10,7 +10,7 @@ import {
   type ProviderGroup,
   type TiamatCatalogRecord,
 } from "./catalog.ts";
-import { formatUsage, isProviders, providerId, type TiamatProviders } from "./usage.ts";
+import { formatBudgetUsage, formatUsage, isProviders, providerId, type TiamatProviders } from "./usage.ts";
 
 const LOG = "tiamat";
 const logError = (value: unknown) => process.env.FAMILIAR_LOG_PATH
@@ -80,9 +80,12 @@ export default async function tiamat(pi: ExtensionAPI) {
   const renderUsage = () => {
     if (!context?.hasUI) return;
     const id = providerId(context.model?.provider);
-    const windows = id && providers[id]?.usage?.windows;
-    const status = id && windows
-      ? formatUsage(id, windows, Date.now() - usageRefreshedAt > USAGE_STALE_MS)
+    const usage = id ? providers[id]?.usage : undefined;
+    const stale = Date.now() - usageRefreshedAt > USAGE_STALE_MS;
+    const status = id && usage
+      ? (usage.windows?.length
+        ? formatUsage(id, usage.windows, stale)
+        : formatBudgetUsage(id, usage, stale))
       : undefined;
     const painted = status ? context.ui.theme.fg(status.tone, status.text) : "";
     if (painted === lastUsageStatus) return;
