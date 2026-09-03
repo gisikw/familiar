@@ -182,6 +182,32 @@ function createAuthManager({ app, getBaseUrl, getConfig, openExternal, getWindow
     const baseOrigin = () => {
       try { return new URL(getBaseUrl()).origin; } catch (_) { return null; }
     };
+    const isLoginRedirect = (url) => {
+      const origin = baseOrigin();
+      return !!origin && url.startsWith(origin) && url.includes("/_identity/login");
+    };
+    // Cookie-path fallback: if the standard dance can't run (no advertisement,
+    // no client registration), let the server's own login redirect through.
+    let cookieFallbackUntil = 0;
+    const FALLBACK_MS = 10 * 60_000;
+
+    ses.webRequest.onBeforeRequest({ urls: ["*://*/*"] }, (details, callback) => {
+      // The resource's 401 surfaces here as a 302 to its login endpoint
+      // (nginx error_page interception) — that IS the auth signal. Cancel it
+      // and run the standard dance; on dance failure, fall through to the
+      // cookie path for a while instead of looping.
+      if (isLoginRedirect(details.url) && Date.now() > cookieFallbackUntil) {
+        cookieFallbackUntil = Date.now() + FALLBACK_MS;
+        ensureAuthenticated({ forceDance: true }).then((ok) => {
+          log(ok ? "standard dance complete; reloading" : "dance unavailable; falling back to cookie login");
+          const win = getWindow && getWindow();
+          if (win && !win.isDestroyed()) win.webContents.loadURL(getBaseUrl()).catch(() => {});
+        });
+        callback({ cancel: true });
+        return;
+      }
+      callback({});
+    });
     ses.webRequest.onBeforeSendHeaders({ urls: ["*://*/*"] }, (details, callback) => {
       const requestHeaders = details.requestHeaders;
       const origin = baseOrigin();
@@ -193,7 +219,8 @@ function createAuthManager({ app, getBaseUrl, getConfig, openExternal, getWindow
       }
       callback({ requestHeaders });
     });
-    // A 401 from the resource means: refresh silently, or dance, then reload.
+    // A 401/403 that still reaches the client (resource without nginx
+    // interception) means the same thing: refresh silently, or dance.
     ses.webRequest.onCompleted({ urls: ["*://*/*"] }, (details) => {
       const origin = baseOrigin();
       if (!origin || !details.url.startsWith(origin)) return;
