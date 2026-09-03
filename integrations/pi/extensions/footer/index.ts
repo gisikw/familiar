@@ -20,7 +20,10 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
  *     timestamp to the first streamed token delta of any kind (prefill +
  *     queueing + hidden-thinking lead-in), and output tokens over the span of
  *     the deltas (gen throughput). Both are running means over the last
- *     SAMPLE_WINDOW completions.
+ *     SAMPLE_WINDOW completions, tracked separately per model (provider/id) so
+ *     a slow model never inherits a fast model's forecast after a switch.
+ *     In-memory only: switching back to a recent model restores its stats; a
+ *     restart starts every model cold.
  *
  * Data sources:
  *   - "familiar:attention" events from the worklist extension (it stays the
@@ -41,6 +44,8 @@ type UsageLike = {
 type Sample = { ttftMs: number; tps: number };
 
 const SAMPLE_WINDOW = 10;
+/** Deltas spanning less than this are buffered flushes, not real generation. */
+const MIN_GEN_SPAN_MS = 250;
 
 function fmtTokens(count: number): string {
   if (count < 1000) return count.toString();
@@ -55,13 +60,18 @@ export default function (pi: ExtensionAPI) {
   let activeTui: { requestRender: (all?: boolean) => void } | undefined;
   let attentionText: string | undefined;
   let providerUsage: { text: string; tone: string } | undefined;
-  let samples: Sample[] = [];
+  // Speed samples keyed by provider/model id — per-model forecasts, not a
+  // convo-wide average (a glm switch after gemini turns shouldn't look fast).
+  const samplesByModel = new Map<string, Sample[]>();
   let turnStart = 0;
   let firstDelta = 0;
   let lastDelta = 0;
   let installed = false;
 
   const refresh = () => activeTui?.requestRender();
+
+  const modelKey = (model: { provider: string; id: string } | undefined): string | undefined =>
+    model ? `${model.provider}/${model.id}` : undefined;
 
   pi.on("session_start", async (_event, ctx) => {
     ctxRef = ctx;
@@ -90,14 +100,24 @@ export default function (pi: ExtensionAPI) {
     lastDelta = now;
   });
 
-  pi.on("message_end", async (event) => {
+  pi.on("message_end", async (event, ctx) => {
     if (event.message.role !== "assistant") return;
     const usage = (event.message as { usage?: UsageLike }).usage;
     if (turnStart && firstDelta && usage?.output) {
       const ttftMs = firstDelta - turnStart;
-      const genMs = Math.max(1, lastDelta - firstDelta);
-      samples.push({ ttftMs, tps: usage.output / (genMs / 1000) });
-      if (samples.length > SAMPLE_WINDOW) samples = samples.slice(-SAMPLE_WINDOW);
+      // Junk-sample guard: short messages (tool-call preambles) often arrive
+      // as a single buffered flush, making the delta span ~1ms and tok/s
+      // absurd (tokens / 0.001s). Only record samples with a real span.
+      const genMs = lastDelta - firstDelta;
+      if (genMs >= MIN_GEN_SPAN_MS) {
+        const key = modelKey(ctx?.model ?? ctxRef?.model);
+        if (key) {
+          const samples = samplesByModel.get(key) ?? [];
+          samples.push({ ttftMs, tps: usage.output / (genMs / 1000) });
+          if (samples.length > SAMPLE_WINDOW) samples.splice(0, samples.length - SAMPLE_WINDOW);
+          samplesByModel.set(key, samples);
+        }
+      }
     }
     turnStart = 0;
     firstDelta = 0;
@@ -181,9 +201,10 @@ export default function (pi: ExtensionAPI) {
             usageParts.push(theme.fg("dim", `CH${latestCacheHitRate.toFixed(1)}%`));
           }
           if (cost) usageParts.push(theme.fg("dim", `$${cost.toFixed(3)}`));
-          if (samples.length > 0) {
-            const meanTtft = samples.reduce((acc, s) => acc + s.ttftMs, 0) / samples.length / 1000;
-            const meanTps = samples.reduce((acc, s) => acc + s.tps, 0) / samples.length;
+          const currentSamples = samplesByModel.get(modelKey(model) ?? "") ?? [];
+          if (currentSamples.length > 0) {
+            const meanTtft = currentSamples.reduce((acc, s) => acc + s.ttftMs, 0) / currentSamples.length / 1000;
+            const meanTps = currentSamples.reduce((acc, s) => acc + s.tps, 0) / currentSamples.length;
             usageParts.push(theme.fg("dim", `${meanTtft.toFixed(1)}s·${Math.round(meanTps)}t/s`));
           }
           const contextUsage = ctx?.getContextUsage();
