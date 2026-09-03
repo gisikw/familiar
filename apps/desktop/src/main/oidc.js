@@ -82,13 +82,16 @@ const AUTH_COMPLETE_HTML =
   "<!doctype html><title>Familiar</title><body style=\"font:14px sans-serif;background:#282828;color:#d5c4a1;display:grid;place-items:center;height:100vh;margin:0\"><p>Authentication complete &mdash; you can close this tab.</p></body>";
 
 /**
- * Full loopback dance: bind a one-shot listener on 127.0.0.1:<ephemeral>
+ * Full loopback dance: bind a one-shot listener on 127.0.0.1:<port>
  * first, then hand the redirect URI to `run(redirectUri, cancel)` so the
  * caller can build the authorize URL and open the system browser, then await
  * the provider's redirect. Resolves {code, state, redirectUri}; rejects on
  * provider-reported error, timeout, or explicit cancel.
+ *
+ * `port` binds a fixed port (RFC 8252 §7.3, for providers that match redirect
+ * URIs literally); omitted/0 binds an ephemeral one.
  */
-async function withLoopbackRedirect(run, { timeoutMs } = {}) {
+async function withLoopbackRedirect(run, { timeoutMs, port = 0 } = {}) {
   return new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
       const u = new URL(req.url, "http://127.0.0.1");
@@ -114,14 +117,14 @@ async function withLoopbackRedirect(run, { timeoutMs } = {}) {
       done(resolve, { code, state: u.searchParams.get("state"), redirectUri: `http://127.0.0.1:${server.address().port}/callback` });
     });
     server.on("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const port = server.address().port;
+    server.listen(port, "127.0.0.1", () => {
+      const bound = server.address().port;
       const timer = setTimeout(() => {
         server.close(() => reject(new Error("authorization timed out")));
       }, timeoutMs || 5 * 60_000);
       if (typeof timer.unref === "function") timer.unref();
       try {
-        run(`http://127.0.0.1:${port}/callback`, () => server.close(() => reject(new Error("authorization cancelled"))));
+        run(`http://127.0.0.1:${bound}/callback`, () => server.close(() => reject(new Error("authorization cancelled"))));
       } catch (err) {
         server.close(() => reject(err));
       }

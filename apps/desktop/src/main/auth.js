@@ -27,6 +27,9 @@ const DANCE_THROTTLE_MS = 30_000;
 // config.json (oidcClientId) still win for nonstandard deployments.
 const DEFAULT_OIDC_CLIENT_ID = "familiar-desktop";
 const DEFAULT_OIDC_SCOPE = "openid profile email offline_access";
+// Fixed loopback port: registered on the IdP as http://127.0.0.1:17421/callback
+// (RFC 8252 §7.3 — specific port for providers that match URIs literally).
+const LOOPBACK_PORT = 17421;
 
 function tokensPath(app) {
   return path.join(app.getPath("userData"), "tokens.bin");
@@ -127,6 +130,10 @@ function createAuthManager({ app, getBaseUrl, getConfig, openExternal, getWindow
     const state = oidc.randomState();
     const nonce = oidc.randomState();
 
+    // Fixed loopback port: RFC 8252 §7.3 explicitly blesses "a specific port
+    // rather than a random one" for providers (like pocket-id) that match
+    // redirect URIs literally instead of ignoring the port. The registered
+    // callback is http://127.0.0.1:17421/callback.
     const result = await oidc.withLoopbackRedirect(async (redirectUri) => {
       const url = oidc.buildAuthorizeUrl(doc.authorization_endpoint, {
         clientId,
@@ -138,7 +145,7 @@ function createAuthManager({ app, getBaseUrl, getConfig, openExternal, getWindow
       });
       log("opening system browser for authorization");
       await openExternal(url);
-    });
+    }, { port: LOOPBACK_PORT });
 
     if (result.state !== state) throw new Error("state mismatch in authorization callback");
     const exchanged = await oidc.exchangeCode(doc.token_endpoint, {
