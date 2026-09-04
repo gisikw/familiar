@@ -11,7 +11,8 @@ import {
 import { uuidv7 } from "@earendil-works/pi-ai";
 import { Loader, Text, type AutocompleteItem } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { errorLog } from "../lib/debug.ts";
+import { debugLog, errorLog } from "../lib/debug.ts";
+import { resolveSummarizerModel } from "./model.ts";
 
 /*
  * Zip — editorial branch compression.
@@ -23,7 +24,7 @@ import { errorLog } from "../lib/debug.ts";
  * there is no synthetic tail and no request-time context projection.
  */
 
-const MODEL = process.env.FAMILIAR_ZIP_MODEL || "anthropic/claude-haiku-4-5";
+const MODEL = process.env.FAMILIAR_ZIP_MODEL;
 const ENTRY_MARKER = "zip-marker";
 const ZIP_SENTINEL = "__FAMILIAR_ZIP_V1__";
 const NAVIGATE_AFTER_SETTLED = Symbol.for("familiar.zip.navigate-after-settled");
@@ -250,11 +251,13 @@ export default function zipExtension(pi: ExtensionAPI) {
   let ctxRef: ExtensionContext | undefined;
 
   const cheapModel = (ctx: ExtensionContext): { model: any } | { error: string } => {
-    const [provider, ...rest] = MODEL.split("/");
-    const model = ctx.modelRegistry.find(provider, rest.join("/"));
-    if (!model) return { error: `model ${MODEL} not found` };
-    if (!ctx.modelRegistry.hasConfiguredAuth(model)) return { error: `no configured auth for ${MODEL}` };
-    return { model };
+    const resolved = resolveSummarizerModel(ctx.modelRegistry, ctx.model, MODEL);
+    if ("error" in resolved) {
+      errorLog("zip", { event: "summarizer_model", error: resolved.error, tried: resolved.tried });
+      return { error: resolved.error };
+    }
+    debugLog("zip", { event: "summarizer_model", model: resolved.ref, override: MODEL ?? null });
+    return { model: resolved.model };
   };
 
   const complete = async (
