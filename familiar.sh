@@ -347,7 +347,7 @@ run_pi() {
         # Keep the live extension set explicit.
         extensions: (([
           "footer", "handoff", "identity", "stuff", "subscriber",
-          "tiamat", "web", "worklist", "zip"
+          "tiamat", "web", "worklist", "zip", "wake"
         ] | map($ext + "/" + .)) + $pluginExts | unique)
       }
       | .defaultProvider //= $provider
