@@ -201,6 +201,24 @@ A stable RPC relay remains an available intermediate implementation if semantic
 session access becomes necessary before pi's detachable TUI is ready; it is not
 required by the current tmux-backed adapter.
 
+### Browser session projection
+
+`gisikw/familiar-ui` is an additional in-process extension of that same resident
+interactive Pi. It does not create an SDK/RPC Pi or a second session owner. The
+extension binds a token-authenticated bridge only on loopback; a separately
+served browser deployment reaches it through familiar-ui's same-origin descriptor
+broker. Exact Origin, bound Host, and bearer-token checks remain owned and
+enforced by familiar-ui.
+
+The repositories stay independently releasable. Fort tracks an exact sibling
+familiar-ui checkout on Azula. At resident-Pi startup Familiar verifies that Git
+revision and clean tree, asks the sibling's locked flake for its immutable package,
+and loads that package's built extension entrypoint. Thus Familiar carries no
+copied `dist` artifact and no machine-private flake input. A stable descriptor
+path under private runtime state hands bridge epoch/port/token changes to the
+broker without making the bridge itself non-loopback or exposing credentials in
+a URL.
+
 ### Model and voice services
 
 Familiar LLM, STT, and TTS are always-local proxy components of the Familiar

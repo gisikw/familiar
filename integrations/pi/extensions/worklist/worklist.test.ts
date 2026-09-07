@@ -448,7 +448,7 @@ describe("runtime scheduler wiring", () => {
         list.push(handler);
         handlers.set(event, list);
       },
-      events: { on() {} },
+      events: { on() {}, emit() {} },
       registerCommand() {},
       registerTool() {},
       sendMessage(message: any, options: any) { sent.push({ message, options }); },
@@ -569,7 +569,7 @@ describe("runtime scheduler wiring", () => {
         list.push(handler);
         handlers.set(event, list);
       },
-      events: { on() {} },
+      events: { on() {}, emit() {} },
       registerCommand() {},
       registerTool(def: any) { tools.set(def.name, def); },
       sendMessage(message: any, options: any) { sent.push({ message, options }); },
@@ -598,6 +598,19 @@ describe("runtime scheduler wiring", () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   };
+
+  test("set_attention model copy makes auto the delegated-work default", async () => {
+    await withRuntime(async ({ tools }) => {
+      const tool = tools.get("set_attention");
+      const copy = [tool.description, tool.promptSnippet, ...(tool.promptGuidelines ?? [])].join(" ");
+      expect(copy).toContain("delegated");
+      expect(copy).toContain("tool-heavy");
+      expect(copy).toContain("Golem");
+      expect(copy).toContain("delay");
+      expect(copy).toContain("uninterrupted conversational window");
+      expect(copy).toContain("true do-not-interrupt");
+    });
+  });
 
   test("a digested item is surfaced explicitly (once) if unacked past its grace", async () => {
     await withRuntime(async ({ dir, runtime, sent, setNow, now }) => {

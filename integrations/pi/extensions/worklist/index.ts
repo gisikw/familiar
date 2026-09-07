@@ -577,7 +577,7 @@ export default function (pi: ExtensionAPI) {
   const LEVEL_GLOSS: Record<string, string> = {
     auto: "auto — infer from conversation activity (open/available/focused)",
     available: "available — accept important items as they arrive; hold trivia for a lull",
-    focused: "focused — active conversation; suppress ordinary interruptions",
+    focused: "focused — uninterrupted conversation window; ordinary worklist held",
     protected: "protected — total do-not-disturb, time-bounded, queue stays durable",
   };
 
@@ -733,19 +733,23 @@ export default function (pi: ExtensionAPI) {
     label: "Set Attention",
     description:
       "Time-bound how interruptible the live conversation is to background worklist items. " +
-      "level 'protected' holds EVERYTHING (even urgent P0) until it expires; 'focused' suppresses ordinary " +
-      "interruptions; 'available' accepts important items; 'auto' returns to activity-inferred attention. " +
-      "Any non-auto level REQUIRES duration_minutes and is clamped to a ceiling — it can never be unbounded. " +
-      "On expiry attention returns directly to auto inference (no decay). Returns the resolved expires_at so " +
-      "you can tell Kevin exactly when it lifts.",
-    promptSnippet: "Time-bound how interruptible the conversation is (protect/focus/available)",
+      "Use 'auto' by default for delegated work, tool-heavy/heads-down work, and while waiting for Golem: " +
+      "'focused' suppresses ordinary worklist traffic and can delay settlements. Use 'focused' only for a " +
+      "deliberately uninterrupted conversational window. Use 'protected' only for true do-not-interrupt; it " +
+      "holds EVERYTHING, even urgent P0. 'available' accepts important items. Any non-auto level REQUIRES " +
+      "duration_minutes and is clamped to a ceiling. On expiry attention returns directly to auto inference. " +
+      "Returns expires_at for a timed override.",
+    promptSnippet: "Time-bound conversational interruption policy; auto is the delegated-work default",
+    promptGuidelines: [
+      "Keep set_attention at auto for delegated work, heads-down/tool-heavy work, and waits for Golem; focused can delay ordinary worklist settlements and is only for an uninterrupted conversational window, while protected is true do-not-interrupt.",
+    ],
     parameters: Type.Object({
       level: Type.Union([
         Type.Literal("auto"),
         Type.Literal("available"),
         Type.Literal("focused"),
         Type.Literal("protected"),
-      ], { description: "auto returns to inference; the others are timed overrides" }),
+      ], { description: "Use auto for delegated/tool-heavy work and Golem waits; focused only for an uninterrupted conversation; protected only for true do-not-interrupt. Non-auto values are timed overrides." }),
       duration_minutes: Type.Optional(Type.Number({ description: "Required for any non-auto level; clamped to the ceiling (8h)." })),
     }),
     async execute(_id, params: { level: string; duration_minutes?: number }) {

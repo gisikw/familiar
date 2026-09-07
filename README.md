@@ -60,6 +60,22 @@ only `index.ts`/`index.js`
 (or a declared package entry) from each immediate subdirectory. This keeps Bun-only
 tests and support modules outside runtime auto-discovery without a second manifest.
 
+## Durable wakes
+
+The resident `wake` extension stores alarms beneath `FAMILIAR_WAKE_DIR`
+(default private `state/wakes`) using 0700 directories and atomically replaced
+0600 records. Future alarms are restored and elapsed alarms are fired promptly
+on `session_start`; fresh user/worklist/settlement activity durably cancels
+`unless_wakened` alarms, while `always` alarms remain. Corrupt records are
+quarantined and ignored. `session_shutdown` clears timers only, never records.
+
+Delivery uses a durable `fired/` claim journal before `pi.sendMessage`, making a
+claimed wake at-most-once across crashes. Pi provides no delivery acknowledgement
+for `sendMessage`, so one unavoidable tiny boundary remains: a process crash
+after the durable claim and before the send can lose that wake. Claiming first
+chooses possible loss over an avoidable duplicate; an already claimed wake is
+never replayed after restart.
+
 ## Quota footer
 
 When pi is logged into `openai-codex`, Familiar shows Codex subscription windows

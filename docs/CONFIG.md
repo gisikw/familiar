@@ -71,7 +71,7 @@ same-session JSON-to-setup-token cutover.
 ## Canonical groups and migration
 
 Use tables whose names match the established environment prefix: `[pi]`,
-`[anthropic]`, `[openai]`, `[tiamat]`, `[server]`, `[plugins]`, `[herdr]`,
+`[ui]`, `[anthropic]`, `[openai]`, `[tiamat]`, `[server]`, `[plugins]`, `[herdr]`,
 `[subagent]`, `[model]`, `[llama]`, `[stt]`, `[tts]`, `[searxng]`, `[brave]`,
 `[fetch]`, `[zip]`, and `[theme]`.
 Cross-cutting
@@ -114,6 +114,71 @@ their `PI_*` counterparts, and maps `FAMILIAR_ANTHROPIC_BASE_URL`,
 `OPENAI_API_KEY`, and covers `LLAMA_BASE_URL`. An upstream name that was explicitly ambient is preserved.
 Local configuration should always use the
 generic Familiar names shown in `familiar.toml.example`.
+
+## familiar-ui tracked deployment contract
+
+The browser bridge is an extension inside the **existing resident interactive Pi
+process**. Familiar does not launch a second Pi or an RPC embedding. Because
+`gisikw/familiar-ui` is a separately released repository whose build outputs and
+`node_modules` are intentionally untracked, it is not copied into this repository
+and is not represented by a machine-private flake input.
+
+Fort/Azula supplies a sibling checkout and these exact values (ambient variables
+or the equivalent `[ui]` keys):
+
+- `FAMILIAR_UI_SOURCE` / `[ui] source`: checkout path (relative config paths are
+  anchored at the private instance);
+- `FAMILIAR_UI_REV` / `[ui] rev`: required full 40-character commit SHA;
+- production `FAMILIAR_UI_ORIGIN` and `FAMILIAR_UI_PORT` (`[ui] origin`,
+  `port`): the exact public HTTPS browser origin and a fixed unprivileged
+  loopback bridge port; development may retain familiar-ui's loopback defaults;
+- optional `FAMILIAR_UI_DESCRIPTOR` / `[ui] descriptor`, defaulting to stable
+  private state at `state/familiar-ui/bridge.json`.
+
+Familiar verifies the checkout SHA and clean tracked tree, then evaluates
+`path:$FAMILIAR_UI_SOURCE#familiar-ui` with `nix build --no-link`. The UI's
+committed `flake.lock` and `importNpmLock` build the extension, browser, broker,
+workspace packages, and npm dependencies into one immutable Nix output. Ignored
+checkout `dist/` and `node_modules/` trees cannot enter that build. Familiar
+validates the packaged runtime closure before adding
+`$out/share/familiar-ui/packages/extension/dist/index.js` to Pi's explicit
+extension list. A missing, dirty, unpinned, unbuildable, or malformed configured
+checkout fails startup rather than loading an old ad-hoc artifact. If `[ui]
+source` is omitted, no external UI extension is added.
+The extension itself retains exact Origin checks, bound-Host validation, a
+per-session bearer token, and loopback-only binding; the integration provides no
+bypass for any of them.
+
+The Fort patch uses the **same Nix output** for the browser deployment. Resolve
+it without activating Presence using:
+
+```sh
+scripts/familiar-ui-extension.sh package /absolute/path/to/familiar-ui FULL_SHA
+```
+
+Serve `$out/share/familiar-ui/web` at the exact HTTPS origin. Run
+`$out/bin/familiar-ui-broker` as a separate, unprivileged descriptor service
+with `FAMILIAR_UI_DESCRIPTOR`, `FAMILIAR_UI_ORIGIN`, and `FAMILIAR_UI_PORT`
+identical to Presence, plus `FAMILIAR_UI_PUBLIC_ORIGIN` equal to the served
+HTTPS origin and a private `FAMILIAR_UI_BROKER_SOCKET`. The HTTPS reverse proxy
+serves `GET /__familiar/bridge.json` from that Unix socket and proxies `/v1/*`
+to `127.0.0.1:$FAMILIAR_UI_PORT`, preserving the exact public `Origin`, rewriting
+`Host` to the exact loopback authority expected by the bridge, and forwarding
+the browser's `Authorization` header. Do not expose the loopback listener,
+descriptor file, token, or broker socket. The broker redacts loopback URL and
+process metadata; it does not relax bridge authentication.
+
+### Activation gate
+
+A deploy/review may prepare the checkout, Nix build, config, and feature branch,
+but **must not restart `familiar-instance-presence` directly or
+indirectly**. It must not merge to `main` if tracked deployment would activate or
+restart the live Presence before review. Kevin activates this change manually
+with `/reload`, then explicitly confirms activation. Until that confirmation,
+Fort and automation must perform no service restart, Presence ensure/recreate,
+or equivalent tracked-deployment action. `/reload` preserves durable wake
+records: shutdown clears only in-memory timers and the replacement extension
+restores them on `session_start`.
 
 ## Changes and failures
 

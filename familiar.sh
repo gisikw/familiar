@@ -90,6 +90,17 @@ export FAMILIAR_PRESENCE_STATE_DIR="$(resolve_config_path "$FAMILIAR_PRESENCE_ST
 export FAMILIAR_PRESENCE_SOCKET="${FAMILIAR_PRESENCE_SOCKET:-$FAMILIAR_PRESENCE_STATE_DIR/tmux.sock}"
 export FAMILIAR_PRESENCE_SOCKET="$(resolve_config_path "$FAMILIAR_PRESENCE_SOCKET")"
 export FAMILIAR_PRESENCE_CTL="${FAMILIAR_PRESENCE_CTL:-$REPO/services/presence/presence.sh}"
+# Durable extension state belongs to the private runtime, never the source tree.
+export FAMILIAR_WAKE_DIR="${FAMILIAR_WAKE_DIR:-$STATE_DIR/wakes}"
+export FAMILIAR_WAKE_DIR="$(resolve_config_path "$FAMILIAR_WAKE_DIR")"
+# familiar-ui is a separately tracked Fort checkout, not an unpinned/private
+# flake input and not a copied generated artifact. Its locked flake supplies the
+# immutable extension package when source+exact revision are configured.
+if [ -n "${FAMILIAR_UI_SOURCE:-}" ]; then
+  export FAMILIAR_UI_SOURCE="$(resolve_config_path "$FAMILIAR_UI_SOURCE")"
+fi
+export FAMILIAR_UI_DESCRIPTOR="${FAMILIAR_UI_DESCRIPTOR:-$STATE_DIR/familiar-ui/bridge.json}"
+export FAMILIAR_UI_DESCRIPTOR="$(resolve_config_path "$FAMILIAR_UI_DESCRIPTOR")"
 # Session storage. Overriding this is the deliberate escape hatch for a wedged
 # session: point it at a clean-room dir to bail out without touching the main
 # continuity line. Not a first-class verb on purpose — forking continuity
@@ -334,7 +345,14 @@ run_pi() {
     # handoff/index.ts triggers at 90% of the active model's real window. Pi's fixed
     # reserve is the emergency floor for small-window models and overflows.
     plugin_exts=$(plugin_extensions_json)
+    local familiar_ui_ext=""
+    if [ -n "${FAMILIAR_UI_SOURCE:-}" ]; then
+      [ -n "${FAMILIAR_UI_REV:-}" ] || { echo 'familiar: [ui] source requires exact rev' >&2; return 1; }
+      familiar_ui_ext=$(bash "$REPO/scripts/familiar-ui-extension.sh" extension \
+        "$FAMILIAR_UI_SOURCE" "$FAMILIAR_UI_REV") || return 1
+    fi
     jq -n --argjson prev "$prev" --argjson pluginExts "$plugin_exts" \
+      --arg familiarUiExt "$familiar_ui_ext" \
       --arg provider "${FAMILIAR_DEFAULT_PROVIDER:-llama.cpp}" \
       --arg model "${FAMILIAR_DEFAULT_MODEL:-$llama_model}" \
       --arg dir "$PI_CODING_AGENT_DIR" \
@@ -348,7 +366,9 @@ run_pi() {
         extensions: (([
           "footer", "handoff", "identity", "stuff", "subscriber",
           "tiamat", "web", "worklist", "zip", "wake"
-        ] | map($ext + "/" + .)) + $pluginExts | unique)
+        ] | map($ext + "/" + .)) + $pluginExts
+          + (if ($familiarUiExt | length) > 0 then [$familiarUiExt] else [] end)
+          | unique)
       }
       | .defaultProvider //= $provider
       | .defaultModel //= $model

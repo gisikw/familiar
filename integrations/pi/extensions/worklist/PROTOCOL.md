@@ -181,8 +181,13 @@ duration hints compute the live resume time.
 ## Model-callable tools
 
 `set_attention({ level, duration_minutes? })` — Exo can protect the conversation
-herself. Any non-`auto` level requires `duration_minutes` and is clamped; the
-tool can never set an unbounded state. Returns the resolved `expires_at`.
+herself. **`auto` is the default for delegated work, heads-down/tool-heavy work,
+and waits for Golem.** Do not select `focused` merely because work is active:
+it suppresses ordinary worklist traffic and can delay settlements. `focused` is
+only for a deliberately uninterrupted conversational window; `protected` is
+only for true do-not-interrupt. Any non-`auto` level requires
+`duration_minutes` and is clamped; the tool can never set an unbounded state.
+Returns the resolved `expires_at`.
 
 `ack_worklist({ id? })` — the **agent-facing** equivalent of the user's `/ack`.
 Slash commands are user-only, so the foreground model cannot invoke `/ack`; it

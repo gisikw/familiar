@@ -1,71 +1,59 @@
+import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { formatLocalTime, humanizeDuration } from "../lib/time.ts";
+import { formatLocalTime } from "../lib/time.ts";
+import { WakeRuntime } from "./runtime.ts";
 
-// wake: the agent's interruptible (or uninterruptible) alarm clock.
-//
-// Gives the presence agent a way to end its turn normally and still get
-// woken at a chosen future time — for deploy convergence checks, settling
-// infrastructure, or anything else with no event that would otherwise fire.
-// This exists so the agent never needs a blocking sleep in the live channel.
-//
-// The mode is a required parameter by design (agentic UX): the caller must
-// state, on every call, whether the wake is
-//   - "unless_wakened": skipped if any fresh message (user, settlement,
-//     worklist) has arrived since it was scheduled — an interruptible nap; or
-//   - "always": fires regardless of intervening activity — a hard alarm.
-// Requiring the choice reinforces the behavioral contract each time.
-//
-// Wakes are in-memory only: /reload, /new, or process exit clears them.
-// The wake fires as a custom message (deliverAs: "followUp"), so it never
-// interrupts a running turn — it waits for the agent to be idle, then
-// triggers one.
-//
-// Deliberate exception to the worklist convention ("senders enqueue, never
-// sendMessage"): a wake is a self-scheduled alarm whose contract is temporal
-// precision. Routing it through attention tiers/digests could delay or
-// suppress an "always" wake, breaking the contract. The live channel is
-// protected instead by unless_wakened (skips if the session was already
-// wakened) and by followUp delivery (never preempts a running turn).
+// wake: the resident agent's durable alarm clock. Records live outside Pi's
+// session transcript so /reload, /new, Presence respawn, and host reboot do not
+// erase them. Delivery remains in the one interactive Pi process: this
+// extension only arms timers and calls sendMessage from that process.
+function stateRoot(): string {
+  if (process.env.FAMILIAR_WAKE_DIR) return path.resolve(process.env.FAMILIAR_WAKE_DIR);
+  if (process.env.FAMILIAR_PRESENCE_STATE_DIR) {
+    return path.join(path.resolve(process.env.FAMILIAR_PRESENCE_STATE_DIR), "wakes");
+  }
+  if (process.env.PI_CODING_AGENT_DIR) {
+    return path.join(path.resolve(process.env.PI_CODING_AGENT_DIR), "wakes");
+  }
+  return path.resolve(".familiar-wakes");
+}
 
 export default function (pi: ExtensionAPI) {
-  let counter = 0;
-  const pending = new Map<number, ReturnType<typeof setTimeout>>();
-  // "Wakened" means any activity that started a turn or delivered input:
-  // user messages fire `input`; settlements/worklist deliveries trigger
-  // turns and therefore fire `agent_start`. The scheduling turn's own
-  // agent_start predates the tool call, so a wake never cancels itself.
-  let lastWakenedAt = 0;
+  const runtime = new WakeRuntime(pi, stateRoot());
 
-  pi.on("input", async () => {
-    lastWakenedAt = Date.now();
+  // input catches direct browser/TUI/worklist user ingress; agent_start catches
+  // custom worklist settlements that trigger a turn. The scheduling turn's
+  // agent_start precedes the wake tool call and therefore cannot cancel itself.
+  const noteFreshInput = () => {
+    try { runtime.freshInput(); } catch { /* durability retries on next event/start */ }
+  };
+  pi.on("input", async () => noteFreshInput());
+  pi.on("agent_start", async () => noteFreshInput());
+
+  pi.on("session_start", async (_event, ctx) => {
+    try { runtime.start(); }
+    catch { ctx.ui.notify("wake: durable state unavailable; alarms not restored", "error"); }
   });
-
-  pi.on("agent_start", async () => {
-    lastWakenedAt = Date.now();
-  });
-
   pi.on("session_shutdown", async () => {
-    for (const timer of pending.values()) clearTimeout(timer);
-    pending.clear();
+    // Timers are session-scoped resources, records are not. The replacement
+    // extension restores them during its next session_start.
+    runtime.stop();
   });
 
   pi.registerTool({
     name: "wake",
     label: "Wake",
     description:
-      "Schedule a future wake for yourself, then end the turn normally. " +
-      "After duration_minutes, a wake message arrives and triggers a turn. " +
-      "mode 'unless_wakened' skips the wake if any fresh message (user, " +
-      "settlement, worklist) arrived after scheduling — an interruptible " +
-      "nap. mode 'always' fires regardless. Wakes do not survive /reload " +
-      "or session switches. Never use blocking sleeps in the live channel; " +
-      "use this instead.",
-    promptSnippet:
-      "Schedule a future self-wake instead of ever blocking on sleep",
+      "Durably schedule a future wake for yourself, then end the turn normally. " +
+      "After duration_minutes, a wake message arrives and triggers a turn, including after /reload, " +
+      "session switch, Presence respawn, or host reboot. mode 'unless_wakened' cancels durably if any " +
+      "fresh user, settlement, or worklist activity arrives after scheduling; mode 'always' fires " +
+      "regardless. Never use blocking sleeps in the live channel; use this instead.",
+    promptSnippet: "Durably schedule a future self-wake instead of ever blocking on sleep",
     promptGuidelines: [
-      "Use wake (mode unless_wakened) when something needs checking later and no settlement or worklist event will fire; never run blocking sleeps in the live conversation.",
+      "Use wake (normally mode unless_wakened) when something needs checking later and no settlement or worklist event will fire; never run blocking sleeps in the live conversation.",
     ],
     parameters: Type.Object({
       duration_minutes: Type.Number({
@@ -74,60 +62,28 @@ export default function (pi: ExtensionAPI) {
       }),
       mode: StringEnum(["unless_wakened", "always"] as const, {
         description:
-          "'unless_wakened': skip if any fresh message arrives first. " +
+          "'unless_wakened': cancel if fresh user/worklist/settlement activity arrives first. " +
           "'always': fire regardless of intervening activity.",
       }),
       reason: Type.String({
-        description:
-          "Why you scheduled this wake; echoed back in the wake message so future-you can orient",
+        description: "Why you scheduled this wake; echoed back so future-you can orient",
+        maxLength: 16_384,
       }),
     }),
     async execute(_toolCallId, params) {
-      const ms = Math.max(6_000, Math.round(params.duration_minutes * 60_000));
-      const id = ++counter;
-      const scheduledAt = Date.now();
-      const fireAt = new Date(scheduledAt + ms);
-
-      const timer = setTimeout(() => {
-        pending.delete(id);
-        if (params.mode === "unless_wakened" && lastWakenedAt > scheduledAt) {
-          return; // Something else woke the session first; nap not needed.
-        }
-        pi.sendMessage(
-          {
-            customType: "wake",
-            content:
-              `<system-reminder>Scheduled wake #${id} firing (mode: ${params.mode}), ` +
-              `set ${humanizeDuration(ms)} ago at ${formatLocalTime(new Date(scheduledAt))}. ` +
-              `Reason: ${params.reason}</system-reminder>`,
-            display: true,
-          },
-          { deliverAs: "followUp", triggerTurn: true },
-        );
-      }, ms);
-      pending.set(id, timer);
-
-      const skipNote =
-        params.mode === "unless_wakened"
-          ? "will be skipped if any fresh message arrives first"
-          : "will fire regardless of intervening activity";
+      const milliseconds = Math.max(6_000, Math.round(params.duration_minutes * 60_000));
+      const wake = runtime.schedule(params.mode, params.reason, milliseconds);
+      const note = params.mode === "unless_wakened"
+        ? "will be cancelled if fresh activity arrives first"
+        : "will fire regardless of intervening activity";
       return {
-        content: [
-          {
-            type: "text",
-            text:
-              `Wake #${id} scheduled for ${formatLocalTime(fireAt)} ` +
-              `(${params.mode}: ${skipNote}). End the turn normally; ` +
-              `do not wait or poll.`,
-          },
-        ],
-        details: {
-          id,
-          mode: params.mode,
-          reason: params.reason,
-          scheduledAt,
-          fireAt: fireAt.getTime(),
-        },
+        content: [{
+          type: "text",
+          text:
+            `Wake ${wake.id} durably scheduled for ${formatLocalTime(new Date(wake.fireAt))} ` +
+            `(${params.mode}: ${note}). End the turn normally; do not wait or poll.`,
+        }],
+        details: wake,
       };
     },
   });
