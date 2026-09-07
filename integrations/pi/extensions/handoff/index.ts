@@ -269,7 +269,7 @@ export default function handoffExtension(pi: ExtensionAPI) {
         {
           signal: event.signal,
           cacheRetention: "short",
-          ...(reasoning === undefined ? {} : { reasoning }),
+          ...(reasoning === undefined ? {} : { reasoningLevel: reasoning }),
           sessionId: ctx.sessionManager.getSessionId() || uuidv7(),
           ...(boundedMaxTokens === undefined ? {} : { maxTokens: boundedMaxTokens }),
         },
