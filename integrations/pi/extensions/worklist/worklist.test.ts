@@ -549,6 +549,7 @@ describe("runtime scheduler wiring", () => {
       sent: Array<{ message: any; options: any }>;
       handlers: Map<string, Array<(...args: any[]) => any>>;
       tools: Map<string, any>;
+      emitted: Array<{ event: string; payload: any }>;
       ctx: any;
       setNow: (n: number) => void;
       now: () => number;
@@ -563,13 +564,17 @@ describe("runtime scheduler wiring", () => {
     const handlers = new Map<string, Array<(...args: any[]) => any>>();
     const tools = new Map<string, any>();
     const sent: Array<{ message: any; options: any }> = [];
+    const emitted: Array<{ event: string; payload: any }> = [];
     const pi = {
       on(event: string, handler: (...args: any[]) => any) {
         const list = handlers.get(event) ?? [];
         list.push(handler);
         handlers.set(event, list);
       },
-      events: { on() {}, emit() {} },
+      events: {
+        on() {},
+        emit(event: string, payload: any) { emitted.push({ event, payload }); },
+      },
       registerCommand() {},
       registerTool(def: any) { tools.set(def.name, def); },
       sendMessage(message: any, options: any) { sent.push({ message, options }); },
@@ -589,7 +594,7 @@ describe("runtime scheduler wiring", () => {
       const mod = await import(`./index.ts?runtime-test=${Date.now()}-${Math.random()}`);
       const runtime = mod.default(pi as any);
       await handlers.get("session_start")?.[0]?.({ type: "session_start", reason: "startup" }, ctx);
-      await body({ dir, runtime, sent, handlers, tools, ctx, setNow: (n) => { now = n; }, now: () => now });
+      await body({ dir, runtime, sent, handlers, tools, emitted, ctx, setNow: (n) => { now = n; }, now: () => now });
       await handlers.get("session_shutdown")?.[0]?.({ type: "session_shutdown", reason: "quit" }, ctx);
     } finally {
       Date.now = realNow;
@@ -598,6 +603,16 @@ describe("runtime scheduler wiring", () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   };
+
+  test("durable worklist ingress announces fresh activity with its persisted time", async () => {
+    await withRuntime(async ({ runtime, emitted, now }) => {
+      runtime.enqueue({ id: "wake-ordering", summary: "arrived while down", source: "test" });
+      expect(emitted).toContainEqual({
+        event: "familiar:fresh-input",
+        payload: { source: "worklist", at: now() },
+      });
+    });
+  });
 
   test("set_attention model copy makes auto the delegated-work default", async () => {
     await withRuntime(async ({ tools }) => {

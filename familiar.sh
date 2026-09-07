@@ -93,14 +93,6 @@ export FAMILIAR_PRESENCE_CTL="${FAMILIAR_PRESENCE_CTL:-$REPO/services/presence/p
 # Durable extension state belongs to the private runtime, never the source tree.
 export FAMILIAR_WAKE_DIR="${FAMILIAR_WAKE_DIR:-$STATE_DIR/wakes}"
 export FAMILIAR_WAKE_DIR="$(resolve_config_path "$FAMILIAR_WAKE_DIR")"
-# familiar-ui is a separately tracked Fort checkout, not an unpinned/private
-# flake input and not a copied generated artifact. Its locked flake supplies the
-# immutable extension package when source+exact revision are configured.
-if [ -n "${FAMILIAR_UI_SOURCE:-}" ]; then
-  export FAMILIAR_UI_SOURCE="$(resolve_config_path "$FAMILIAR_UI_SOURCE")"
-fi
-export FAMILIAR_UI_DESCRIPTOR="${FAMILIAR_UI_DESCRIPTOR:-$STATE_DIR/familiar-ui/bridge.json}"
-export FAMILIAR_UI_DESCRIPTOR="$(resolve_config_path "$FAMILIAR_UI_DESCRIPTOR")"
 # Session storage. Overriding this is the deliberate escape hatch for a wedged
 # session: point it at a clean-room dir to bail out without touching the main
 # continuity line. Not a first-class verb on purpose — forking continuity
@@ -315,6 +307,23 @@ plugin_extensions_json() {
     in map (x: builtins.replaceStrings ["\${plugin_root}"] [root] x) (m.pi.extensions or [])'
 }
 
+extra_extensions_json() {
+  # Fort may stage immutable extension wrappers for the next Presence birth.
+  # This is deliberately a small path-only seam, not arbitrary settings JSON.
+  # An explicitly empty value is malformed; only an unset value defaults to [].
+  printf '%s\n' "${FAMILIAR_PI_EXTRA_EXTENSIONS_JSON-[]}" | jq -ce '
+    if type == "array"
+      and length <= 16
+      and all(.[]; type == "string" and length > 0 and startswith("/"))
+    then .
+    else error("expected at most 16 non-empty absolute extension paths")
+    end
+  ' 2>/dev/null || {
+    echo 'familiar: invalid FAMILIAR_PI_EXTRA_EXTENSIONS_JSON (expected an array of at most 16 non-empty absolute paths)' >&2
+    return 1
+  }
+}
+
 run_pi() {
   prepare_plugin
   ensure_devshell pi "$@"
@@ -344,15 +353,12 @@ run_pi() {
     prev=$(jq -ce . "$PI_CODING_AGENT_DIR/settings.json" 2>/dev/null || echo '{}')
     # handoff/index.ts triggers at 90% of the active model's real window. Pi's fixed
     # reserve is the emergency floor for small-window models and overflows.
-    plugin_exts=$(plugin_extensions_json)
-    local familiar_ui_ext=""
-    if [ -n "${FAMILIAR_UI_SOURCE:-}" ]; then
-      [ -n "${FAMILIAR_UI_REV:-}" ] || { echo 'familiar: [ui] source requires exact rev' >&2; return 1; }
-      familiar_ui_ext=$(bash "$REPO/scripts/familiar-ui-extension.sh" extension \
-        "$FAMILIAR_UI_SOURCE" "$FAMILIAR_UI_REV") || return 1
-    fi
+    plugin_exts=$(plugin_extensions_json) || return 1
+    # Validate the entire operator-supplied value before opening settings.json.
+    # A bad next-birth contract must leave the prior settings byte-for-byte intact.
+    extra_exts=$(extra_extensions_json) || return 1
     jq -n --argjson prev "$prev" --argjson pluginExts "$plugin_exts" \
-      --arg familiarUiExt "$familiar_ui_ext" \
+      --argjson extraExts "$extra_exts" \
       --arg provider "${FAMILIAR_DEFAULT_PROVIDER:-llama.cpp}" \
       --arg model "${FAMILIAR_DEFAULT_MODEL:-$llama_model}" \
       --arg dir "$PI_CODING_AGENT_DIR" \
@@ -366,9 +372,7 @@ run_pi() {
         extensions: (([
           "footer", "handoff", "identity", "stuff", "subscriber",
           "tiamat", "web", "worklist", "zip", "wake"
-        ] | map($ext + "/" + .)) + $pluginExts
-          + (if ($familiarUiExt | length) > 0 then [$familiarUiExt] else [] end)
-          | unique)
+        ] | map($ext + "/" + .)) + $pluginExts + $extraExts | unique)
       }
       | .defaultProvider //= $provider
       | .defaultModel //= $model

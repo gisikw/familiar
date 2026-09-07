@@ -26,11 +26,19 @@ export default function (pi: ExtensionAPI) {
   // input catches direct browser/TUI/worklist user ingress; agent_start catches
   // custom worklist settlements that trigger a turn. The scheduling turn's
   // agent_start precedes the wake tool call and therefore cannot cancel itself.
-  const noteFreshInput = () => {
-    try { runtime.freshInput(); } catch { /* durability retries on next event/start */ }
+  const noteFreshInput = (at?: number) => {
+    try { runtime.freshInput(at); } catch { /* durability retries on next event/start */ }
   };
   pi.on("input", async () => noteFreshInput());
   pi.on("agent_start", async () => noteFreshInput());
+  // Worklist emits this after durable enqueue/promotion during session_start.
+  // Pi awaits lifecycle handlers sequentially before timers run: whether this
+  // handler runs before or after wake's handler, it cancels the delay-0 overdue
+  // nap before the event loop can deliver it.
+  pi.events.on("familiar:fresh-input", (event: unknown) => {
+    const at = (event as { at?: unknown })?.at;
+    if (typeof at === "number") noteFreshInput(at);
+  });
 
   pi.on("session_start", async (_event, ctx) => {
     try { runtime.start(); }

@@ -82,6 +82,30 @@ describe("durable wake runtime", () => {
     expect(JSON.stringify(f.sent[0]?.message)).toContain("overdue");
   });
 
+  test("post-downtime worklist activity cancels an overdue nap before startup arms it", () => {
+    const f = fixture();
+    const first = new WakeRuntime(f.host, f.root, f.clock);
+    const nap = first.schedule("unless_wakened", "stale nap", 10_000);
+    const alarm = first.schedule("always", "hard alarm", 10_000);
+    first.stop();
+    f.clock.advance(20_000);
+
+    const restored = new WakeRuntime(f.host, f.root, f.clock);
+    // Wake's session_start may run first and arm delay-0 timers. Pi then awaits
+    // worklist's handler before returning to the event loop, so its persisted
+    // ingress timestamp must still cancel the nap before timers execute.
+    restored.start();
+    restored.freshInput(nap.scheduledAt + 5_000);
+    f.clock.advance(0);
+
+    expect(f.sent).toHaveLength(1);
+    expect(JSON.stringify(f.sent[0]?.message)).toContain("hard alarm");
+    const paths = wakePaths(f.root);
+    expect(fs.existsSync(path.join(paths.pending, `${nap.id}.json`))).toBe(false);
+    expect(fs.existsSync(path.join(paths.fired, `${nap.id}.json`))).toBe(false);
+    expect(fs.existsSync(path.join(paths.fired, `${alarm.id}.json`))).toBe(true);
+  });
+
   test("fresh user/worklist activity durably cancels unless_wakened only", () => {
     const f = fixture();
     const runtime = new WakeRuntime(f.host, f.root, f.clock);

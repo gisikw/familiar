@@ -37,6 +37,10 @@ export class WakeRuntime {
   private readonly paths;
   private readonly timers = new Map<string, unknown>();
   private started = false;
+  // Other extensions can report durable ingress during their session_start
+  // before wake's own lifecycle handler runs. Retain that timestamp so overdue
+  // unless_wakened records are cancelled before they can be armed at delay 0.
+  private lastFreshInputAt = 0;
 
   constructor(
     private readonly host: WakeHost,
@@ -54,6 +58,13 @@ export class WakeRuntime {
       // fired/ is the durable idempotence journal. This also handles a stale
       // backup restoring an already-claimed pending record.
       if (wasClaimed(this.paths, wake.id)) {
+        removePendingWake(this.paths, wake.id);
+        continue;
+      }
+      // Worklist announces queued/incoming work with its durable timestamp.
+      // Honor an announcement made before this lifecycle handler as well as the
+      // common wake-first ordering handled by the cancellable delay-0 timer.
+      if (wake.mode === "unless_wakened" && wake.scheduledAt < this.lastFreshInputAt) {
         removePendingWake(this.paths, wake.id);
         continue;
       }
@@ -85,10 +96,12 @@ export class WakeRuntime {
     return wake;
   }
 
-  freshInput(): void {
+  freshInput(at = this.clock.now()): void {
+    if (!Number.isSafeInteger(at) || at < 0) return;
+    this.lastFreshInputAt = Math.max(this.lastFreshInputAt, at);
     if (!this.started) return;
     for (const wake of loadWakes(this.paths)) {
-      if (wake.mode !== "unless_wakened" || wake.scheduledAt >= this.clock.now()) continue;
+      if (wake.mode !== "unless_wakened" || wake.scheduledAt >= at) continue;
       this.cancel(wake.id);
     }
   }

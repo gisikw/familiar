@@ -146,6 +146,15 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
+  // A durable worklist arrival is fresh activity for interruptible wakes. Use
+  // the item's persisted timestamp rather than observation time so wake can
+  // compare correctly when both records are restored after downtime.
+  const announceFreshWork = (items: QueueItem[]) => {
+    if (items.length === 0) return;
+    const at = items.reduce((latest, item) => Math.max(latest, item.ts), 0);
+    pi.events.emit("familiar:fresh-input", { source: "worklist", at });
+  };
+
   /** Lazily expire an elapsed override, persisting the clear so the footer and
    *  disk stay honest. Correctness does not depend on this firing — resolve is
    *  lazy — but it keeps the persisted file clean. */
@@ -296,6 +305,7 @@ export default function (pi: ExtensionAPI) {
   const tick = () => {
     ensureDirs(P, LEGACY_ROOT);
     const created = drainIncoming(P);
+    announceFreshWork(created);
     // Process after incoming so an ack request and its enqueue observed in the
     // same tick resolve deterministically. Unknown ids are still consumed: the
     // producer's durable claimed marker prevents a later enqueue.
@@ -369,7 +379,10 @@ export default function (pi: ExtensionAPI) {
   const enqueue = (env: EnqueueEnvelope): QueueItem => {
     ensureDirs(P, LEGACY_ROOT);
     const { item, created } = enqueueEnvelopeIdempotent(P, env);
-    if (created) refreshSurfaces();
+    if (created) {
+      announceFreshWork([item]);
+      refreshSurfaces();
+    }
     return item;
   };
 
@@ -404,7 +417,10 @@ export default function (pi: ExtensionAPI) {
           ? { suggested_deadline: env.suggested_deadline }
           : {}),
       });
-      if (created) refreshSurfaces();
+      if (created) {
+        announceFreshWork([item]);
+        refreshSurfaces();
+      }
       return { accepted: true, id: item.id };
     },
     async acknowledge(id: string): Promise<boolean> {
@@ -917,6 +933,10 @@ export default function (pi: ExtensionAPI) {
       idleSince = Date.now();
       agentBusy = false;
       voiceHoldUntil = 0;
+      // Pending items may have been promoted before the crash (rather than
+      // remaining in incoming/). Replay only their original activity times;
+      // wake compares those against each alarm's scheduledAt.
+      announceFreshWork(listItems(P).filter(isPending));
       refreshSurfaces();
 
       // Factory initialization normally registered the sink before lifecycle

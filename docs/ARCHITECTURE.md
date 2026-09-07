@@ -210,14 +210,13 @@ served browser deployment reaches it through familiar-ui's same-origin descripto
 broker. Exact Origin, bound Host, and bearer-token checks remain owned and
 enforced by familiar-ui.
 
-The repositories stay independently releasable. Fort tracks an exact sibling
-familiar-ui checkout on Azula. At resident-Pi startup Familiar verifies that Git
-revision and clean tree, asks the sibling's locked flake for its immutable package,
-and loads that package's built extension entrypoint. Thus Familiar carries no
-copied `dist` artifact and no machine-private flake input. A stable descriptor
-path under private runtime state hands bridge epoch/port/token changes to the
-broker without making the bridge itself non-loopback or exposing credentials in
-a URL.
+The repositories stay independently releasable. Fort owns the separately tracked
+private familiar-ui repository, immutable Nix profile, browser deployment, and a
+stable extension wrapper. On the next Presence birth it passes that wrapper via
+Familiar's bounded `FAMILIAR_PI_EXTRA_EXTENSIONS_JSON` seam. Familiar neither
+builds the private repository during Presence startup nor carries copied `dist`
+artifacts or machine-private flake inputs. The wrapper and descriptor broker keep
+bridge configuration and credentials within the deployment trust boundary.
 
 ### Model and voice services
 

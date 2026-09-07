@@ -12,18 +12,6 @@ offline = 1
 skip_version_check = 1
 # coding_agent_dir = "./state/pi"
 
-# Optional browser projection from Fort's separately tracked familiar-ui checkout.
-# Familiar resolves its locked production flake at this exact revision; ignored
-# local dist/node_modules can never enter the runtime (see docs/CONFIG.md).
-[ui]
-# source = "../familiar-ui"
-# rev = "0123456789abcdef0123456789abcdef01234567"
-# origin = "https://familiar-ui.example.invalid" # exact browser origin
-# port = 5174                                  # fixed loopback bridge port in production
-# descriptor = "./state/familiar-ui/bridge.json"
-# public_origin = "https://familiar-ui.example.invalid" # broker service env
-# broker_socket = "./state/familiar-ui/broker.sock"     # broker service env
-
 # Cross-cutting Familiar paths/policy use [familiar]; its prefix is not doubled.
 [familiar]
 # identity_path = "./identity"
