@@ -3,7 +3,13 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { WakeRuntime, type WakeClock } from "./runtime.ts";
-import { wakePaths } from "./store.ts";
+import {
+  putWake,
+  wakePaths,
+  wakeStateRoots,
+  writeWakeAtomic,
+  type WakeRecord,
+} from "./store.ts";
 
 class FakeClock implements WakeClock {
   current = 1_000_000;
@@ -49,6 +55,153 @@ function fixture() {
 function modes(file: string): number {
   return fs.statSync(file).mode & 0o777;
 }
+
+function record(id: string, reason: string, scheduledAt = 1_000_000, fireAt = 1_010_000): WakeRecord {
+  return { version: 1, id, mode: "always", reason, scheduledAt, fireAt };
+}
+
+describe("wake store upgrade", () => {
+  test("fallback derives a sibling of pi or Presence state, never nested wakes", () => {
+    expect(wakeStateRoots({ PI_CODING_AGENT_DIR: "/var/lib/kestrel/state/pi" })).toEqual({
+      canonical: "/var/lib/kestrel/state/wakes",
+      legacy: ["/var/lib/kestrel/state/pi/wakes"],
+    });
+    expect(wakeStateRoots({ FAMILIAR_PRESENCE_STATE_DIR: "/var/lib/kestrel/state/presence" })).toEqual({
+      canonical: "/var/lib/kestrel/state/wakes",
+      legacy: ["/var/lib/kestrel/state/presence/wakes"],
+    });
+    expect(wakeStateRoots({
+      FAMILIAR_PRESENCE_STATE_DIR: "/var/lib/kestrel/state/presence",
+      PI_CODING_AGENT_DIR: "/var/lib/kestrel/state/pi",
+    })).toEqual({
+      canonical: "/var/lib/kestrel/state/wakes",
+      legacy: [
+        "/var/lib/kestrel/state/presence/wakes",
+        "/var/lib/kestrel/state/pi/wakes",
+      ],
+    });
+  });
+
+  test("reproduces old-env schedule then new-env restart: overdue always fires exactly once", () => {
+    const f = fixture();
+    const state = path.join(f.root, "state");
+    const oldRoot = path.join(state, "presence", "wakes");
+    const roots = wakeStateRoots({
+      FAMILIAR_WAKE_DIR: path.join(state, "wakes"),
+      FAMILIAR_PRESENCE_STATE_DIR: path.join(state, "presence"),
+      PI_CODING_AGENT_DIR: path.join(state, "pi"),
+    });
+    const oldResident = new WakeRuntime(f.host, oldRoot, f.clock);
+    const wake = oldResident.schedule("always", "old resident overdue", 10_000);
+    oldResident.stop();
+    f.clock.advance(20_000);
+
+    const replacement = new WakeRuntime(f.host, roots.canonical, f.clock, roots.legacy);
+    replacement.start();
+    f.clock.advance(0);
+    expect(f.sent).toHaveLength(1);
+    expect(JSON.stringify(f.sent[0]?.message)).toContain("old resident overdue");
+    replacement.stop();
+    new WakeRuntime(f.host, roots.canonical, f.clock, roots.legacy).start();
+    f.clock.advance(0);
+    expect(f.sent).toHaveLength(1);
+    expect(fs.existsSync(path.join(wakePaths(roots.canonical).fired, `${wake.id}.json`))).toBe(true);
+    expect(fs.existsSync(path.join(wakePaths(oldRoot).pending, `${wake.id}.json`))).toBe(false);
+  });
+
+  test("restores a migrated future wake", () => {
+    const f = fixture();
+    const canonical = path.join(f.root, "state", "wakes");
+    const legacy = path.join(f.root, "state", "presence", "wakes");
+    const oldResident = new WakeRuntime(f.host, legacy, f.clock);
+    oldResident.schedule("always", "legacy future", 60_000);
+    oldResident.stop();
+
+    new WakeRuntime(f.host, canonical, f.clock, [legacy]).start();
+    f.clock.advance(59_999);
+    expect(f.sent).toHaveLength(0);
+    f.clock.advance(1);
+    expect(f.sent).toHaveLength(1);
+    expect(JSON.stringify(f.sent[0]?.message)).toContain("legacy future");
+  });
+
+  test("ingests an old fired claim before pending and never replays it", () => {
+    const f = fixture();
+    const canonical = path.join(f.root, "canonical");
+    const legacy = path.join(f.root, "presence", "wakes");
+    const oldResident = new WakeRuntime(f.host, legacy, f.clock);
+    const wake = oldResident.schedule("always", "already attempted", 10_000);
+    f.clock.advance(10_000);
+    expect(f.sent).toHaveLength(1);
+    oldResident.stop();
+    f.sent.length = 0;
+    // Simulate a stale backup copy alongside the valid legacy fired claim.
+    putWake(wakePaths(legacy), wake);
+
+    new WakeRuntime(f.host, canonical, f.clock, [legacy]).start();
+    f.clock.advance(0);
+    expect(f.sent).toHaveLength(0);
+    expect(fs.existsSync(path.join(wakePaths(canonical).fired, `${wake.id}.json`))).toBe(true);
+    expect(fs.existsSync(path.join(wakePaths(canonical).pending, `${wake.id}.json`))).toBe(false);
+  });
+
+  test("canonical collision wins deterministically without overwrite", () => {
+    const f = fixture();
+    const canonical = path.join(f.root, "canonical");
+    const legacy = path.join(f.root, "presence", "wakes");
+    const canonicalWake = record("wake-collision", "canonical", f.clock.now(), f.clock.now() + 20_000);
+    const legacyWake = record("wake-collision", "legacy", f.clock.now(), f.clock.now() + 10_000);
+    putWake(wakePaths(canonical), canonicalWake);
+    putWake(wakePaths(legacy), legacyWake);
+
+    new WakeRuntime(f.host, canonical, f.clock, [legacy]).start();
+    expect(JSON.parse(fs.readFileSync(path.join(wakePaths(canonical).pending, "wake-collision.json"), "utf8"))).toEqual(canonicalWake);
+    expect(fs.existsSync(path.join(wakePaths(legacy).pending, "wake-collision.json"))).toBe(true);
+    f.clock.advance(10_000);
+    expect(f.sent).toHaveLength(0);
+    f.clock.advance(10_000);
+    expect(f.sent).toHaveLength(1);
+    expect(JSON.stringify(f.sent[0]?.message)).toContain("canonical");
+  });
+
+  test("migration applies private permissions and ignores unsafe/corrupt sources", () => {
+    const f = fixture();
+    const canonical = path.join(f.root, "canonical");
+    const legacy = path.join(f.root, "presence", "wakes");
+    const paths = wakePaths(legacy);
+    fs.mkdirSync(paths.pending, { recursive: true, mode: 0o755 });
+    fs.mkdirSync(paths.fired, { recursive: true, mode: 0o755 });
+    const good = record("wake-good", "safe future", f.clock.now(), f.clock.now() + 60_000);
+    writeWakeAtomic(path.join(paths.pending, `${good.id}.json`), good);
+    fs.chmodSync(path.join(paths.pending, `${good.id}.json`), 0o644);
+    fs.writeFileSync(path.join(paths.pending, "corrupt.json"), "{bad", { mode: 0o644 });
+    const outside = path.join(f.root, "outside.json");
+    fs.writeFileSync(outside, `${JSON.stringify(record("wake-link", "unsafe"))}\n`);
+    fs.symlinkSync(outside, path.join(paths.pending, "wake-link.json"));
+
+    new WakeRuntime(f.host, canonical, f.clock, [legacy]).start();
+    const destination = path.join(wakePaths(canonical).pending, `${good.id}.json`);
+    expect(modes(wakePaths(canonical).root)).toBe(0o700);
+    expect(modes(wakePaths(canonical).pending)).toBe(0o700);
+    expect(modes(destination)).toBe(0o600);
+    expect(fs.existsSync(path.join(paths.pending, "corrupt.json"))).toBe(true);
+    expect(fs.lstatSync(path.join(paths.pending, "wake-link.json")).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(outside, "utf8")).toContain("wake-link");
+  });
+
+  test("does not traverse a symlinked legacy root", () => {
+    const f = fixture();
+    const actual = path.join(f.root, "actual");
+    const linked = path.join(f.root, "linked");
+    putWake(wakePaths(actual), record("wake-hidden", "must not ingest"));
+    fs.symlinkSync(actual, linked, "dir");
+    const canonical = path.join(f.root, "canonical");
+
+    new WakeRuntime(f.host, canonical, f.clock, [linked]).start();
+    expect(fs.readdirSync(wakePaths(canonical).pending)).toEqual([]);
+    expect(fs.existsSync(path.join(wakePaths(actual).pending, "wake-hidden.json"))).toBe(true);
+  });
+});
 
 describe("durable wake runtime", () => {
   test("restores a future wake after session/process teardown", () => {

@@ -64,7 +64,20 @@ tests and support modules outside runtime auto-discovery without a second manife
 
 The resident `wake` extension stores alarms beneath `FAMILIAR_WAKE_DIR`
 (default private `state/wakes`) using 0700 directories and atomically replaced
-0600 records. Future alarms are restored and elapsed alarms are fired promptly
+0600 records. If that export is absent in an old resident Presence environment,
+the fallback is the `wakes` sibling of `PI_CODING_AGENT_DIR` or
+`FAMILIAR_PRESENCE_STATE_DIR`, never a nested Pi/Presence directory.
+
+For one release, startup also ingests the initial durable-wake release's mistaken
+`presence/wakes` and `pi/wakes` fallbacks when they differ from the canonical
+root. Valid fired claims are durably copied before pending alarms; canonical
+records win deterministic ID collisions, no destination is overwritten, and a
+source is removed only after a durable equal copy. Divergent, corrupt, symlinked,
+or otherwise unsafe sources remain untouched. The retained fired journal makes
+an interrupted migration idempotent and prevents stale pending copies from
+replaying.
+
+Future alarms are restored and elapsed alarms are fired promptly
 on `session_start`; fresh user/worklist/settlement activity durably cancels
 `unless_wakened` alarms, while `always` alarms remain. Worklist reports persisted
 post-schedule ingress before wake arms overdue records at startup, so queued work

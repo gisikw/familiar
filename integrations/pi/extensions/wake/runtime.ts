@@ -5,6 +5,7 @@ import {
   claimWake,
   ensureWakeDirs,
   loadWakes,
+  migrateLegacyWakes,
   putWake,
   removePendingWake,
   wakePaths,
@@ -46,6 +47,7 @@ export class WakeRuntime {
     private readonly host: WakeHost,
     root: string,
     private readonly clock: WakeClock = systemClock,
+    private readonly legacyRoots: readonly string[] = [],
   ) {
     this.paths = wakePaths(root);
   }
@@ -53,6 +55,10 @@ export class WakeRuntime {
   start(): void {
     if (this.started) return;
     ensureWakeDirs(this.paths);
+    // Ingest the bounded, first-release fallback locations before loading or
+    // arming anything. In particular, legacy fired claims must win over every
+    // pending collision so a restart cannot replay an already-attempted wake.
+    migrateLegacyWakes(this.paths, this.legacyRoots);
     this.started = true;
     for (const wake of loadWakes(this.paths)) {
       // fired/ is the durable idempotence journal. This also handles a stale

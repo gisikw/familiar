@@ -1,27 +1,17 @@
-import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { formatLocalTime } from "../lib/time.ts";
 import { WakeRuntime } from "./runtime.ts";
+import { wakeStateRoots } from "./store.ts";
 
 // wake: the resident agent's durable alarm clock. Records live outside Pi's
 // session transcript so /reload, /new, Presence respawn, and host reboot do not
 // erase them. Delivery remains in the one interactive Pi process: this
 // extension only arms timers and calls sendMessage from that process.
-function stateRoot(): string {
-  if (process.env.FAMILIAR_WAKE_DIR) return path.resolve(process.env.FAMILIAR_WAKE_DIR);
-  if (process.env.FAMILIAR_PRESENCE_STATE_DIR) {
-    return path.join(path.resolve(process.env.FAMILIAR_PRESENCE_STATE_DIR), "wakes");
-  }
-  if (process.env.PI_CODING_AGENT_DIR) {
-    return path.join(path.resolve(process.env.PI_CODING_AGENT_DIR), "wakes");
-  }
-  return path.resolve(".familiar-wakes");
-}
-
 export default function (pi: ExtensionAPI) {
-  const runtime = new WakeRuntime(pi, stateRoot());
+  const roots = wakeStateRoots();
+  const runtime = new WakeRuntime(pi, roots.canonical, undefined, roots.legacy);
 
   // input catches direct browser/TUI/worklist user ingress; agent_start catches
   // custom worklist settlements that trigger a turn. The scheduling turn's

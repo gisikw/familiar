@@ -19,7 +19,40 @@ export interface WakePaths {
   quarantine: string;
 }
 
+export interface WakeStateRoots {
+  canonical: string;
+  legacy: string[];
+}
+
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/;
+const MAX_RECORD_BYTES = 65_536;
+
+/** Resolve the durable store without relying on familiar.sh having run in the
+ * current process. Presence can survive a source upgrade, so an extension
+ * loaded by /reload may see the old environment. The pi and Presence stores
+ * are children of Familiar's state root; wakes are their sibling, not a child.
+ *
+ * legacy is intentionally bounded to the two incorrect roots emitted by the
+ * first durable-wake release. Remove this compatibility list after one release.
+ */
+export function wakeStateRoots(env: NodeJS.ProcessEnv = process.env): WakeStateRoots {
+  const piDir = env.PI_CODING_AGENT_DIR ? path.resolve(env.PI_CODING_AGENT_DIR) : undefined;
+  const presenceDir = env.FAMILIAR_PRESENCE_STATE_DIR
+    ? path.resolve(env.FAMILIAR_PRESENCE_STATE_DIR)
+    : undefined;
+  const canonical = env.FAMILIAR_WAKE_DIR
+    ? path.resolve(env.FAMILIAR_WAKE_DIR)
+    : piDir
+      ? path.join(path.dirname(piDir), "wakes")
+      : presenceDir
+        ? path.join(path.dirname(presenceDir), "wakes")
+        : path.resolve(".familiar-wakes");
+  const candidates: string[] = [];
+  if (presenceDir) candidates.push(path.join(presenceDir, "wakes"));
+  if (piDir) candidates.push(path.join(piDir, "wakes"));
+  const legacy = candidates.filter((root) => path.resolve(root) !== path.resolve(canonical));
+  return { canonical, legacy: [...new Set(legacy)] };
+}
 
 export function wakePaths(root: string): WakePaths {
   return {
@@ -139,6 +172,136 @@ export function loadWakes(paths: WakePaths): WakeRecord[] {
   return records.sort((a, b) => a.fireAt - b.fireAt || a.id.localeCompare(b.id));
 }
 
+function safeLegacyDirectory(directory: string): boolean {
+  const absolute = path.resolve(directory);
+  const parsed = path.parse(absolute);
+  let cursor = parsed.root;
+  try {
+    for (const part of absolute.slice(parsed.root.length).split(path.sep).filter(Boolean)) {
+      cursor = path.join(cursor, part);
+      const stat = fs.lstatSync(cursor);
+      if (stat.isSymbolicLink()) return false;
+    }
+    return fs.lstatSync(absolute).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+type LegacyRecord = { wake: WakeRecord; stat: fs.Stats };
+
+function readLegacyRecord(file: string, expectedName: string): LegacyRecord | undefined {
+  let fd: number | undefined;
+  try {
+    const before = fs.lstatSync(file);
+    if (!before.isFile() || before.isSymbolicLink()) return undefined;
+    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || stat.dev !== before.dev || stat.ino !== before.ino
+      || stat.size > MAX_RECORD_BYTES) return undefined;
+    const parsed: unknown = JSON.parse(fs.readFileSync(fd, "utf8"));
+    if (!validWake(parsed) || expectedName !== `${parsed.id}.json`) return undefined;
+    return { wake: parsed, stat };
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
+type InstallResult = "installed" | "equal" | "collision";
+
+/** Durably publish without rename-overwrite. link(2) is the atomic no-replace
+ * step; the temporary inode is already fsynced and mode 0600. */
+function installWakeNoReplace(file: string, wake: WakeRecord): InstallResult {
+  const directory = path.dirname(file);
+  const temporary = `${file}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(temporary, "wx", 0o600);
+    fs.writeFileSync(fd, `${JSON.stringify(wake)}\n`);
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = undefined;
+    try {
+      fs.linkSync(temporary, file);
+      syncDirectory(directory);
+      return "installed";
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      try {
+        const stat = fs.lstatSync(file);
+        if (!stat.isFile() || stat.isSymbolicLink()) return "collision";
+        const existing: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
+        return validWake(existing) && JSON.stringify(existing) === JSON.stringify(wake) ? "equal" : "collision";
+      } catch {
+        return "collision";
+      }
+    }
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+    try {
+      fs.unlinkSync(temporary);
+      syncDirectory(directory);
+    } catch { /* absent, or harmless stale temp retried by operator cleanup */ }
+  }
+}
+
+function removeCopiedLegacy(file: string, original: fs.Stats): void {
+  try {
+    const current = fs.lstatSync(file);
+    if (!current.isFile() || current.isSymbolicLink()
+      || current.dev !== original.dev || current.ino !== original.ino) return;
+    fs.unlinkSync(file);
+    syncDirectory(path.dirname(file));
+  } catch {
+    // The canonical copy is already durable. A retained source is safe: the
+    // canonical fired journal/collision rules make the next ingestion a no-op.
+  }
+}
+
+function canonicalClaim(paths: WakePaths, id: string): boolean {
+  try {
+    const stat = fs.lstatSync(path.join(paths.fired, `${id}.json`));
+    return stat.isFile() && !stat.isSymbolicLink();
+  } catch { return false; }
+}
+
+/** One-release ingestion for stores accidentally derived as presence/wakes or
+ * pi/wakes. Valid claims are copied before pending records. Sources are removed
+ * only after an fsynced canonical install (or byte-equivalent destination), so
+ * interruption is retryable. Divergent collisions and every malformed or
+ * unsafe source remain untouched for inspection. */
+export function migrateLegacyWakes(paths: WakePaths, legacyRoots: readonly string[]): void {
+  ensureWakeDirs(paths);
+  const roots = [...new Set(legacyRoots.map((root) => path.resolve(root)))]
+    .filter((root) => root !== path.resolve(paths.root));
+
+  for (const kind of ["fired", "pending"] as const) {
+    for (const root of roots) {
+      const directory = path.join(root, kind);
+      if (!safeLegacyDirectory(root) || !safeLegacyDirectory(directory)) continue;
+      let names: string[];
+      try { names = fs.readdirSync(directory).sort(); } catch { continue; }
+      for (const name of names) {
+        if (!name.endsWith(".json")) continue;
+        const source = path.join(directory, name);
+        const record = readLegacyRecord(source, name);
+        if (!record) continue;
+        if (kind === "pending" && canonicalClaim(paths, record.wake.id)) {
+          removeCopiedLegacy(source, record.stat);
+          continue;
+        }
+        const destination = path.join(paths[kind], name);
+        let result: InstallResult;
+        try { result = installWakeNoReplace(destination, record.wake); }
+        catch { continue; }
+        if (result !== "collision") removeCopiedLegacy(source, record.stat);
+      }
+    }
+  }
+}
+
 /** Atomically claim a wake before delivery. A restart treats anything in fired/
  * as already delivered, preventing duplicate sends. This deliberately creates
  * a tiny at-most-once boundary: a crash after this rename but before send can
@@ -173,6 +336,8 @@ export function removePendingWake(paths: WakePaths, id: string): void {
  * tiny and make an old pending copy/restore with the same id harmless. */
 export function wasClaimed(paths: WakePaths, id: string): boolean {
   if (!ID_RE.test(id)) return true;
-  try { return fs.lstatSync(path.join(paths.fired, `${id}.json`)).isFile(); }
-  catch { return false; }
+  try {
+    const stat = fs.lstatSync(path.join(paths.fired, `${id}.json`));
+    return stat.isFile() && !stat.isSymbolicLink();
+  } catch { return false; }
 }
