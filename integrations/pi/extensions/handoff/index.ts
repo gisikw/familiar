@@ -4,7 +4,7 @@ import { buildSessionContext, convertToLlm } from "@earendil-works/pi-coding-age
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { errorLog } from "../lib/debug.ts";
-import { handoffMaxTokens } from "./request.ts";
+import { completeHandoff, handoffMaxTokens } from "./request.ts";
 import { Type } from "typebox";
 
 // Context compaction becomes an active-model-authored handoff, followed by
@@ -263,16 +263,17 @@ export default function handoffExtension(pi: ExtensionAPI) {
         : desiredOutput;
       const maxTokens = Math.max(1024, Math.min(desiredOutput, remaining));
       const boundedMaxTokens = handoffMaxTokens(ctx.model.provider, maxTokens);
-      const response = await ctx.modelRegistry.complete(
-        ctx.model,
+      const response = await completeHandoff((reasoning) => ctx.modelRegistry.complete(
+        ctx.model!,
         { systemPrompt: ctx.getSystemPrompt(), messages },
         {
           signal: event.signal,
           cacheRetention: "short",
+          ...(reasoning === undefined ? {} : { reasoning }),
           sessionId: ctx.sessionManager.getSessionId() || uuidv7(),
           ...(boundedMaxTokens === undefined ? {} : { maxTokens: boundedMaxTokens }),
         },
-      );
+      ), event.signal);
       if (response.stopReason === "aborted" || event.signal.aborted) {
         compactionRunning = false;
         return { cancel: true };
