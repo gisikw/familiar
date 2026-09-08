@@ -27,6 +27,9 @@ Do not address the user. Do not say hello. Do not summarize what you'll help wit
 const MASK = "*⟨continuity — private⟩*";
 const KIND = "familiar-handoff";
 const ORIENTATION_ENTRY = "handoff-orientation-output";
+// Durable, projection-only controls understood by the familiar-ui bridge.
+// appendEntry() state never participates in model context.
+const TRANSCRIPT_VISIBILITY_ENTRY = "familiar-ui/transcript-visibility";
 const SATURATION_WARN = 70;
 const SATURATION_NEAR = 85;
 const SATURATION_HANDOFF = 90;
@@ -43,6 +46,7 @@ type ScheduledHandoff = { continuation?: string; automatic?: boolean };
 type HandoffDetails = {
   kind: typeof KIND;
   archive: string;
+  transcriptVisibility: "private";
 };
 
 const handoffPrompt = async (): Promise<string> => {
@@ -113,6 +117,10 @@ export default function handoffExtension(pi: ExtensionAPI) {
       errorLog("handoff", { orientationReadError: String(err) });
     }
     virginSession = false;
+    // The prompt and response remain canonical, context-bearing messages. These
+    // markers affect presentation projections only and make that intent durable
+    // across hydration, history paging, and reconnects.
+    pi.appendEntry(TRANSCRIPT_VISIBILITY_ENTRY, { visibility: "private" });
     pi.sendMessage(
       {
         customType: "handoff-orientation",
@@ -120,6 +128,10 @@ export default function handoffExtension(pi: ExtensionAPI) {
           ? `Handoff from the previous context (weigh staleness accordingly):\n\n${archived}\n\n---\n\n${ORIENTATION_PROMPT}`
           : ORIENTATION_PROMPT,
         display: false,
+        details: {
+          transcriptVisibility: "private",
+          transcriptSpan: "start",
+        },
       },
       { triggerTurn: true },
     );
@@ -133,6 +145,7 @@ export default function handoffExtension(pi: ExtensionAPI) {
       for (const thought of liveThinking) knownPrivateOutputs.add(thought);
       pi.appendEntry(ORIENTATION_ENTRY, { text: liveText, thinking: liveThinking });
     }
+    pi.appendEntry(TRANSCRIPT_VISIBILITY_ENTRY, { visibility: "public" });
 
     const deferred = stash;
     stash = [];
@@ -297,7 +310,11 @@ export default function handoffExtension(pi: ExtensionAPI) {
           firstKeptEntryId: KEEP_NOTHING_ENTRY_ID,
           tokensBefore: event.preparation.tokensBefore,
           usage: response.usage,
-          details: { kind: KIND, archive } satisfies HandoffDetails,
+          details: {
+            kind: KIND,
+            archive,
+            transcriptVisibility: "private",
+          } satisfies HandoffDetails,
         },
       };
     } catch (error) {
