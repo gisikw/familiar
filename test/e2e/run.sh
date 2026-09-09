@@ -34,7 +34,10 @@ FAMILIAR_VIEWER_BIN=${FAMILIAR_VIEWER_BIN:-$(command -v familiar-viewer || true)
 export FAMILIAR_PRESENCE_STATE_DIR="$STATE"
 export FAMILIAR_PRESENCE_SOCKET="$SOCKET"
 export FAMILIAR_PRESENCE_SESSION=presence
-export FAMILIAR_PRESENCE_COMMAND='exec env PS1= bash --noprofile --norc -i'
+# The custom worker is invoked through a login shell. Carry the declared e2e
+# tool closure explicitly so that inner `kitten` does not disappear with PATH.
+printf -v FAMILIAR_PRESENCE_COMMAND 'exec env PS1= PATH=%q %q --noprofile --norc -i' "$PATH" "$(command -v bash)"
+export FAMILIAR_PRESENCE_COMMAND
 export FAMILIAR_PRESENCE_CTL="$ROOT/services/presence/presence.sh"
 export FAMILIAR_VIEWER_BIN
 export FAMILIAR_MARK_PNG="$ROOT/assets/familiar-mark.png"

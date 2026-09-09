@@ -30,13 +30,15 @@ async function pixels(buffer, kind, before) {
     const a = await decode(png);
     const b = prior ? await decode(prior) : null;
     let count = 0;
-    const sidebar = kind === 'teal';
+    const sidebar = kind === 'mark';
     const x0 = sidebar ? 0 : Math.floor(a.width * .21);
     const x1 = sidebar ? Math.floor(a.width * .24) : a.width;
     const y1 = sidebar ? Math.floor(a.height * .48) : Math.floor(a.height * .92);
     for (let y = 0; y < y1; y++) for (let x = x0; x < x1; x++) {
       const i = (y * a.width + x) * 4, r = a.data[i], g = a.data[i+1], bl = a.data[i+2];
-      if (kind === 'teal' && g > 145 && bl > 160 && r < 150 && bl > r * 1.25) count++;
+      // Current canonical PNG uses the Gruvbox accent #8ec07c, not the
+      // pre-theme teal. Keep the same spatial and minimum-pixel requirements.
+      if (kind === 'mark' && Math.abs(r - 142) <= 8 && Math.abs(g - 192) <= 8 && Math.abs(bl - 124) <= 8) count++;
       if (kind === 'magenta' && r > 190 && bl > 190 && g < 90) count++;
       if (kind === 'diff' && b && (Math.abs(r-b.data[i]) + Math.abs(g-b.data[i+1]) + Math.abs(bl-b.data[i+2]) > 80)) count++;
     }
@@ -66,10 +68,10 @@ test.describe.serial('real browser terminal', () => {
   });
   test.afterAll(async () => { await page?.close(); });
 
-  test('sidebar PNG mark renders (teal pixel truth)', async () => {
-    const { shot, count } = await waitForPixels('teal', 80);
+  test('sidebar PNG mark renders (canonical accent pixel truth)', async () => {
+    const { shot, count } = await waitForPixels('mark', 80);
     fs.writeFileSync(path.join(artifacts, 'sidebar-mark.png'), shot);
-    expect(count, 'teal pixels in the top-left 28-column sidebar').toBeGreaterThanOrEqual(80);
+    expect(count, 'canonical mark pixels in the top-left 28-column sidebar').toBeGreaterThanOrEqual(80);
   });
 
   test('presence content changes main canvas pixels', async () => {
