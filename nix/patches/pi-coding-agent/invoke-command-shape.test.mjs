@@ -10,7 +10,7 @@ const types = read("src/core/extensions/types.ts");
 assert.match(session, /isIdle: \(\) => this\.isIdle/);
 assert.match(
   session,
-  /get isIdle\(\): boolean \{\s*return !this\._isAgentRunActive;/,
+  /get isIdle\(\): boolean \{\s*return !this\._isAgentRunActive && !this\.isCompacting;/,
 );
 assert.match(
   session,
@@ -47,7 +47,7 @@ assert.match(
 assert.match(dispatcher, /await command\.handler\(args, ctx\)/);
 assert.match(dispatcher, /this\._extensionRunner\.emitError\(/);
 assert(!dispatcher.includes("invokeExtensionCommand"));
-// Pristine 0.84.1 method, including context creation and error runner selection.
+// Pristine 0.85.1 method, including context creation and error runner selection.
 assert.equal(
   createHash("sha256").update(dispatcher).digest("hex"),
   "cc6796c07663e960235679c3d85156d69dd9eb307bf12e4da2b1b8e63a296fec",
@@ -89,7 +89,7 @@ assert(!types.includes("invokeExtensionCommandFromPrompt"));
 assert(!types.includes("invokeCommand("));
 assert.equal(
   createHash("sha256").update(prompt).digest("hex"),
-  "00211933a1265023f4346eabdd76f91d99f95bd50283f1648762a8dc9c5a4bf1",
+  "0bfe4e2dd9d49a301697f4ae2aabe13ddda4507659d1b9a5995f4748b0ad460d",
 );
 // Exhaustive pinned runner audit. Verify both the wrapper and the unchanged body:
 // only one indentation level may differ. New async methods/dispatch sites fail loudly.

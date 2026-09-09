@@ -1,0 +1,3 @@
+# Unified diffs necessarily encode context as a leading space followed by the
+# source indentation; do not misclassify their syntax as source whitespace.
+nix/patches/**/*.patch whitespace=-blank-at-eol,-space-before-tab

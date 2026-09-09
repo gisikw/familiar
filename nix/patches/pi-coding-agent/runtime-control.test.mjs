@@ -215,6 +215,30 @@ try {
     release();
     assert.equal((await replacement).cancelled, true);
     commit();
+
+    // Every public replacement entrypoint holds the owner fence from its
+    // synchronous call boundary until completion, including future awaits in
+    // upstream method bodies. Exercise the installed wrappers independently.
+    for (const action of ["switchSession", "newSession", "fork", "importFromJsonl"]) {
+      const internal = `_${action}`;
+      const original = runtime[internal];
+      const actionWaiting = enteredPromise();
+      runtime[internal] = async () => {
+        entered();
+        await new Promise((resolve) => {
+          release = resolve;
+        });
+        return { cancelled: true };
+      };
+      const actionRun = runtime[action]();
+      await actionWaiting;
+      assert.throws(commit, /idle owner/, action);
+      release();
+      await actionRun;
+      commit();
+      runtime[internal] = original;
+    }
+
     await session._emitAgentSettled();
     assert.equal(settledRejected, true);
     assert.equal(api.isRuntimeControlAvailable(), true);

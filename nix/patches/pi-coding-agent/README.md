@@ -1,10 +1,12 @@
 # Familiar's downstream Pi patch (no fork)
 
-This directory owns the Nix adaptation of **earendil-works/pi v0.84.1** used
+This directory owns the Nix adaptation of **earendil-works/pi v0.85.1** used
 by the top-level locked nixpkgs. It is not an extension and does not belong in
-`integrations/pi`. There is no replacement source checkout, maintained git fork,
-or npm dependency change. `default.nix` overrides the existing nixpkgs derivation;
-its workspace build, dependency hashes, wrappers and platform cleanup are retained.
+`integrations/pi`. There is no replacement source checkout or maintained git fork.
+`default.nix` adapts the locked nixpkgs 0.84.1 recipe to immutable upstream commit
+`d981de1229ef899957bbe968bc8dcda02a21f477`, including the exact 0.85.1 source,
+npm dependency, model-data, workspace-build and install metadata. The nixpkgs
+wrappers, install checks and platform cleanup remain in force.
 Both default/pi shells and `PI_PACKAGE_DIR` use this package. It is also exported
 as `packages.<system>.pi-coding-agent` and `checks.<system>.pi-invoke-command`.
 
@@ -61,16 +63,16 @@ this general API now enforces its own admission fence rather than trusting that
 frontend or documentation. The name `invokeExtensionCommand` deliberately excludes
 built-ins/templates/skills; there is no broad `invokeCommand` compatibility alias.
 
-We remain pinned to verified **0.84.1**. Its owning-session `isIdle` is backed by
-`_isAgentRunActive`, which spans the run and post-run retries/continuations, not
-just `agent.state.isStreaming`. This is the upstream lifecycle predicate, not a
-new quiescence implementation. Because `_emitAgentSettled` clears that flag before
+We remain pinned to verified **0.85.1**. Its owning-session `isIdle` is backed by
+`_isAgentRunActive` and `isCompacting`; the former spans the run and post-run
+retries/continuations, rather than only `agent.state.isStreaming`. This is the
+upstream lifecycle predicate, not a new quiescence implementation. Because `_emitAgentSettled` clears that flag before
 awaiting handlers, the separate session-owned dispatch depth fences that interval
 without changing `ctx.isIdle()` (which is true inside `agent_settled`). Admission
 checks both synchronously, plus runner event dispatch depth, before acquiring the
 public-only exclusive slot.
 
-An exhaustive 0.84.1 runner audit found 11 awaited handler-dispatching methods:
+An exhaustive 0.85.1 runner audit found 11 awaited handler-dispatching methods:
 `emit`, `emitMessageEnd`, `emitToolResult`, `emitToolCall`, `emitUserBash`,
 `emitContext`, `emitBeforeProviderRequest`, `emitBeforeProviderHeaders`,
 `emitBeforeAgentStart`, `emitResourcesDiscover`, and `emitInput`. Each complete
@@ -79,9 +81,11 @@ decrement. Nested/concurrent emissions cannot clear each other's fence. Original
 handler order, results, error swallowing, early cancel/handled returns and thrown
 `emitToolCall` errors remain unchanged. Synchronous `emitError` only notifies
 listeners and is not independently guarded (notifications inside an emitter are
-still within its depth). The standalone `emitSessionShutdownEvent` helper delegates
-to guarded `emit`. Standalone `emitProjectTrustEvent` takes a load result, not a
-runner, and runs before runtime binding; public calls there remain uninitialized.
+still within its depth). The new 0.85.1 `after_provider_response` SDK hook also
+delegates to guarded generic `emit`. The standalone `emitSessionShutdownEvent`
+helper delegates to guarded `emit`. Standalone `emitProjectTrustEvent` takes a
+load result, not a runner, and runs before runtime binding; public calls there
+remain uninitialized.
 
 **No other idle lifecycle callbacks are admissible.** This includes shutdown
 (after abort and before disposal), before-switch/fork, compaction/tree,
@@ -92,8 +96,8 @@ Hosts must gate unrelated non-event session actions throughout the handler;
 prompt/public overlap is explicitly permitted by core, and upstream prompt dispatch
 neither checks nor acquires the event guard or public slot.
 
-Do **not** queue slash text via `sendUserMessage(... followUp)` as a substitute:
-in 0.84.1 this is literal model-visible text. 0.84.2's `expandPromptTemplates`
+Do **not** queue slash text via `sendUserMessage(... followUp)` as a substitute.
+In 0.85.1 it defaults to literal model-visible text. The `expandPromptTemplates`
 opt-in dispatches before streaming queueing, is void on the extension facade,
 and expands skills/templates too. It does not replace an awaited idle-only API.
 
@@ -102,6 +106,37 @@ There is no timeout, cancellation injection, sandbox, or rollback. Fire-and-forg
 work after handler completion is outside the slot lifetime. Admission cannot
 prevent a handler from starting another run or misusing captured raw objects.
 
+## 0.85.1 rebase assumptions and patch order
+
+Upstream tag `v0.85.1` is the lightweight tag at
+`d981de1229ef899957bbe968bc8dcda02a21f477`. Familiar applies exactly:
+
+1. `invoke-command.patch` — awaited exact-name direct extension-command
+   invocation and complete event/settled admission fences.
+2. `runtime-control.patch` — atomic no-run owner commits, persistence budget and
+   writer quarantine, admitted-user continuation, and owner/session/leaf/idle,
+   command/event and runtime-replacement fences.
+
+Neither facility exists upstream in 0.85.1, so no downstream portion was
+superseded. The rebase preserves the changed upstream loader factory/runtime
+ownership, session-runtime replacement bodies, SDK construction, prompt body,
+SessionManager loading/appending and compaction flow. The command patch only
+wraps the 11 awaited runner emitter bodies and hash-checks each body after
+removing that one indentation level. Runtime control uses narrow admission
+bindings at session/runtime ownership boundaries; replacement methods are
+wrapped from public entry through completion so cancelled and failed
+replacements are fenced too.
+
+Upstream commit `56700d42ed65a94a80af7376adb19a9298065164` (PR #8782,
+issue #6879), included in 0.85.1, moved next-turn preparation into the continuing
+agent loop. This allows threshold compaction after a large tool result and before
+the next provider request in the same run. Familiar does not patch this path.
+Upstream republishes `agent.state.model` and `agent.state.thinkingLevel` after
+compaction, preserving the effective thinking level. Familiar therefore carries
+no generic reasoning-level patch. The custom handoff's direct
+`ModelRegistry.complete()` path remains separate: it retries with `low` only for
+an explicit provider rejection of no reasoning and retains dedicated tests.
+
 ## Fail-closed update procedure
 
 Inspected nixpkgs `pkgs/by-name/pi/pi-coding-agent/package.nix`: it builds the
@@ -109,15 +144,17 @@ GitHub monorepo (not the published coding-agent tarball), uses tsgo for workspac
 deps, restores the model catalogue from matching npm pi-ai, then installs compiled
 coding-agent output at `lib/node_modules/pi-monorepo`.
 
-Evaluation asserts version **0.84.1**, the exact upstream source hash, and absence
-of upstream patches/prePatch modifications. Before applying any patch, SHA-256
-checks cover whole `loader.ts`, `runner.ts`, `types.ts`, `agent-session.ts`, root
-and coding-agent package manifests, lockfile, and the patched extension API docs. This pins command resolution,
-context construction, prompt dispatch, getCommands binding, and stale/reload
-internals, not just nearby patch context. Source rearrangements fail before patch
-application; patch fuzz is not the verification mechanism. All pristine source
-hashes were rechecked; they remain unchanged because the pinned inputs did not
-change. `invoke-command-shape.test.mjs` additionally checks the separate admission
+Evaluation asserts the expected locked nixpkgs 0.84.1 base recipe and its source,
+then replaces it with exact **0.85.1** commit/source/vendor/model-data metadata.
+It also asserts absence of nixpkgs patches or a prePatch hook. Before applying
+any downstream patch, SHA-256 checks cover whole `loader.ts`, `runner.ts`,
+`types.ts`, `agent-session.ts`, `session-manager.ts`, `agent-session-runtime.ts`,
+`sdk.ts`, compaction and agent-loop sources, root/coding-agent manifests, lockfile,
+and patched extension API docs. This pins command resolution, context construction,
+prompt dispatch, SDK session construction, getCommands binding, replacement,
+persistence and mid-run compaction internals—not merely nearby patch context.
+Source rearrangements fail before patch application; patch fuzz is not the
+verification mechanism. `invoke-command-shape.test.mjs` additionally checks the separate admission
 binding, settled depth/finally, unchanged owning-session getter and default context
 idle semantics, prompt-before-streaming ordering, direct prompt handler path,
 public-only exclusive guard, and absence of a public bypass/legacy alias. A new
@@ -150,17 +187,16 @@ context behavior during and after replacement/reload. Session/resource I/O is st
 at the mode-action boundary; these are not full TUI or disk-backed lifecycle tests.
 
 Source shape checks run in `postPatch`. Runtime tests run in `checkPhase` and again
-unconditionally in `postInstall`, against the
-installed runtime, plus an installed declaration assertion. Setting `doCheck` or
-`doInstallCheck` false cannot silently skip installed validation. No network, real
-model, operator state, or resident Presence is used.
+unconditionally in `postInstall` against the installed runtime, plus installed
+declaration assertions. `mid-turn-compaction.test.mjs` verifies in both source and
+compiled output that 0.85.1's `prepareNextTurn` compaction path runs before the
+next assistant request and republishes the effective model/thinking level. Setting
+`doCheck` or `doInstallCheck` false cannot silently skip installed validation.
+No provider call, operator state, or resident Presence is used.
 
-Event-fence corrective revision (on top of `798233b`): all commands below were
-rerun successfully on x86_64-linux,
-except the explicitly noted existing all-systems Darwin evaluation failure.
-Both negative checks failed for their intended reasons (version assertion and
-pristine source checksum), and disabled-check-flags validation still passed.
-Non-native outputs were evaluated, not built.
+For the 0.85.1 integration, run the following on x86_64-linux. The all-systems
+Darwin limitation remains the unrelated gateway output that references a missing
+viewer package. Non-native patched outputs are evaluation gates, not native builds.
 
 Commands used from the repository root (x86_64-linux):
 
@@ -184,7 +220,7 @@ patched checks evaluate successfully; only x86_64-linux was built here.
 Negative verification (both must fail loudly):
 
 ```sh
-nix eval --impure --expr 'let f = builtins.getFlake (toString ./.); p = f.inputs.nixpkgs.legacyPackages.x86_64-linux; in (import ./nix/patches/pi-coding-agent { pkgs = p // { pi-coding-agent = p.pi-coding-agent.overrideAttrs { version = "0.84.2"; }; }; }).drvPath'
+nix eval --impure --expr 'let f = builtins.getFlake (toString ./.); p = f.inputs.nixpkgs.legacyPackages.x86_64-linux; in (import ./nix/patches/pi-coding-agent { pkgs = p // { pi-coding-agent = p.pi-coding-agent.overrideAttrs { version = "unexpected-base"; }; }; }).drvPath'
 nix build --no-link --impure --expr 'let f = builtins.getFlake (toString ./.); in f.packages.x86_64-linux.pi-coding-agent.overrideAttrs { postUnpack = "echo tampered >> source/packages/coding-agent/src/core/agent-session.ts"; }'
 ```
 

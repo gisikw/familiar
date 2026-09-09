@@ -1,8 +1,11 @@
 diff --git a/packages/coding-agent/src/core/agent-session-runtime.ts b/packages/coding-agent/src/core/agent-session-runtime.ts
-index c3b6056..05d20bb 100644
+index 861c00f7..d9868850 100644
 --- a/packages/coding-agent/src/core/agent-session-runtime.ts
 +++ b/packages/coding-agent/src/core/agent-session-runtime.ts
-@@ -81,0 +82,11 @@ export class AgentSessionRuntime {
+@@ -79,6 +79,17 @@ export class AgentSessionRuntime {
+ 	private readonly createRuntime: CreateAgentSessionRuntimeFactory;
+ 	private _diagnostics: AgentSessionRuntimeDiagnostic[];
+ 	private _modelFallbackMessage?: string;
 +	private runtimeControlReplacementDepth = 0;
 +
 +	private async withRuntimeControlReplacement<T>(run: () => Promise<T>): Promise<T> {
@@ -14,27 +17,69 @@ index c3b6056..05d20bb 100644
 +	newSession(...args: Parameters<AgentSessionRuntime["_newSession"]>) { return this.withRuntimeControlReplacement(() => this._newSession(...args)); }
 +	fork(...args: Parameters<AgentSessionRuntime["_fork"]>) { return this.withRuntimeControlReplacement(() => this._fork(...args)); }
 +	importFromJsonl(...args: Parameters<AgentSessionRuntime["_importFromJsonl"]>) { return this.withRuntimeControlReplacement(() => this._importFromJsonl(...args)); }
-@@ -90,0 +102 @@ export class AgentSessionRuntime {
+ 
+ 	constructor(
+ 		_session: AgentSession,
+@@ -88,6 +99,7 @@ export class AgentSessionRuntime {
+ 		_modelFallbackMessage?: string,
+ 	) {
+ 		this._session = _session;
 +		_session.extensionRunner.bindRuntimeControlOwnerAdmission(() => this.runtimeControlReplacementDepth === 0);
-@@ -181,0 +194 @@ export class AgentSessionRuntime {
+ 		this._services = _services;
+ 		this.createRuntime = createRuntime;
+ 		this._diagnostics = _diagnostics;
+@@ -179,6 +191,7 @@ export class AgentSessionRuntime {
+ 
+ 	private apply(result: CreateAgentSessionRuntimeResult): void {
+ 		this._session = result.session;
 +		result.session.extensionRunner.bindRuntimeControlOwnerAdmission(() => this.runtimeControlReplacementDepth === 0);
-@@ -196 +209 @@ export class AgentSessionRuntime {
+ 		this._services = result.services;
+ 		this._diagnostics = result.diagnostics;
+ 		this._modelFallbackMessage = result.modelFallbackMessage;
+@@ -193,7 +206,7 @@ export class AgentSessionRuntime {
+ 		}
+ 	}
+ 
 -	async switchSession(
 +	private async _switchSession(
-@@ -226 +239 @@ export class AgentSessionRuntime {
+ 		sessionPath: string,
+ 		options?: {
+ 			cwdOverride?: string;
+@@ -223,7 +236,7 @@ export class AgentSessionRuntime {
+ 		return { cancelled: false };
+ 	}
+ 
 -	async newSession(options?: {
 +	private async _newSession(options?: {
-@@ -262 +275 @@ export class AgentSessionRuntime {
+ 		parentSession?: string;
+ 		setup?: (sessionManager: SessionManager) => Promise<void>;
+ 		withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
+@@ -259,7 +272,7 @@ export class AgentSessionRuntime {
+ 		return { cancelled: false };
+ 	}
+ 
 -	async fork(
 +	private async _fork(
-@@ -361 +374 @@ export class AgentSessionRuntime {
+ 		entryId: string,
+ 		options?: { position?: "before" | "at"; withSession?: (ctx: ReplacedSessionContext) => Promise<void> },
+ 	): Promise<{ cancelled: boolean; selectedText?: string }> {
+@@ -358,7 +371,7 @@ export class AgentSessionRuntime {
+ 	 * @throws {SessionImportFileNotFoundError} When the input path does not exist.
+ 	 * @throws {MissingSessionCwdError} When the imported session cwd cannot be resolved and no override is provided.
+ 	 */
 -	async importFromJsonl(inputPath: string, cwdOverride?: string): Promise<{ cancelled: boolean }> {
 +	private async _importFromJsonl(inputPath: string, cwdOverride?: string): Promise<{ cancelled: boolean }> {
+ 		const resolvedPath = resolvePath(inputPath);
+ 		if (!existsSync(resolvedPath)) {
+ 			throw new SessionImportFileNotFoundError(resolvedPath);
 diff --git a/packages/coding-agent/src/core/agent-session.ts b/packages/coding-agent/src/core/agent-session.ts
-index 4aafe13..385ba50 100644
+index 8799d17e..b2270582 100644
 --- a/packages/coding-agent/src/core/agent-session.ts
 +++ b/packages/coding-agent/src/core/agent-session.ts
-@@ -1067 +1067,10 @@ export class AgentSession {
+@@ -1106,10 +1106,20 @@ export class AgentSession {
+ 	// Prompting
+ 	// =========================================================================
+ 
 -	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
 +	/** Start an owned background archive's already-admitted user entry once,
 +	 * through the ordinary retry/queue/settled pipeline without re-appending it. */
@@ -46,14 +91,21 @@ index 4aafe13..385ba50 100644
 +
 +	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[] | undefined): Promise<void> {
 +		if (this.sessionManager.isRuntimeControlQuarantined()) throw new Error("Session writer quarantined; reopen under a new owner");
-@@ -1070 +1079,2 @@ export class AgentSession {
+ 		this._isAgentRunActive = true;
+ 		try {
 -			await this.agent.prompt(messages);
 +			if (messages === undefined) await this.agent.continue();
 +			else await this.agent.prompt(messages);
-@@ -1119,0 +1130,2 @@ export class AgentSession {
+ 			while (await this._handlePostAgentRun()) {
+ 				await this.agent.continue();
+ 			}
+@@ -1160,7 +1170,16 @@ export class AgentSession {
+ 	 * @throws Error if streaming and no streamingBehavior specified
+ 	 * @throws Error if no model selected or no API key available (when not streaming)
+ 	 */
 +	private controlPromptDepth = 0;
 +
-@@ -1120,0 +1133,7 @@ export class AgentSession {
+ 	async prompt(text: string, options?: PromptOptions): Promise<void> {
 +		if (this.sessionManager.isRuntimeControlQuarantined()) throw new Error("Session writer quarantined; reopen under a new owner");
 +		this.controlPromptDepth++;
 +		try { return await this._promptForOwner(text, options); }
@@ -61,7 +113,13 @@ index 4aafe13..385ba50 100644
 +	}
 +
 +	private async _promptForOwner(text: string, options?: PromptOptions): Promise<void> {
-@@ -2342,0 +2362,12 @@ export class AgentSession {
+ 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
+ 		const preflightResult = options?.preflightResult;
+ 		let messages: AgentMessage[] | undefined;
+@@ -2548,8 +2567,21 @@ export class AgentSession {
+ 		this.agent.state.model = refreshedModel;
+ 	}
+ 
 +	/** Durable no-run owner transaction; no awaited callbacks inside its fence. */
 +	commitRuntimeControl(sessionId: string, leafId: string | null, entries: import("./session-manager.ts").RuntimeControlInput[]): string[] {
 +		this._extensionRunner.assertRuntimeControlAdmission();
@@ -74,18 +132,37 @@ index 4aafe13..385ba50 100644
 +		return ids;
 +	}
 +
-@@ -2344,0 +2376 @@ export class AgentSession {
+ 	private _bindExtensionCore(runner: ExtensionRunner): void {
+ 		runner.bindCommandAdmission(() => this.isIdle && this._agentSettledDispatchDepth === 0);
 +		runner.bindRuntimeControlPromptAdmission(() => !this.sessionManager.isRuntimeControlQuarantined() && this.controlPromptDepth === 0 && this.pendingMessageCount === 0 && this._pendingNextTurnMessages.length === 0 && this._pendingBashMessages.length === 0 && !this.isCompacting && !this.isBashRunning);
-@@ -2389,0 +2422 @@ export class AgentSession {
+ 		const getCommands = (): SlashCommandInfo[] => {
+ 			const extensionCommands: SlashCommandInfo[] = runner.getRegisteredCommands().map((command) => ({
+ 				name: command.invocationName,
+@@ -2595,6 +2627,7 @@ export class AgentSession {
+ 						});
+ 					});
+ 				},
 +				commitRuntimeControl: (sessionId, leafId, entries) => this.commitRuntimeControl(sessionId, leafId, entries),
+ 				appendEntry: (customType, data) => {
+ 					const entryId = this.sessionManager.appendCustomEntry(customType, data);
+ 					const entry = this.sessionManager.getEntry(entryId);
 diff --git a/packages/coding-agent/src/core/extensions/loader.ts b/packages/coding-agent/src/core/extensions/loader.ts
-index 25b06ed..e51de47 100644
+index ca87f135..6082505f 100644
 --- a/packages/coding-agent/src/core/extensions/loader.ts
 +++ b/packages/coding-agent/src/core/extensions/loader.ts
-@@ -199,0 +200,2 @@ export function createExtensionRuntime(): ExtensionRuntime {
+@@ -200,6 +200,8 @@ export function createExtensionRuntime(): ExtensionRuntime {
+ 		refreshTools: () => {},
+ 		getCommands: notInitialized,
+ 		invokeExtensionCommand: async () => notInitialized(),
 +		commitRuntimeControl: notInitialized,
 +		isRuntimeControlAvailable: () => false,
-@@ -378,0 +381,7 @@ function createExtensionAPI(
+ 		setModel: () => Promise.reject(new Error("Extension runtime not initialized")),
+ 		getThinkingLevel: notInitialized,
+ 		setThinkingLevel: notInitialized,
+@@ -408,6 +410,13 @@ function createExtensionAPI(
+ 			runtime.setActiveTools(toolNames);
+ 		},
+ 
 +		isRuntimeControlAvailable() { return runtime.isRuntimeControlAvailable(); },
 +
 +		commitRuntimeControl(sessionId, leafId, entries) {
@@ -93,11 +170,17 @@ index 25b06ed..e51de47 100644
 +			return runtime.commitRuntimeControl(sessionId, leafId, entries);
 +		},
 +
+ 		async invokeExtensionCommand(name, args) {
+ 			runtime.assertActive();
+ 			await runtime.invokeExtensionCommand(name, args);
 diff --git a/packages/coding-agent/src/core/extensions/runner.ts b/packages/coding-agent/src/core/extensions/runner.ts
-index 8772d34..90d49c1 100644
+index 84625928..9a8a847d 100644
 --- a/packages/coding-agent/src/core/extensions/runner.ts
 +++ b/packages/coding-agent/src/core/extensions/runner.ts
-@@ -339,0 +340,8 @@ export class ExtensionRunner {
+@@ -340,6 +340,14 @@ export class ExtensionRunner {
+ 		this.runtime.refreshTools = actions.refreshTools;
+ 		this.runtime.getCommands = actions.getCommands;
+ 		this.runtime.invokeExtensionCommand = (name, args) => this.invokeExtensionCommand(name, args);
 +		this.runtime.isRuntimeControlAvailable = () => {
 +			try { this.assertRuntimeControlAdmission(); return true; } catch { return false; }
 +		};
@@ -106,7 +189,13 @@ index 8772d34..90d49c1 100644
 +			if (!actions.commitRuntimeControl) throw new Error("Runtime control unavailable");
 +			return actions.commitRuntimeControl(sessionId, leafId, entries);
 +		};
-@@ -665,0 +674,12 @@ export class ExtensionRunner {
+ 		this.runtime.setModel = actions.setModel;
+ 		this.runtime.getThinkingLevel = actions.getThinkingLevel;
+ 		this.runtime.setThinkingLevel = actions.setThinkingLevel;
+@@ -713,6 +721,18 @@ export class ExtensionRunner {
+ 		this.commandAdmissionFn = admit;
+ 	}
+ 
 +	private runtimeControlOwnerAdmission = () => true;
 +	private runtimeControlPromptAdmission = () => true;
 +	bindRuntimeControlOwnerAdmission(admit: () => boolean): void { this.runtimeControlOwnerAdmission = admit; }
@@ -119,11 +208,17 @@ index 8772d34..90d49c1 100644
 +			throw new Error("Runtime control requires idle owner outside command/event dispatch");
 +	}
 +
+ 	async invokeExtensionCommand(name: string, args = ""): Promise<void> {
+ 		this.assertActive();
+ 		this.runtime.assertActive();
 diff --git a/packages/coding-agent/src/core/extensions/types.ts b/packages/coding-agent/src/core/extensions/types.ts
-index 93f114d..e52f8a3 100644
+index d8793e30..c2b76183 100644
 --- a/packages/coding-agent/src/core/extensions/types.ts
 +++ b/packages/coding-agent/src/core/extensions/types.ts
-@@ -1362,0 +1363,7 @@ export interface ExtensionAPI {
+@@ -1424,6 +1424,13 @@ export interface ExtensionAPI {
+ 	 */
+ 	invokeExtensionCommand(name: string, args?: string): Promise<void>;
+ 
 +	/** Familiar owner-only atomic no-run control write. Synchronous, idle/session/leaf fenced.
 +	 * Rejects awaited event dispatch, active commands and stale runtimes. Never queues inference.
 +	 */
@@ -131,30 +226,66 @@ index 93f114d..e52f8a3 100644
 +	/** Non-mutating current eligibility hint. commitRuntimeControl rechecks atomically. */
 +	isRuntimeControlAvailable(): boolean;
 +
-@@ -1617,0 +1625,2 @@ export interface ExtensionRuntimeState {
+ 	// =========================================================================
+ 	// Model and Thinking Level
+ 	// =========================================================================
+@@ -1685,6 +1692,8 @@ export type SetLabelHandler = (entryId: string, label: string | undefined) => vo
+ export interface ExtensionRuntimeState {
+ 	/** Bound by ExtensionRunner, not a caller-supplied raw command handler. */
+ 	invokeExtensionCommand: ExtensionAPI["invokeExtensionCommand"];
 +	isRuntimeControlAvailable: ExtensionAPI["isRuntimeControlAvailable"];
 +	commitRuntimeControl: ExtensionAPI["commitRuntimeControl"];
-@@ -1644,0 +1654 @@ export interface ExtensionActions {
+ 	flagValues: Map<string, boolean | string>;
+ 	/** Legacy provider-config registrations queued during extension loading, processed when runner binds. */
+ 	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; extensionPath: string }>;
+@@ -1712,6 +1721,7 @@ export interface ExtensionRuntimeState {
+  * Provided to runner.initialize(), copied into the shared runtime.
+  */
+ export interface ExtensionActions {
 +	commitRuntimeControl: ExtensionAPI["commitRuntimeControl"];
+ 	sendMessage: SendMessageHandler;
+ 	sendUserMessage: SendUserMessageHandler;
+ 	appendEntry: AppendEntryHandler;
 diff --git a/packages/coding-agent/src/core/session-manager.ts b/packages/coding-agent/src/core/session-manager.ts
-index 70d3921..be0f290 100644
+index d25b196a..58c7c2eb 100644
 --- a/packages/coding-agent/src/core/session-manager.ts
 +++ b/packages/coding-agent/src/core/session-manager.ts
-@@ -8,0 +9,3 @@ import {
+@@ -6,6 +6,9 @@ import {
+ 	closeSync,
+ 	createReadStream,
+ 	existsSync,
 +	fsyncSync,
 +	renameSync,
 +	unlinkSync,
-@@ -17 +20 @@ import { readdir, stat } from "fs/promises";
+ 	mkdirSync,
+ 	openSync,
+ 	readdirSync,
+@@ -14,7 +17,7 @@ import {
+ 	writeFileSync,
+ } from "fs";
+ import { readdir, stat } from "fs/promises";
 -import { join, resolve } from "path";
 +import { dirname, join, resolve } from "path";
-@@ -31,0 +35,6 @@ export const CURRENT_SESSION_VERSION = 3;
+ import { createInterface } from "readline";
+ import { StringDecoder } from "string_decoder";
+ import { APP_NAME, getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.ts";
+@@ -29,6 +32,12 @@ import {
+ 
+ export const CURRENT_SESSION_VERSION = 3;
+ 
 +/** Owner-only no-run batch. Cannot manufacture assistant messages. */
 +export type RuntimeControlInput =
 +	| { type: "message"; message: Extract<Message, { role: "user" }> }
 +	| { type: "custom"; customType: string; data: unknown }
 +	| { type: "custom_message"; customType: string; content: string; display: boolean; details?: unknown };
 +
-@@ -978,0 +988,91 @@ export class SessionManager {
+ export interface SessionHeader {
+ 	type: "session";
+ 	version?: number; // v1 sessions don't have this
+@@ -990,7 +999,100 @@ export class SessionManager {
+ 		}
+ 	}
+ 
 +	private controlWriteUncertain = false;
 +	isRuntimeControlQuarantined(): boolean { return this.controlWriteUncertain; }
 +	private persistenceBudget = Number.POSITIVE_INFINITY;
@@ -246,11 +377,26 @@ index 70d3921..be0f290 100644
 +		}
 +	}
 +
-@@ -979,0 +1080,2 @@ export class SessionManager {
+ 	private _rewriteFile(): void {
 +		this.assertPersistenceBudget();
 +		if (this.controlWriteUncertain) throw new Error("Session writer quarantined");
-@@ -1015,0 +1118 @@ export class SessionManager {
+ 		if (!this.persist || !this.sessionFile) return;
+ 		const fd = openSync(this.sessionFile, "w");
+ 		try {
+@@ -1027,6 +1129,7 @@ export class SessionManager {
+ 	}
+ 
+ 	_persist(entry: SessionEntry): void {
 +		if (this.controlWriteUncertain) throw new Error("Session writer quarantined");
-@@ -1044,0 +1148,2 @@ export class SessionManager {
+ 		if (!this.persist || !this.sessionFile) return;
+ 
+ 		const hasAssistant = this.fileEntries.some((e) => e.type === "message" && e.message.role === "assistant");
+@@ -1056,6 +1159,8 @@ export class SessionManager {
+ 	}
+ 
+ 	private _appendEntry(entry: SessionEntry): void {
 +		this.assertPersistenceBudget(entry);
 +		if (this.controlWriteUncertain) throw new Error("Session writer quarantined");
+ 		this.fileEntries.push(entry);
+ 		this.byId.set(entry.id, entry);
+ 		this.leafId = entry.id;
