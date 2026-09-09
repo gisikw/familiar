@@ -325,25 +325,34 @@ export class Ledger {
           JSON.stringify(next),
           job.job_id,
         );
-      const retire = (pattern) =>
+      // Compare a literal prefix: notification ids are durable protocol keys,
+      // so retirement must not depend on SQL LIKE metacharacters in job ids.
+      const retire = (prefix) =>
         this.db
           .prepare(
-            "UPDATE notifications SET delivered=2 WHERE job_id=? AND id LIKE ? AND delivered IN (0,1)",
+            "UPDATE notifications SET delivered=2 WHERE job_id=? AND substr(id,1,length(?))=? AND delivered IN (0,1)",
           )
-          .run(job.job_id, pattern);
-      if (terminal(next) && !maintenance) retire(`${job.job_id}-%`);
+          .run(job.job_id, prefix, prefix);
+      const retireExact = (id) =>
+        this.db
+          .prepare(
+            "UPDATE notifications SET delivered=2 WHERE job_id=? AND id=? AND delivered IN (0,1)",
+          )
+          .run(job.job_id, id);
+      if (terminal(next) && !maintenance) retire(`${job.job_id}-`);
       else if (!maintenance) {
         if (
           next.observation !== "blocked" ||
           next.blocked_episode !== current.blocked_episode
         )
-          retire(`${job.job_id}-blocked-%`);
+          retire(`${job.job_id}-blocked-`);
         if (
           next.observation !== "idle" ||
           next.idle_episode !== current.idle_episode
         )
-          retire(`${job.job_id}-idle-unsettled-%`);
-        if (next.observation !== "gone") retire(`${job.job_id}-gone`);
+          retire(`${job.job_id}-idle-unsettled-`);
+        if (next.observation !== "gone")
+          retireExact(`${job.job_id}-gone`);
       }
       if (notification)
         this.db

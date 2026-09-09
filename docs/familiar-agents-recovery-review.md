@@ -84,7 +84,7 @@ These are new runs, not inherited dead-job logs:
 
 - Pinned Herdr **0.9.0 / protocol 22** binary schema inspected for all used
   workspace, agent and pane operations, including their exact request fields.
-- Nix `agents-ledger`: **48 Node tests**, **8 Python tests**, and the real pinned
+- Nix `agents-ledger`: **60 Node tests**, **8 Python tests**, and the real pinned
   Pi-loader tool test covering all **11 tools**.
 - Additional tests cover SIGKILL at six ledger boundaries; stale generation
   takeover; no overlapping passes; shutdown of an abort-resistant transport
@@ -110,6 +110,27 @@ Reproducible commands are in `test/agents/README.md`. Private-free execution log
 are outside the nested repositories in the worktree parent (`nix-core-proof.log`,
 `nix-check.log`, `final-extension-check.log`, `shell-check.log`, `drover-check.log`,
 `ui-check.log`, and the redacted `*-secrets-commits.json` reports).
+
+## Independent-audit follow-up dispositions
+
+The post-review remediation remains limited to the two concrete robustness
+findings. Cleanup now follows Herdr 0.9's exact `PaneProcessInfo` serde contract:
+an omitted `foreground_processes` is the wire representation of its default
+empty `Vec`. Omission/emptiness is accepted only after workspace, pane and agent
+identity/state checks and only when `foreground_process_group_id == shell_pid`;
+active, replaced, moved, human, ambiguous, multi-pane and incomplete observations
+continue to fail closed. Notification retirement now uses a literal SQLite
+prefix comparison rather than `LIKE`, with regression coverage for `_` and `%`
+in a job id.
+
+The loader-smoke addition of `private` is an intentional correction, not scope
+drift. Base main already contains the private extension and its extension-layout
+test already lists it, so the real pinned Pi-loader smoke must include that actual
+entrypoint as well as the new Agents entrypoint.
+
+`Ledger.active() LIMIT 64` is intentionally unchanged. It bounds work in each
+reconciliation pass; any cleanup backlog beyond that window remains eligible and
+naturally drains over later passes. It is not an active-job capacity limit.
 
 ## Release limits — do not overclaim
 

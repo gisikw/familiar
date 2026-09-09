@@ -825,38 +825,52 @@ export class Owner {
       const { workspaces } = await this.call((s) =>
         this.transport.rpc(j, "workspace.list", {}, s),
       );
-      const matches = workspaces.filter((w) =>
-        j.herdr_workspace_id
-          ? w.workspace_id === j.herdr_workspace_id
-          : w.label === j.label,
+      const matches = workspaces.filter(
+        (w) =>
+          w.label === j.label ||
+          (j.herdr_workspace_id && w.workspace_id === j.herdr_workspace_id),
       );
       if (matches.length > 1) throw new Error("ambiguous cleanup workspace");
       const w = matches[0];
-      if (w && w.label !== j.label)
+      if (
+        w &&
+        (w.label !== j.label ||
+          (j.herdr_workspace_id && w.workspace_id !== j.herdr_workspace_id))
+      )
         throw new Error("workspace identity changed");
       // Unknown create-result is reconciled by the unique durable label. Never
       // close an active agent or any differently named human workspace.
-      if (
-        w &&
-        agents.some(
-          (a) =>
-            a.workspace_id === w.workspace_id &&
-            (!["idle", "done"].includes(a.agent_status) ||
-              a.launch_pending ||
-              a.name !== j.herdr_agent_name),
-        )
-      )
-        throw new Error("active or replaced workspace");
+      const correlated = (a) =>
+        a.name === j.herdr_agent_name ||
+        (j.herdr_agent_id && a.terminal_id === j.herdr_agent_id) ||
+        (j.herdr_pane_id && a.pane_id === j.herdr_pane_id);
       if (
         agents.some(
-          (a) =>
-            (a.name === j.herdr_agent_name ||
-              a.terminal_id === j.herdr_agent_id) &&
-            a.workspace_id !== w?.workspace_id,
+          (a) => correlated(a) && a.workspace_id !== w?.workspace_id,
         )
       )
         throw new Error("job agent moved; inspect before cleanup");
       if (w) {
+        const workspaceAgents = agents.filter(
+          (a) => a.workspace_id === w.workspace_id,
+        );
+        if (
+          workspaceAgents.length > 1 ||
+          workspaceAgents.some(
+            (a) =>
+              !correlated(a) ||
+              a.name !== j.herdr_agent_name ||
+              a.terminal_id !== j.herdr_agent_id ||
+              a.pane_id !== j.herdr_pane_id ||
+              a.agent !== j.harness ||
+              !["idle", "done"].includes(a.agent_status) ||
+              a.launch_pending ||
+              (j.agent_session &&
+                JSON.stringify(a.agent_session) !==
+                  JSON.stringify(j.agent_session)),
+          )
+        )
+          throw new Error("active or replaced workspace");
         const { panes } = await this.call((s) =>
           this.transport.rpc(
             j,
@@ -865,7 +879,10 @@ export class Owner {
             s,
           ),
         );
-        if (panes.length !== 1)
+        if (
+          panes.length !== 1 ||
+          (j.herdr_pane_id && panes[0].pane_id !== j.herdr_pane_id)
+        )
           throw new Error("human changed workspace topology");
         const { process_info: p } = await this.call((s) =>
           this.transport.rpc(
@@ -875,18 +892,27 @@ export class Owner {
             s,
           ),
         );
+        // Herdr 0.9 serde-defaults this Vec and omits it on the wire when it is
+        // empty. Treat omission exactly as [], but only shell-foreground PGID
+        // evidence may make that otherwise information-poor observation safe.
+        const foregroundProcesses =
+          p?.foreground_processes === undefined ? [] : p.foreground_processes;
         if (
           !Number.isSafeInteger(p?.shell_pid) ||
           p.shell_pid <= 0 ||
           !Number.isSafeInteger(p.foreground_process_group_id) ||
-          !Array.isArray(p.foreground_processes)
+          p.foreground_process_group_id <= 0 ||
+          !Array.isArray(foregroundProcesses)
         )
           throw new Error("invalid process observation");
-        const agent = agents.find((a) => a.pane_id === panes[0].pane_id);
-        if (agent) {
+        const agent = workspaceAgents[0];
+        if (!foregroundProcesses.length) {
+          if (p.foreground_process_group_id !== p.shell_pid)
+            throw new Error("human foreground process; cleanup refused");
+        } else if (agent) {
           if (
-            p.foreground_processes.length !== 1 ||
-            p.foreground_processes[0].name !== j.harness
+            foregroundProcesses.length !== 1 ||
+            foregroundProcesses[0].name !== j.harness
           )
             throw new Error("unrecognized foreground process");
         } else if (p.foreground_process_group_id !== p.shell_pid)

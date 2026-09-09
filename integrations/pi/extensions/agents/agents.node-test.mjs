@@ -92,12 +92,24 @@ class Fake {
   }
   async rpc(_j, method, params) {
     this.calls.push({ method, params });
-    if (method === "workspace.list") return { workspaces: [] };
+    if (method === "workspace.list")
+      return { workspaces: this.workspaces ?? [] };
     if (method === "workspace.create")
       return { workspace: { workspace_id: "workspace" } };
-    if (method === "pane.list") return { panes: [{ pane_id: "pane" }] };
+    if (method === "pane.list")
+      return { panes: this.panes ?? [{ pane_id: "pane" }] };
+    if (method === "pane.process_info")
+      return {
+        process_info: this.processInfo ?? {
+          shell_pid: 10,
+          foreground_process_group_id: 10,
+          foreground_processes: [],
+        },
+      };
     if (method === "agent.list")
-      return { agents: this.started ? [this.agent()] : [] };
+      return {
+        agents: this.agents ?? (this.started ? [this.agent()] : []),
+      };
     if (method === "agent.start") {
       this.started = true;
       return { agent: this.agent() };
@@ -105,6 +117,10 @@ class Fake {
     if (method === "agent.get") return { agent: this.agent() };
     if (method === "agent.prompt") this.status = "working";
     return {};
+  }
+  async native() {
+    this.calls.push({ method: "native.cleanup" });
+    return { complete: true };
   }
 }
 function running(t) {
@@ -346,6 +362,113 @@ test("route loss then reconnect accepts settlement exactly once", async (t) => {
   );
 });
 
+test("cleanup accepts Herdr's omitted empty foreground list only with shell-foreground proof", async (t) => {
+  for (const agentPresent of [false, true]) {
+    await t.test(agentPresent ? "idle agent record" : "exited agent", async (t) => {
+      const f = running(t);
+      const j = f.db.update(f.fence, f.job, {
+        semantic_state: "settled",
+        cleanup_state: "requested",
+        settlement_path: `/remote/${f.job.job_id}/settlement.json`,
+        herdr_workspace_id: "workspace",
+        herdr_pane_id: "pane",
+        herdr_agent_id: "terminal",
+      });
+      f.transport.workspaces = [
+        { workspace_id: "workspace", label: j.label },
+      ];
+      f.transport.panes = [{ pane_id: "pane" }];
+      f.transport.agents = agentPresent ? [f.transport.agent()] : [];
+      f.transport.processInfo = {
+        shell_pid: 10,
+        foreground_process_group_id: 10,
+        // Herdr 0.9 omits foreground_processes when its serde-default Vec is empty.
+      };
+      await f.o.cleanup(j);
+      assert.equal(f.db.get(j.job_id).cleanup_state, "complete");
+      assert.equal(
+        f.transport.calls.filter((c) => c.method === "workspace.close").length,
+        1,
+      );
+    });
+  }
+});
+
+test("cleanup refuses adversarial or uncertain workspace observations", async (t) => {
+  const cases = [
+    ["active", (f) => (f.transport.status = "working")],
+    [
+      "replaced agent",
+      (f) =>
+        (f.transport.agents = [
+          { ...f.transport.agent(), terminal_id: "replacement" },
+        ]),
+    ],
+    [
+      "moved agent",
+      (f) =>
+        (f.transport.agents = [
+          { ...f.transport.agent(), workspace_id: "elsewhere" },
+        ]),
+    ],
+    [
+      "human foreground process",
+      (f) => {
+        f.transport.agents = [];
+        f.transport.processInfo.foreground_process_group_id = 11;
+      },
+    ],
+    [
+      "ambiguous workspace",
+      (f, j) =>
+        (f.transport.workspaces = [
+          { workspace_id: "workspace", label: j.label },
+          { workspace_id: "other", label: j.label },
+        ]),
+    ],
+    [
+      "multi-pane workspace",
+      (f) =>
+        (f.transport.panes = [{ pane_id: "pane" }, { pane_id: "human" }]),
+    ],
+    [
+      "uncertain process group",
+      (f) => delete f.transport.processInfo.foreground_process_group_id,
+    ],
+  ];
+  for (const [name, adversary] of cases) {
+    await t.test(name, async (t) => {
+      const f = running(t);
+      const j = f.db.update(f.fence, f.job, {
+        semantic_state: "settled",
+        cleanup_state: "requested",
+        settlement_path: `/remote/${f.job.job_id}/settlement.json`,
+        herdr_workspace_id: "workspace",
+        herdr_pane_id: "pane",
+        herdr_agent_id: "terminal",
+      });
+      f.transport.started = true;
+      f.transport.workspaces = [
+        { workspace_id: "workspace", label: j.label },
+      ];
+      f.transport.panes = [{ pane_id: "pane" }];
+      f.transport.processInfo = {
+        shell_pid: 10,
+        foreground_process_group_id: 10,
+      };
+      adversary(f, j);
+      await f.o.cleanup(j);
+      assert.equal(f.db.get(j.job_id).cleanup_state, "needs_attention");
+      assert.equal(
+        f.transport.calls.some((c) =>
+          ["workspace.close", "native.cleanup"].includes(c.method),
+        ),
+        false,
+      );
+    });
+  }
+});
+
 test("generation loss during network call cannot launch or update", async (t) => {
   const f = running(t);
   f.transport.identity = async () => {
@@ -565,6 +688,33 @@ test("future schema versions fail closed before new migrations", (t) => {
   );
   assert.equal(f.db.get(f.job.job_id).settlement_nonce, f.job.settlement_nonce);
 });
+test("notification retirement treats metacharacters in job ids literally", (t) => {
+  const f = setup(t);
+  const id = "agent_meta%id";
+  const j = { ...f.job, job_id: id, observation: "blocked", blocked_episode: 1 };
+  f.db.db
+    .prepare("UPDATE jobs SET job_id=?,data=? WHERE job_id=?")
+    .run(id, JSON.stringify(j), f.job.job_id);
+  const exact = `${id}-blocked-1`;
+  const wildcardDecoy = "agentXmetaZZid-blocked-1";
+  const unrelated = `${id}-other-1`;
+  const insert = f.db.db.prepare(
+    "INSERT INTO notifications(id,job_id,body) VALUES(?,?,?)",
+  );
+  for (const notificationId of [exact, wildcardDecoy, unrelated])
+    insert.run(notificationId, id, JSON.stringify({ id: notificationId }));
+  f.db.update(f.fence, j, { observation: "running" });
+  const states = new Map(
+    f.db.db
+      .prepare("SELECT id,delivered FROM notifications WHERE job_id=?")
+      .all(id)
+      .map((row) => [row.id, row.delivered]),
+  );
+  assert.equal(states.get(exact), 2);
+  assert.equal(states.get(wildcardDecoy), 0);
+  assert.equal(states.get(unrelated), 0);
+});
+
 test("retention drops report details, not admission dedup or operator attribution", (t) => {
   const f = setup(t);
   let j = f.db.update(f.fence, f.job, {
