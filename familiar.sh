@@ -1018,7 +1018,7 @@ run_tests() {
     fi
   }
 
-  run_suite viewer nix shell nixpkgs#zig_0_15 -c cargo test \
+  run_suite viewer nix develop "$REPO#viewer" -c cargo test \
     --manifest-path "$REPO/services/viewer/Cargo.toml" --all-targets
   run_suite gateway bash -c 'cd "$1" && exec nix shell nixpkgs#bun -c bun test' _ \
     "$REPO/services/gateway"
