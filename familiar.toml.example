@@ -26,6 +26,12 @@ skip_version_check = 1
 # default_provider = "llama.cpp"
 # default_model = "provider/model-id"
 # artifact_dir = "./state/artifacts"
+# familiar-ui durable attachments. The browser uploads images and files through
+# the authenticated bridge; they are stored here (0700) and referenced by
+# history and by agent-visible local paths. Keep it private and back it up with
+# the session archive. See familiar-ui's docs/ATTACHMENTS.md.
+# ui_attachment_dir = "./state/familiar-ui/attachments"
+# ui_attachment_max_bytes = 16777216 # per attachment; 64 MiB hard maximum
 # subscriber_port = 1692
 # tz = "America/Chicago"
 # debug_level = "debug"

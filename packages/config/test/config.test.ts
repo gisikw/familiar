@@ -32,6 +32,20 @@ claude_oauth_token="placeholder"\n[theme.ansi]\nbright_blue="#abcdef"\n`);chmodS
     expect(()=>validateConfig({plugins:{golem:{path:"/g",git:"x",rev:"0123456789abcdef0123456789abcdef01234567"}}})).toThrow(ConfigError);
   });
   test("canonical environment naming is deterministic",()=>expect(envName(["theme","ansi","bright-blue"])).toBe("FAMILIAR_THEME_ANSI_BRIGHT_BLUE"));
+  test("familiar-ui attachment storage is configurable and typed",async()=>{
+    const d=mkdtempSync(join(tmpdir(),"familiar-config-"));dirs.push(d);const p=join(d,"familiar.toml");
+    writeFileSync(p,`[familiar]\nui_attachment_dir="/srv/familiar/state/familiar-ui/attachments"\nui_attachment_max_bytes=8388608\n`);chmodSync(p,0o600);
+    const loaded=await loadConfig(p,{env:{},defaults:{}});
+    expect(loaded.config.familiar?.ui_attachment_dir).toBe("/srv/familiar/state/familiar-ui/attachments");
+    // The generic flattener already produces exactly the names familiar-ui reads.
+    expect(loaded.environment.FAMILIAR_UI_ATTACHMENT_DIR).toBe("/srv/familiar/state/familiar-ui/attachments");
+    expect(loaded.environment.FAMILIAR_UI_ATTACHMENT_MAX_BYTES).toBe("8388608");
+    // Ambient explicit values still win, and the size stays a number.
+    const overridden=await loadConfig(p,{env:{FAMILIAR_UI_ATTACHMENT_DIR:"/run/att"},defaults:{}});
+    expect(overridden.config.familiar?.ui_attachment_dir).toBe("/run/att");
+    expect(()=>validateConfig({familiar:{ui_attachment_max_bytes:"16 MiB"}})).toThrow(ConfigError);
+    expect(()=>validateConfig({familiar:{ui_attachment_root:"/srv"}})).toThrow(ConfigError);
+  });
   test("rejects malformed, unknown, and invalid settings",()=>{
     expect(()=>validateConfig({flat:1})).toThrow(ConfigError);expect(()=>validateConfig({wat:{key:1}})).toThrow("invalid Familiar configuration");
     expect(()=>applyEnvironment({fetch:{}},{FAMILIAR_FETCH_ALLOW_PRIVATE:"maybe"})).toThrow("true or false");

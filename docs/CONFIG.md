@@ -146,6 +146,36 @@ A deploy/review may stage that contract but must not restart Presence or run
 clears only in-memory timers, and the replacement extension restores records on
 `session_start`.
 
+### familiar-ui durable attachments
+
+Browser uploads (images and arbitrary files) are stored server-side before any
+message references them, so historical chat still renders after a reload or a
+restart and the resident agent can open an upload by a stable local path. Two
+optional `[familiar]` keys own that root, and flatten to the names familiar-ui
+already reads:
+
+| Setting                   | Environment                        | Default                                   |
+| ------------------------- | ---------------------------------- | ----------------------------------------- |
+| `ui_attachment_dir`       | `FAMILIAR_UI_ATTACHMENT_DIR`       | `$XDG_STATE_HOME/familiar-ui/attachments` |
+| `ui_attachment_max_bytes` | `FAMILIAR_UI_ATTACHMENT_MAX_BYTES` | `16777216` (64 MiB hard maximum)          |
+
+The path must be absolute at use time and is created mode 0700, owner-only;
+familiar-ui refuses a root reached through a symlink or a group/other-writable
+directory, and disables uploads (rather than the whole bridge) if the root is
+unusable. Nothing is served statically: bytes come back only through the
+bridge's authenticated `GET /v1/attachments/<id>`, so a reverse proxy in front
+of a public deployment must forward `/v1/attachments` and `/v1/attachments/*`
+uncached alongside the existing `/v1/*` routes.
+
+Migration is additive: existing instances need no change, and inline image
+sends keep working (they are persisted on arrival). Back the root up with the
+session archive — an archive restored without it renders attachments as
+`(unavailable)`, which is the intended degradation. familiar-ui sweeps stale
+partial uploads and *unreferenced* uploads older than 24 h on `session_start`;
+anything a message referenced is kept until an operator removes it. See
+familiar-ui's `docs/ATTACHMENTS.md` for the storage layout and the annotation
+grammar handed to the agent.
+
 ## Changes and failures
 
 After editing, keep mode 0600, run `./familiar.sh config-check`, then stop and
