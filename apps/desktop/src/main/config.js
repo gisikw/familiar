@@ -4,11 +4,10 @@ const path = require("path");
 // ---------------------------------------------------------------------------
 // Config surface for the dumb chrome shell.
 //
-// The client is now a thin Electron window that LOADS the familiar server's
-// served terminal page. The only thing it needs to know is the BASE URL of that
-// server; every endpoint (the terminal page itself, the /pty WebSocket, the
-// /upload drop target) is owned by the served page, derived from that origin by
-// the browser context — we never hard-code a path here.
+// The client is a thin Electron window that LOADS a Familiar web deployment.
+// The only thing it needs to know is the BASE URL; routing and every API/stream
+// endpoint are owned by the served app and derived in the browser context — we
+// never hard-code a path here.
 //
 // Resolution order for the base URL (first hit wins):
 //   1. FAMILIAR_BASE_URL environment variable
@@ -19,7 +18,7 @@ const path = require("path");
 // was left.
 // ---------------------------------------------------------------------------
 
-const DEFAULT_BASE_URL = "http://localhost:1692";
+const DEFAULT_BASE_URL = "https://familiar-ui.gisi.network";
 
 // Normalize to an origin+path with no trailing slash noise. We keep whatever
 // path the user configured (in case the server ever lives under a sub-path),

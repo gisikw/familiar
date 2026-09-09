@@ -1,17 +1,16 @@
 # Familiar (client)
 
 A **dumb client**: a thin, near-chromeless Electron window that **loads the
-terminal page served by the familiar server** (default
-`http://localhost:1692`). The served page owns *everything* that makes
-the terminal work — the [restty](https://github.com/wiedymi/restty)
-(libghostty-vt → WASM) renderer, the `/pty` WebSocket bridge, mouse/emoji
-handling, its own fonts, and drag-and-drop file **upload**. This app contributes
-only native chrome.
+configured Familiar web app** (default
+`https://familiar-ui.gisi.network`). The served app owns routing, rendering,
+API/stream connections, and uploads; this app contributes only native chrome.
+When configured for the local gateway (`http://localhost:1692`), that served
+page is the restty terminal and its same-origin `/pty` and `/upload` endpoints.
 
 Previously the client spawned a **local** shell via `node-pty` and rendered
-restty itself. That's gone: there is no local pty, no vendored restty, no
-bundled fonts, no drops-to-disk. The server got good enough that the browser
-terminal feels equivalent, so the Electron app collapsed to a shell around it.
+restty itself. That's gone: there is no local pty, vendored renderer, bundled
+font, or drops-to-disk path. Electron is now only a shell around a configured
+web deployment.
 
 ## What Electron still does
 
@@ -62,7 +61,7 @@ Resolution order (first hit wins):
 
 1. `FAMILIAR_BASE_URL` environment variable (development/terminal launches)
 2. `"baseUrl"` in `<userData>/config.json`
-3. Default: `http://localhost:1692`
+3. Default: `https://familiar-ui.gisi.network`
 
 Packaged apps launched from Finder, Spotlight, or the Dock do not inherit a
 terminal environment. Use **Familiar → Configure Server URL…** in the menu at
@@ -76,7 +75,7 @@ Example:
 
 ```json
 {
-  "baseUrl": "http://localhost:1692",
+  "baseUrl": "https://familiar-ui.gisi.network",
   "bounds": { "x": 100, "y": 100, "width": 1024, "height": 680 }
 }
 ```
@@ -109,7 +108,10 @@ intentionally deferred.
 ## Auth
 
 The gateway has no built-in authentication. A remote deployment should put it
-behind an authenticating reverse proxy; see the gateway README.
+behind an authenticating reverse proxy; see the gateway README. The default
+host advertises its OIDC issuer using RFC 9728, so the desktop client can use
+its native-app authorization-code + PKCE flow without deployment-specific
+credentials in the package.
 
 Because the window is a **real browser context**, browser-based auth "just
 works": when the server returns a login redirect, the window follows it, the
@@ -129,6 +131,11 @@ separate auth window.
   a different `userData`) forces a fresh login.
 - `window.open`/`target=_blank` from the page is denied (single-window shell);
   auth redirects are top-level navigations, so this doesn't affect login.
+- Remote pages run sandboxed with Node integration disabled. Microphone and
+  clipboard-write grants, bearer headers, and the mirrored WebSocket cookie are
+  restricted to the exact configured origin. Preload IPC is accepted only from
+  the exact bundled offline/settings files, not from remote or arbitrary
+  `file:` pages.
 
 ## Layout
 
@@ -139,6 +146,7 @@ apps/desktop/
     main/
       main.js             window, zoom chords, session partition, offline retry
       config.js           base-URL resolution + config.json (bounds) persistence
+      security.js         exact origin and bundled-file authorization helpers
       offline.html        local retry page shown when the server is unreachable
     preload/preload.js    tiny bridge: offline page -> app:retry / app:baseUrl
     selftest/selftest.js  headless verification harness (electron . --selftest)

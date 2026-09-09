@@ -17,6 +17,7 @@
 const fs = require("fs");
 const path = require("path");
 const oidc = require("./oidc");
+const { isSameOrigin } = require("./security");
 
 const REFRESH_MARGIN_MS = 60_000; // refresh a minute before expiry
 const DANCE_THROTTLE_MS = 30_000;
@@ -196,7 +197,9 @@ function createAuthManager({ app, getBaseUrl, getConfig, openExternal, getWindow
     };
     const isLoginRedirect = (url) => {
       const origin = baseOrigin();
-      return !!origin && url.startsWith(origin) && url.includes("/_identity/login");
+      if (!origin || !isSameOrigin(url, origin)) return false;
+      try { return new URL(url).pathname === "/_identity/login"; }
+      catch (_) { return false; }
     };
 
     /**
@@ -268,7 +271,7 @@ function createAuthManager({ app, getBaseUrl, getConfig, openExternal, getWindow
     ses.webRequest.onBeforeSendHeaders({ urls: ["*://*/*"] }, (details, callback) => {
       const requestHeaders = details.requestHeaders;
       const origin = baseOrigin();
-      const sameOrigin = origin && details.url.startsWith(origin);
+      const sameOrigin = origin && isSameOrigin(details.url, origin);
       // Main frame included: the served page load itself must pass the
       // resource's auth gate. Off-origin requests are never touched.
       if (sameOrigin && tokens && tokens.accessToken) {
@@ -280,7 +283,7 @@ function createAuthManager({ app, getBaseUrl, getConfig, openExternal, getWindow
     // interception) means the same thing: refresh silently, or dance.
     ses.webRequest.onCompleted({ urls: ["*://*/*"] }, (details) => {
       const origin = baseOrigin();
-      if (!origin || !details.url.startsWith(origin)) return;
+      if (!origin || !isSameOrigin(details.url, origin)) return;
       if (details.statusCode !== 401 && details.statusCode !== 403) return;
       const force = !hasValidAccessToken();
       ensureAuthenticated({ forceDance: force }).then((ok) => {

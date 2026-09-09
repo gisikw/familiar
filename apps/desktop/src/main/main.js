@@ -21,14 +21,15 @@ if (process.argv.includes("--selftest")) {
 
 const { resolveBaseUrl, readConfigFile, writeConfigFile } = require("./config");
 const { createAuthManager } = require("./auth");
+const { isAllowedBundledFile } = require("./security");
 
 // ---------------------------------------------------------------------------
 // Familiar is a DUMB CLIENT: a thin, near-chromeless Electron window that loads
-// the terminal PAGE served by the configured familiar server (localhost by
-// default, root "/"). The served page owns EVERYTHING — restty, the pty
-// WebSocket, mouse/emoji handling, and drag-and-drop upload. Electron contributes
-// only native chrome: an edgeless window, zoom chords, a persistent login session
-// (so an authentication cookie survives restarts), and an offline retry page.
+// the web app served by the configured deployment (root "/"). The served app
+// owns EVERYTHING — routing, rendering, API/stream connections, and uploads.
+// Electron contributes only native chrome: an edgeless window, zoom chords, a
+// persistent login session (so an authentication cookie survives restarts),
+// and an offline retry page.
 //
 // A persistent session partition means browser-based authentication "just
 // works": redirects complete inline and the resulting cookie is stored on disk
@@ -38,6 +39,7 @@ const { createAuthManager } = require("./auth");
 // Persistent partition -> cookies (incl. the auth session) survive restarts.
 const PARTITION = "persist:familiar";
 const OFFLINE_PAGE = path.join(__dirname, "offline.html");
+const SETTINGS_PAGE = path.join(__dirname, "settings.html");
 
 let mainWindow = null;
 let settingsWindow = null;
@@ -146,7 +148,7 @@ function openSettings() {
       sandbox: true,
     },
   });
-  settingsWindow.loadFile(path.join(__dirname, "settings.html"));
+  settingsWindow.loadFile(SETTINGS_PAGE);
   settingsWindow.on("closed", () => { settingsWindow = null; });
 }
 
@@ -292,17 +294,23 @@ app.whenReady().then(() => {
   // eslint-disable-next-line no-console
   console.log("[familiar] base URL:", baseUrl, "partition:", PARTITION);
 
-  // Renderer (offline page) can ask us to retry loading the app now.
-  ipcMain.on("app:retry", () => {
+  const senderIsBundledPage = (event, allowed) =>
+    !!event.senderFrame && isAllowedBundledFile(event.senderFrame.url, allowed);
+
+  // The preload also runs in remote documents because the main window uses it
+  // for offline.html. Treat the exact bundled file as the IPC authority, never
+  // a scheme or remote origin.
+  ipcMain.on("app:retry", (event) => {
+    if (!senderIsBundledPage(event, [OFFLINE_PAGE])) return;
     retryDelay = 0;
     loadApp();
   });
-  // Expose the resolved base URL to the offline page if it asks.
-  ipcMain.handle("app:baseUrl", () => baseUrl);
+  ipcMain.handle("app:baseUrl", (event) => {
+    if (!senderIsBundledPage(event, [OFFLINE_PAGE, SETTINGS_PAGE])) return null;
+    return baseUrl;
+  });
   ipcMain.handle("app:saveBaseUrl", (event, raw) => {
-    // Only the bundled settings page may change the persisted destination;
-    // never let a remote server loaded in the shell rewrite local config.
-    if (!event.senderFrame || !event.senderFrame.url.startsWith("file:")) {
+    if (!senderIsBundledPage(event, [SETTINGS_PAGE])) {
       return { ok: false, error: "Settings can only be changed from Familiar." };
     }
     const normalized = require("./config").normalizeBaseUrl(raw);

@@ -23,6 +23,7 @@ const os = require("os");
 const fs = require("fs");
 
 const cfg = require("../main/config");
+const security = require("../main/security");
 
 const OUT = path.join(os.tmpdir(), "familiar-selftest");
 fs.mkdirSync(OUT, { recursive: true });
@@ -66,8 +67,9 @@ function checkConfig() {
   const savedEnv = process.env.FAMILIAR_BASE_URL;
   delete process.env.FAMILIAR_BASE_URL;
   const def = cfg.resolveBaseUrl(null, {});
-  if (def !== cfg.DEFAULT_BASE_URL) {
-    return `default base url = ${def}, want ${cfg.DEFAULT_BASE_URL}`;
+  const expectedDefault = "https://familiar-ui.gisi.network";
+  if (def !== expectedDefault || cfg.DEFAULT_BASE_URL !== expectedDefault) {
+    return `default base url = ${def}, want ${expectedDefault}`;
   }
   log("default base URL OK:", def);
 
@@ -86,6 +88,23 @@ function checkConfig() {
   if (savedEnv === undefined) delete process.env.FAMILIAR_BASE_URL;
   else process.env.FAMILIAR_BASE_URL = savedEnv;
   log("resolveBaseUrl precedence OK (env > file > default)");
+
+  // Origin checks must parse URLs rather than accept lookalike prefixes, and
+  // preload IPC must recognize only exact bundled files.
+  if (!security.isSameOrigin("https://familiar-ui.gisi.network/stream", expectedDefault)) {
+    return "same-origin URL rejected";
+  }
+  if (security.isSameOrigin("https://familiar-ui.gisi.network.evil/", expectedDefault)) {
+    return "lookalike origin accepted";
+  }
+  const offline = path.join(__dirname, "..", "main", "offline.html");
+  if (!security.isAllowedBundledFile(new URL(`file://${offline}`).toString(), [offline])) {
+    return "bundled offline file rejected";
+  }
+  if (security.isAllowedBundledFile("file:///tmp/offline.html", [offline])) {
+    return "arbitrary file URL accepted as bundled content";
+  }
+  log("origin and bundled-file allowlists OK");
 
   // Bounds round-trip through the real userData JSON.
   cfg.writeConfigFile(app, { bounds: { x: 5, y: 6, width: 700, height: 500 } });
