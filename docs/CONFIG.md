@@ -131,6 +131,16 @@ private repository and immutable Nix profile. The wrapper configures the bridge
 before invoking the packaged extension. Familiar does not accept a UI source or
 revision and does not build familiar-ui during a Presence birth.
 
+Current familiar-ui uses the patched Pi's awaited
+`pi.invokeExtensionCommand(name, args?)` by default for exact registered
+extension commands. It separately adapts only built-ins with matching explicit
+Pi operations (`/compact` today); prompt templates and skills are not command
+API targets. The old pane-validated keyboard transport remains an explicit
+bootstrap/rollback setting, `FAMILIAR_UI_COMMAND_TRANSPORT=tmux`, owned by the
+wrapper. It is never an automatic fallback after direct dispatch, so a stale,
+busy, or otherwise ambiguous failure cannot submit twice. Omit the variable (or
+set it to `direct`) in normal deployments.
+
 A deploy/review may stage that contract but must not restart Presence or run
 `/reload`; activation remains an explicit operator action. Durable wake shutdown
 clears only in-memory timers, and the replacement extension restores records on
