@@ -1,0 +1,124 @@
+--- a/packages/coding-agent/src/core/extensions/types.ts
++++ b/packages/coding-agent/src/core/extensions/types.ts
+@@ -1344,6 +1344,19 @@
+ 	/** Get available slash commands in the current session. */
+ 	getCommands(): SlashCommandInfo[];
+ 
++	/**
++	 * Invoke a registered extension command by its exact getCommands() name (source: "extension").
++	 * No leading slash, parsing, prompt/skill expansion, or built-in interactive commands.
++	 * Args are passed unchanged (default ""). Resolves after the handler completes; rejects
++	 * unknown names, stale runtimes, active-command reentry, or more than 16 active commands.
++	 * Handler Errors propagate unchanged; other thrown values become Error(String(value)).
++	 * Does not emit an additional error event. Callers must await/catch the returned promise.
++	 * Runs immediately, not at an idle boundary: do not invoke session-control commands from
++	 * tools/events that those commands must wait for. Queue a follow-up message instead.
++	 * After replacement/reload, captured pi/ctx remain stale even if this promise resolves.
++	 */
++	invokeCommand(name: string, args?: string): Promise<void>;
++
+ 	// =========================================================================
+ 	// Model and Thinking Level
+ 	// =========================================================================
+@@ -1597,6 +1610,8 @@
+  * Contains flag values (defaults set during registration, CLI values set after).
+  */
+ export interface ExtensionRuntimeState {
++	/** Bound by ExtensionRunner, not a caller-supplied raw command handler. */
++	invokeCommand: ExtensionAPI["invokeCommand"];
+ 	flagValues: Map<string, boolean | string>;
+ 	/** Legacy provider-config registrations queued during extension loading, processed when runner binds. */
+ 	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; extensionPath: string }>;
+--- a/packages/coding-agent/src/core/extensions/loader.ts
++++ b/packages/coding-agent/src/core/extensions/loader.ts
+@@ -196,6 +196,7 @@
+ 		// registerTool() is valid during extension load; refresh is only needed post-bind.
+ 		refreshTools: () => {},
+ 		getCommands: notInitialized,
++		invokeCommand: async () => notInitialized(),
+ 		setModel: () => Promise.reject(new Error("Extension runtime not initialized")),
+ 		getThinkingLevel: notInitialized,
+ 		setThinkingLevel: notInitialized,
+@@ -373,6 +374,11 @@
+ 		setActiveTools(toolNames: string[]): void {
+ 			runtime.assertActive();
+ 			runtime.setActiveTools(toolNames);
++		},
++
++		async invokeCommand(name, args) {
++			runtime.assertActive();
++			await runtime.invokeCommand(name, args);
+ 		},
+ 
+ 		getCommands() {
+--- a/packages/coding-agent/src/core/extensions/runner.ts
++++ b/packages/coding-agent/src/core/extensions/runner.ts
+@@ -295,6 +295,7 @@
+ 	private shortcutDiagnostics: ResourceDiagnostic[] = [];
+ 	private commandDiagnostics: ResourceDiagnostic[] = [];
+ 	private staleMessage: string | undefined;
++	private activeCommands = new Set<string>();
+ 
+ 	constructor(
+ 		extensions: Extension[],
+@@ -332,6 +333,7 @@
+ 		this.runtime.setActiveTools = actions.setActiveTools;
+ 		this.runtime.refreshTools = actions.refreshTools;
+ 		this.runtime.getCommands = actions.getCommands;
++		this.runtime.invokeCommand = (name, args) => this.invokeCommand(name, args);
+ 		this.runtime.setModel = actions.setModel;
+ 		this.runtime.getThinkingLevel = actions.getThinkingLevel;
+ 		this.runtime.setThinkingLevel = actions.setThinkingLevel;
+@@ -651,6 +653,26 @@
+ 
+ 	getCommand(name: string): ResolvedCommand | undefined {
+ 		return this.resolveRegisteredCommands().find((command) => command.invocationName === name);
++	}
++
++	async invokeCommand(name: string, args = ""): Promise<void> {
++		this.assertActive();
++		this.runtime.assertActive();
++		const command = this.getCommand(name);
++		if (!command) throw new Error(`Unknown extension command: ${name}`);
++		// Runner-local, deliberately also rejects concurrent calls of the same name.
++		// Covers direct/indirect async cycles, including calls through prompt dispatch.
++		if (this.activeCommands.has(name)) throw new Error(`Extension command already active: ${name}`);
++		if (this.activeCommands.size >= 16) throw new Error("Extension command invocation limit (16) exceeded");
++		this.activeCommands.add(name);
++		try {
++			await command.handler(args, this.createCommandContext());
++		} catch (error) {
++			throw error instanceof Error ? error : new Error(String(error));
++		} finally {
++			// Do not assertActive here: successful commands may replace/reload their runtime.
++			this.activeCommands.delete(name);
++		}
+ 	}
+ 
+ 	/**
+--- a/packages/coding-agent/src/core/agent-session.ts
++++ b/packages/coding-agent/src/core/agent-session.ts
+@@ -1281,18 +1281,15 @@
+ 		const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
+ 		const args = spaceIndex === -1 ? "" : text.slice(spaceIndex + 1);
+ 
+-		const command = this._extensionRunner.getCommand(commandName);
+-		if (!command) return false;
+-
+-		// Get command context from extension runner (includes session control methods)
+-		const ctx = this._extensionRunner.createCommandContext();
++		const runner = this._extensionRunner;
++		if (!runner.getCommand(commandName)) return false;
+ 
+ 		try {
+-			await command.handler(args, ctx);
++			await runner.invokeCommand(commandName, args);
+ 			return true;
+ 		} catch (err) {
+-			// Emit error via extension runner
+-			this._extensionRunner.emitError({
++			// Report on the originating runner, even if the handler replaced the session.
++			runner.emitError({
+ 				extensionPath: `command:${commandName}`,
+ 				event: "command",
+ 				error: err instanceof Error ? err.message : String(err),

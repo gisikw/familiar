@@ -15,6 +15,7 @@
     flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ] (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+        patchedPi = import ./nix/patches/pi-coding-agent { inherit pkgs; };
         modelEnv = {
           FAMILIAR_MODEL_FILE = "gemma-4-E4B-it-Q4_K_M.gguf";
           FAMILIAR_MODEL_URL = "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/${modelEnv.FAMILIAR_MODEL_FILE}";
@@ -66,12 +67,13 @@
         piShell = pkgs.mkShell (modelEnv // {
           FAMILIAR_SHELL = "pi";
           FAMILIAR_INTERACTIVE_SHELL = "${pkgs.bashInteractive}/bin/bash";
-          PI_PACKAGE_DIR = "${pkgs.pi-coding-agent}/lib/node_modules/pi-monorepo";
-          packages = with pkgs; [ age curl jq sqlite pi-coding-agent librsvg ffmpeg tmux util-linux git ];
+          PI_PACKAGE_DIR = "${patchedPi}/lib/node_modules/pi-monorepo";
+          packages = [ patchedPi ] ++ (with pkgs; [ age curl jq sqlite librsvg ffmpeg tmux util-linux git ]);
         });
       in
       {
         packages = rec {
+          pi-coding-agent = patchedPi;
           familiar-server = server.packages.${system}.default;
           familiar-llm = llm.packages.${system}.default;
           familiar-stt = stt.packages.${system}.default;
@@ -97,7 +99,7 @@
           familiar-viewer = viewer.packages.${system}.default;
           familiar-desktop = desktop.packages.${system}.default;
         };
-        checks = pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+        checks = { pi-invoke-command = patchedPi; } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           drop-serve-lifecycle = pkgs.runCommand "drop-serve-lifecycle" {
             nativeBuildInputs = with pkgs; [ bash coreutils gnugrep gawk netcat-openbsd ];
           } ''
