@@ -93,6 +93,11 @@ export FAMILIAR_PRESENCE_CTL="${FAMILIAR_PRESENCE_CTL:-$REPO/services/presence/p
 # Durable extension state belongs to the private runtime, never the source tree.
 export FAMILIAR_WAKE_DIR="${FAMILIAR_WAKE_DIR:-$STATE_DIR/wakes}"
 export FAMILIAR_WAKE_DIR="$(resolve_config_path "$FAMILIAR_WAKE_DIR")"
+# Private-mode keyring. Holds a public age recipient and the matching identity
+# wrapped under Kevin's passphrase; never conversation content. Mode 0700.
+export FAMILIAR_PRIVATE_DIR="${FAMILIAR_PRIVATE_DIR:-$STATE_DIR/private}"
+export FAMILIAR_PRIVATE_DIR="$(resolve_config_path "$FAMILIAR_PRIVATE_DIR")"
+install -d -m 700 "$FAMILIAR_PRIVATE_DIR" 2>/dev/null || true
 # Session storage. Overriding this is the deliberate escape hatch for a wedged
 # session: point it at a clean-room dir to bail out without touching the main
 # continuity line. Not a first-class verb on purpose — forking continuity
@@ -370,7 +375,7 @@ run_pi() {
         compaction: { enabled: true, reserveTokens: 4096 },
         # Keep the live extension set explicit.
         extensions: (([
-          "footer", "handoff", "identity", "stuff", "subscriber",
+          "footer", "handoff", "identity", "private", "stuff", "subscriber",
           "tiamat", "web", "worklist", "zip", "wake"
         ] | map($ext + "/" + .)) + $pluginExts + $extraExts | unique)
       }
@@ -1013,12 +1018,14 @@ run_tests() {
     --manifest-path "$REPO/services/viewer/Cargo.toml" --all-targets
   run_suite gateway bash -c 'cd "$1" && exec nix shell nixpkgs#bun -c bun test' _ \
     "$REPO/services/gateway"
+  run_suite extensions bash -c 'cd "$1" && exec nix develop "$1/.." -c bun test' _ \
+    "$REPO/integrations/pi/extensions"
   run_suite presence bash "$REPO/services/presence/test.sh"
   run_suite e2e nix develop "$REPO#e2e" -c "$REPO/test/e2e/run.sh"
 
   printf '\n========== SUMMARY ==========\n'
   if [ "${#failed[@]}" -eq 0 ]; then
-    echo 'All suites passed: viewer gateway presence e2e'
+    echo 'All suites passed: viewer gateway extensions presence e2e'
     return 0
   fi
   printf 'Failed suites:'
@@ -1047,6 +1054,7 @@ init_instance() {
 # High-volume runtime output and generated/private workspace data.
 state/log.jsonl*
 state/age.key
+state/private/
 state/pi/
 state/pi/auth.json
 state/presence/

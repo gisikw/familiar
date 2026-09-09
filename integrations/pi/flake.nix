@@ -10,7 +10,7 @@
       in {
         devShells.default = pkgs.mkShell {
           PI_PACKAGE_DIR = "${pkgs.pi-coding-agent}/lib/node_modules/pi-monorepo";
-          packages = with pkgs; [ bun pi-coding-agent ];
+          packages = with pkgs; [ bun pi-coding-agent age ];
         };
       });
 }
