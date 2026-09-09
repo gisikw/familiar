@@ -17,6 +17,8 @@ async function fixture() {
   await assert.rejects(runner.invokeExtensionCommand('missing'), /requires an idle AgentSession/);
   const session = Object.assign(Object.create(AgentSession.prototype), {
     _isAgentRunActive: false,
+    _agentSettledDispatchDepth: 0,
+    _eventListeners: [],
     _extensionRunner: runner,
     _resourceLoader: {
       getPrompts: () => ({ prompts: [{ name: 'template' }] }),
@@ -129,15 +131,47 @@ assert.equal(received[0], ' raw');
 assert.equal(await prompt('/throw'), true);
 assert.equal(errors.length, 1);
 assert.equal(errors[0].error, 'boom');
-pi.registerCommand('prompt-cycle', { handler: async () => { await prompt('/prompt-cycle'); } });
-await pi.invokeExtensionCommand('prompt-cycle'); // prompt reports rather than propagating, as upstream
-assert.match(errors.at(-1).error, /already active/);
-// The internal prompt path shares exclusivity, including different names.
+// Upstream prompt commands neither acquire nor check the new public slot.
+const publicPending = pi.invokeExtensionCommand('async');
+await session.prompt('/hello overlap');
+assert.equal(received[0], 'overlap');
+await session.prompt('/throw');
+assert.equal(errors.at(-1).error, 'boom');
+release(); await publicPending;
 const promptPending = session.prompt('/async');
-await assert.rejects(pi.invokeExtensionCommand('hello'), /already active/);
-await session.prompt('/hello');
-assert.match(errors.at(-1).error, /already active/);
+await pi.invokeExtensionCommand('hello', 'public overlap');
+assert.equal(received[0], 'public overlap');
+await session.prompt('/hello prompt overlap');
+assert.equal(received[0], 'prompt overlap');
 release(); await promptPending;
+
+// Real AgentSession settled pipeline: public isIdle stays true, admission does not.
+let targetRuns = 0, settledChecks = 0, finishSettled;
+pi.registerCommand('settled-target', { handler: async () => { targetRuns++; } });
+pi.on('agent_settled', async (_event, ctx) => {
+  assert.equal(ctx.isIdle(), true);
+  await assert.rejects(pi.invokeExtensionCommand('settled-target'), /requires an idle AgentSession/);
+  settledChecks++;
+  await new Promise(resolve => { finishSettled = resolve; });
+  await assert.rejects(pi.invokeExtensionCommand('settled-target'), /requires an idle AgentSession/);
+});
+session._isAgentRunActive = true;
+const settling = session._emitAgentSettled();
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(settledChecks, 1);
+assert.equal(session.isIdle, true);
+await assert.rejects(pi.invokeExtensionCommand('settled-target'), /requires an idle AgentSession/);
+assert.equal(targetRuns, 0);
+finishSettled(); await settling;
+assert.equal(session._agentSettledDispatchDepth, 0);
+await pi.invokeExtensionCommand('settled-target');
+assert.equal(targetRuns, 1);
+// Finally restores admission even if dispatch itself fails.
+const originalEmit = runner.emit;
+runner.emit = async () => { throw boom; };
+await assert.rejects(session._emitAgentSettled(), e => e === boom);
+runner.emit = originalEmit;
+assert.equal(session._agentSettledDispatchDepth, 0);
 await pi.invokeExtensionCommand('hello');
 
 // Exercise the actual invalidation path used by reload/session replacement. Only

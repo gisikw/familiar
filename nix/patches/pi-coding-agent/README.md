@@ -29,19 +29,19 @@ if (command) await pi.invokeExtensionCommand(command.name, "unchanged args");
   their identity/stack; other thrown values become `Error(String(value))`, as in
   Pi's existing async compaction error normalization.
 - Programmatic failures belong to the caller: no duplicate `emitError` side
-  effect. Prompt dispatch uses the same runner operation but keeps upstream's
-  report-and-consume behavior. Reporting is on the originating runner even if
-  the handler replaced the session before throwing.
-- Requires the runner's bound owning `AgentSession.isIdle` to return exactly true
-  at admission. Unbound runners fail closed. Active-run tools/events reject before
+  effect. `AgentSession.prompt` keeps upstream's direct handler invocation,
+  context creation, and report-and-consume error behavior byte-for-byte.
+- Requires a separate owning-session admission predicate to return exactly true:
+  `session.isIdle && _agentSettledDispatchDepth === 0`. Unbound runners fail closed.
+  Active-run tools/events and the entire `_emitAgentSettled` dispatch reject before
   a command context is created; no wait or queue can deadlock on the caller.
-- One runner-local exclusive command slot rejects **all nested and concurrent
-  commands**, including A → B. Different names still mutate the same session;
-  a name set/depth limit does not protect that shared state. Rejecting rather than
-  queueing also avoids nested callers waiting on themselves. Prompt dispatch
-  shares exclusivity but uses an internal entry point **without the public idle
-  restriction**, retaining upstream immediate command handling during streaming.
-  Cleanup is in `finally`, including throws and runtime replacement.
+  The depth spans both extension dispatch and synchronous session listeners and
+  is restored in `finally`. Public `isIdle` semantics are unchanged.
+- One runner-local exclusive slot rejects nested/concurrent **public API calls**,
+  including A → B. Cleanup is in `finally`, including throws and replacement.
+  Existing prompt dispatch neither checks nor acquires this slot. Prompt commands
+  retain immediate/overlapping behavior, even during a public invocation or while
+  streaming. Browser/terminal concurrency remains the host's responsibility.
 - Successful replacement/reload may resolve the invocation. It does not revive
   captured old `pi`/`ctx`. Subsequent calls reject and context getters/actions
   retain upstream stale checks. No post-handler active assertion falsely turns
@@ -62,12 +62,20 @@ built-ins/templates/skills; there is no broad `invokeCommand` compatibility alia
 We remain pinned to verified **0.84.1**. Its owning-session `isIdle` is backed by
 `_isAgentRunActive`, which spans the run and post-run retries/continuations, not
 just `agent.state.isStreaming`. This is the upstream lifecycle predicate, not a
-new quiescence implementation. The API checks it synchronously before dispatch.
-It is not a scheduler, provenance check, or session-wide lock: idle callbacks can
-call it, and unrelated host actions must still be gated throughout the handler.
-The internal prompt entry point is not exposed on `pi`; SDK hosts retain their
-upstream ability to dispatch commands while busy. Nested/overlapping prompt
-commands now report an error instead of overlapping session mutation.
+new quiescence implementation. Because `_emitAgentSettled` clears that flag before
+awaiting handlers, the separate session-owned dispatch depth fences that interval
+without changing `ctx.isIdle()` (which is true inside `agent_settled`). Admission
+checks both synchronously. The exclusive slot belongs only to the new public API.
+
+Other lifecycle callbacks were assessed: `session_start`, model changes and most
+session events use generic `ExtensionRunner.emit`, while `resources_discover` and
+input/tool/provider/message pipelines have distinct emit methods. There is no
+single existing dispatch boundary covering all of them. This patch deliberately
+uses the requested narrow settled fence rather than wrapping every emitter or
+introducing a scheduler. **Other idle lifecycle callbacks are not fenced**; they
+can invoke if the public slot is free. This is not a provenance check, general
+event-pipeline lock, or session-wide lock. Hosts must gate unrelated session actions
+throughout the handler; prompt/public overlap is explicitly permitted by core.
 
 Do **not** queue slash text via `sendUserMessage(... followUp)` as a substitute:
 in 0.84.1 this is literal model-visible text. 0.84.2's `expandPromptTemplates`
@@ -92,11 +100,14 @@ checks cover whole `loader.ts`, `runner.ts`, `types.ts`, `agent-session.ts`, roo
 and coding-agent package manifests, lockfile, and the patched extension API docs. This pins command resolution,
 context construction, prompt dispatch, getCommands binding, and stale/reload
 internals, not just nearby patch context. Source rearrangements fail before patch
-application; patch fuzz is not the verification mechanism. The existing pristine
-source hashes are unchanged; the extension-docs hash is added because those docs
-are now patched too. `invoke-command-shape.test.mjs` additionally checks the patched
-idle binding, owning-session getter, prompt-before-streaming ordering, internal
-prompt path, exclusive guard, and absence of a public bypass/legacy alias.
+application; patch fuzz is not the verification mechanism. All pristine source
+hashes were rechecked; they remain unchanged because the pinned inputs did not
+change. `invoke-command-shape.test.mjs` additionally checks the separate admission
+binding, settled depth/finally, unchanged owning-session getter and default context
+idle semantics, prompt-before-streaming ordering, direct prompt handler path,
+public-only exclusive guard, and absence of a public bypass/legacy alias. A new
+SHA-256 assertion pins the restored `_tryExecuteExtensionCommand` method byte-for-byte
+to upstream, including its error runner selection and context creation.
 
 On an upstream bump, inspect the new source and nixpkgs build recipe, revisit
 semantics and tests, and only then regenerate hashes/patch. Do not merely relax
@@ -109,8 +120,10 @@ It exercises factory registration, real session getCommands binding, args/defaul
 suffix resolution, async completion through an explicit barrier, unknown/non-extension
 names, sync Error identity and async non-Error normalization, self-invocation and
 A → B exclusion, same/different-name concurrency rejection, busy public/event/tool
-rejection, guard cleanup, real `AgentSession.prompt()` execution while busy,
-prompt error reporting, and stale API/
+rejection, guard cleanup, real `_emitAgentSettled` execution where ctx.isIdle is
+true but invocation rejects without running the target (including across an await),
+settled dispatch failure cleanup, real `AgentSession.prompt()` execution while busy,
+prompt/public overlap in both directions, prompt error reporting, and stale API/
 context behavior during and after replacement/reload. Session/resource I/O is stubbed
 at the mode-action boundary; these are not full TUI or disk-backed lifecycle tests.
 
