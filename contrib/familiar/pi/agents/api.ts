@@ -7,10 +7,41 @@ export type Capabilities = { harnesses: Record<string,{models:string[]}>; projec
 
 export class GolemClient {
   endpoint: string; token?: string;
-  constructor(endpoint=process.env.GOLEM_ENDPOINT||"http://127.0.0.1:7337", token=process.env.GOLEM_TOKEN){this.endpoint=endpoint.replace(/\/$/,"");this.token=token||undefined}
+  constructor(endpoint=process.env.GOLEM_ENDPOINT||"http://127.0.0.1:7337", token=process.env.GOLEM_TOKEN,
+    readonly limits = { timeoutMs: 30_000, responseBytes: 4 * 1024 * 1024 }) {
+    if (!Number.isFinite(limits.timeoutMs) || limits.timeoutMs <= 0 ||
+      !Number.isSafeInteger(limits.responseBytes) || limits.responseBytes <= 0)
+      throw new Error("invalid Golem transport limits");
+    this.endpoint=endpoint.replace(/\/$/,"");this.token=token||undefined;
+  }
   async raw(method:string,path:string,body?:unknown):Promise<{status:number;headers:Record<string,string|string[]|undefined>;body:Uint8Array}>{
     const unix=this.endpoint.startsWith("unix://"); const target=unix?new URL("http://unix"+path):new URL(this.endpoint+path); const payload=body===undefined?undefined:Buffer.from(JSON.stringify(body));
-    return await new Promise((resolve,reject)=>{const fn=target.protocol==="https:"?httpsRequest:httpRequest;const req=fn({protocol:target.protocol,hostname:target.hostname,port:target.port,path:target.pathname+target.search,method,socketPath:unix?this.endpoint.slice(7):undefined,headers:{...(payload?{"content-type":"application/json","content-length":String(payload.length)}:{}),...(this.token?{authorization:`Bearer ${this.token}`}:{})}},res=>{const chunks:Buffer[]=[];res.on("data",x=>chunks.push(x));res.on("end",()=>resolve({status:res.statusCode||0,headers:res.headers,body:Buffer.concat(chunks)}))});req.on("error",reject);if(payload)req.write(payload);req.end()})
+    return await new Promise((resolve,reject)=>{
+      const fn=target.protocol==="https:"?httpsRequest:httpRequest;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const fail=(error:Error)=>{clearTimeout(timer);reject(error)};
+      const req=fn({protocol:target.protocol,hostname:target.hostname,port:target.port,path:target.pathname+target.search,method,socketPath:unix?this.endpoint.slice(7):undefined,headers:{...(payload?{"content-type":"application/json","content-length":String(payload.length)}:{}),...(this.token?{authorization:`Bearer ${this.token}`}:{})}},res=>{
+        const chunks:Buffer[]=[];let bytes=0;
+        res.on("data",x=>{
+          bytes+=x.length;
+          if(bytes>this.limits.responseBytes){
+            const error=new Error("golemd response exceeds byte budget");
+            fail(error);res.destroy(error);req.destroy(error);return;
+          }
+          chunks.push(x);
+        });
+        res.on("error",fail);
+        res.on("aborted",()=>fail(new Error("golemd response aborted")));
+        res.on("end",()=>{clearTimeout(timer);resolve({status:res.statusCode||0,headers:res.headers,body:Buffer.concat(chunks)})});
+      });
+      // An absolute deadline, not socket inactivity: trickled bytes must not
+      // keep a cancellation/status request alive indefinitely.
+      timer=setTimeout(()=>{
+        const error=new Error("golemd request deadline exceeded; outcome may be uncertain");
+        fail(error);req.destroy(error);
+      },this.limits.timeoutMs);
+      req.on("error",fail);if(payload)req.write(payload);req.end();
+    })
   }
   async json(method:string,path:string,body?:unknown):Promise<any>{const r=await this.raw(method,path,body);const text=Buffer.from(r.body).toString("utf8");if(r.status<200||r.status>=300)throw new Error(`golemd ${r.status}: ${text.slice(0,1000)}`);return text?JSON.parse(text):null}
   capabilities():Promise<Capabilities>{return this.json("GET","/v1/capabilities")}
@@ -25,14 +56,42 @@ export class GolemClient {
     return new Promise((resolve,reject)=>{
       if(signal.aborted)return resolve();
       const fn=target.protocol==="https:"?httpsRequest:httpRequest;
+      let headerTimer: ReturnType<typeof setTimeout> | undefined;
+      const finish=(error?:Error)=>{clearTimeout(headerTimer);signal.removeEventListener("abort",abort);if(error)reject(error);else resolve()};
+      const abort=()=>{finish();req.destroy()};
       const req=fn({protocol:target.protocol,hostname:target.hostname,port:target.port,path:target.pathname+target.search,method:"GET",socketPath:unix?this.endpoint.slice(7):undefined,headers:{accept:"text/event-stream",...(this.token?{authorization:`Bearer ${this.token}`}:{})}},res=>{
-        if((res.statusCode||0)!==200){res.resume();return reject(new Error(`golemd events ${res.statusCode}`))}
+        clearTimeout(headerTimer);
+        if((res.statusCode||0)!==200){finish(new Error(`golemd events ${res.statusCode}`));res.destroy();return}
         let buf="";res.setEncoding("utf8");
-        res.on("data",chunk=>{buf+=chunk;let i;while((i=buf.indexOf("\n"))>=0){const line=buf.slice(0,i).replace(/\r$/,"");buf=buf.slice(i+1);if(line.startsWith("data:")){const j=line.slice(5).trim();if(j){try{onEvent(JSON.parse(j))}catch{/* skip malformed frame */}}}}});
-        res.on("end",()=>resolve());res.on("error",reject);
+        res.on("data",chunk=>{
+          buf+=chunk;
+          // Check the entire unparsed buffer BEFORE splitting. A peer that never
+          // sends a newline cannot grow memory indefinitely.
+          if(Buffer.byteLength(buf)>this.limits.responseBytes){
+            const error=new Error("golemd event frame exceeds byte budget");
+            finish(error);res.destroy(error);req.destroy(error);return;
+          }
+          let i;
+          while((i=buf.indexOf("\n"))>=0){
+            const line=buf.slice(0,i).replace(/\r$/,"");buf=buf.slice(i+1);
+            if(line.startsWith("data:")){
+              const j=line.slice(5).trim();if(!j)continue;
+              let event;try{event=JSON.parse(j)}catch{continue}
+              try{onEvent(event)}catch(error){
+                // Consumer failure is not malformed JSON. Disconnect so the
+                // durable cursor/reconciliation path can retry the event.
+                finish(error instanceof Error?error:new Error(String(error)));req.destroy();return;
+              }
+            }
+          }
+        });
+        res.on("end",()=>finish());res.on("error",finish);
+        res.on("aborted",()=>finish(new Error("golemd events aborted")));
       });
-      req.on("error",reject);
-      signal.addEventListener("abort",()=>{try{req.destroy()}catch{/* already closed */}resolve()},{once:true});
+      req.on("error",finish);
+      headerTimer=setTimeout(()=>{const error=new Error("golemd events connect deadline exceeded");finish(error);req.destroy(error)},this.limits.timeoutMs);
+      req.setTimeout(this.limits.timeoutMs,()=>{const error=new Error("golemd events idle deadline exceeded");finish(error);req.destroy(error)});
+      signal.addEventListener("abort",abort,{once:true});
       req.end();
     })
   }
