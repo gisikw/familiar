@@ -83,6 +83,8 @@ export class OwnedChildren {
           job.state === "blocked" && job.question && !job.question.answer
             ? id(job.question.id)
             : null;
+        if ((child.terminal || child.questionId) && !child.pendingEvent)
+          child.pendingEvent = { seq: child.eventSeq, job };
       });
     } catch (error) {
       // Cancellation/replacement may win while create is in flight. Cancel that

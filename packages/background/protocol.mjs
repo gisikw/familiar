@@ -125,7 +125,7 @@ export function report(value) {
     questions: strings(value.questions ?? []),
     changedArtifacts: strings(value.changedArtifacts ?? []),
     integrationRef:
-      value.integrationRef === undefined
+      value.integrationRef === undefined || value.integrationRef === null
         ? null
         : text(value.integrationRef, 2048),
     requestedRejoin: value.requestedRejoin,

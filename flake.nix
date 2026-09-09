@@ -113,7 +113,7 @@
             touch $out
           '';
           background-core = pkgs.runCommand "background-core" {
-            nativeBuildInputs = [ pkgs.nodejs_22 ];
+            nativeBuildInputs = [ pkgs.nodejs_22 ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.util-linux ];
             PI_PACKAGE_DIR = "${patchedPi}/lib/node_modules/pi-monorepo";
           } ''
             export HOME="$TMPDIR/home"

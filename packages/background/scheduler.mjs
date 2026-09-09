@@ -17,6 +17,7 @@ export class BranchScheduler {
       abortTimeoutMs = 5000,
       idleTimeoutMs = 60 * 60_000,
       onError = () => {},
+      onSettled = () => {},
     } = {},
   ) {
     for (const ms of [turnTimeoutMs, abortTimeoutMs, idleTimeoutMs])
@@ -27,6 +28,7 @@ export class BranchScheduler {
     this.abortTimeoutMs = abortTimeoutMs;
     this.idleTimeoutMs = idleTimeoutMs;
     this.onError = onError;
+    this.onSettled = onSettled;
     this.live = new Map();
     this.closed = false;
   }
@@ -156,6 +158,9 @@ export class BranchScheduler {
         if (!lane.retiring) {
           this.armIdle(key, lane);
           this.pump(key, lane);
+          if (!lane.busy) {
+            try { this.onSettled(key, lane.generation); } catch (error) { this.onError(error); }
+          }
         }
       });
   }
@@ -177,7 +182,7 @@ export class BranchScheduler {
         Promise.all([
           Promise.resolve().then(() => lane.runtime.abort()),
           lane.task,
-        ]).then(() => true),
+        ]).then(() => { lane.stopped = true; return true; }),
         new Promise((resolve) => {
           timer = setTimeout(() => resolve(false), this.abortTimeoutMs);
         }),
@@ -206,6 +211,15 @@ export class BranchScheduler {
     } finally {
       clearTimeout(timer);
     }
+  }
+  releaseQuarantine(key, generation) {
+    const record = this.store.get(key);
+    const lane = this.live.get(key);
+    if (!record || record.generation !== generation || record.status !== "orphaned" || !lane?.stopped)
+      throw new Error("writer retirement not proven");
+    this.store.update(key, generation, "quarantine-release", (r) => { r.status = "cancelled"; });
+    lane.runtime.dispose();
+    this.live.delete(key);
   }
   async shutdown() {
     if (!this.closed) {
