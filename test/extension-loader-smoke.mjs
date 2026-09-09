@@ -8,21 +8,56 @@ import { pathToFileURL } from "node:url";
 
 const packageDir = process.env.PI_PACKAGE_DIR;
 assert(packageDir, "PI_PACKAGE_DIR must identify the installed pi package");
-const { discoverAndLoadExtensions } = await import(pathToFileURL(join(packageDir, "dist/core/extensions/loader.js")));
+const { discoverAndLoadExtensions } = await import(
+  pathToFileURL(join(packageDir, "dist/core/extensions/loader.js"))
+);
 const repo = resolve(new URL("..", import.meta.url).pathname);
 const scratch = mkdtempSync(join(tmpdir(), "familiar-pi-loader-"));
 const agentDir = join(scratch, "agent");
 mkdirSync(agentDir, { recursive: true });
 try {
-  const result = await discoverAndLoadExtensions([join(repo, "integrations", "pi", "extensions")], scratch, agentDir);
-  assert.deepEqual(result.errors, [], `extension load errors: ${JSON.stringify(result.errors, null, 2)}`);
-  const loaded = result.extensions.map((extension) => extension.resolvedPath).sort();
+  const result = await discoverAndLoadExtensions(
+    [join(repo, "integrations", "pi", "extensions")],
+    scratch,
+    agentDir,
+  );
+  assert.deepEqual(
+    result.errors,
+    [],
+    `extension load errors: ${JSON.stringify(result.errors, null, 2)}`,
+  );
+  const loaded = result.extensions
+    .map((extension) => extension.resolvedPath)
+    .sort();
   const expected = [
-    "agents", "footer", "handoff", "identity", "private", "stuff", "subscriber", "tiamat", "timegap", "wake", "web", "worklist", "zip",
-  ].map((name) => join(repo, "integrations", "pi", "extensions", name, "index.ts")).sort();
+    "agents",
+    "background",
+    "footer",
+    "handoff",
+    "identity",
+    "private",
+    "stuff",
+    "subscriber",
+    "tiamat",
+    "timegap",
+    "wake",
+    "web",
+    "worklist",
+    "zip",
+  ]
+    .map((name) =>
+      join(repo, "integrations", "pi", "extensions", name, "index.ts"),
+    )
+    .sort();
   assert.deepEqual(loaded, expected);
-  assert.equal(typeof globalThis.Bun, "undefined", "smoke must run without Bun globals");
-  console.log(`pi loader smoke: loaded ${loaded.length} index.ts entrypoints; Bun absent`);
+  assert.equal(
+    typeof globalThis.Bun,
+    "undefined",
+    "smoke must run without Bun globals",
+  );
+  console.log(
+    `pi loader smoke: loaded ${loaded.length} index.ts entrypoints; Bun absent`,
+  );
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }

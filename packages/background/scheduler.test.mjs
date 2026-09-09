@@ -143,7 +143,16 @@ test("turn deadline and idle deadline fence work without foreground participatio
   const a = branch(1, { run: () => new Promise(() => {}) });
   const b = branch(2);
   scheduler.start(a.id, 1);
-  await new Promise((r) => setTimeout(r, 50));
+  // Observe both scheduled transitions, rather than assuming the abort timer
+  // already started before a fixed sleep (parallel SIGKILL/fsync tests can delay
+  // the first timer). The production deadlines remain 15/20 ms in this test.
+  const deadline = Date.now() + 1500;
+  while (
+    Date.now() < deadline &&
+    (store.get(a.id).status !== "orphaned" ||
+      store.get(b.id).status !== "cancelled")
+  )
+    await new Promise((resolve) => setTimeout(resolve, 5));
   assert.equal(store.get(a.id).status, "orphaned");
   assert.equal(store.get(b.id).status, "cancelled");
 });
@@ -225,15 +234,20 @@ test("concurrent Golem invalidations cannot both claim the same event; duplicate
   const { store, branch } = setup(t);
   const r = branch(1),
     pending = deferred();
+  let holdStatus = false;
   const owned = new OwnedChildren(store, r.id, 1, {
     dispatch: async () => ({ id: "job", state: "running" }),
-    status: () => pending.promise,
+    status: () =>
+      holdStatus
+        ? pending.promise
+        : Promise.resolve({ id: "job", state: "running" }),
   });
   await owned.dispatch("one", { prompt: "task" });
   await assert.rejects(
     owned.dispatch("two", { prompt: "other task" }),
     /owner collision/,
   );
+  holdStatus = true;
   const a = owned.observe({ seq: 1, job_id: "job" });
   const b = owned.observe({ seq: 1, job_id: "job" });
   pending.resolve({ id: "job", state: "running" });

@@ -1,8 +1,15 @@
 import { DatabaseSync } from "node:sqlite";
 import { chmodSync, lstatSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
-import { admission, bounded, id, LIMITS, report } from "./protocol.mjs";
+import { randomUUID, createHash } from "node:crypto";
+import {
+  admission,
+  bounded,
+  id,
+  LIMITS,
+  report,
+  reportData,
+} from "./protocol.mjs";
 
 export const TERMINAL = new Set([
   "rejoined",
@@ -44,6 +51,130 @@ export class WorkstreamStore {
       );`);
     this.boundary = boundary;
     this.maxRecords = maxRecords;
+    this.childOwners = new Map();
+    this.publicRecords = new Map();
+    for (const record of this.list()) this.indexChildren(record);
+  }
+  indexChildren(record) {
+    const packet = record.packets?.at(-1);
+    const reportFields = Object.fromEntries(
+      [
+        "decisions",
+        "durableContext",
+        "risks",
+        "questions",
+        "changedArtifacts",
+      ].map((key) => [
+        key,
+        Array.isArray(packet?.[key])
+          ? packet[key]
+              .filter((text) => typeof text === "string")
+              .map((text) => text.slice(0, 2048))
+          : [],
+      ]),
+    );
+    // Derived, immutable public cache: UI token-rate projection must never
+    // decode admission images or copy child requests/archives out of SQLite.
+    const view = {
+      id: record.id,
+      generation: record.generation,
+      status: record.status,
+      projectId: record.admission.projectId,
+      sessionId: record.admission.parentSessionId,
+      settled:
+        record.settledRun === record.run &&
+        !record.childWake &&
+        !record.commands.some((command) => command.status !== "done"),
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+      resourceQuarantined: Boolean(record.resourceQuarantined),
+      archiveExpired: Boolean(record.archive?.expired),
+      failure:
+        typeof (record.failure ?? record.cancelReason) === "string"
+          ? (record.failure ?? record.cancelReason).slice(0, 1024)
+          : undefined,
+      packets: packet
+        ? [
+            {
+              packetId: packet.packetId,
+              disposition: packet.disposition,
+              ...reportFields,
+              integrationRef:
+                typeof packet.integrationRef === "string"
+                  ? packet.integrationRef.slice(0, 2048)
+                  : null,
+              summary:
+                typeof packet.summary === "string"
+                  ? packet.summary.slice(0, 8192)
+                  : "",
+            },
+          ]
+        : [],
+      children: (record.children ?? []).map((child) => ({
+        jobId: child.jobId,
+        referenceId:
+          child.jobId ??
+          `intent-${createHash("sha256")
+            .update(String(child.createKey ?? child.key ?? ""))
+            .digest("hex")
+            .slice(0, 24)}`,
+        createRef: child.createKey,
+        terminal: child.terminal,
+        questionId: child.questionId,
+        reviewPending: Boolean(child.pendingEvent),
+        pendingEvent:
+          child.questionId && child.pendingEvent
+            ? {
+                job: {
+                  question: {
+                    prompt: String(
+                      child.pendingEvent?.job?.question?.prompt ?? "",
+                    ).slice(0, 2048),
+                  },
+                },
+              }
+            : null,
+      })),
+    };
+    const freeze = (value) => {
+      if (value && typeof value === "object") {
+        for (const child of Object.values(value)) freeze(child);
+        Object.freeze(value);
+      }
+      return value;
+    };
+    this.publicRecords.set(record.id, freeze(view));
+    for (const [jobId, owner] of this.childOwners)
+      if (owner.id === record.id) this.childOwners.delete(jobId);
+    for (const child of record.children ?? [])
+      if (child.jobId)
+        this.childOwners.set(child.jobId, {
+          id: record.id,
+          generation: record.generation,
+          status: record.status,
+        });
+  }
+  publicList(sessionId) {
+    const priority = (record) =>
+      ["preparing", "running", "cancelling", "rejoining"].includes(
+        record.status,
+      )
+        ? 0
+        : record.status === "orphaned" || record.resourceQuarantined
+          ? 1
+          : 2;
+    return [...this.publicRecords.values()]
+      .filter((record) => record.sessionId === sessionId)
+      .sort(
+        (a, b) =>
+          priority(a) - priority(b) ||
+          (priority(a) === 2
+            ? b.createdAt - a.createdAt
+            : a.createdAt - b.createdAt),
+      );
+  }
+  childOwner(jobId) {
+    return this.childOwners.get(jobId);
   }
   close() {
     this.db.close();
@@ -67,6 +198,12 @@ export class WorkstreamStore {
       .map((r) => JSON.parse(r.body));
   }
   transaction(label, fn) {
+    // Never accumulate an unbounded WAL behind a reader holding an old snapshot.
+    // Each accepted mutation starts from an empty journal and writes one bounded
+    // record. External inspectors must release their read transaction first.
+    const checkpoint = this.db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get();
+    if (checkpoint.busy !== 0)
+      throw new Error("workstream journal checkpoint busy");
     this.db.exec("BEGIN IMMEDIATE");
     let committed = false;
     try {
@@ -76,6 +213,8 @@ export class WorkstreamStore {
       this.boundary(`${label}:before-commit`);
       this.db.exec("COMMIT");
       committed = true;
+      const record = result?.record ?? result;
+      if (record?.children) this.indexChildren(record);
       this.boundary(`${label}:after-commit`);
       return result;
     } catch (error) {
@@ -142,7 +281,7 @@ export class WorkstreamStore {
       record.updatedAt = Date.now();
       const body = bounded(
         record,
-        LIMITS.admissionBytes + 2 * 1024 * 1024,
+        LIMITS.admissionBytes + 8 * 1024 * 1024,
         "record",
       );
       const result = this.db
@@ -155,7 +294,7 @@ export class WorkstreamStore {
       return record;
     });
   }
-  prepare(key, generation, archive) {
+  prepare(key, generation, archive, canonicalFile, model) {
     return this.update(key, generation, "prepare", (r) => {
       if (r.status !== "preparing") throw new Error("not preparing");
       if (
@@ -169,6 +308,18 @@ export class WorkstreamStore {
       bounded(archive, 4096, "archive");
       id(archive.sessionId);
       r.archive = archive;
+      if (model !== undefined) {
+        if (typeof model.provider !== "string" || typeof model.id !== "string")
+          throw new Error("invalid branch model");
+        r.model = { provider: model.provider, id: model.id };
+        bounded(r.model, 1024, "branch model");
+      }
+      if (canonicalFile !== undefined) {
+        if (typeof canonicalFile !== "string" || !canonicalFile.startsWith("/"))
+          throw new Error("invalid canonical archive reference");
+        bounded(canonicalFile, 4096, "canonical archive reference");
+        r.canonicalFile = canonicalFile;
+      }
     });
   }
   admitReceipt(key, generation, receipt) {
@@ -224,7 +375,10 @@ export class WorkstreamStore {
         throw new Error("cannot report");
       const replay = r.packets.find((p) => p.reportId === normalized.reportId);
       if (replay) {
-        if (JSON.stringify(report(replay)) !== JSON.stringify(normalized))
+        if (
+          JSON.stringify(report(reportData(replay))) !==
+          JSON.stringify(normalized)
+        )
           throw new Error("report replay conflict");
         saved = replay;
         return;
@@ -236,31 +390,35 @@ export class WorkstreamStore {
     });
     return saved;
   }
+  assertRejoin(r, packetId) {
+    if (FENCED.has(r.status) || r.status === "preparing")
+      throw new Error("cannot rejoin or replay");
+    const packet = r.packets.at(-1);
+    if (
+      !packet ||
+      packet.packetId !== packetId ||
+      packet.run !== r.run ||
+      !["ready", "failed", "refused", "narrowed", "returned"].includes(
+        packet.disposition,
+      )
+    )
+      throw new Error("invalid or superseded merge packet");
+    // Refusal/narrowing can return early, but cannot abandon children, pending
+    // tools, or a live writer. Broker requests may be made during the reporting
+    // tool; actual delivery always waits for the current settlement fence.
+    if (
+      r.settledRun !== r.run ||
+      r.childWake ||
+      r.commands.some((c) => c.status !== "done") ||
+      r.children.some((c) => !c.terminal || c.questionId || c.pendingEvent) ||
+      (packet.disposition === "ready" && packet.questions.length)
+    )
+      throw new Error("branch not settled");
+    if (!r.archive) throw new Error("archive missing");
+  }
   beginRejoin(key, generation, packetId) {
     return this.update(key, generation, "rejoin", (r) => {
-      if (FENCED.has(r.status) || r.status === "preparing")
-        throw new Error("cannot rejoin or replay");
-      const packet = r.packets.at(-1);
-      if (
-        !packet ||
-        packet.packetId !== packetId ||
-        packet.run !== r.run ||
-        !["ready", "failed", "refused", "narrowed", "returned"].includes(
-          packet.disposition,
-        )
-      )
-        throw new Error("invalid or superseded merge packet");
-      // Refusal/narrowing can return early, but cannot abandon children, pending
-      // tools, or a live writer. Broker requests may be made during the reporting
-      // tool; actual delivery always waits for the current settlement fence.
-      if (
-        r.settledRun !== r.run ||
-        r.commands.some((c) => c.status !== "done") ||
-        r.children.some((c) => !c.terminal || c.questionId || c.pendingEvent) ||
-        (packet.disposition === "ready" && packet.questions.length)
-      )
-        throw new Error("branch not settled");
-      if (!r.archive) throw new Error("archive missing");
+      this.assertRejoin(r, packetId);
       r.status = "rejoining";
       r.selectedPacketId = packetId;
     });
@@ -275,9 +433,10 @@ export class WorkstreamStore {
         throw new Error("invalid delivery receipt");
       r.deliveredPacketId = packetId;
       r.status = "rejoined";
+      if (!r.resourceQuarantined) delete r.failure;
     });
   }
-  cancel(key, generation) {
+  cancel(key, generation, reason) {
     return this.update(key, generation, "cancel", (r) => {
       if (
         TERMINAL.has(r.status) ||
@@ -286,6 +445,10 @@ export class WorkstreamStore {
       )
         throw new Error("cannot cancel");
       r.status = "cancelling";
+      if (reason !== undefined) {
+        bounded(reason, 1024, "cancellation reason");
+        r.cancelReason = reason;
+      }
       r.generation++;
       r.settledRun = null;
     });

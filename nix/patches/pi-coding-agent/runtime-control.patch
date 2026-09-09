@@ -31,10 +31,10 @@ index c3b6056..05d20bb 100644
 -	async importFromJsonl(inputPath: string, cwdOverride?: string): Promise<{ cancelled: boolean }> {
 +	private async _importFromJsonl(inputPath: string, cwdOverride?: string): Promise<{ cancelled: boolean }> {
 diff --git a/packages/coding-agent/src/core/agent-session.ts b/packages/coding-agent/src/core/agent-session.ts
-index 4aafe13..9a99f22 100644
+index 4aafe13..385ba50 100644
 --- a/packages/coding-agent/src/core/agent-session.ts
 +++ b/packages/coding-agent/src/core/agent-session.ts
-@@ -1067 +1067,9 @@ export class AgentSession {
+@@ -1067 +1067,10 @@ export class AgentSession {
 -	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
 +	/** Start an owned background archive's already-admitted user entry once,
 +	 * through the ordinary retry/queue/settled pipeline without re-appending it. */
@@ -45,21 +45,23 @@ index 4aafe13..9a99f22 100644
 +	}
 +
 +	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[] | undefined): Promise<void> {
-@@ -1070 +1078,2 @@ export class AgentSession {
++		if (this.sessionManager.isRuntimeControlQuarantined()) throw new Error("Session writer quarantined; reopen under a new owner");
+@@ -1070 +1079,2 @@ export class AgentSession {
 -			await this.agent.prompt(messages);
 +			if (messages === undefined) await this.agent.continue();
 +			else await this.agent.prompt(messages);
-@@ -1119,0 +1129,2 @@ export class AgentSession {
+@@ -1119,0 +1130,2 @@ export class AgentSession {
 +	private controlPromptDepth = 0;
 +
-@@ -1120,0 +1132,6 @@ export class AgentSession {
+@@ -1120,0 +1133,7 @@ export class AgentSession {
++		if (this.sessionManager.isRuntimeControlQuarantined()) throw new Error("Session writer quarantined; reopen under a new owner");
 +		this.controlPromptDepth++;
 +		try { return await this._promptForOwner(text, options); }
 +		finally { this.controlPromptDepth--; }
 +	}
 +
 +	private async _promptForOwner(text: string, options?: PromptOptions): Promise<void> {
-@@ -2342,0 +2360,12 @@ export class AgentSession {
+@@ -2342,0 +2362,12 @@ export class AgentSession {
 +	/** Durable no-run owner transaction; no awaited callbacks inside its fence. */
 +	commitRuntimeControl(sessionId: string, leafId: string | null, entries: import("./session-manager.ts").RuntimeControlInput[]): string[] {
 +		this._extensionRunner.assertRuntimeControlAdmission();
@@ -72,9 +74,9 @@ index 4aafe13..9a99f22 100644
 +		return ids;
 +	}
 +
-@@ -2344,0 +2374 @@ export class AgentSession {
-+		runner.bindRuntimeControlPromptAdmission(() => this.controlPromptDepth === 0);
-@@ -2389,0 +2420 @@ export class AgentSession {
+@@ -2344,0 +2376 @@ export class AgentSession {
++		runner.bindRuntimeControlPromptAdmission(() => !this.sessionManager.isRuntimeControlQuarantined() && this.controlPromptDepth === 0 && this.pendingMessageCount === 0 && this._pendingNextTurnMessages.length === 0 && this._pendingBashMessages.length === 0 && !this.isCompacting && !this.isBashRunning);
+@@ -2389,0 +2422 @@ export class AgentSession {
 +				commitRuntimeControl: (sessionId, leafId, entries) => this.commitRuntimeControl(sessionId, leafId, entries),
 diff --git a/packages/coding-agent/src/core/extensions/loader.ts b/packages/coding-agent/src/core/extensions/loader.ts
 index 25b06ed..e51de47 100644
@@ -135,7 +137,7 @@ index 93f114d..e52f8a3 100644
 @@ -1644,0 +1654 @@ export interface ExtensionActions {
 +	commitRuntimeControl: ExtensionAPI["commitRuntimeControl"];
 diff --git a/packages/coding-agent/src/core/session-manager.ts b/packages/coding-agent/src/core/session-manager.ts
-index 70d3921..35bd729 100644
+index 70d3921..be0f290 100644
 --- a/packages/coding-agent/src/core/session-manager.ts
 +++ b/packages/coding-agent/src/core/session-manager.ts
 @@ -8,0 +9,3 @@ import {
@@ -152,8 +154,9 @@ index 70d3921..35bd729 100644
 +	| { type: "custom"; customType: string; data: unknown }
 +	| { type: "custom_message"; customType: string; content: string; display: boolean; details?: unknown };
 +
-@@ -978,0 +988,68 @@ export class SessionManager {
+@@ -978,0 +988,91 @@ export class SessionManager {
 +	private controlWriteUncertain = false;
++	isRuntimeControlQuarantined(): boolean { return this.controlWriteUncertain; }
 +	private persistenceBudget = Number.POSITIVE_INFINITY;
 +
 +	/** Host-owned branch disk bound; checked before publishing an appended entry. */
@@ -177,25 +180,47 @@ index 70d3921..35bd729 100644
 +		if (this.controlWriteUncertain) throw new Error("Session writer quarantined");
 +		if (this.sessionId !== expectedSessionId || this.leafId !== expectedLeafId) throw new Error("Session/leaf conflict");
 +		if (!this.persist || !this.sessionFile) throw new Error("Runtime control requires durable session");
-+		if (!Array.isArray(inputs) || inputs.length < 1 || inputs.length > 2) throw new Error("Invalid runtime control batch");
-+		const serialized = JSON.stringify(inputs);
-+		if (Buffer.byteLength(serialized) > 8 * 1024 * 1024) throw new Error("Runtime control byte budget");
++		if (!Array.isArray(inputs) || inputs.length < 1 || inputs.length > 3) throw new Error("Invalid runtime control batch");
++		const encodeWithin = (value: unknown, limit: number): string => {
++			let estimate = 0;
++			const encoded = JSON.stringify(value, (key, item) => {
++				estimate += key.length + (typeof item === "string" ? item.length : 1);
++				if (estimate > limit || (Array.isArray(item) && item.length * 2 > limit)) throw new Error("Runtime control byte budget");
++				return item;
++			});
++			if (encoded === undefined || Buffer.byteLength(encoded) > limit) throw new Error("Runtime control byte budget");
++			return encoded;
++		};
++		const serialized = encodeWithin(inputs, 8 * 1024 * 1024);
 +		const copy = JSON.parse(serialized) as RuntimeControlInput[];
 +		for (const input of copy) {
 +			if (input.type === "message" ? input.message?.role !== "user" :
 +				!["custom", "custom_message"].includes(input.type) || typeof input.customType !== "string")
 +				throw new Error("Invalid runtime control entry");
 +		}
++		for (const type of ["message", "custom", "custom_message"])
++			if (copy.filter((entry) => entry.type === type).length > 1) throw new Error("Invalid runtime control batch");
 +		let parentId = this.leafId;
 +		const entries: SessionEntry[] = copy.map((input) => {
 +			const entry = { ...input, id: randomUUID(), parentId, timestamp: new Date().toISOString() } as SessionEntry;
 +			parentId = entry.id;
 +			return entry;
 +		});
++		const limit = Math.min(this.persistenceBudget, 32 * 1024 * 1024);
++		if (this.flushed && (!existsSync(this.sessionFile) || statSync(this.sessionFile).size > limit)) throw new Error("Canonical archive missing or over byte budget");
 +		const next = [...this.fileEntries, ...entries];
-+		const body = next.map((entry) => JSON.stringify(entry)).join("\n") + "\n";
-+		if (Buffer.byteLength(body) > Math.min(this.persistenceBudget, 32 * 1024 * 1024)) throw new Error("Canonical context byte budget");
-+		const temporary = `${this.sessionFile}.${randomUUID()}.runtime-control.tmp`;
++		let bytes = 0;
++		const lines: string[] = [];
++		for (const entry of next) {
++			const line = encodeWithin(entry, limit - bytes - 1) + "\n";
++			bytes += Buffer.byteLength(line);
++			lines.push(line);
++		}
++		const body = lines.join("");
++		// One bounded temporary per canonical file. Only the exclusive owner may
++		// enter this method, so an existing temporary belongs to its dead birth.
++		const temporary = `${this.sessionFile}.runtime-control.tmp`;
++		if (existsSync(temporary)) unlinkSync(temporary);
 +		let renamed = false;
 +		const fd = openSync(temporary, "wx", 0o600);
 +		try {
@@ -221,11 +246,11 @@ index 70d3921..35bd729 100644
 +		}
 +	}
 +
-@@ -979,0 +1057,2 @@ export class SessionManager {
+@@ -979,0 +1080,2 @@ export class SessionManager {
 +		this.assertPersistenceBudget();
 +		if (this.controlWriteUncertain) throw new Error("Session writer quarantined");
-@@ -1015,0 +1095 @@ export class SessionManager {
+@@ -1015,0 +1118 @@ export class SessionManager {
 +		if (this.controlWriteUncertain) throw new Error("Session writer quarantined");
-@@ -1044,0 +1125,2 @@ export class SessionManager {
+@@ -1044,0 +1148,2 @@ export class SessionManager {
 +		this.assertPersistenceBudget(entry);
 +		if (this.controlWriteUncertain) throw new Error("Session writer quarantined");

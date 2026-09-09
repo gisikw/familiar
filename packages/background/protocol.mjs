@@ -9,13 +9,69 @@ export const LIMITS = Object.freeze({
   commandBytes: 32768,
   commands: 32,
   children: 32,
+  activeChildren: 4,
   packets: 32,
 });
 
 export function bounded(value, bytes, label) {
-  const encoded = JSON.stringify(value);
-  if (encoded === undefined || Buffer.byteLength(encoded) > bytes)
+  let remaining = bytes,
+    root = true;
+  const members = new WeakMap();
+  const fail = () => {
     throw new Error(`${label} exceeds byte budget`);
+  };
+  const debit = (count) => {
+    remaining -= count;
+    if (remaining < 0) fail();
+  };
+  const quoteBytes = (text) => {
+    // Reject a huge existing string before allocating its escaped copy.
+    if (text.length + 2 > remaining) fail();
+    return Buffer.byteLength(JSON.stringify(text));
+  };
+  // A progressive accounting replacer stops before traversing/allocating an
+  // oversized context. Accepted JSON retains native key/order/toJSON semantics.
+  const encoded = JSON.stringify(value, function (key, item) {
+    const first = root;
+    root = false;
+    const arrayParent = !first && Array.isArray(this);
+    const omitted =
+      item === undefined ||
+      typeof item === "function" ||
+      typeof item === "symbol";
+    if (!first) {
+      if (arrayParent) {
+        if (key !== "0") debit(1);
+      } else if (!omitted) {
+        const count = members.get(this) ?? 0;
+        if (count) debit(1);
+        debit(quoteBytes(key) + 1);
+        members.set(this, count + 1);
+      }
+    }
+    if (omitted) {
+      if (arrayParent) debit(4);
+      return item;
+    }
+    let scalar = item;
+    if (
+      item instanceof String ||
+      item instanceof Number ||
+      item instanceof Boolean
+    )
+      scalar = item.valueOf();
+    if (scalar === null) debit(4);
+    else if (typeof scalar === "string") debit(quoteBytes(scalar));
+    else if (typeof scalar === "number") debit(JSON.stringify(scalar).length);
+    else if (typeof scalar === "boolean") debit(scalar ? 4 : 5);
+    else if (typeof scalar === "object") {
+      if (Array.isArray(scalar) && scalar.length * 2 + 1 > remaining) fail();
+      debit(2);
+      members.set(scalar, 0);
+    }
+    return item;
+  });
+  if (encoded === undefined || Buffer.byteLength(encoded) > bytes) fail();
   return encoded;
 }
 
@@ -99,6 +155,25 @@ export function admission(value) {
   };
 }
 
+export function reportData(value) {
+  return Object.fromEntries(
+    [
+      "reportId",
+      "disposition",
+      "summary",
+      "decisions",
+      "durableContext",
+      "risks",
+      "questions",
+      "changedArtifacts",
+      "integrationRef",
+      "requestedRejoin",
+    ]
+      .filter((key) => value[key] !== undefined)
+      .map((key) => [key, value[key]]),
+  );
+}
+
 export function report(value) {
   bounded(value, LIMITS.packetBytes, "merge packet");
   if (
@@ -115,7 +190,7 @@ export function report(value) {
     throw new Error("invalid disposition");
   if (typeof value.requestedRejoin !== "boolean")
     throw new Error("invalid rejoin request");
-  return {
+  const normalized = {
     reportId: id(value.reportId),
     disposition: value.disposition,
     summary: text(value.summary, 8192),
@@ -130,6 +205,8 @@ export function report(value) {
         : text(value.integrationRef, 2048),
     requestedRejoin: value.requestedRejoin,
   };
+  bounded(normalized, LIMITS.packetBytes, "normalized merge packet");
+  return normalized;
 }
 
 // Pi drops CustomMessage.details in convertToLlm. EVERYTHING needed for durable
@@ -151,7 +228,7 @@ export function mergeContent(record, packet, canonicalLeaf) {
     canonicalLeafId: canonicalLeaf,
     staleParent: canonicalLeaf !== record.foregroundControlEntryId,
     archive: record.archive,
-    ...report(packet),
+    ...report(reportData(packet)),
   };
   return bounded(envelope, LIMITS.packetBytes + 8192, "merge envelope");
 }

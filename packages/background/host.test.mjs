@@ -5,53 +5,212 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { BackgroundHost } from "./host.mjs";
-const sdk = process.env.PI_PACKAGE_DIR ? await import(pathToFileURL(join(process.env.PI_PACKAGE_DIR, "dist/index.js"))) : null;
+const sdk = process.env.PI_PACKAGE_DIR
+  ? await import(
+      pathToFileURL(join(process.env.PI_PACKAGE_DIR, "dist/index.js"))
+    )
+  : null;
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
-test("installed canonical owner: admission, attachment/handoff, refusal, merge, replay, leaf and session fencing", { skip: !sdk }, async () => {
-  const root = mkdtempSync(join(tmpdir(), "background-host-"));
-  const agentDir = join(root, "pi"); mkdirSync(agentDir);
-  const settingsManager = sdk.SettingsManager.inMemory({ compaction: { enabled: false } });
-  let pi;
-  const loader = new sdk.DefaultResourceLoader({ cwd: agentDir, agentDir, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, agentsFilesOverride: () => ({ agentsFiles: [] }), extensionFactories: [(api) => { pi = api; }] });
-  await loader.reload();
-  const modelRuntime = await sdk.ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json"), modelsStorePath: join(agentDir, "models-store.json"), allowModelNetwork: false });
-  const { session } = await sdk.createAgentSession({ cwd: agentDir, agentDir, settingsManager, modelRuntime, resourceLoader: loader, sessionManager: sdk.SessionManager.create(agentDir, agentDir), noTools: "all" });
-  await session.bindExtensions({ mode: "print" });
-  const sm = session.sessionManager;
-  let starts = 0, disposed = 0;
-  const owner = { snapshot: () => ({ sessionId: sm.getSessionId(), leafId: sm.getLeafId(), cwd: agentDir, idle: session.isIdle, private: false, entries: sm.getBranch(), messages: sm.buildSessionContext().messages }), commit: (...args) => pi.commitRuntimeControl(...args) };
-  const stateRoot = join(root, "background");
-  const host = new BackgroundHost({ root: stateRoot, owner, createRuntime: async (r) => ({ sessionId: r.archive.sessionId, file: r.archive.file, async run() { starts++; }, async abort() {}, dispose() { disposed++; } }) });
-  try {
-    const content = [{ type: "text", text: "  exact request\n[bounded project handoff]\n" }, { type: "image", mimeType: "image/png", data: "aGk=" }];
-    const request = { admissionId: "admission", parentSessionId: sm.getSessionId(), parentLeafId: sm.getLeafId(), projectId: "test", content };
-    const receipt = host.admit(request);
-    assert.equal(starts, 0, "no factory/model execution under admission");
-    assert.equal(sm.getEntries().filter((e) => e.type === "message" && e.message.role === "assistant").length, 0);
-    const disk = sdk.SessionManager.open(sm.getSessionFile());
-    assert.deepEqual(disk.buildSessionContext().messages.at(-1).content, content);
-    assert.equal(disk.getEntries().at(-1).customType, "familiar.background-dispatch");
-    for (let i = 0; i < 5; i++) await tick();
-    assert.equal(starts, 1);
-    let r = host.store.get(receipt.workstreamId);
-    assert.equal(r.settledRun, r.run);
-    const packet = host.report(r.id, r.generation, { reportId: "refusal", disposition: "refused", summary: "Cannot proceed without a choice", questions: ["Which target?"], requestedRejoin: false });
-    const oldLeaf = sm.getLeafId();
-    pi.commitRuntimeControl(sm.getSessionId(), oldLeaf, [{ type: "custom", customType: "test-leaf-advance", data: {} }]);
-    assert.throws(() => host.rejoin(r.id, r.generation, packet.packetId, oldLeaf), /conflict/);
-    host.rejoin(r.id, r.generation, packet.packetId, sm.getLeafId());
-    assert.equal(disposed, 1);
-    const merged = session.messages.at(-1);
-    assert.equal(merged.role, "custom");
-    const envelope = JSON.parse(merged.content);
-    assert.equal(envelope.disposition, "refused");
-    assert.equal(envelope.staleParent, true);
-    assert.deepEqual(envelope.questions, ["Which target?"]);
-    assert.throws(() => host.rejoin(r.id, r.generation, packet.packetId, sm.getLeafId()), /rejoin or replay/);
-    assert.throws(() => host.admit({ ...request, parentLeafId: sm.getLeafId() }), /replay conflict/);
-    const reopened = sdk.SessionManager.open(sm.getSessionFile());
-    assert.equal(reopened.buildSessionContext().messages.at(-1).content, merged.content);
-    assert.equal(host.store.get(r.id).status, "rejoined");
-  } finally { await host.shutdown(); session.dispose(); rmSync(root, { recursive: true, force: true }); }
-});
+test(
+  "installed canonical owner: admission, attachment/handoff, refusal, merge, replay, leaf and session fencing",
+  { skip: !sdk },
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), "background-host-"));
+    const agentDir = join(root, "pi");
+    mkdirSync(agentDir);
+    const settingsManager = sdk.SettingsManager.inMemory({
+      compaction: { enabled: false },
+    });
+    let pi;
+    const loader = new sdk.DefaultResourceLoader({
+      cwd: agentDir,
+      agentDir,
+      settingsManager,
+      noExtensions: true,
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+      agentsFilesOverride: () => ({ agentsFiles: [] }),
+      extensionFactories: [
+        (api) => {
+          pi = api;
+        },
+      ],
+    });
+    await loader.reload();
+    const modelRuntime = await sdk.ModelRuntime.create({
+      authPath: join(agentDir, "auth.json"),
+      modelsPath: join(agentDir, "models.json"),
+      modelsStorePath: join(agentDir, "models-store.json"),
+      allowModelNetwork: false,
+    });
+    const { session } = await sdk.createAgentSession({
+      cwd: agentDir,
+      agentDir,
+      settingsManager,
+      modelRuntime,
+      resourceLoader: loader,
+      sessionManager: sdk.SessionManager.create(agentDir, agentDir),
+      noTools: "all",
+    });
+    await session.bindExtensions({ mode: "print" });
+    const sm = session.sessionManager;
+    let starts = 0,
+      disposed = 0;
+    const owner = {
+      snapshot: () => ({
+        sessionId: sm.getSessionId(),
+        leafId: sm.getLeafId(),
+        cwd: agentDir,
+        idle: session.isIdle,
+        private: false,
+        entries: sm.getBranch(),
+        messages: sm.buildSessionContext().messages,
+      }),
+      commit: (...args) => pi.commitRuntimeControl(...args),
+    };
+    const stateRoot = join(root, "background");
+    const host = new BackgroundHost({
+      root: stateRoot,
+      owner,
+      createRuntime: async (r) => ({
+        sessionId: r.archive.sessionId,
+        file: r.archive.file,
+        async run() {
+          starts++;
+        },
+        async abort() {},
+        dispose() {
+          disposed++;
+        },
+      }),
+    });
+    try {
+      const content = [
+        { type: "text", text: "  exact request\n[bounded project handoff]\n" },
+        { type: "image", mimeType: "image/png", data: "aGk=" },
+      ];
+      const request = {
+        admissionId: "admission",
+        parentSessionId: sm.getSessionId(),
+        parentLeafId: sm.getLeafId(),
+        projectId: "test",
+        content,
+      };
+      const receipt = host.admit(request);
+      assert.equal(starts, 0, "no factory/model execution under admission");
+      assert.equal(
+        sm
+          .getEntries()
+          .filter((e) => e.type === "message" && e.message.role === "assistant")
+          .length,
+        0,
+      );
+      const disk = sdk.SessionManager.open(sm.getSessionFile());
+      assert.deepEqual(
+        disk
+          .buildSessionContext()
+          .messages.filter((message) => message.role === "user")
+          .at(-1).content,
+        content,
+      );
+      assert.equal(
+        JSON.parse(disk.buildSessionContext().messages.at(-1).content).type,
+        "familiar.background.admission",
+      );
+      assert.equal(
+        disk.getEntries().at(-1).customType,
+        "familiar.background-dispatch",
+      );
+      for (let i = 0; i < 5; i++) await tick();
+      assert.equal(starts, 1);
+      let r = host.store.get(receipt.workstreamId);
+      assert.equal(r.settledRun, r.run);
+      const packet = host.report(r.id, r.generation, {
+        reportId: "refusal",
+        disposition: "refused",
+        summary: "Cannot proceed without a choice",
+        questions: ["Which target?"],
+        requestedRejoin: false,
+      });
+      const oldLeaf = sm.getLeafId();
+      pi.commitRuntimeControl(sm.getSessionId(), oldLeaf, [
+        { type: "custom", customType: "test-leaf-advance", data: {} },
+      ]);
+      assert.throws(
+        () => host.rejoin(r.id, r.generation, packet.packetId, oldLeaf),
+        /conflict/,
+      );
+      host.rejoin(r.id, r.generation, packet.packetId, sm.getLeafId());
+      for (let i = 0; i < 5; i++) await tick();
+      assert.equal(disposed, 1);
+      const merged = session.messages.at(-1);
+      assert.equal(merged.role, "custom");
+      const envelope = JSON.parse(merged.content);
+      assert.equal(envelope.disposition, "refused");
+      assert.equal(envelope.staleParent, true);
+      assert.deepEqual(envelope.questions, ["Which target?"]);
+      assert.throws(
+        () => host.rejoin(r.id, r.generation, packet.packetId, sm.getLeafId()),
+        /rejoin or replay/,
+      );
+      assert.throws(
+        () => host.admit({ ...request, parentLeafId: sm.getLeafId() }),
+        /replay conflict/,
+      );
+      const reopened = sdk.SessionManager.open(sm.getSessionFile());
+      assert.equal(
+        reopened.buildSessionContext().messages.at(-1).content,
+        merged.content,
+      );
+      assert.equal(host.store.get(r.id).status, "rejoined");
+      for (const mode of ["before", "after"]) {
+        const receipt = host.admit({
+          admissionId: `io-${mode}`,
+          parentSessionId: sm.getSessionId(),
+          parentLeafId: sm.getLeafId(),
+          projectId: "test",
+          content: "delivery retry",
+        });
+        for (let i = 0; i < 5; i++) await tick();
+        const current = host.store.get(receipt.workstreamId);
+        const packet = host.report(current.id, 1, {
+          reportId: `io-${mode}`,
+          disposition: "returned",
+          summary: "bounded return",
+          requestedRejoin: false,
+        });
+        const original = owner.commit;
+        owner.commit = (...args) => {
+          if (mode === "after") original(...args);
+          throw new Error("injected canonical failure");
+        };
+        assert.throws(
+          () => host.rejoin(current.id, 1, packet.packetId, sm.getLeafId()),
+          /injected canonical/,
+        );
+        owner.commit = original;
+        assert.equal(host.store.get(current.id).status, "rejoining");
+        for (let i = 0; i < 5; i++) await tick();
+        host.rejoin(current.id, 1, packet.packetId, sm.getLeafId());
+        assert.equal(host.store.get(current.id).status, "rejoined");
+        assert.equal(
+          sm
+            .getEntries()
+            .filter((entry) => entry.details?.packetId === packet.packetId)
+            .length,
+          1,
+        );
+        assert.throws(
+          () => host.rejoin(current.id, 1, packet.packetId, sm.getLeafId()),
+          /rejoin or replay/,
+        );
+      }
+    } finally {
+      await host.shutdown();
+      session.dispose();
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);

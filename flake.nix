@@ -141,6 +141,16 @@
           familiar-desktop = flake-utils.lib.mkApp { drv = desktop.packages.${system}.default; };
         };
         devShells = {
+          # Cross-repository Background release gate: same installed Pi/owner
+          # path as production, plus pinned test runtimes and browser closure.
+          background = pkgs.mkShell {
+            inputsFrom = [ piShell ];
+            FAMILIAR_SHELL = "pi";
+            PI_PACKAGE_DIR = "${patchedPi}/lib/node_modules/pi-monorepo";
+            FAMILIAR_INTERACTIVE_SHELL = "${pkgs.bashInteractive}/bin/bash";
+            PLAYWRIGHT_BROWSERS_PATH = pkgs.playwright-driver.browsers;
+            packages = with pkgs; [ nodejs_22 bun netcat-openbsd ];
+          };
           default = piShell;
           pi = piShell;
           # Isolated Agents proofs/checks, never an alternate resident service.

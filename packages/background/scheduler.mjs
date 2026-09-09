@@ -18,6 +18,7 @@ export class BranchScheduler {
       idleTimeoutMs = 60 * 60_000,
       onError = () => {},
       onSettled = () => {},
+      onChange = () => {},
     } = {},
   ) {
     for (const ms of [turnTimeoutMs, abortTimeoutMs, idleTimeoutMs])
@@ -29,6 +30,7 @@ export class BranchScheduler {
     this.idleTimeoutMs = idleTimeoutMs;
     this.onError = onError;
     this.onSettled = onSettled;
+    this.onChange = onChange;
     this.live = new Map();
     this.closed = false;
   }
@@ -94,6 +96,30 @@ export class BranchScheduler {
     this.pump(key, lane);
     return { accepted: true, commandId };
   }
+  wakeChildren(key, generation) {
+    const lane = this.lane(key, generation);
+    this.store.update(key, generation, "child-wake", (r) => {
+      if (r.status !== "running")
+        throw new Error("child wake owner unavailable");
+      const content = bounded(
+        {
+          type: "background.child.invalidated",
+          children: r.children
+            .filter((c) => c.pendingEvent)
+            .map((c) => ({ jobId: c.jobId, seq: c.pendingEvent.seq })),
+          instruction:
+            "Inspect owned status, handle questions and review each exact event before reporting/rejoin.",
+        },
+        LIMITS.commandBytes,
+        "child wake",
+      );
+      if (content === r.lastChildWake) return;
+      r.lastChildWake = content;
+      r.childWake = { internal: true, content, status: "queued" };
+      r.settledRun = null;
+    });
+    this.pump(key, lane);
+  }
   lane(key, generation) {
     const lane = this.live.get(key);
     if (this.closed || !lane || lane.generation !== generation || lane.retiring)
@@ -102,9 +128,9 @@ export class BranchScheduler {
   }
   pump(key, lane) {
     if (lane.busy || lane.retiring || this.closed) return;
-    const command = this.store
-      .get(key)
-      ?.commands.find((c) => c.status === "queued");
+    const record = this.store.get(key);
+    const command =
+      record?.commands.find((c) => c.status === "queued") ?? record?.childWake;
     if (command) this.launch(key, lane, command);
   }
   launch(key, lane, command) {
@@ -114,7 +140,8 @@ export class BranchScheduler {
     const started = this.store.start(key, lane.generation);
     if (command)
       this.store.update(key, lane.generation, "command-start", (r) => {
-        r.commands.find((c) => c.id === command.id).status = "executing";
+        if (command.internal) r.childWake = null;
+        else r.commands.find((c) => c.id === command.id).status = "executing";
       });
     lane.busy = true;
     const timer = setTimeout(() => {
@@ -136,11 +163,12 @@ export class BranchScheduler {
         if (lane.retiring) return;
         // runtime.run's contract is full settlement incl. retries/queued work,
         // not agent_end. The Pi adapter must verify agent_settled independently.
-        if (command)
+        if (command && !command.internal)
           this.store.update(key, lane.generation, "command-done", (r) => {
             r.commands.find((c) => c.id === command.id).status = "done";
           });
         this.store.settle(key, lane.generation, started.run);
+        this.onChange();
       })
       .catch((error) => {
         this.onError(error);
@@ -159,7 +187,11 @@ export class BranchScheduler {
           this.armIdle(key, lane);
           this.pump(key, lane);
           if (!lane.busy) {
-            try { this.onSettled(key, lane.generation); } catch (error) { this.onError(error); }
+            try {
+              this.onSettled(key, lane.generation);
+            } catch (error) {
+              this.onError(error);
+            }
           }
         }
       });
@@ -167,7 +199,7 @@ export class BranchScheduler {
   cancel(key, generation, reason) {
     const lane = this.lane(key, generation);
     bounded(reason, 1024, "cancellation reason");
-    const record = this.store.cancel(key, generation);
+    const record = this.store.cancel(key, generation, reason);
     lane.retiring = true;
     clearTimeout(lane.idleTimer);
     lane.retirement = this.retire(key, record.generation, lane);
@@ -182,7 +214,12 @@ export class BranchScheduler {
         Promise.all([
           Promise.resolve().then(() => lane.runtime.abort()),
           lane.task,
-        ]).then(() => { lane.stopped = true; return true; }),
+        ]).then(async () => {
+          await lane.runtime.dispose();
+          lane.disposed = true;
+          lane.stopped = true;
+          return true;
+        }),
         new Promise((resolve) => {
           timer = setTimeout(() => resolve(false), this.abortTimeoutMs);
         }),
@@ -196,29 +233,63 @@ export class BranchScheduler {
             r.failure =
               "Abort deadline elapsed; live writer/child outcome uncertain";
         });
+      if (!done && TERMINAL.has(record.status))
+        this.store.update(key, generation, "resource-quarantine", (r) => {
+          r.resourceQuarantined = true;
+        });
+      this.onChange();
       // Never dispose a still-running writer or free capacity on uncertainty.
       // It stays quarantined in live until process death or explicit recovery.
-      if (done) {
-        lane.runtime.dispose();
-        this.live.delete(key);
-      }
+      if (done) this.live.delete(key);
     } catch (error) {
       this.onError(error);
       this.store.update(key, generation, "retire-error", (r) => {
-        r.status = "orphaned";
+        if (TERMINAL.has(r.status) || r.status === "rejoining")
+          r.resourceQuarantined = true;
+        else r.status = "orphaned";
         r.failure = "Abort failed; writer outcome uncertain";
       });
+      this.onChange();
     } finally {
       clearTimeout(timer);
     }
   }
-  releaseQuarantine(key, generation) {
+  complete(key, generation) {
+    const lane = this.lane(key, generation);
+    if (lane.busy) throw new Error("branch still executing");
+    lane.retiring = true;
+    clearTimeout(lane.idleTimer);
+    lane.retirement = this.retire(key, generation, lane);
+  }
+  async releaseQuarantine(key, generation) {
     const record = this.store.get(key);
     const lane = this.live.get(key);
-    if (!record || record.generation !== generation || record.status !== "orphaned" || !lane?.stopped)
+    if (
+      !record ||
+      record.generation !== generation ||
+      (record.status !== "orphaned" && !record.resourceQuarantined) ||
+      !lane?.stopped
+    )
       throw new Error("writer retirement not proven");
-    this.store.update(key, generation, "quarantine-release", (r) => { r.status = "cancelled"; });
-    lane.runtime.dispose();
+    let timer;
+    try {
+      await Promise.race([
+        lane.disposed ? Promise.resolve() : lane.runtime.dispose(),
+        new Promise((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("cleanup still quarantined")),
+            this.abortTimeoutMs,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+    lane.disposed = true;
+    this.store.update(key, generation, "quarantine-release", (r) => {
+      if (r.status === "orphaned") r.status = "cancelled";
+      r.resourceQuarantined = false;
+    });
     this.live.delete(key);
   }
   async shutdown() {
