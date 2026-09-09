@@ -132,9 +132,19 @@ function migrateLegacy(legacyRoot: string, p: WorklistPaths): void {
 /** Atomic write: temp + rename. Cross-process senders depend on this. */
 export function writeJSONAtomic(file: string, obj: unknown): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2), { mode: 0o600 });
-  fs.renameSync(tmp, file);
+  const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    const fd = fs.openSync(tmp, 'wx', 0o600);
+    try { fs.writeFileSync(fd, JSON.stringify(obj, null, 2)); fs.fsyncSync(fd); }
+    finally { fs.closeSync(fd); }
+    fs.renameSync(tmp, file);
+    const dir = fs.openSync(path.dirname(file), 'r');
+    try { fs.fsyncSync(dir); }
+    catch (error) { if (!['EINVAL', 'ENOTSUP'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error; }
+    finally { fs.closeSync(dir); }
+  } finally {
+    try { fs.unlinkSync(tmp); } catch { /* renamed or never created */ }
+  }
 }
 
 export function readJSON<T>(file: string): T | null {
@@ -176,7 +186,7 @@ export function getArchivedItem(p: WorklistPaths, id: string): QueueItem | null 
 
 /** Read terminal history as well as the live queue. */
 export function getKnownItem(p: WorklistPaths, id: string): QueueItem | null {
-  return getItem(p, id) ?? getArchivedItem(p, id);
+  return getArchivedItem(p, id) ?? getItem(p, id);
 }
 
 /** All live (non-archived) items, oldest first. Skips torn/partial files. */
@@ -191,7 +201,15 @@ export function listItems(p: WorklistPaths): QueueItem[] {
   for (const n of names) {
     if (!n.endsWith(".json")) continue;
     const it = readJSON<QueueItem>(path.join(p.items, n));
-    if (it && isValidItemId(it.id)) items.push(it);
+    if (it && isValidItemId(it.id)) {
+      // A stale producer can resume between checking an id and writing it.
+      // Durable archive/withdrawal wins even if a late live copy is left behind.
+      if (getArchivedItem(p, it.id)) {
+        try { fs.unlinkSync(itemFile(p, it.id)); } catch { /* another reader won */ }
+        continue;
+      }
+      items.push(it);
+    }
   }
   return items.sort((a, b) => a.ts - b.ts);
 }
@@ -342,6 +360,21 @@ export function enqueueEnvelopeIdempotent(
   const item = envelopeToItem(env, now);
   putItem(p, item);
   return { item, created: true };
+}
+
+/** Retire an out-of-band notification without pretending it was delivered.
+ * Write an archive tombstone FIRST, including when enqueue has not happened.
+ * listItems fences a producer paused before its late live write. */
+export function withdrawEnvelopeIdempotent(p: WorklistPaths, env: EnqueueEnvelope): void {
+  if (!env.id || !isValidItemId(env.id)) throw new Error('withdrawal requires a valid stable id');
+  const archived = getArchivedItem(p, env.id);
+  if (archived?.withdrawn) return;
+  const item = archived ?? getItem(p, env.id) ?? envelopeToItem(env);
+  // Preserve any prior delivery/ack facts, but never keep waking for an expired
+  // question. This does not retract a message already in the Pi transcript.
+  item.withdrawn = true;
+  putItemAt(p, item, true);
+  try { fs.unlinkSync(itemFile(p, item.id)); } catch { /* absent or already archived */ }
 }
 
 /** True iff an item with this id is live or archived. */
