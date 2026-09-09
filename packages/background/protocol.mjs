@@ -71,7 +71,11 @@ export function admission(value) {
         throw new Error("invalid image");
     }
   }
-  if (typeof content === "string" && !content.trim())
+  if (
+    typeof content === "string"
+      ? !content.trim()
+      : !content.some((part) => part.type === "image" || part.text.trim())
+  )
     throw new Error("empty admission");
   const normalized = {
     admissionId: id(value.admissionId),

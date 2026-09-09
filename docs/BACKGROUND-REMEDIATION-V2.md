@@ -44,6 +44,10 @@ Adversarial iteration found and fixed further issues:
 7. The existing private-instance path test inherited the enclosing Pi agent
    directory, invalidating its TOML-only assertion. The test now unsets only that
    override; runtime override semantics remain unchanged.
+8. A final race test found duplicate concurrent Golem invalidations could both
+   return acceptance after one had already committed. Acceptance is now decided
+   inside the transaction; duplicate job IDs also reject within one workstream,
+   and empty text-array admissions are refused.
 
 The companion UI adds a strict public-identity-only typed dispatch receipt,
 message-free browser projection, private-span exclusion, and desktop/mobile live
@@ -55,7 +59,7 @@ advertised before a real host exists; current Projects/composer behavior is kept
 
 | Check | Result |
 | --- | --- |
-| Background component + installed compiled Pi tests | **78 passed** |
+| Background component + installed compiled Pi tests | **80 passed** |
 | Actual SIGKILL/reopen tests | **60 boundaries**, included above |
 | Compiled SDK concurrency | **100 cycles**, foreground stream completes while two branch streams remain active |
 | Pi model conversion of complete merge packet | Passed against compiled pinned Pi 0.84.1 |

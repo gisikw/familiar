@@ -221,6 +221,29 @@ test("child questions, answers and settlements remain branch-local and block pre
   store.beginRejoin(a.id, 1, p.packetId);
 });
 
+test("concurrent Golem invalidations cannot both claim the same event; duplicate child IDs reject", async (t) => {
+  const { store, branch } = setup(t);
+  const r = branch(1),
+    pending = deferred();
+  const owned = new OwnedChildren(store, r.id, 1, {
+    dispatch: async () => ({ id: "job", state: "running" }),
+    status: () => pending.promise,
+  });
+  await owned.dispatch("one", { prompt: "task" });
+  await assert.rejects(
+    owned.dispatch("two", { prompt: "other task" }),
+    /owner collision/,
+  );
+  const a = owned.observe({ seq: 1, job_id: "job" });
+  const b = owned.observe({ seq: 1, job_id: "job" });
+  pending.resolve({ id: "job", state: "running" });
+  assert.deepEqual(await Promise.all([a, b]), [true, false]);
+  assert.equal(
+    store.get(r.id).children.filter((c) => c.jobId === "job").length,
+    1,
+  );
+});
+
 test("cancellation during dispatch cancels the returned exact job without claiming new generation", async (t) => {
   const { store, branch, scheduler } = setup(t);
   const r = branch(1),

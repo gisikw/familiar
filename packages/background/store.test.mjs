@@ -50,6 +50,16 @@ function running(store) {
   return store.get(r.id);
 }
 
+test("empty text arrays cannot create a background admission", () => {
+  for (const content of [
+    "",
+    "  ",
+    [{ type: "text", text: "" }],
+    [{ type: "text", text: "\n  " }],
+  ])
+    assert.throws(() => admission({ ...request, content }), /empty admission/);
+});
+
 test("admission single identity binds exact bytes, parent and project", (t) => {
   const { store } = fixture(t);
   const first = store.create(request);

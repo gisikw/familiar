@@ -68,17 +68,21 @@ export class OwnedChildren {
         this.record();
         for (const other of this.store.list())
           if (
-            other.id !== this.key &&
-            other.children.some((c) => c.jobId === job.id)
+            other.children.some(
+              (c) =>
+                c.jobId === job.id && (other.id !== this.key || c.key !== key),
+            )
           )
             throw new Error("child owner collision");
         const child = r.children.find((c) => c.key === key);
         if (child.jobId && child.jobId !== job.id)
           throw new Error("golemd create identity changed");
         child.jobId = job.id;
-        child.terminal = terminal.has(job.state);
+        child.terminal = terminal.has(job.state) && Boolean(job.settlement);
         child.questionId =
-          job.question && !job.question.answer ? job.question.id : null;
+          job.state === "blocked" && job.question && !job.question.answer
+            ? id(job.question.id)
+            : null;
       });
     } catch (error) {
       // Cancellation/replacement may win while create is in flight. Cancel that
@@ -109,9 +113,11 @@ export class OwnedChildren {
       throw new Error("child status identity mismatch");
     bounded(job, LIMITS.commandBytes, "child status");
     this.record();
+    let accepted = false;
     this.store.update(this.key, this.generation, "child-event", (record) => {
       const current = record.children.find((c) => c.jobId === event.job_id);
       if (event.seq <= current.eventSeq) return;
+      accepted = true;
       current.eventSeq = event.seq;
       // Persist compact latest status, not an unbounded event/transcript list.
       current.pendingEvent = { seq: event.seq, job };
@@ -122,7 +128,7 @@ export class OwnedChildren {
           : null;
       record.settledRun = null;
     });
-    return true;
+    return accepted;
   }
   acknowledgeEvent(jobId, seq) {
     this.owned(jobId);
