@@ -1,5 +1,5 @@
 diff --git a/packages/coding-agent/src/core/agent-session-runtime.ts b/packages/coding-agent/src/core/agent-session-runtime.ts
-index 861c00f7..d9868850 100644
+index 861c00f..d986885 100644
 --- a/packages/coding-agent/src/core/agent-session-runtime.ts
 +++ b/packages/coding-agent/src/core/agent-session-runtime.ts
 @@ -79,6 +79,17 @@ export class AgentSessionRuntime {
@@ -73,19 +73,39 @@ index 861c00f7..d9868850 100644
  		if (!existsSync(resolvedPath)) {
  			throw new SessionImportFileNotFoundError(resolvedPath);
 diff --git a/packages/coding-agent/src/core/agent-session.ts b/packages/coding-agent/src/core/agent-session.ts
-index 8799d17e..b2270582 100644
+index 8799d17..d6c9544 100644
 --- a/packages/coding-agent/src/core/agent-session.ts
 +++ b/packages/coding-agent/src/core/agent-session.ts
-@@ -1106,10 +1106,20 @@ export class AgentSession {
+@@ -1106,10 +1106,40 @@ export class AgentSession {
  	// Prompting
  	// =========================================================================
  
 -	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
-+	/** Start an owned background archive's already-admitted user entry once,
-+	 * through the ordinary retry/queue/settled pipeline without re-appending it. */
++	/** Start an owned background archive's already-admitted user entry once.
++	 * This deliberately skips input/before_agent_start and pre-turn compaction:
++	 * the isolated branch must have no such handlers and compaction disabled. */
 +	async continueAdmittedTurn(): Promise<void> {
 +		this._extensionRunner.assertRuntimeControlAdmission();
-+		if (this.messages.at(-1)?.role !== "user") throw new Error("No admitted user turn to continue");
++		if (this.autoCompactionEnabled) throw new Error("Admitted continuation requires compaction disabled");
++		if (this._extensionRunner.hasHandlers("input") || this._extensionRunner.hasHandlers("before_agent_start"))
++			throw new Error("Admitted continuation forbids prompt preflight handlers");
++		const admittedLeaf = this.sessionManager.getLeafId();
++		if (this.messages.at(-1)?.role !== "user" || !admittedLeaf) throw new Error("No admitted user turn to continue");
++		const model = this.model;
++		if (!model) throw new Error(formatNoModelSelectedMessage());
++		const hasConfiguredAuth =
++			this._modelRuntime.hasConfiguredAuth(model.provider) ||
++			(await this._modelRuntime.checkAuth(model.provider)) !== undefined;
++		if (!hasConfiguredAuth) {
++			if (this._modelRuntime.isUsingOAuth(model.provider))
++				throw new Error(`Authentication failed for "${model.provider}". Credentials may have expired or network is unavailable. Run '/login ${model.provider}' to re-authenticate.`);
++			throw new Error(formatNoApiKeyFoundMessage(model.provider));
++		}
++		// Authentication may await. Recheck every no-run admission premise and the
++		// exact admitted leaf before continuing it without appending another user.
++		this._extensionRunner.assertRuntimeControlAdmission();
++		if (this.model !== model || this.sessionManager.getLeafId() !== admittedLeaf || this.messages.at(-1)?.role !== "user")
++			throw new Error("Admitted continuation changed during authentication");
 +		await this._runAgentPrompt(undefined);
 +	}
 +
@@ -99,7 +119,7 @@ index 8799d17e..b2270582 100644
  			while (await this._handlePostAgentRun()) {
  				await this.agent.continue();
  			}
-@@ -1160,7 +1170,16 @@ export class AgentSession {
+@@ -1160,7 +1190,16 @@ export class AgentSession {
  	 * @throws Error if streaming and no streamingBehavior specified
  	 * @throws Error if no model selected or no API key available (when not streaming)
  	 */
@@ -116,29 +136,34 @@ index 8799d17e..b2270582 100644
  		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
  		const preflightResult = options?.preflightResult;
  		let messages: AgentMessage[] | undefined;
-@@ -2548,8 +2567,21 @@ export class AgentSession {
+@@ -2548,8 +2587,26 @@ export class AgentSession {
  		this.agent.state.model = refreshedModel;
  	}
  
-+	/** Durable no-run owner transaction; no awaited callbacks inside its fence. */
++	/** Durable no-run owner transaction; synchronous entry notifications remain
++	 * inside the commit-depth fence and therefore cannot re-enter control. */
++	private runtimeControlCommitDepth = 0;
 +	commitRuntimeControl(sessionId: string, leafId: string | null, entries: import("./session-manager.ts").RuntimeControlInput[]): string[] {
 +		this._extensionRunner.assertRuntimeControlAdmission();
-+		const ids = this.sessionManager.commitRuntimeControl(sessionId, leafId, entries);
-+		this.agent.state.messages = this.sessionManager.buildSessionContext().messages;
-+		for (const id of ids) {
-+			const entry = this.sessionManager.getEntry(id);
-+			if (entry) this._emit({ type: "entry_appended", entry });
-+		}
-+		return ids;
++		this.runtimeControlCommitDepth++;
++		try {
++			const ids = this.sessionManager.commitRuntimeControl(sessionId, leafId, entries);
++			this.agent.state.messages = this.sessionManager.buildSessionContext().messages;
++			for (const id of ids) {
++				const entry = this.sessionManager.getEntry(id);
++				if (entry) this._emit({ type: "entry_appended", entry });
++			}
++			return ids;
++		} finally { this.runtimeControlCommitDepth--; }
 +	}
 +
  	private _bindExtensionCore(runner: ExtensionRunner): void {
  		runner.bindCommandAdmission(() => this.isIdle && this._agentSettledDispatchDepth === 0);
-+		runner.bindRuntimeControlPromptAdmission(() => !this.sessionManager.isRuntimeControlQuarantined() && this.controlPromptDepth === 0 && this.pendingMessageCount === 0 && this._pendingNextTurnMessages.length === 0 && this._pendingBashMessages.length === 0 && !this.isCompacting && !this.isBashRunning);
++		runner.bindRuntimeControlPromptAdmission(() => !this.sessionManager.isRuntimeControlQuarantined() && this.controlPromptDepth === 0 && this.runtimeControlCommitDepth === 0 && this.pendingMessageCount === 0 && this._pendingNextTurnMessages.length === 0 && this._pendingBashMessages.length === 0 && !this.isCompacting && !this.isBashRunning);
  		const getCommands = (): SlashCommandInfo[] => {
  			const extensionCommands: SlashCommandInfo[] = runner.getRegisteredCommands().map((command) => ({
  				name: command.invocationName,
-@@ -2595,6 +2627,7 @@ export class AgentSession {
+@@ -2595,6 +2652,7 @@ export class AgentSession {
  						});
  					});
  				},
@@ -147,19 +172,20 @@ index 8799d17e..b2270582 100644
  					const entryId = this.sessionManager.appendCustomEntry(customType, data);
  					const entry = this.sessionManager.getEntry(entryId);
 diff --git a/packages/coding-agent/src/core/extensions/loader.ts b/packages/coding-agent/src/core/extensions/loader.ts
-index ca87f135..6082505f 100644
+index ca87f13..d008a30 100644
 --- a/packages/coding-agent/src/core/extensions/loader.ts
 +++ b/packages/coding-agent/src/core/extensions/loader.ts
-@@ -200,6 +200,8 @@ export function createExtensionRuntime(): ExtensionRuntime {
+@@ -200,6 +200,9 @@ export function createExtensionRuntime(): ExtensionRuntime {
  		refreshTools: () => {},
  		getCommands: notInitialized,
  		invokeExtensionCommand: async () => notInitialized(),
 +		commitRuntimeControl: notInitialized,
 +		isRuntimeControlAvailable: () => false,
++		runtimeControlEventDispatchDepth: 0,
  		setModel: () => Promise.reject(new Error("Extension runtime not initialized")),
  		getThinkingLevel: notInitialized,
  		setThinkingLevel: notInitialized,
-@@ -408,6 +410,13 @@ function createExtensionAPI(
+@@ -408,6 +411,13 @@ function createExtensionAPI(
  			runtime.setActiveTools(toolNames);
  		},
  
@@ -174,10 +200,68 @@ index ca87f135..6082505f 100644
  			runtime.assertActive();
  			await runtime.invokeExtensionCommand(name, args);
 diff --git a/packages/coding-agent/src/core/extensions/runner.ts b/packages/coding-agent/src/core/extensions/runner.ts
-index 84625928..9a8a847d 100644
+index 8462592..34ea19a 100644
 --- a/packages/coding-agent/src/core/extensions/runner.ts
 +++ b/packages/coding-agent/src/core/extensions/runner.ts
-@@ -340,6 +340,14 @@ export class ExtensionRunner {
+@@ -206,31 +206,36 @@ export async function emitProjectTrustEvent(
+ 	event: ProjectTrustEvent,
+ 	ctx: ProjectTrustContext,
+ ): Promise<{ result?: ProjectTrustEventResult; errors: ExtensionError[] }> {
+-	const errors: ExtensionError[] = [];
+-	for (const ext of extensionsResult.extensions) {
+-		// A single extension may register multiple handlers for the same event.
+-		// The first project_trust handler that returns yes/no wins; undecided falls through.
+-		const handlers = ext.handlers.get("project_trust");
+-		if (!handlers || handlers.length === 0) continue;
+-
+-		for (const handler of handlers) {
+-			try {
+-				const handlerResult = (await handler(event, ctx)) as ProjectTrustEventResult;
+-				if (handlerResult.trusted === "undecided") {
+-					continue;
++	extensionsResult.runtime.runtimeControlEventDispatchDepth++;
++	try {
++		const errors: ExtensionError[] = [];
++		for (const ext of extensionsResult.extensions) {
++			// A single extension may register multiple handlers for the same event.
++			// The first project_trust handler that returns yes/no wins; undecided falls through.
++			const handlers = ext.handlers.get("project_trust");
++			if (!handlers || handlers.length === 0) continue;
++
++			for (const handler of handlers) {
++				try {
++					const handlerResult = (await handler(event, ctx)) as ProjectTrustEventResult;
++					if (handlerResult.trusted === "undecided") {
++						continue;
++					}
++					return { result: handlerResult, errors };
++				} catch (error) {
++					errors.push({
++						extensionPath: ext.path,
++						event: event.type,
++						error: error instanceof Error ? error.message : String(error),
++						stack: error instanceof Error ? error.stack : undefined,
++					});
+ 				}
+-				return { result: handlerResult, errors };
+-			} catch (error) {
+-				errors.push({
+-					extensionPath: ext.path,
+-					event: event.type,
+-					error: error instanceof Error ? error.message : String(error),
+-					stack: error instanceof Error ? error.stack : undefined,
+-				});
+ 			}
+ 		}
++		return { errors };
++	} finally {
++		extensionsResult.runtime.runtimeControlEventDispatchDepth--;
+ 	}
+-	return { errors };
+ }
+ 
+ const noOpUIContext: ExtensionUIContext = {
+@@ -340,6 +345,14 @@ export class ExtensionRunner {
  		this.runtime.refreshTools = actions.refreshTools;
  		this.runtime.getCommands = actions.getCommands;
  		this.runtime.invokeExtensionCommand = (name, args) => this.invokeExtensionCommand(name, args);
@@ -192,7 +276,7 @@ index 84625928..9a8a847d 100644
  		this.runtime.setModel = actions.setModel;
  		this.runtime.getThinkingLevel = actions.getThinkingLevel;
  		this.runtime.setThinkingLevel = actions.setThinkingLevel;
-@@ -713,6 +721,18 @@ export class ExtensionRunner {
+@@ -713,12 +726,25 @@ export class ExtensionRunner {
  		this.commandAdmissionFn = admit;
  	}
  
@@ -204,15 +288,22 @@ index 84625928..9a8a847d 100644
 +	assertRuntimeControlAdmission(): void {
 +		this.assertActive();
 +		this.runtime.assertActive();
-+		if (!this.commandAdmissionFn() || !this.runtimeControlOwnerAdmission() || !this.runtimeControlPromptAdmission() || this.eventDispatchDepth !== 0 || this.commandActive)
++		if (!this.commandAdmissionFn() || !this.runtimeControlOwnerAdmission() || !this.runtimeControlPromptAdmission() || this.runtime.runtimeControlEventDispatchDepth !== 0 || this.eventDispatchDepth !== 0 || this.commandActive)
 +			throw new Error("Runtime control requires idle owner outside command/event dispatch");
 +	}
 +
  	async invokeExtensionCommand(name: string, args = ""): Promise<void> {
  		this.assertActive();
  		this.runtime.assertActive();
+ 		// Use the owning session's lifecycle predicate, not low-level agent streaming.
+ 		// Never wait here: an awaited tool/event could be waiting on itself (#2023).
+ 		if (this.commandAdmissionFn() !== true) throw new Error("Extension command requires an idle AgentSession");
++		if (this.runtime.runtimeControlEventDispatchDepth !== 0) throw new Error("Extension command unavailable during event dispatch");
+ 		if (this.eventDispatchDepth !== 0) throw new Error("Extension command unavailable during event dispatch");
+ 		// One slot, acquired before any await: different names can mutate the same session.
+ 		// Reject rather than queue, since nested A -> B would otherwise self-deadlock.
 diff --git a/packages/coding-agent/src/core/extensions/types.ts b/packages/coding-agent/src/core/extensions/types.ts
-index d8793e30..c2b76183 100644
+index d8793e3..9f3f980 100644
 --- a/packages/coding-agent/src/core/extensions/types.ts
 +++ b/packages/coding-agent/src/core/extensions/types.ts
 @@ -1424,6 +1424,13 @@ export interface ExtensionAPI {
@@ -229,16 +320,18 @@ index d8793e30..c2b76183 100644
  	// =========================================================================
  	// Model and Thinking Level
  	// =========================================================================
-@@ -1685,6 +1692,8 @@ export type SetLabelHandler = (entryId: string, label: string | undefined) => vo
+@@ -1685,6 +1692,10 @@ export type SetLabelHandler = (entryId: string, label: string | undefined) => vo
  export interface ExtensionRuntimeState {
  	/** Bound by ExtensionRunner, not a caller-supplied raw command handler. */
  	invokeExtensionCommand: ExtensionAPI["invokeExtensionCommand"];
 +	isRuntimeControlAvailable: ExtensionAPI["isRuntimeControlAvailable"];
 +	commitRuntimeControl: ExtensionAPI["commitRuntimeControl"];
++	/** Internal fence shared with pre-run project_trust dispatch. */
++	runtimeControlEventDispatchDepth: number;
  	flagValues: Map<string, boolean | string>;
  	/** Legacy provider-config registrations queued during extension loading, processed when runner binds. */
  	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; extensionPath: string }>;
-@@ -1712,6 +1721,7 @@ export interface ExtensionRuntimeState {
+@@ -1712,6 +1723,7 @@ export interface ExtensionRuntimeState {
   * Provided to runner.initialize(), copied into the shared runtime.
   */
  export interface ExtensionActions {
@@ -247,7 +340,7 @@ index d8793e30..c2b76183 100644
  	sendUserMessage: SendUserMessageHandler;
  	appendEntry: AppendEntryHandler;
 diff --git a/packages/coding-agent/src/core/session-manager.ts b/packages/coding-agent/src/core/session-manager.ts
-index d25b196a..58c7c2eb 100644
+index d25b196..1b3381a 100644
 --- a/packages/coding-agent/src/core/session-manager.ts
 +++ b/packages/coding-agent/src/core/session-manager.ts
 @@ -6,6 +6,9 @@ import {
@@ -282,26 +375,39 @@ index d25b196a..58c7c2eb 100644
  export interface SessionHeader {
  	type: "session";
  	version?: number; // v1 sessions don't have this
-@@ -990,7 +999,100 @@ export class SessionManager {
+@@ -938,6 +947,7 @@ export class SessionManager {
+ 			parentSession: options?.parentSession,
+ 		};
+ 		this.fileEntries = [header];
++		this.resetPersistenceBytes();
+ 		this.byId.clear();
+ 		this.labelsById.clear();
+ 		this.labelTimestampsById.clear();
+@@ -988,9 +998,110 @@ export class SessionManager {
+ 				}
+ 			}
  		}
- 	}
- 
++		this.resetPersistenceBytes();
++	}
++
 +	private controlWriteUncertain = false;
 +	isRuntimeControlQuarantined(): boolean { return this.controlWriteUncertain; }
 +	private persistenceBudget = Number.POSITIVE_INFINITY;
++	private persistenceBytes = 0;
++	private serializedBytes(entry: FileEntry): number { return Buffer.byteLength(JSON.stringify(entry)) + 1; }
++	private resetPersistenceBytes(): void {
++		this.persistenceBytes = this.fileEntries.reduce((bytes, entry) => bytes + this.serializedBytes(entry), 0);
++	}
 +
 +	/** Host-owned branch disk bound; checked before publishing an appended entry. */
 +	setPersistenceBudget(bytes: number): void {
 +		if (!Number.isSafeInteger(bytes) || bytes < 1024 || bytes > 32 * 1024 * 1024) throw new Error("Invalid persistence budget");
 +		this.persistenceBudget = bytes;
++		if (this.persistenceBytes > bytes) throw new Error("Session persistence byte budget exceeded");
 +	}
 +
-+	private assertPersistenceBudget(entry?: SessionEntry): void {
-+		if (!Number.isFinite(this.persistenceBudget)) return;
-+		let bytes = 0;
-+		for (const item of this.fileEntries) bytes += Buffer.byteLength(JSON.stringify(item)) + 1;
-+		if (entry) bytes += Buffer.byteLength(JSON.stringify(entry)) + 1;
-+		if (bytes > this.persistenceBudget) throw new Error("Session persistence byte budget exceeded");
++	private assertPersistenceBudget(additionalBytes = 0): void {
++		if (this.persistenceBytes + additionalBytes > this.persistenceBudget) throw new Error("Session persistence byte budget exceeded");
 +	}
 +
 +	/** Caller owns the writer lease and lifecycle fence. Memory changes only after
@@ -332,8 +438,11 @@ index d25b196a..58c7c2eb 100644
 +		for (const type of ["message", "custom", "custom_message"])
 +			if (copy.filter((entry) => entry.type === type).length > 1) throw new Error("Invalid runtime control batch");
 +		let parentId = this.leafId;
++		const allocatedIds = new Set(this.byId.keys());
 +		const entries: SessionEntry[] = copy.map((input) => {
-+			const entry = { ...input, id: randomUUID(), parentId, timestamp: new Date().toISOString() } as SessionEntry;
++			const id = generateId(allocatedIds);
++			allocatedIds.add(id);
++			const entry = { ...input, id, parentId, timestamp: new Date().toISOString() } as SessionEntry;
 +			parentId = entry.id;
 +			return entry;
 +		});
@@ -367,6 +476,7 @@ index d25b196a..58c7c2eb 100644
 +			try { fsyncSync(directory); } finally { closeSync(directory); }
 +			boundary("control:directory-synced");
 +			this.fileEntries = next;
++			this.persistenceBytes = bytes;
 +			this._buildIndex();
 +			this.flushed = true;
 +			this.controlWriteUncertain = false;
@@ -375,15 +485,16 @@ index d25b196a..58c7c2eb 100644
 +			closeSync(fd);
 +			if (!renamed) unlinkSync(temporary);
 +		}
-+	}
-+
+ 	}
+ 
  	private _rewriteFile(): void {
++		this.resetPersistenceBytes();
 +		this.assertPersistenceBudget();
 +		if (this.controlWriteUncertain) throw new Error("Session writer quarantined");
  		if (!this.persist || !this.sessionFile) return;
  		const fd = openSync(this.sessionFile, "w");
  		try {
-@@ -1027,6 +1129,7 @@ export class SessionManager {
+@@ -1027,6 +1138,7 @@ export class SessionManager {
  	}
  
  	_persist(entry: SessionEntry): void {
@@ -391,12 +502,15 @@ index d25b196a..58c7c2eb 100644
  		if (!this.persist || !this.sessionFile) return;
  
  		const hasAssistant = this.fileEntries.some((e) => e.type === "message" && e.message.role === "assistant");
-@@ -1056,6 +1159,8 @@ export class SessionManager {
+@@ -1056,7 +1168,11 @@ export class SessionManager {
  	}
  
  	private _appendEntry(entry: SessionEntry): void {
-+		this.assertPersistenceBudget(entry);
++		const entryBytes = this.serializedBytes(entry);
++		this.assertPersistenceBudget(entryBytes);
 +		if (this.controlWriteUncertain) throw new Error("Session writer quarantined");
  		this.fileEntries.push(entry);
++		this.persistenceBytes += entryBytes;
  		this.byId.set(entry.id, entry);
  		this.leafId = entry.id;
+ 		this._persist(entry);

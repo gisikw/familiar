@@ -6,6 +6,9 @@ import { pathToFileURL } from "node:url";
 const sdk = await import(
   pathToFileURL(join(process.argv[2], "dist/index.js")).href
 );
+const { emitProjectTrustEvent } = await import(
+  pathToFileURL(join(process.argv[2], "dist/core/extensions/runner.js")).href
+);
 const root = mkdtempSync(join(tmpdir(), "pi-runtime-control-"));
 try {
   const sm = sdk.SessionManager.create(root, root);
@@ -26,6 +29,7 @@ try {
   );
   const ids = sm.commitRuntimeControl(sm.getSessionId(), sm.getLeafId(), input);
   assert.equal(ids.length, 2);
+  assert(ids.every((id) => /^[0-9a-f]{8}$/.test(id)));
   const reopened = sdk.SessionManager.open(sm.getSessionFile());
   assert.equal(reopened.getEntries().length, 2);
   assert.equal(
@@ -33,6 +37,13 @@ try {
     "exact user entry  ",
   );
   assert.equal(reopened.getEntry(ids[1]).parentId, ids[0]);
+  assert.equal(
+    reopened.persistenceBytes,
+    reopened.fileEntries.reduce(
+      (bytes, entry) => bytes + Buffer.byteLength(JSON.stringify(entry)) + 1,
+      0,
+    ),
+  );
   assert.throws(
     () => sm.commitRuntimeControl(sm.getSessionId(), null, input),
     /conflict/,
@@ -111,14 +122,23 @@ try {
       manager.commitRuntimeControl(manager.getSessionId(), null, input);
     }
   }
+  // Incremental accounting includes the header, survives load, admits the exact
+  // boundary, and does not advance after a rejected append.
+  const probe = sdk.SessionManager.create(root, root);
+  const probeBefore = probe.persistenceBytes;
+  probe.appendCustomEntry("sized", "x".repeat(900));
+  const appendBytes = probe.persistenceBytes - probeBefore;
   const limited = sdk.SessionManager.create(root, root);
-  limited.setPersistenceBudget(1024);
+  limited.setPersistenceBudget(limited.persistenceBytes + appendBytes);
+  limited.appendCustomEntry("sized", "x".repeat(900));
+  assert.equal(limited.persistenceBytes, limited.persistenceBudget);
+  const atBoundary = limited.persistenceBytes;
   assert.throws(
-    () => limited.appendCustomEntry("over-budget", "x".repeat(2048)),
+    () => limited.appendCustomEntry("over-budget", "x"),
     /budget/,
   );
-  assert.equal(limited.getEntries().length, 0);
-
+  assert.equal(limited.getEntries().length, 1);
+  assert.equal(limited.persistenceBytes, atBoundary);
   let api, release, entered;
   let settledRejected = false;
   const enteredPromise = () =>
@@ -242,6 +262,45 @@ try {
     await session._emitAgentSettled();
     assert.equal(settledRejected, true);
     assert.equal(api.isRuntimeControlAvailable(), true);
+
+    // Synchronous entry notifications are observable, but cannot recursively
+    // enter a second owner transaction before the first one returns.
+    let appendReentryRejected = false;
+    const unsubscribe = session.subscribe((event) => {
+      if (event.type !== "entry_appended") return;
+      try { commit(); } catch (error) {
+        appendReentryRejected = /idle owner/.test(error.message);
+      }
+    });
+    commit();
+    unsubscribe();
+    assert.equal(appendReentryRejected, true);
+
+    // project_trust is dispatched without an ExtensionRunner instance. Its
+    // shared runtime fence still rejects a captured, already-bound API.
+    let projectTrustRejected = false;
+    let projectTrustCommandRejected = false;
+    const extensionsResult = loader.getExtensions();
+    extensionsResult.extensions.push({
+      path: "fence-project-trust",
+      handlers: new Map([["project_trust", [async () => {
+        try { commit(); } catch (error) {
+          projectTrustRejected = /idle owner/.test(error.message);
+        }
+        try { await api.invokeExtensionCommand("hold"); } catch (error) {
+          projectTrustCommandRejected = /event dispatch/.test(error.message);
+        }
+        return { trusted: "undecided" };
+      }]]]),
+    });
+    await emitProjectTrustEvent(
+      extensionsResult,
+      { type: "project_trust", cwd: root },
+      {},
+    );
+    assert.equal(projectTrustRejected, true);
+    assert.equal(projectTrustCommandRejected, true);
+    assert.equal(api.isRuntimeControlAvailable(), true);
     await session.sendCustomMessage(
       { customType: "pending", content: "queued next turn", display: false },
       { deliverAs: "nextTurn" },
@@ -270,6 +329,68 @@ try {
     session.dispose();
   }
   assert.throws(commit, /stale|disposed|replaced/i);
+
+  // The admitted continuation is intentionally narrower than prompt(): no new
+  // user append, no prompt-preflight hooks, compaction disabled, model/auth
+  // ready, exact leaf unchanged across an async auth check, and normal settled
+  // semantics. No provider is called: Agent.continue is replaced locally.
+  const continuationLoader = new sdk.DefaultResourceLoader({
+    cwd: root,
+    agentDir: root,
+    settingsManager,
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+    agentsFilesOverride: () => ({ agentsFiles: [] }),
+  });
+  await continuationLoader.reload();
+  const continuationManager = sdk.SessionManager.create(root, root);
+  continuationManager.commitRuntimeControl(
+    continuationManager.getSessionId(),
+    null,
+    [{ type: "message", message: { role: "user", content: "admitted", timestamp: 1 } }],
+  );
+  const { session: continuation } = await sdk.createAgentSession({
+    cwd: root,
+    agentDir: root,
+    settingsManager,
+    modelRuntime,
+    resourceLoader: continuationLoader,
+    sessionManager: continuationManager,
+    noTools: "all",
+  });
+  await continuation.bindExtensions({ mode: "print" });
+  const entryCount = continuationManager.getEntries().length;
+  continuation.agent.state.model = undefined;
+  await assert.rejects(continuation.continueAdmittedTurn(), /No model selected/);
+  const fakeModel = { provider: "test-provider", id: "test-model", contextWindow: 100000 };
+  continuation.agent.state.model = fakeModel;
+  continuation.settingsManager.setCompactionEnabled(true);
+  await assert.rejects(continuation.continueAdmittedTurn(), /compaction disabled/);
+  continuation.settingsManager.setCompactionEnabled(false);
+  const originalHasHandlers = continuation.extensionRunner.hasHandlers.bind(continuation.extensionRunner);
+  continuation.extensionRunner.hasHandlers = (type) => type === "input" || originalHasHandlers(type);
+  await assert.rejects(continuation.continueAdmittedTurn(), /preflight handlers/);
+  continuation.extensionRunner.hasHandlers = originalHasHandlers;
+  continuation.modelRuntime.hasConfiguredAuth = () => false;
+  continuation.modelRuntime.checkAuth = async () => undefined;
+  continuation.modelRuntime.isUsingOAuth = () => false;
+  await assert.rejects(continuation.continueAdmittedTurn(), /API key|api key/i);
+  continuation.modelRuntime.hasConfiguredAuth = () => true;
+  let continued = 0;
+  let prompted = 0;
+  let settled = 0;
+  continuation.agent.continue = async () => { continued++; };
+  continuation.agent.prompt = async () => { prompted++; };
+  const originalSettled = continuation._emitAgentSettled.bind(continuation);
+  continuation._emitAgentSettled = async () => { settled++; await originalSettled(); };
+  await continuation.continueAdmittedTurn();
+  assert.equal(continued, 1);
+  assert.equal(prompted, 0);
+  assert.equal(settled, 1);
+  assert.equal(continuationManager.getEntries().length, entryCount);
+  continuation.dispose();
   assert.equal(api.isRuntimeControlAvailable(), false);
   console.log(
     "installed runtime control: atomic no-run, exact content, command/replacement fencing, bounds, quarantine passed",

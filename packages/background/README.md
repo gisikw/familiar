@@ -87,7 +87,12 @@ workflow. Mutating/review/integration work is delegated through the configured
 child backend's existing workspace semantics. Tool results and artifact reads
 are bounded; artifact text is paged in 4 KiB chunks. `continueAdmittedTurn` runs
 the seeded user entry through Pi's actual retry/queue/settled pipeline, without
-appending it a second time.
+appending it a second time. It fails closed unless the branch is idle with no
+pending/custom/bash work, the exact user leaf and selected model remain stable,
+authentication is ready, compaction is disabled, and no input/before-agent-start
+preflight handlers are installed. Skipping those prompt-only hooks and pre-turn
+compaction is deliberate for this already-admitted isolated branch; normal settled,
+retry, queue and post-run event semantics still apply.
 
 ## Reports and rejoin
 

@@ -6,7 +6,10 @@ by the top-level locked nixpkgs. It is not an extension and does not belong in
 `default.nix` adapts the locked nixpkgs 0.84.1 recipe to immutable upstream commit
 `d981de1229ef899957bbe968bc8dcda02a21f477`, including the exact 0.85.1 source,
 npm dependency, model-data, workspace-build and install metadata. The nixpkgs
-wrappers, install checks and platform cleanup remain in force.
+wrappers, install checks and platform cleanup remain in force. In particular,
+the 0.85.1 Darwin post-install step removes both foreign Linux seccomp vendor
+directories from `@anthropic-ai/sandbox-runtime`; Darwin derivation inspection
+is part of the release check.
 Both default/pi shells and `PI_PACKAGE_DIR` use this package. It is also exported
 as `packages.<system>.pi-coding-agent` and `checks.<system>.pi-invoke-command`.
 
@@ -83,16 +86,20 @@ handler order, results, error swallowing, early cancel/handled returns and throw
 listeners and is not independently guarded (notifications inside an emitter are
 still within its depth). The new 0.85.1 `after_provider_response` SDK hook also
 delegates to guarded generic `emit`. The standalone `emitSessionShutdownEvent`
-helper delegates to guarded `emit`. Standalone `emitProjectTrustEvent` takes a
-load result, not a runner, and runs before runtime binding; public calls there
-remain uninitialized.
+helper delegates to guarded `emit`. `emitProjectTrustEvent` has no runner, so it
+uses a finally-safe depth on the shared extension runtime; even an unusually
+captured, already-bound API rejects while that handler is awaited.
 
-**No other idle lifecycle callbacks are admissible.** This includes shutdown
-(after abort and before disposal), before-switch/fork, compaction/tree,
-startup/reload, model changes and resource/input/provider pipelines. Public calls
-reject while runner event dispatch is active; events themselves are not serialized
-or blocked. This is not a scheduler, provenance check or session-wide action lock.
-Hosts must gate unrelated non-event session actions throughout the handler;
+Awaited extension lifecycle callbacks are not admissible. This includes shutdown,
+before-switch/fork, compaction/tree, startup/reload, model changes and
+resource/input/provider pipelines. Public calls reject while runner or project-trust
+event dispatch is active; events themselves are not serialized or blocked. The
+old runner is invalidated synchronously immediately after reload's guarded shutdown
+and remains stale across settings/resource awaits, so there is no callable old-API
+reload gap. This is not a scheduler, provenance check or session-wide action lock.
+Synchronous renderers and `emitError` listeners are notification-only and remain
+outside an independent fence; Familiar renderers do not perform owner commits.
+Hosts must gate unrelated non-event session actions throughout a handler;
 prompt/public overlap is explicitly permitted by core, and upstream prompt dispatch
 neither checks nor acquires the event guard or public slot.
 
@@ -113,9 +120,9 @@ Upstream tag `v0.85.1` is the lightweight tag at
 
 1. `invoke-command.patch` — awaited exact-name direct extension-command
    invocation and complete event/settled admission fences.
-2. `runtime-control.patch` — atomic no-run owner commits, persistence budget and
-   writer quarantine, admitted-user continuation, and owner/session/leaf/idle,
-   command/event and runtime-replacement fences.
+2. `runtime-control.patch` — atomic no-run owner commits, incrementally accounted
+   persistence budget and writer quarantine, admitted-user continuation, and
+   owner/session/leaf/idle, command/event and runtime-replacement fences.
 
 Neither facility exists upstream in 0.85.1, so no downstream portion was
 superseded. The rebase preserves the changed upstream loader factory/runtime
@@ -125,7 +132,9 @@ wraps the 11 awaited runner emitter bodies and hash-checks each body after
 removing that one indentation level. Runtime control uses narrow admission
 bindings at session/runtime ownership boundaries; replacement methods are
 wrapped from public entry through completion so cancelled and failed
-replacements are fenced too.
+replacements are fenced too. Runtime-control entry IDs use upstream `generateId`
+with a batch-local collision set. Synchronous `entry_appended` notifications stay
+inside a commit-depth fence and cannot recursively commit.
 
 Upstream commit `56700d42ed65a94a80af7376adb19a9298065164` (PR #8782,
 issue #6879), included in 0.85.1, moved next-turn preparation into the continuing
@@ -188,7 +197,11 @@ at the mode-action boundary; these are not full TUI or disk-backed lifecycle tes
 
 Source shape checks run in `postPatch`. Runtime tests run in `checkPhase` and again
 unconditionally in `postInstall` against the installed runtime, plus installed
-declaration assertions. `mid-turn-compaction.test.mjs` verifies in both source and
+declaration assertions. The runtime test also checks incremental load/append and
+exact-boundary accounting, 8-hex collision-safe control IDs, project-trust and
+entry-notification reentrancy fences, and admitted continuation without a provider
+call: model/auth readiness, disabled compaction, unchanged leaf, no duplicate user
+append, `agent.continue()` rather than `prompt()`, and one settled event. `mid-turn-compaction.test.mjs` verifies in both source and
 compiled output that 0.85.1's `prepareNextTurn` compaction path runs before the
 next assistant request and republishes the effective model/thinking level. Setting
 `doCheck` or `doInstallCheck` false cannot silently skip installed validation.
