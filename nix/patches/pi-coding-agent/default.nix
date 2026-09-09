@@ -99,6 +99,14 @@ assert pkgs.lib.assertMsg ((old.patches or []) == [] && (old.prePatch or "") == 
     find "$nm" -type l -lname '*/packages/*' -delete
     find "$nm/.bin" -xtype l -delete
 
+    ${pkgs.lib.optionalString pkgs.stdenvNoCC.hostPlatform.isDarwin ''
+      # Keep nixpkgs' 0.85.1 Darwin cleanup: these are foreign Linux binaries
+      # which otherwise make audit-tmpdir inspect ELF RPATHs with patchelf.
+      rm -rf \
+        "$nm/@anthropic-ai/sandbox-runtime/dist/vendor/seccomp" \
+        "$nm/@anthropic-ai/sandbox-runtime/vendor/seccomp"
+    ''}
+
     piRoot="$out/lib/node_modules/pi-monorepo"
     node ${./invoke-command.test.mjs} "$piRoot"
     node ${./runtime-control.test.mjs} "$piRoot"

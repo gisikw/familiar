@@ -101,11 +101,11 @@ separate and tested.
 | Cross-repository production-extension HTTP flow | **1 passed**, no skip: canonical admission → actual SDK/report tool → durable refusal merge                                                           |
 | Actual process-kill boundaries                  | **102 SIGKILL cases**: 60 retained kernel boundaries, 8 canonical primitive cases, 33 composed admission/rejoin/failure cases, 1 host-held lease case |
 | Compiled SDK synthetic isolation                | Retained **100 cycles** with independent runtime/loader/session ownership                                                                             |
-| Familiar extension + contrib                    | **241 passed**; real Node loader smoke loaded all 13 directory entrypoints without Bun globals                                                        |
+| Familiar extension + contrib                    | **240 passed** (178 extension + 62 contrib); real Node loader smoke loaded all 13 directory entrypoints without Bun globals                           |
 | Familiar shell regression scripts               | **9 scripts passed**                                                                                                                                  |
 | Presence isolated lifecycle                     | **12 passed**                                                                                                                                         |
 | Native viewer                                   | **97 passed**, all targets                                                                                                                            |
-| Gateway Bun suite                               | **64 passed** across 12 files                                                                                                                         |
+| Gateway Bun suite                               | **75 passed** across 13 files                                                                                                                         |
 | Subscriber + zip harness                        | Passed with synthetic attach and matching installed SDK resolution                                                                                    |
 | Native gateway/viewer/Presence browser smoke    | **6 passed**; Kitty translation proven by APC bytes and **11,760 magenta pixels**                                                                     |
 | familiar-ui npm check                           | **267 Node + 163 web passed**, type and format checks passed                                                                                          |
