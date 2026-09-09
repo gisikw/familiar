@@ -146,7 +146,7 @@ def provision_profile(folder, p):
     if not (profile / 'settings.json').exists():
         atomic(profile / 'settings.json', {
             'extensions': [str(profile / 'assets/tiamat')],
-            'defaultProjectTrust': 'no', 'lastChangelogVersion': '0.84.1',
+            'defaultProjectTrust': 'never', 'lastChangelogVersion': '0.84.1',
         })
     return profile
 
@@ -281,12 +281,19 @@ def main(p):
 
 
 if __name__ == '__main__':
+    request = None
     try:
         data = sys.stdin.buffer.read(65537)
         if len(data) > 65536:
             raise ValueError('native input bound')
-        print(json.dumps(main(json.loads(data))))
+        request = json.loads(data)
+        print(json.dumps(main(request)))
     except Exception:
-        # Never return git stderr, credential values, or exception arguments.
+        # A completed read-only admission check is definitive, unlike a lost
+        # route or a provisioning mutation with an unknown outcome. No stderr,
+        # credential values, or exception arguments cross this boundary.
+        if isinstance(request, dict) and request.get('operation') == 'plan':
+            print(json.dumps({'admission_error': 'remote_preflight_failed'}))
+            sys.exit(0)
         print(json.dumps({'error': 'native operation failed; inspect enrolled machine'}))
         sys.exit(1)

@@ -68,7 +68,13 @@ Example (public-key placeholders must be replaced with verified public keys;
 
 The machine tuple is copied from the authenticated Drover catalog and verified
 on each observation: name, session, never-reused route port, SSH user and host
-key must agree. Herdr must report **0.9.0 / protocol 22**. The configured jump
+key must agree. Every Herdr RPC additionally sends `If-Match: "<enrollment-port>"`;
+Drover checks the never-reused port against the authenticated live connection
+before forwarding and acknowledges it with `ETag`. Familiar requires the
+acknowledgment even on the initial read-only ping, failing closed against an old
+coordinator. Revoking and re-enrolling a name cannot redirect an in-flight job to
+its replacement. This is a generic route-generation fence, not Familiar job
+semantics. Herdr must report **0.9.0 / protocol 22**. The configured jump
 identity is explicit because Drover's SSH listener may differ from its HTTP URL.
 The inner native SSH endpoint remains the account-level route from Drover's
 operations guide, not a forced-command pane attach endpoint.
@@ -168,6 +174,9 @@ existing familiar-ui snapshot bridge—no additional listener or bearer token.
 ### Durable phases and uncertain operations
 
 1. A **read-only plan** resolves the remote XDG paths, source commit and profile.
+   A completed failed plan returns a fixed credential-free admission error and
+   marks `failed_admission`, with one worklist notice. A lost route remains
+   unknown and retryable, never terminal.
    The controller persists this plan before any provisioning mutation. Changing
    a ref/XDG environment after a crash cannot move the job or its cleanup path.
 2. Native provisioning is idempotent under a per-job lock; a remote marker pins
@@ -239,13 +248,45 @@ public/private span marker. The browser omits the Agents projection while privat
 
 Tools: `familiar_agents_capabilities`, `familiar_agents_dispatch`,
 `familiar_agents_status`, `familiar_agents_steer`, `familiar_agents_answer`,
-`familiar_agents_cancel`, `familiar_agents_reconcile`.
+`familiar_agents_cancel`, `familiar_agents_reconcile`,
+`familiar_agents_abandon`, `familiar_agents_settle`,
+`familiar_agents_resolve_operation`, `familiar_agents_resolve_intent`.
+
+All recovery actions are callable by foreground Exo without impersonating a
+human command. Tool decisions are attributed as `exo:<session-id>`; commands
+retain `operator-command:<session-id>`. Explicit settlement is controller
+judgment, never agent proof. Identical abandon/settle retries are idempotent;
+conflicting terminal decisions cannot replace the first one. Operation/intent
+resolution requires native inspection and a reason recording that evidence,
+not just an automatic retry after a timeout.
 
 Dispatch requires a caller key, machine, Pi harness, exact enrolled model,
-absolute **remote** repository path, requested_ref, task and label. No local
-repository, tmux job or model is substituted. Status pages five jobs; full
-inspection is by id. Model-facing output is capped at 48 KiB with an explicit
-truncation marker; the full bounded record remains available in the ledger.
+absolute **remote** repository path, requested_ref, task and label. Worktrees
+are always freshly managed detached worktrees under the remote job state path;
+v1 does not reuse arbitrary human worktrees or fetch controller repositories.
+Optional `options.thinking` accepts Pi's documented off/minimal/low/medium/high/
+xhigh/max levels (Pi may clamp to model capability). No arbitrary CLI argv,
+environment, extensions or credentials can be supplied through tools. Options
+are persisted and included in admission idempotency. No local repository, tmux
+job or model is substituted. Status pages five jobs; full inspection is by id,
+including typed native attach coordinates and a Drover client invocation hint.
+Both model text and tool details are capped at 48 KB. Oversized results return a
+valid JSON truncation envelope with an explicitly incomplete text preview; the
+full bounded record remains available in the private ledger.
+
+Example Exo workflow (tool arguments, not shell commands):
+
+```json
+{"tool":"familiar_agents_capabilities","arguments":{"machine_id":"worker-a"}}
+{"tool":"familiar_agents_dispatch","arguments":{"key":"review-123","machine_id":"worker-a","harness":"pi","model":"tiamat-responses-account/model-id","options":{"thinking":"high"},"repo":"/remote/repo","requested_ref":"main","task":"Implement, test and review the requested change; do not push.","label":"review change"}}
+{"tool":"familiar_agents_status","arguments":{"id":"<returned-job-id>"}}
+{"tool":"familiar_agents_steer","arguments":{"id":"<returned-job-id>","key":"review-123-steer-1","text":"Also check the regression test."}}
+```
+
+Retain the caller key after a lost dispatch reply; do not mint a new one simply
+because the foreground restarted. `familiar_agents_reconcile` forces observation,
+not replay of uncertain mutations. A cancel request waits for settlement or
+explicit abandon; it is never represented as a cancelled verdict by itself.
 
 Operator commands (record the command-channel session attribution):
 

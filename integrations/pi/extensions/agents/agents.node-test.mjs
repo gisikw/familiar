@@ -302,6 +302,50 @@ test("lost workspace response reconciles by identity, never duplicates creation"
   await f.o.observe(f.db.get(f.job.job_id));
   assert.equal(f.db.get(f.job.job_id).phase, "observe");
 });
+test("definitive read-only remote admission failure is loud; route failure stays unresolved", async (t) => {
+  const f = running(t);
+  f.transport.plan = async () => {
+    throw new Error("route lost");
+  };
+  await f.o.reconcile();
+  let j = f.db.get(f.job.job_id);
+  assert.equal(j.semantic_state, "provisioning");
+  assert.equal(j.reachability, "unknown");
+  f.transport.plan = async () => ({
+    admission_error: "remote_preflight_failed",
+  });
+  await f.o.reconcile();
+  j = f.db.get(j.job_id);
+  assert.equal(j.semantic_state, "failed_admission");
+  assert.match(j.last_error, /read-only admission/);
+  assert.equal(f.transport.calls.length, 0);
+  assert.equal(
+    [...f.notes.values()].filter((n) => n.id.endsWith("failed-admission"))
+      .length,
+    1,
+  );
+});
+
+test("route loss then reconnect accepts settlement exactly once", async (t) => {
+  const f = running(t);
+  await f.o.observe(f.job);
+  f.transport.online = false;
+  await f.o.reconcile();
+  let j = f.db.get(f.job.job_id);
+  assert.equal(j.semantic_state, "running");
+  assert.equal(j.reachability, "unknown");
+  f.transport.raw = report(j);
+  f.transport.status = "idle";
+  f.transport.online = true;
+  await f.o.reconcile();
+  await f.o.reconcile();
+  assert.equal(f.db.get(j.job_id).semantic_state, "settled");
+  assert.equal(
+    [...f.notes.values()].filter((n) => n.id.endsWith("settled")).length,
+    1,
+  );
+});
+
 test("generation loss during network call cannot launch or update", async (t) => {
   const f = running(t);
   f.transport.identity = async () => {

@@ -229,10 +229,25 @@ export class Owner {
             : "provisioning",
       });
       if (!job.settlement_path) {
-        const plan = provisionedPaths(
-          await this.call((s) => this.transport.plan(job, s)),
-          job,
-        );
+        const planned = await this.call((s) => this.transport.plan(job, s));
+        if (
+          planned?.admission_error === "remote_preflight_failed" &&
+          Object.keys(planned).length === 1
+        ) {
+          const changes = {
+            semantic_state: "failed_admission",
+            last_error:
+              "Remote read-only admission checks failed. Inspect repository/ref, enrolled worker profile and toolchain; dispatch with a new key after correction.",
+            task: null,
+          };
+          this.save(
+            job,
+            changes,
+            this.note({ ...job, ...changes }, "failed-admission", 2),
+          );
+          return;
+        }
+        const plan = provisionedPaths(planned, job);
         // Resolve/pin remote paths and commit BEFORE any provisioning mutation.
         // A lost apply reply cannot lose the cleanup address or follow a new XDG root.
         job = this.save(job, plan);
@@ -330,6 +345,9 @@ export class Owner {
                 modelSelection(job.model).id,
                 "--extension",
                 modelGuardPath(job),
+                ...(job.options?.thinking
+                  ? ["--thinking", job.options.thinking]
+                  : []),
               ],
               timeout_ms: 300000,
             },
@@ -941,8 +959,17 @@ export class Owner {
     return projection(next);
   }
   operatorSettle(id, verdict, summary, actor) {
+    this.guard();
     const j = this.ledger.get(id);
     if (!j) throw new Error("unknown job");
+    if (
+      j.semantic_state === "settled" &&
+      j.operator?.actor === actor &&
+      j.settlement_json &&
+      JSON.parse(j.settlement_json).verdict === verdict &&
+      JSON.parse(j.settlement_json).summary === summary
+    )
+      return projection(j);
     const accepted = settlement(
       JSON.stringify({
         version: 1,
@@ -972,9 +999,16 @@ export class Owner {
     );
   }
   abandon(id, reason, actor) {
+    this.guard();
     text(reason, 4096);
     const j = this.ledger.get(id);
     if (!j) throw new Error("unknown job");
+    if (
+      j.semantic_state === "abandoned" &&
+      j.operator?.actor === actor &&
+      j.operator.reason === reason
+    )
+      return projection(j);
     const next = this.save(j, {
       semantic_state: "abandoned",
       operator: { actor, reason, at: Date.now() },

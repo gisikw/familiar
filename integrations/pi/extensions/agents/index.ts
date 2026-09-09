@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { StringEnum } from "@earendil-works/pi-ai";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { Ledger } from "./ledger.mjs";
@@ -42,12 +43,21 @@ export default function (pi: ExtensionAPI) {
   };
   const result = (details: unknown) => {
     const bytes = Buffer.from(JSON.stringify(details));
-    const text =
-      bytes.length <= 48000
-        ? bytes.toString("utf8")
-        : bytes.subarray(0, 48000).toString("utf8") +
-          "\n[Output truncated at 48 KB; page status or inspect one machine/job. Full bounded details remain in the ledger/tool record.]";
-    return { content: [{ type: "text" as const, text }], details };
+    if (bytes.length > 48000) {
+      // Keep both the model content and persisted tool details bounded, and the
+      // outer result valid JSON even when the original projection is too large.
+      details = {
+        truncated: true,
+        message:
+          "Page status or inspect one machine/job. Full report remains in the private ledger; preview is incomplete JSON text.",
+        preview: bytes.subarray(0, 12000).toString("utf8"),
+      };
+    }
+    const text = JSON.stringify(details);
+    return {
+      content: [{ type: "text" as const, text }],
+      details: JSON.parse(text),
+    };
   };
   const str = (maxLength = 256) => Type.String({ minLength: 1, maxLength });
   pi.on("session_start", (_event, ctx) => {
@@ -87,7 +97,13 @@ export default function (pi: ExtensionAPI) {
         },
         { idleGraceMs: config.idle_grace_ms },
       );
-      owner.changed = () => pi.events.emit("familiar:agents-changed", {});
+      owner.changed = () => {
+        // Optional projections must never invalidate a committed ledger action
+        // or orphan the process owner when a bridge subscriber throws.
+        try {
+          pi.events.emit("familiar:agents-changed", {});
+        } catch {}
+      };
       owner.start(); // Schedules network work; startup never awaits reconciliation.
       const installed = owner;
       source = {
@@ -192,6 +208,24 @@ export default function (pi: ExtensionAPI) {
         machine_id: str(48),
         harness: str(32),
         model: str(),
+        options: Type.Optional(
+          Type.Object(
+            {
+              thinking: Type.Optional(
+                StringEnum([
+                  "off",
+                  "minimal",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max",
+                ] as const),
+              ),
+            },
+            { additionalProperties: false },
+          ),
+        ),
         repo: str(4096),
         requested_ref: str(),
         task: str(24576),
@@ -269,6 +303,83 @@ export default function (pi: ExtensionAPI) {
       current().kick();
       return result({ scheduled: true });
     },
+  });
+  pi.registerTool({
+    name: "familiar_agents_abandon",
+    label: "Abandon Familiar Agent",
+    description:
+      "Explicitly retire unresolved work without killing or deleting the remote agent. Requires a reason; attributed to Exo, not a human or agent self-report. Identical retries are safe.",
+    parameters: Type.Object(
+      { id: str(), reason: str(4096) },
+      { additionalProperties: false },
+    ),
+    execute: async (_id, p) =>
+      result(current().abandon(p.id, p.reason, `exo:${provenance}`)),
+  });
+  pi.registerTool({
+    name: "familiar_agents_settle",
+    label: "Explicitly Settle Familiar Agent",
+    description:
+      "Explicit controller settlement after inspection, NOT agent proof. Never infer completion from idle or unreachable. Requires a verdict and summary; attributed to Exo. First accepted settlement wins; identical retries are safe.",
+    parameters: Type.Object(
+      {
+        id: str(),
+        verdict: StringEnum(["done", "failed", "cancelled"] as const),
+        summary: str(8192),
+      },
+      { additionalProperties: false },
+    ),
+    execute: async (_id, p) =>
+      result(
+        current().operatorSettle(
+          p.id,
+          p.verdict,
+          p.summary,
+          `exo:${provenance}`,
+        ),
+      ),
+  });
+  pi.registerTool({
+    name: "familiar_agents_resolve_operation",
+    label: "Resolve Uncertain Familiar Operation",
+    description:
+      "Only after native inspection and allowing in-flight requests to quiesce: authorize retry of a confirmed absent operation, or confirm initial prompt delivery. Reconcile alone never replays uncertain mutations. Reason records inspection evidence, attributed to Exo.",
+    parameters: Type.Object(
+      {
+        id: str(),
+        operation: StringEnum(["workspace", "launch", "prompt"] as const),
+        resolution: StringEnum([
+          "retry-confirmed-absent",
+          "prompt-confirmed-delivered",
+        ] as const),
+        reason: str(4096),
+      },
+      { additionalProperties: false },
+    ),
+    execute: async (_id, p) =>
+      result(
+        current().resolveOperation(
+          p.id,
+          p.operation,
+          p.resolution,
+          p.reason,
+          `exo:${provenance}`,
+        ),
+      ),
+  });
+  pi.registerTool({
+    name: "familiar_agents_resolve_intent",
+    label: "Resolve Uncertain Familiar Input",
+    description:
+      "After native inspection, retire an uncertain intent without redelivery. A new steer/answer/cancel needs a new key. Reason records inspection evidence, attributed to Exo.",
+    parameters: Type.Object(
+      { id: str(), key: str(), reason: str(4096) },
+      { additionalProperties: false },
+    ),
+    execute: async (_id, p) =>
+      result(
+        current().resolveIntent(p.id, p.key, p.reason, `exo:${provenance}`),
+      ),
   });
   pi.registerCommand("familiar-agents", {
     description: "Familiar Agents ledger snapshot (no network wait)",

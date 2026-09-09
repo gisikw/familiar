@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import {
   Transport,
@@ -85,6 +86,58 @@ test("native overlay pins exact machine and jump keys, not ambient known_hosts",
   assert.match(pins, /drover-test ssh-ed25519/);
   assert.match(pins, /familiar-drover-jump ssh-ed25519/);
 });
+test(
+  "shutdown kills an abort-resistant local route child",
+  { timeout: 5000 },
+  async (t) => {
+    const { root } = fixture(t);
+    const marker = join(root, "ready");
+    const controller = new AbortController();
+    const run = boundedExec(
+      process.execPath,
+      [
+        "-e",
+        `
+    require('fs').writeFileSync(${JSON.stringify(marker)}, String(process.pid));
+    process.on('SIGTERM', () => {});
+    setInterval(() => {}, 1000);
+  `,
+      ],
+      "",
+      controller.signal,
+    );
+    let pid;
+    t.after(() => {
+      controller.abort();
+      if (pid) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {}
+      }
+    });
+    for (let i = 0; i < 100 && !pid; i++) {
+      try {
+        pid = Number(readFileSync(marker, "utf8"));
+      } catch {}
+      if (!pid) await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.ok(pid);
+    controller.abort();
+    await assert.rejects(run, /route unavailable/);
+    let alive = true;
+    for (let i = 0; i < 100 && alive; i++) {
+      try {
+        process.kill(pid, 0);
+      } catch {
+        alive = false;
+      }
+      if (alive) await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(alive, false);
+    pid = undefined;
+  },
+);
+
 test("catalog identity mismatch prevents Herdr RPC and never falls back to local", async (t) => {
   const { root, config, m } = fixture(t),
     transport = new Transport(config, root);
@@ -104,6 +157,37 @@ test("catalog identity mismatch prevents Herdr RPC and never falls back to local
   assert.throws(() => transport.enrolled("not-enrolled"), /no local fallback/);
   assert.throws(() => configuration(), /no local fallback/);
 });
+test("RPC carries route-generation precondition and rejects absent or wrong acknowledgment", async (t) => {
+  const { root, config, m } = fixture(t);
+  writeFileSync(config.token_file, randomBytes(32).toString("hex"));
+  const transport = new Transport(config, root);
+  const original = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = original;
+  });
+  const job = { machine_id: "test", machine_identity: m };
+  const signal = new AbortController().signal;
+  let tag;
+  globalThis.fetch = async (_url, options) => {
+    assert.equal(options.headers["If-Match"], '"24000"');
+    return new Response(
+      JSON.stringify({ result: { version: "0.9.0", protocol: 22 } }),
+      { headers: tag ? { ETag: tag } : {} },
+    );
+  };
+  await assert.rejects(
+    transport.rpc(job, "ping", {}, signal),
+    /route unavailable/,
+  );
+  tag = '"24001"';
+  await assert.rejects(
+    transport.rpc(job, "ping", {}, signal),
+    /route unavailable/,
+  );
+  tag = '"24000"';
+  assert.equal((await transport.rpc(job, "ping", {}, signal)).protocol, 22);
+});
+
 test("changing enrolled jump identity fences native actions before execution", async (t) => {
   const { root, config, m } = fixture(t),
     transport = new Transport(config, root);

@@ -182,6 +182,26 @@ export class Ledger {
         k === "task" ? LIMITS.task : k === "repo" ? 4096 : 256,
         k,
       );
+    if (
+      !request.repo.startsWith("/") ||
+      /[\u0000-\u001f\u007f-\u009f]/.test(request.repo + request.requested_ref)
+    )
+      throw new Error(
+        "absolute remote repository and control-free ref/path required",
+      );
+    text(provenance, 256, "owner provenance");
+    const options = request.options ?? {};
+    if (
+      !options ||
+      typeof options !== "object" ||
+      Array.isArray(options) ||
+      Object.keys(options).some((k) => k !== "thinking") ||
+      (options.thinking !== undefined &&
+        !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(
+          options.thinking,
+        ))
+    )
+      throw new Error("unsupported harness options");
     const hash = digest(
       JSON.stringify(
         Object.fromEntries(
@@ -194,7 +214,13 @@ export class Ledger {
             "requested_ref",
             "task",
             "label",
-          ].map((k) => [k, request[k]]),
+          ]
+            .map((k) => [k, request[k]])
+            .concat(
+              options.thinking === undefined
+                ? []
+                : [["options", { thinking: options.thinking }]],
+            ),
         ),
       ),
     );
@@ -236,6 +262,8 @@ export class Ledger {
         settlement_path: null,
         harness: request.harness,
         model: request.model,
+        options:
+          options.thinking === undefined ? {} : { thinking: options.thinking },
         label: `familiar/${slug} — ${request.label.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").slice(0, 80)}`,
         prompt_digest: digest(request.task),
         task: request.task,

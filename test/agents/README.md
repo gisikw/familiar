@@ -25,13 +25,28 @@ From the Familiar repository:
 ```sh
 nix develop .#agents -c node --test integrations/pi/extensions/agents/*.node-test.mjs
 nix develop .#agents -c python integrations/pi/extensions/agents/test_remote.py
-nix develop .#agents -c bun test integrations/pi/extensions
-nix flake check --no-update-lock-file
+nix develop .#agents -c node test/agents/tools.mjs
+nix develop .#agents -c bun test integrations/pi/extensions contrib/familiar
+nix build --no-link .#checks.x86_64-linux.agents-ledger .#checks.x86_64-linux.pi-invoke-command
 ```
 
 Node tests use Node's SQLite, not Bun's unrelated SQLite API. The `.node-test.mjs`
 name keeps them out of Bun discovery. The normal extension loader itself remains
 safe to load under Bun: SQLite is required only when constructing a real ledger.
+
+`tools.mjs` loads the actual extension with the pinned Pi loader and invokes
+all eleven registered tools against the real ledger/owner, with offline mocked
+transport. It verifies foreground-only ownership, honest Exo attribution,
+recovery actions, private rejection, restart/admission idempotency, typed bounded
+results, and isolation from a failing optional projection subscriber. The fast
+checks do not contact providers or resident services and do not build/test the
+obsolete Rust viewer.
+
+The retained live fixture below is opt-in historical candidate material, **not**
+a claim that the focused-recovery run executed a real-provider or O'Brien proof.
+It includes multiple inference phases; do not run it during bounded review
+without separately authorizing that cost/scope. Production profile enrollment
+remains an operator action using remote file references, never credential values.
 
 ## Live proof
 

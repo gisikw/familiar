@@ -46,6 +46,10 @@ export function boundedExec(binary, args, input, signal) {
       if (size > LIMITS.response) fail();
     });
     child.on("error", () => {
+      // Node's abort path sends SIGTERM, which a stuck child may ignore. Do not
+      // clear the only deadline while leaving that local transport child alive.
+      failed = true;
+      child.kill("SIGKILL");
       clearTimeout(timer);
       reject(new Error("native route unavailable"));
     });
@@ -345,7 +349,7 @@ export class Transport {
       jump: this.config.jump,
     };
   }
-  async http(path, body, signal) {
+  async http(path, body, signal, expectedPort) {
     const timeout = AbortSignal.timeout(LIMITS.callMs);
     const token = clientToken(this.config.token_file);
     const r = await fetch(this.config.url.replace(/\/$/, "") + path, {
@@ -354,11 +358,18 @@ export class Transport {
       headers: {
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
+        ...(expectedPort === undefined
+          ? {}
+          : { "If-Match": JSON.stringify(String(expectedPort)) }),
       },
       body: body ? JSON.stringify(body) : undefined,
       signal: AbortSignal.any([signal, timeout]),
     });
-    if (!r.ok) {
+    if (
+      !r.ok ||
+      (expectedPort !== undefined &&
+        r.headers.get("etag") !== JSON.stringify(String(expectedPort)))
+    ) {
       await r.body?.cancel();
       throw new Error("Drover route unavailable; outcome unknown");
     }
@@ -399,6 +410,7 @@ export class Transport {
       `/v1/machines/${job.machine_id}/rpc`,
       { method, params },
       signal,
+      job.machine_identity.port,
     );
     if (v.error)
       throw new Error("Herdr operation rejected; inspect native workspace");

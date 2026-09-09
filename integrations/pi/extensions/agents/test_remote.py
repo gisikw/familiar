@@ -46,6 +46,14 @@ class Native(unittest.TestCase):
         with self.assertRaises(ValueError):
             remote.main(dict(self.request, nonce='other'))
 
+    def test_read_only_admission_failure_is_typed_and_credential_free(self):
+        request = dict(self.request, operation='plan', profile=str(self.root / 'absent-profile'))
+        run = subprocess.run([sys.executable, str(Path(__file__).with_name('remote.py'))], input=json.dumps(request), text=True, capture_output=True)
+        self.assertEqual(run.returncode, 0)
+        self.assertEqual(json.loads(run.stdout), {'admission_error': 'remote_preflight_failed'})
+        self.assertEqual(run.stderr, '')
+        self.assertFalse(Path(request['settlement_path']).parent.exists())
+
     def test_atomic_file_contract_and_bounds(self):
         paths = remote.main(self.request)
         path = Path(paths['settlement_path'])
@@ -87,7 +95,9 @@ class Native(unittest.TestCase):
         generated = Path(paths['remote_profile'])
         self.assertNotEqual(generated, self.profile)
         self.assertFalse((generated / 'auth.json').exists())
-        self.assertEqual(json.loads((generated / 'settings.json').read_text())['extensions'], [str(generated / 'assets/tiamat')])
+        settings = json.loads((generated / 'settings.json').read_text())
+        self.assertEqual(settings['extensions'], [str(generated / 'assets/tiamat')])
+        self.assertEqual(settings['defaultProjectTrust'], 'never')
         self.assertEqual(remote.main(request), paths)
         with self.assertRaises(ValueError):
             remote.main(dict(request, profile_bundle=dict(bundle, **{'lib/debug.ts': 'changed'})))

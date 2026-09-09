@@ -102,12 +102,14 @@
         checks = {
           pi-invoke-command = patchedPi;
           agents-ledger = pkgs.runCommand "familiar-agents-ledger" {
+            PI_PACKAGE_DIR = "${patchedPi}/lib/node_modules/pi-monorepo";
             nativeBuildInputs = with pkgs; [ nodejs_24 python3 git openssh ];
           } ''
             export HOME="$TMPDIR/home"
             mkdir -p "$HOME"
             node --test ${self}/integrations/pi/extensions/agents/*.node-test.mjs
             python ${self}/integrations/pi/extensions/agents/test_remote.py
+            node ${self}/test/agents/tools.mjs
             touch $out
           '';
         } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
