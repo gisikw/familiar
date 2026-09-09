@@ -1,6 +1,6 @@
 --- a/packages/coding-agent/src/core/extensions/types.ts
 +++ b/packages/coding-agent/src/core/extensions/types.ts
-@@ -1344,6 +1344,19 @@
+@@ -1344,6 +1344,21 @@
  	/** Get available slash commands in the current session. */
  	getCommands(): SlashCommandInfo[];
  
@@ -8,24 +8,26 @@
 +	 * Invoke a registered extension command by its exact getCommands() name (source: "extension").
 +	 * No leading slash, parsing, prompt/skill expansion, or built-in interactive commands.
 +	 * Args are passed unchanged (default ""). Resolves after the handler completes; rejects
-+	 * unknown names, stale runtimes, active-command reentry, or more than 16 active commands.
++	 * unknown names, stale runtimes, non-idle sessions, or any nested/concurrent command.
 +	 * Handler Errors propagate unchanged; other thrown values become Error(String(value)).
 +	 * Does not emit an additional error event. Callers must await/catch the returned promise.
-+	 * Runs immediately, not at an idle boundary: do not invoke session-control commands from
-+	 * tools/events that those commands must wait for. Queue a follow-up message instead.
++	 * Requires the owning AgentSession's bound isIdle() to report true at admission.
++	 * Active-run tools/events are rejected, never queued or waited on (deadlock fence).
++	 * Intended for idle external human frontends; not a scheduler or session-wide lock.
++	 * AgentSession.prompt retains its separate immediate dispatch during streaming.
 +	 * After replacement/reload, captured pi/ctx remain stale even if this promise resolves.
 +	 */
-+	invokeCommand(name: string, args?: string): Promise<void>;
++	invokeExtensionCommand(name: string, args?: string): Promise<void>;
 +
  	// =========================================================================
  	// Model and Thinking Level
  	// =========================================================================
-@@ -1597,6 +1610,8 @@
+@@ -1597,6 +1612,8 @@
   * Contains flag values (defaults set during registration, CLI values set after).
   */
  export interface ExtensionRuntimeState {
 +	/** Bound by ExtensionRunner, not a caller-supplied raw command handler. */
-+	invokeCommand: ExtensionAPI["invokeCommand"];
++	invokeExtensionCommand: ExtensionAPI["invokeExtensionCommand"];
  	flagValues: Map<string, boolean | string>;
  	/** Legacy provider-config registrations queued during extension loading, processed when runner binds. */
  	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; extensionPath: string }>;
@@ -35,29 +37,38 @@
  		// registerTool() is valid during extension load; refresh is only needed post-bind.
  		refreshTools: () => {},
  		getCommands: notInitialized,
-+		invokeCommand: async () => notInitialized(),
++		invokeExtensionCommand: async () => notInitialized(),
  		setModel: () => Promise.reject(new Error("Extension runtime not initialized")),
  		getThinkingLevel: notInitialized,
  		setThinkingLevel: notInitialized,
-@@ -373,6 +374,11 @@
- 		setActiveTools(toolNames: string[]): void {
- 			runtime.assertActive();
+@@ -375,6 +376,11 @@
  			runtime.setActiveTools(toolNames);
-+		},
-+
-+		async invokeCommand(name, args) {
-+			runtime.assertActive();
-+			await runtime.invokeCommand(name, args);
  		},
  
++		async invokeExtensionCommand(name, args) {
++			runtime.assertActive();
++			await runtime.invokeExtensionCommand(name, args);
++		},
++
  		getCommands() {
+ 			runtime.assertActive();
+ 			return runtime.getCommands();
 --- a/packages/coding-agent/src/core/extensions/runner.ts
 +++ b/packages/coding-agent/src/core/extensions/runner.ts
+@@ -276,7 +276,7 @@
+ 	private errorListeners: Set<ExtensionErrorListener> = new Set();
+ 	private getModel: () => Model<any> | undefined = () => undefined;
+ 	private getScopedModels: () => readonly ScopedModel[] = () => [];
+-	private isIdleFn: () => boolean = () => true;
++	private isIdleFn: () => boolean = () => false;
+ 	private isProjectTrustedFn: () => boolean = () => true;
+ 	private getSignalFn: () => AbortSignal | undefined = () => undefined;
+ 	private waitForIdleFn: () => Promise<void> = async () => {};
 @@ -295,6 +295,7 @@
  	private shortcutDiagnostics: ResourceDiagnostic[] = [];
  	private commandDiagnostics: ResourceDiagnostic[] = [];
  	private staleMessage: string | undefined;
-+	private activeCommands = new Set<string>();
++	private commandActive = false;
  
  	constructor(
  		extensions: Extension[],
@@ -65,37 +76,50 @@
  		this.runtime.setActiveTools = actions.setActiveTools;
  		this.runtime.refreshTools = actions.refreshTools;
  		this.runtime.getCommands = actions.getCommands;
-+		this.runtime.invokeCommand = (name, args) => this.invokeCommand(name, args);
++		this.runtime.invokeExtensionCommand = (name, args) => this.invokeExtensionCommand(name, args);
  		this.runtime.setModel = actions.setModel;
  		this.runtime.getThinkingLevel = actions.getThinkingLevel;
  		this.runtime.setThinkingLevel = actions.setThinkingLevel;
-@@ -651,6 +653,26 @@
- 
- 	getCommand(name: string): ResolvedCommand | undefined {
+@@ -653,6 +655,39 @@
  		return this.resolveRegisteredCommands().find((command) => command.invocationName === name);
-+	}
-+
-+	async invokeCommand(name: string, args = ""): Promise<void> {
+ 	}
+ 
++	async invokeExtensionCommand(name: string, args = ""): Promise<void> {
 +		this.assertActive();
 +		this.runtime.assertActive();
++		// Use the owning session's lifecycle predicate, not low-level agent streaming.
++		// Never wait here: an awaited tool/event could be waiting on itself (#2023).
++		if (this.isIdleFn() !== true) throw new Error("Extension command requires an idle AgentSession");
++		await this.executeExtensionCommand(name, args);
++	}
++
++	/** @internal AgentSession.prompt intentionally dispatches commands even while busy. */
++	async invokeExtensionCommandFromPrompt(name: string, args = ""): Promise<void> {
++		await this.executeExtensionCommand(name, args);
++	}
++
++	private async executeExtensionCommand(name: string, args: string): Promise<void> {
++		this.assertActive();
++		this.runtime.assertActive();
++		// One slot, acquired before any await: different names can mutate the same session.
++		// Reject rather than queue, since nested A -> B would otherwise self-deadlock.
++		if (this.commandActive) throw new Error("Extension command already active");
 +		const command = this.getCommand(name);
 +		if (!command) throw new Error(`Unknown extension command: ${name}`);
-+		// Runner-local, deliberately also rejects concurrent calls of the same name.
-+		// Covers direct/indirect async cycles, including calls through prompt dispatch.
-+		if (this.activeCommands.has(name)) throw new Error(`Extension command already active: ${name}`);
-+		if (this.activeCommands.size >= 16) throw new Error("Extension command invocation limit (16) exceeded");
-+		this.activeCommands.add(name);
++		this.commandActive = true;
 +		try {
 +			await command.handler(args, this.createCommandContext());
 +		} catch (error) {
 +			throw error instanceof Error ? error : new Error(String(error));
 +		} finally {
 +			// Do not assertActive here: successful commands may replace/reload their runtime.
-+			this.activeCommands.delete(name);
++			this.commandActive = false;
 +		}
- 	}
- 
++	}
++
  	/**
+ 	 * Request a graceful shutdown. Called by extension tools and event handlers.
+ 	 * The actual shutdown behavior is provided by the mode via bindExtensions().
 --- a/packages/coding-agent/src/core/agent-session.ts
 +++ b/packages/coding-agent/src/core/agent-session.ts
 @@ -1281,18 +1281,15 @@
@@ -112,7 +136,7 @@
  
  		try {
 -			await command.handler(args, ctx);
-+			await runner.invokeCommand(commandName, args);
++			await runner.invokeExtensionCommandFromPrompt(commandName, args);
  			return true;
  		} catch (err) {
 -			// Emit error via extension runner
@@ -122,3 +146,46 @@
  				extensionPath: `command:${commandName}`,
  				event: "command",
  				error: err instanceof Error ? err.message : String(err),
+--- a/packages/coding-agent/docs/extensions.md
++++ b/packages/coding-agent/docs/extensions.md
+@@ -1526,6 +1526,40 @@
+ });
+ ```
+ 
++### pi.invokeExtensionCommand(name, args?) (Familiar downstream)
++
++```typescript
++const command = pi.getCommands().find(c => c.source === "extension" && c.name === "review:2");
++if (command) await pi.invokeExtensionCommand(command.name, "unchanged args");
++```
++
++Invokes only an exact registered extension command (including collision suffixes),
++with a fresh command context. No leading slash, built-ins, skills, templates,
++input event, or model turn. Args default to `""` and are passed unchanged.
++The promise resolves after completion; unknown names, stale/uninitialized runtimes,
++busy sessions, and any nested or concurrent command reject. Handler Errors retain
++identity; other thrown values become `Error(String(value))`. Await/catch errors;
++programmatic invocation does not also emit an extension error event.
++
++The owning AgentSession's bound `isIdle()` must report true at admission. Active
++run tools/events cannot cross into command-only session controls: waiting there
++can deadlock on the caller itself (upstream commit `0d9fddec`, issue #2023).
++One runner-local command slot excludes even A -> B: different commands still
++mutate the same session. Calls reject rather than queue. The slot is released
++in `finally`, including handler failures and successful runtime replacement.
++Old captured pi/ctx remain stale after replacement or reload.
++
++This API is for an idle external human frontend, not deferred scheduling or a
++session-wide lock. Hosts must still gate other session actions during the handler.
++`AgentSession.prompt()` retains immediate command dispatch while streaming through
++an internal path, with the same exclusive guard and upstream report-and-consume
++error handling. The public API has no bypass option.
++
++Do not use a follow-up user message as a command queue: in 0.84.1 it is literal
++model-visible text. 0.84.2 adds `expandPromptTemplates` opt-in to `sendUserMessage`,
++but that is void, parses text, expands skills/templates, and dispatches commands
++before streaming queueing. It does not replace this awaited idle-only API.
++
+ ### pi.getCommands()
+ 
+ Get the slash commands available for invocation via `prompt` in the current session. Includes extension commands, prompt templates, and skill commands.

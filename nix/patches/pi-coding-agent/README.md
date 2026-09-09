@@ -12,10 +12,10 @@ as `packages.<system>.pi-coding-agent` and `checks.<system>.pi-invoke-command`.
 
 ```ts
 const command = pi.getCommands().find(c => c.source === "extension" && c.name === "review:2");
-if (command) await pi.invokeCommand(command.name, "unchanged args");
+if (command) await pi.invokeExtensionCommand(command.name, "unchanged args");
 ```
 
-`ExtensionAPI.invokeCommand(name: string, args?: string): Promise<void>`:
+`ExtensionAPI.invokeExtensionCommand(name: string, args?: string): Promise<void>`:
 
 - Uses `ExtensionRunner.getCommand` at invocation time: exact invocation names,
   including numeric collision suffixes, without `/`. No raw callbacks are exposed.
@@ -32,29 +32,52 @@ if (command) await pi.invokeCommand(command.name, "unchanged args");
   effect. Prompt dispatch uses the same runner operation but keeps upstream's
   report-and-consume behavior. Reporting is on the originating runner even if
   the handler replaced the session before throwing.
-- Runner-local active-name tracking rejects direct/indirect async recursion
-  **and concurrent invocation of the same name**. Different names may overlap,
-  up to 16 active invocations. Prompt dispatch participates in the guard. Cleanup
-  is in `finally`, including throws and runtime replacement. This is intentionally
-  conservative rather than introducing async-local context or a command queue.
+- Requires the runner's bound owning `AgentSession.isIdle` to return exactly true
+  at admission. Unbound runners fail closed. Active-run tools/events reject before
+  a command context is created; no wait or queue can deadlock on the caller.
+- One runner-local exclusive command slot rejects **all nested and concurrent
+  commands**, including A → B. Different names still mutate the same session;
+  a name set/depth limit does not protect that shared state. Rejecting rather than
+  queueing also avoids nested callers waiting on themselves. Prompt dispatch
+  shares exclusivity but uses an internal entry point **without the public idle
+  restriction**, retaining upstream immediate command handling during streaming.
+  Cleanup is in `finally`, including throws and runtime replacement.
 - Successful replacement/reload may resolve the invocation. It does not revive
   captured old `pi`/`ctx`. Subsequent calls reject and context getters/actions
   retain upstream stale checks. No post-handler active assertion falsely turns
   successful replacement into failure. New runtimes have independent guards.
 
-### Important call-site limitation / unresolved design risk
+### Why preserve the fence?
 
-This is immediate command composition, **not a safe scheduling API**. Upstream's
-`docs/extensions.md` warns that command-context session controls can deadlock
-from event handlers. A tool/event awaiting a command that waits for that same
-agent/event to settle can still deadlock; the recursion guard is not a general
-wait-for graph. Do not invoke such commands from tools or lifecycle callbacks.
-Use the existing `sendUserMessage(..., { deliverAs: "followUp" })` handoff instead.
+Sol's Chesterton's Fence research (09a039b, `pi-command-invocation-fence.md`)
+identifies upstream commit [0d9fddec](https://github.com/earendil-works/pi/commit/0d9fddec1eacfa5a535ad5f93a170cacdd2fad30)
+and [issue #2023](https://github.com/earendil-works/pi/issues/2023#issuecomment-4060338341)
+as deliberate deadlock/lifecycle boundaries, not missing plumbing. Ordinary
+awaited tools/events cannot safely wait for or mutate their own active pipeline.
+Familiar's external human browser frontend already gates actions at idle, but
+this general API now enforces its own admission fence rather than trusting that
+frontend or documentation. The name `invokeExtensionCommand` deliberately excludes
+built-ins/templates/skills; there is no broad `invokeCommand` compatibility alias.
+
+We remain pinned to verified **0.84.1**. Its owning-session `isIdle` is backed by
+`_isAgentRunActive`, which spans the run and post-run retries/continuations, not
+just `agent.state.isStreaming`. This is the upstream lifecycle predicate, not a
+new quiescence implementation. The API checks it synchronously before dispatch.
+It is not a scheduler, provenance check, or session-wide lock: idle callbacks can
+call it, and unrelated host actions must still be gated throughout the handler.
+The internal prompt entry point is not exposed on `pi`; SDK hosts retain their
+upstream ability to dispatch commands while busy. Nested/overlapping prompt
+commands now report an error instead of overlapping session mutation.
+
+Do **not** queue slash text via `sendUserMessage(... followUp)` as a substitute:
+in 0.84.1 this is literal model-visible text. 0.84.2's `expandPromptTemplates`
+opt-in dispatches before streaming queueing, is void on the extension facade,
+and expands skills/templates too. It does not replace an awaited idle-only API.
+
 UI availability and cancellation remain the handler's/mode's responsibility.
-There is no timeout, cancellation injection, sandbox, or rollback of handler side
-effects. Fire-and-forget work after handler completion is outside the invocation
-lifetime. Further upstream research may justify a stricter call-site fence or a
-separate queued API; this patch does not claim to solve those problems.
+There is no timeout, cancellation injection, sandbox, or rollback. Fire-and-forget
+work after handler completion is outside the slot lifetime. Admission cannot
+prevent a handler from starting another run or misusing captured raw objects.
 
 ## Fail-closed update procedure
 
@@ -66,10 +89,14 @@ coding-agent output at `lib/node_modules/pi-monorepo`.
 Evaluation asserts version **0.84.1**, the exact upstream source hash, and absence
 of upstream patches/prePatch modifications. Before applying any patch, SHA-256
 checks cover whole `loader.ts`, `runner.ts`, `types.ts`, `agent-session.ts`, root
-and coding-agent package manifests, and lockfile. This pins command resolution,
+and coding-agent package manifests, lockfile, and the patched extension API docs. This pins command resolution,
 context construction, prompt dispatch, getCommands binding, and stale/reload
 internals, not just nearby patch context. Source rearrangements fail before patch
-application; patch fuzz is not the verification mechanism.
+application; patch fuzz is not the verification mechanism. The existing pristine
+source hashes are unchanged; the extension-docs hash is added because those docs
+are now patched too. `invoke-command-shape.test.mjs` additionally checks the patched
+idle binding, owning-session getter, prompt-before-streaming ordering, internal
+prompt path, exclusive guard, and absence of a public bypass/legacy alias.
 
 On an upstream bump, inspect the new source and nixpkgs build recipe, revisit
 semantics and tests, and only then regenerate hashes/patch. Do not merely relax
@@ -80,15 +107,24 @@ assertions or refresh checksums to make a build green.
 `invoke-command.test.mjs` imports the **compiled** loader, runner and AgentSession.
 It exercises factory registration, real session getCommands binding, args/defaults,
 suffix resolution, async completion through an explicit barrier, unknown/non-extension
-names, sync Error identity and async non-Error normalization, direct/indirect cycles,
-concurrency and depth bounds, guard cleanup, prompt error reporting, and stale API/
+names, sync Error identity and async non-Error normalization, self-invocation and
+A → B exclusion, same/different-name concurrency rejection, busy public/event/tool
+rejection, guard cleanup, real `AgentSession.prompt()` execution while busy,
+prompt error reporting, and stale API/
 context behavior during and after replacement/reload. Session/resource I/O is stubbed
 at the mode-action boundary; these are not full TUI or disk-backed lifecycle tests.
 
-It runs in `checkPhase` and again unconditionally in `postInstall`, against the
+Source shape checks run in `postPatch`. Runtime tests run in `checkPhase` and again
+unconditionally in `postInstall`, against the
 installed runtime, plus an installed declaration assertion. Setting `doCheck` or
 `doInstallCheck` false cannot silently skip installed validation. No network, real
 model, operator state, or resident Presence is used.
+
+Revision validation: all commands below were rerun successfully on x86_64-linux,
+except the explicitly noted existing all-systems Darwin evaluation failure.
+Both negative checks failed for their intended reasons (version assertion and
+pristine source checksum), and disabled-check-flags validation still passed.
+Non-native outputs were evaluated, not built.
 
 Commands used from the repository root (x86_64-linux):
 

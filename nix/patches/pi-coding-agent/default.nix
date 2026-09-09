@@ -4,12 +4,12 @@ let
   expectedVersion = "0.84.1";
 in
 assert pkgs.lib.assertMsg (base.version == expectedVersion)
-  "Familiar invokeCommand patch: unverified Pi version ${base.version}; expected ${expectedVersion}. Review nix/patches/pi-coding-agent before updating.";
+  "Familiar invokeExtensionCommand patch: unverified Pi version ${base.version}; expected ${expectedVersion}. Review nix/patches/pi-coding-agent before updating.";
 assert pkgs.lib.assertMsg (base.src.outputHash == "sha256-lg+I4S/aAjazjhGZU567ow+rksoNiqOqjHl//TjAMes=")
-  "Familiar invokeCommand patch: unverified upstream source hash; review required.";
+  "Familiar invokeExtensionCommand patch: unverified upstream source hash; review required.";
 base.overrideAttrs (old:
 assert pkgs.lib.assertMsg ((old.patches or []) == [] && (old.prePatch or "") == "")
-  "Familiar invokeCommand patch: upstream now patches Pi; review patch ordering and inputs.";
+  "Familiar invokeExtensionCommand patch: upstream now patches Pi; review patch ordering and inputs.";
 {
   # Verify pristine inputs BEFORE any upstream or downstream patch/prePatch hook.
   # Full-file hashes intentionally reject unrelated changes too: review is required.
@@ -18,6 +18,10 @@ assert pkgs.lib.assertMsg ((old.patches or []) == [] && (old.prePatch or "") == 
     sha256sum --check --strict ${./upstream.sha256}
   '' + (old.prePatch or "");
   patches = (old.patches or []) ++ [ ./invoke-command.patch ];
+
+  postPatch = (old.postPatch or "") + ''
+    node ${./invoke-command-shape.test.mjs}
+  '';
 
   doCheck = true;
   checkPhase = ''
@@ -30,7 +34,11 @@ assert pkgs.lib.assertMsg ((old.patches or []) == [] && (old.prePatch or "") == 
   postInstall = (old.postInstall or "") + ''
     piRoot="$out/lib/node_modules/pi-monorepo"
     node ${./invoke-command.test.mjs} "$piRoot"
-    grep -F 'invokeCommand(name: string, args?: string): Promise<void>;' \
+    grep -F 'invokeExtensionCommand(name: string, args?: string): Promise<void>;' \
       "$piRoot/dist/core/extensions/types.d.ts"
+    if grep -E 'invokeCommand\(|invokeExtensionCommandFromPrompt' "$piRoot/dist/core/extensions/types.d.ts"; then
+      echo 'Unexpected broad API alias or public idle bypass' >&2
+      exit 1
+    fi
   '';
 })

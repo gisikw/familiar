@@ -12,19 +12,25 @@ async function fixture() {
   let pi;
   const extensions = [];
   extensions.push(await loadExtensionFromFactory(api => { pi = api; }, process.cwd(), createEventBus(), runtime));
-  await assert.rejects(pi.invokeCommand('missing'), /not initialized/);
+  await assert.rejects(pi.invokeExtensionCommand('missing'), /not initialized/);
   const runner = new ExtensionRunner(extensions, runtime, process.cwd(), {}, {});
-  const session = {
+  await assert.rejects(runner.invokeExtensionCommand('missing'), /requires an idle AgentSession/);
+  const session = Object.assign(Object.create(AgentSession.prototype), {
+    _isAgentRunActive: false,
     _extensionRunner: runner,
-    promptTemplates: [{ name: 'template' }],
-    _resourceLoader: { getSkills: () => ({ skills: [{ name: 'test' }] }) },
-    systemPrompt: 'test system prompt',
-  };
+    _resourceLoader: {
+      getPrompts: () => ({ prompts: [{ name: 'template' }] }),
+      getSkills: () => ({ skills: [{ name: 'test' }] }),
+    },
+    agent: { state: { systemPrompt: 'test system prompt' } },
+  });
   // Use the real session getCommands binding, with inert dependencies.
   AgentSession.prototype._bindExtensionCore.call(session, runner);
   return { pi, runtime, runner, session, extensions };
 }
 const { pi, runner, session, extensions, runtime } = await fixture();
+assert.equal(pi.invokeCommand, undefined, 'no misleading legacy alias');
+assert.equal(pi.invokeExtensionCommandFromPrompt, undefined, 'no public busy bypass');
 let received;
 pi.registerCommand('hello', { handler: async (args, ctx) => {
   received = [args, ctx];
@@ -32,12 +38,12 @@ pi.registerCommand('hello', { handler: async (args, ctx) => {
   assert.equal(typeof ctx.reload, 'function');
   assert.equal(typeof ctx.newSession, 'function');
 } });
-assert.equal(await pi.invokeCommand('hello', '  a "b"\n '), undefined);
+assert.equal(await pi.invokeExtensionCommand('hello', '  a "b"\n '), undefined);
 assert.equal(received[0], '  a "b"\n ');
-await pi.invokeCommand('hello');
+await pi.invokeExtensionCommand('hello');
 assert.equal(received[0], '');
 for (const name of ['missing', '/hello', 'hello args', 'model', 'template', 'skill:test']) {
-  await assert.rejects(pi.invokeCommand(name), /Unknown extension command/);
+  await assert.rejects(pi.invokeExtensionCommand(name), /Unknown extension command/);
 }
 assert(!pi.getCommands().some(c => c.name === 'model'));
 assert(pi.getCommands().some(c => c.source === 'prompt'));
@@ -48,42 +54,75 @@ extensions.push(await loadExtensionFromFactory(api => {
   api.registerCommand('duplicate', { handler: async () => { suffix = 2; } });
 }, process.cwd(), createEventBus(), runtime, '<second>'));
 assert.deepEqual(pi.getCommands().filter(c => c.name.startsWith('duplicate')).map(c => c.name), ['duplicate:1', 'duplicate:2']);
-for (const n of [1, 2]) { await pi.invokeCommand(`duplicate:${n}`); assert.equal(suffix, n); }
-await assert.rejects(pi.invokeCommand('duplicate'), /Unknown/);
+for (const n of [1, 2]) { await pi.invokeExtensionCommand(`duplicate:${n}`); assert.equal(suffix, n); }
+await assert.rejects(pi.invokeExtensionCommand('duplicate'), /Unknown/);
 let release, completed = false;
 pi.registerCommand('async', { handler: async () => {
   await new Promise(resolve => { release = resolve; }); completed = true;
 } });
 let settled = false;
-const pending = pi.invokeCommand('async').then(() => { settled = true; });
+const pending = pi.invokeExtensionCommand('async').then(() => { settled = true; });
 // Drain promise continuations without resolving the handler's explicit barrier.
 await new Promise(resolve => setImmediate(resolve));
-assert.equal(settled, false, 'invokeCommand must await the handler');
+assert.equal(settled, false, 'invokeExtensionCommand must await the handler');
 assert.equal(completed, false);
-await assert.rejects(pi.invokeCommand('async'), /already active/);
-await pi.invokeCommand('hello'); // unrelated concurrent command is allowed
+await assert.rejects(pi.invokeExtensionCommand('async'), /already active/);
+await assert.rejects(pi.invokeExtensionCommand('hello'), /already active/);
 release(); await pending; assert.equal(completed, true);
 const boom = new Error('boom');
 pi.registerCommand('throw', { handler: () => { throw boom; } });
 pi.registerCommand('string', { handler: async () => { throw 'string failure'; } });
 for (let i = 0; i < 2; i++) {
-  await assert.rejects(pi.invokeCommand('throw'), e => e === boom);
-  await assert.rejects(pi.invokeCommand('string'), { name: 'Error', message: 'string failure' });
+  await assert.rejects(pi.invokeExtensionCommand('throw'), e => e === boom);
+  await assert.rejects(pi.invokeExtensionCommand('string'), { name: 'Error', message: 'string failure' });
 }
-pi.registerCommand('self', { handler: async () => { await Promise.resolve(); await pi.invokeCommand('self'); } });
-pi.registerCommand('a', { handler: async () => pi.invokeCommand('b') });
-pi.registerCommand('b', { handler: async () => pi.invokeCommand('a') });
-for (const name of ['self', 'a', 'self', 'a']) await assert.rejects(pi.invokeCommand(name), /already active/);
-for (let i = 0; i < 17; i++) pi.registerCommand(`depth${i}`, { handler: async () => {
-  if (i < 16) await pi.invokeCommand(`depth${i + 1}`);
-} });
-await assert.rejects(pi.invokeCommand('depth0'), /limit \(16\)/);
-await pi.invokeCommand('depth1'); // cleanup after failure
+pi.registerCommand('self', { handler: async () => { await Promise.resolve(); await pi.invokeExtensionCommand('self'); } });
+pi.registerCommand('a', { handler: async () => pi.invokeExtensionCommand('b') });
+let bRan = false;
+pi.registerCommand('b', { handler: async () => { bRan = true; } });
+for (const name of ['self', 'a', 'self', 'a']) await assert.rejects(pi.invokeExtensionCommand(name), /already active/);
+assert.equal(bRan, false, 'even A -> B must reject before B executes');
+await pi.invokeExtensionCommand('b'); // cleanup after nested failures
+assert.equal(bRan, true);
 const errors = [];
 runner.onError(e => errors.push(e));
-await assert.rejects(pi.invokeCommand('throw'), /boom/);
+await assert.rejects(pi.invokeExtensionCommand('throw'), /boom/);
 assert.equal(errors.length, 0); // programmatic errors are caller-owned
+// Real owning-session getter and real binding: low-level streaming can be false
+// during post-run event/retry/continuation work while session idle remains false.
+session._isAgentRunActive = true;
+session.agent.state.isStreaming = false;
+await assert.rejects(pi.invokeExtensionCommand('hello'), /requires an idle AgentSession/);
+let eventChecked = false;
+pi.on('tool_call', async (_event, ctx) => {
+  assert.equal(ctx.isIdle(), false);
+  await assert.rejects(pi.invokeExtensionCommand('hello'), /requires an idle AgentSession/);
+  eventChecked = true;
+});
+await runner.emitToolCall({ type: 'tool_call', toolName: 'test', toolCallId: 'test', input: {} });
+assert.equal(eventChecked, true);
+// Tool execute equivalent: ordinary context, awaited inside the active pipeline.
+const toolExecute = async ctx => {
+  assert.equal(ctx.isIdle(), false);
+  await assert.rejects(pi.invokeExtensionCommand('hello'), /requires an idle AgentSession/);
+};
+await toolExecute(runner.createContext());
 const prompt = text => AgentSession.prototype._tryExecuteExtensionCommand.call(session, text);
+// Exercise prompt(), not only its private dispatcher. No provider/transcript path
+// may be reached; no streamingBehavior is needed for a registered command.
+for (const options of [undefined, { streamingBehavior: 'followUp' }]) {
+  let accepted;
+  await session.prompt('/hello busy', { ...options, preflightResult: v => { accepted = v; } });
+  assert.equal(received[0], 'busy');
+  assert.equal(accepted, true);
+}
+let busyPromptSettled = false;
+const busyPrompt = session.prompt('/async').then(() => { busyPromptSettled = true; });
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(busyPromptSettled, false, 'busy prompt still awaits the command');
+release(); await busyPrompt;
+session._isAgentRunActive = false;
+await pi.invokeExtensionCommand('hello'); // busy failure did not acquire/leak slot
 assert.equal(await prompt('/unknown'), false);
 assert.equal(await prompt('/hello  raw'), true);
 assert.equal(received[0], ' raw');
@@ -91,8 +130,15 @@ assert.equal(await prompt('/throw'), true);
 assert.equal(errors.length, 1);
 assert.equal(errors[0].error, 'boom');
 pi.registerCommand('prompt-cycle', { handler: async () => { await prompt('/prompt-cycle'); } });
-await pi.invokeCommand('prompt-cycle'); // prompt reports rather than propagating, as upstream
+await pi.invokeExtensionCommand('prompt-cycle'); // prompt reports rather than propagating, as upstream
 assert.match(errors.at(-1).error, /already active/);
+// The internal prompt path shares exclusivity, including different names.
+const promptPending = session.prompt('/async');
+await assert.rejects(pi.invokeExtensionCommand('hello'), /already active/);
+await session.prompt('/hello');
+assert.match(errors.at(-1).error, /already active/);
+release(); await promptPending;
+await pi.invokeExtensionCommand('hello');
 
 // Exercise the actual invalidation path used by reload/session replacement. Only
 // the mode's resource/session I/O is stubbed; API, runner and context are real.
@@ -107,14 +153,14 @@ for (const action of ['reload', 'newSession', 'fork', 'switchSession']) {
   f.runner.bindCommandContext({ waitForIdle: async () => {}, reload: replace,
     newSession: replace, fork: replace, switchSession: replace, navigateTree: async () => ({ cancelled: false }) });
   f.pi.registerCommand('replace', { handler: async (_args, ctx) => { oldCtx = ctx; await ctx[action](); } });
-  const captured = f.pi.invokeCommand;
+  const captured = f.pi.invokeExtensionCommand;
   await captured('replace'); // legitimate replacement itself must resolve
   await assert.rejects(captured('replace'), /stale/);
-  await assert.rejects(f.runner.invokeCommand('replace'), /stale/);
+  await assert.rejects(f.runner.invokeExtensionCommand('replace'), /stale/);
   assert.throws(() => oldCtx.cwd, /stale/);
   assert.throws(() => oldCtx.reload(), /stale/);
   fresh.pi.registerCommand('replace', { handler: async () => {} });
-  await fresh.pi.invokeCommand('replace'); // no old guard or runtime leakage
+  await fresh.pi.invokeExtensionCommand('replace'); // no old guard or runtime leakage
 }
 const inflight = await fixture();
 let resume, savedCtx;
@@ -122,10 +168,10 @@ inflight.pi.registerCommand('pending', { handler: async (_args, ctx) => {
   savedCtx = ctx;
   await new Promise(resolve => { resume = resolve; });
   assert.throws(() => ctx.cwd, /stale/);
-  await assert.rejects(inflight.pi.invokeCommand('pending'), /stale/);
+  await assert.rejects(inflight.pi.invokeExtensionCommand('pending'), /stale/);
 } });
-const oldPending = inflight.pi.invokeCommand('pending');
+const oldPending = inflight.pi.invokeExtensionCommand('pending');
 inflight.runner.invalidate();
 resume(); await oldPending;
 assert.throws(() => savedCtx.getSystemPrompt(), /stale/);
-console.log('invokeCommand: all targeted checks passed');
+console.log('invokeExtensionCommand: all targeted checks passed');
