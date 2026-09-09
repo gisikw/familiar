@@ -14,6 +14,58 @@ import {
 } from "./contract.mjs";
 
 const SLOT = Symbol.for("familiar.agents.owner.v1");
+
+// Herdr 0.9 obtains `name` from the native process comm, while Darwin obtains
+// `argv0` independently from KERN_PROCARGS2. Node-launched Pi therefore appears
+// as { name: "node", argv0: "pi" } on Darwin. Only admit that representation
+// after the surrounding cleanup correlation and every process fact are exact.
+function isManagedForegroundProcess(
+  job,
+  workspace,
+  pane,
+  processInfo,
+  agent,
+  process,
+) {
+  const expected = [
+    job.herdr_workspace_id,
+    job.herdr_pane_id,
+    job.herdr_agent_id,
+    job.remote_worktree,
+  ];
+  if (expected.some((value) => typeof value !== "string" || !value))
+    return false;
+  if (!job.agent_session || typeof job.agent_session !== "object")
+    return false;
+  if (
+    workspace.workspace_id !== job.herdr_workspace_id ||
+    workspace.label !== job.label ||
+    pane.pane_id !== job.herdr_pane_id ||
+    processInfo.pane_id !== job.herdr_pane_id ||
+    agent?.workspace_id !== job.herdr_workspace_id ||
+    agent.pane_id !== job.herdr_pane_id ||
+    agent.terminal_id !== job.herdr_agent_id ||
+    agent.name !== job.herdr_agent_name ||
+    agent.agent !== job.harness ||
+    !["idle", "done"].includes(agent.agent_status) ||
+    agent.launch_pending === true ||
+    JSON.stringify(agent.agent_session) !== JSON.stringify(job.agent_session) ||
+    agent.cwd !== job.remote_worktree ||
+    (agent.foreground_cwd !== undefined &&
+      agent.foreground_cwd !== job.remote_worktree) ||
+    !Number.isSafeInteger(process.pid) ||
+    process.pid <= 0 ||
+    process.pid === processInfo.shell_pid ||
+    processInfo.foreground_process_group_id !== process.pid ||
+    process.cwd !== job.remote_worktree
+  )
+    return false;
+  return (
+    process.name === job.harness ||
+    (job.harness === "pi" && process.name === "node" && process.argv0 === "pi")
+  );
+}
+
 export function singleton() {
   return process[SLOT];
 }
@@ -912,7 +964,14 @@ export class Owner {
         } else if (agent) {
           if (
             foregroundProcesses.length !== 1 ||
-            foregroundProcesses[0].name !== j.harness
+            !isManagedForegroundProcess(
+              j,
+              w,
+              panes[0],
+              p,
+              agent,
+              foregroundProcesses[0],
+            )
           )
             throw new Error("unrecognized foreground process");
         } else if (p.foreground_process_group_id !== p.shell_pid)

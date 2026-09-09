@@ -123,6 +123,20 @@ continue to fail closed. Notification retirement now uses a literal SQLite
 prefix comparison rather than `LIKE`, with regression coverage for `_` and `%`
 in a job id.
 
+The later real O'Brien gate exposed one additional compatibility defect: Herdr
+0.9's Darwin collector obtains `name` from `proc_bsdinfo.pbi_comm` but obtains a
+basename `argv0` separately from `sysctl(KERN_PROCARGS2)`. A Node-launched Pi was
+therefore observed as exactly `name: "node", argv0: "pi"`, despite native `ps`
+presenting `pi`. Cleanup now recognizes that pair only after authenticated
+machine-generation fencing and exact unique workspace label/id, agent
+name/terminal/pane/harness/session, idle/done state, non-pending launch, sole
+pane/process, process-group ownership, process pane, and managed agent/process
+cwd checks. Native Linux `name: "pi"` follows the same correlation checks.
+Wrong/missing argv0, argv0 with a wrong cwd, shell foreground, multiple
+processes, active/replaced/moved agents and incomplete observations still fail
+closed. The earlier omitted/empty foreground-list plus shell-PGID behavior is
+unchanged.
+
 The loader-smoke addition of `private` is an intentional correction, not scope
 drift. Base main already contains the private extension and its extension-layout
 test already lists it, so the real pinned Pi-loader smoke must include that actual
@@ -140,7 +154,10 @@ new live remote foreground/attach proof was run in this recovery. The retained
 opt-in live fixture is candidate test code; its old logs are not new evidence.
 The focused tool tests use the real Pi loader and ledger with mocked transport;
 the Drover tests use isolated loopback HTTP/WebSockets. They do not certify the
-production reverse tunnel, worker environment or credentials.
+production reverse tunnel, worker environment or credentials. In particular,
+this local Darwin-cleanup remediation does not complete the stopped real matrix:
+blocked/answer, interrupt/resume, reconnect and owner-crash rows require a
+resumed isolated O'Brien run after review.
 
 An independent integration/security reviewer should verify the matching Familiar
 and Drover revisions, then authorize any bounded cross-host proof and production

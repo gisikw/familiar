@@ -88,6 +88,7 @@ class Fake {
       agent_status: this.status,
       interactive_ready: true,
       state_change_seq: this.seq ?? 1,
+      ...(this.agentSession ? { agent_session: this.agentSession } : {}),
     };
   }
   async rpc(_j, method, params) {
@@ -362,6 +363,160 @@ test("route loss then reconnect accepts settlement exactly once", async (t) => {
   );
 });
 
+function cleanupFixture(t) {
+  const f = running(t);
+  f.transport.agentSession = {
+    source: "herdr:pi",
+    agent: "pi",
+    kind: "id",
+    value: "managed-session",
+  };
+  const observed = f.transport.agent();
+  const j = f.db.update(f.fence, f.job, {
+    semantic_state: "settled",
+    cleanup_state: "requested",
+    settlement_path: `/remote/${f.job.job_id}/settlement.json`,
+    remote_worktree: `/remote/${f.job.job_id}/worktree`,
+    herdr_workspace_id: "workspace",
+    herdr_pane_id: "pane",
+    herdr_agent_id: "terminal",
+    agent_session: observed.agent_session,
+  });
+  f.transport.workspaces = [{ workspace_id: "workspace", label: j.label }];
+  f.transport.panes = [{ pane_id: "pane" }];
+  f.transport.agents = [{ ...observed, cwd: j.remote_worktree }];
+  f.transport.processInfo = {
+    pane_id: "pane",
+    shell_pid: 10,
+    foreground_process_group_id: 11,
+    foreground_processes: [
+      { pid: 11, name: "pi", cwd: j.remote_worktree },
+    ],
+  };
+  return { ...f, j };
+}
+
+async function assertCleanupRefused(f, j) {
+  await f.o.cleanup(j);
+  assert.equal(f.db.get(j.job_id).cleanup_state, "needs_attention");
+  assert.equal(
+    f.transport.calls.some((c) =>
+      ["workspace.close", "native.cleanup"].includes(c.method),
+    ),
+    false,
+  );
+}
+
+test("cleanup recognizes exact Linux and Darwin Pi process representations", async (t) => {
+  for (const [name, process] of [
+    ["Linux comm", { name: "pi" }],
+    ["Darwin Node argv0", { name: "node", argv0: "pi" }],
+  ]) {
+    await t.test(name, async (t) => {
+      const f = cleanupFixture(t);
+      Object.assign(f.transport.processInfo.foreground_processes[0], process);
+      await f.o.cleanup(f.j);
+      assert.equal(f.db.get(f.j.job_id).cleanup_state, "complete");
+      assert.equal(
+        f.transport.calls.filter((c) => c.method === "workspace.close").length,
+        1,
+      );
+    });
+  }
+});
+
+test("cleanup rejects uncorrelated executable and process evidence", async (t) => {
+  const cases = [
+    [
+      "Darwin node with wrong argv0",
+      (f) =>
+        (f.transport.processInfo.foreground_processes[0] = {
+          ...f.transport.processInfo.foreground_processes[0],
+          name: "node",
+          argv0: "other",
+        }),
+    ],
+    [
+      "Darwin node with missing argv0",
+      (f) =>
+        (f.transport.processInfo.foreground_processes[0] = {
+          ...f.transport.processInfo.foreground_processes[0],
+          name: "node",
+        }),
+    ],
+    [
+      "argv0 Pi with wrong cwd",
+      (f) =>
+        Object.assign(f.transport.processInfo.foreground_processes[0], {
+          name: "node",
+          argv0: "pi",
+          cwd: "/human",
+        }),
+    ],
+    [
+      "multiple foreground processes",
+      (f) =>
+        f.transport.processInfo.foreground_processes.push({
+          pid: 12,
+          name: "pi",
+          cwd: f.j.remote_worktree,
+        }),
+    ],
+    [
+      "shell foreground",
+      (f) =>
+        Object.assign(f.transport.processInfo, {
+          foreground_process_group_id: 10,
+          foreground_processes: [
+            {
+              pid: 10,
+              name: "sh",
+              argv0: "pi",
+              cwd: f.j.remote_worktree,
+            },
+          ],
+        }),
+    ],
+    [
+      "process group not owned by Pi",
+      (f) => (f.transport.processInfo.foreground_process_group_id = 12),
+    ],
+    [
+      "process pane changed",
+      (f) => (f.transport.processInfo.pane_id = "other"),
+    ],
+    [
+      "process cwd missing",
+      (f) => delete f.transport.processInfo.foreground_processes[0].cwd,
+    ],
+    ["agent cwd changed", (f) => (f.transport.agents[0].cwd = "/human")],
+    ["agent session missing", (f) => delete f.transport.agents[0].agent_session],
+    [
+      "agent session replaced",
+      (f) =>
+        (f.transport.agents[0].agent_session = {
+          ...f.transport.agents[0].agent_session,
+          value: "replacement",
+        }),
+    ],
+  ];
+  for (const [name, change] of cases) {
+    await t.test(name, async (t) => {
+      const f = cleanupFixture(t);
+      change(f);
+      await assertCleanupRefused(f, f.j);
+    });
+  }
+});
+
+test("cleanup requires the authenticated enrolled machine generation", async (t) => {
+  const f = cleanupFixture(t);
+  f.transport.online = false;
+  await f.o.cleanup(f.j);
+  assert.equal(f.db.get(f.j.job_id).cleanup_state, "requested");
+  assert.equal(f.transport.calls.length, 0);
+});
+
 test("cleanup accepts Herdr's omitted empty foreground list only with shell-foreground proof", async (t) => {
   for (const agentPresent of [false, true]) {
     await t.test(agentPresent ? "idle agent record" : "exited agent", async (t) => {
@@ -457,14 +612,7 @@ test("cleanup refuses adversarial or uncertain workspace observations", async (t
         foreground_process_group_id: 10,
       };
       adversary(f, j);
-      await f.o.cleanup(j);
-      assert.equal(f.db.get(j.job_id).cleanup_state, "needs_attention");
-      assert.equal(
-        f.transport.calls.some((c) =>
-          ["workspace.close", "native.cleanup"].includes(c.method),
-        ),
-        false,
-      );
+      await assertCleanupRefused(f, j);
     });
   }
 });

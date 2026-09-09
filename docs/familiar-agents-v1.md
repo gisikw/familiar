@@ -318,8 +318,15 @@ Legacy contrib `agents_*`/Golem tools are separate and are not used as fallback.
   Retained idle harnesses/workspaces are not counted as semantically active jobs;
   they consume machine resources until manual close or explicit cleanup.
 * Cleanup refuses active/replaced agents, changed topology, unknown foreground
-  processes, dirty/untracked worktrees and unidentified files. It is retryable,
-  including partial provisioning and death during deletion. It never uses force.
+  processes, dirty/untracked worktrees and unidentified files. For a retained
+  managed process it requires one process that owns the observed foreground
+  group and has the exact worktree cwd. Herdr 0.9 reports ordinary Linux Pi as
+  `name: "pi"`; on Darwin its native `comm` can remain `name: "node"` while its
+  independently collected KERN_PROCARGS2 `argv0` is `"pi"`. The latter is
+  accepted only with the complete matching machine/workspace/pane/terminal/
+  harness/session/cwd chain. Arbitrary Node, argv0-only, shell, human and
+  multi-process observations fail closed. Cleanup is retryable, including
+  partial provisioning and death during deletion. It never uses force.
 * Generated per-job profiles/session history are cleaned with that job. Shared
   enrolled profiles and credential files are never removed.
 * Per-job lock inodes and tiny nonce-correlated retirement markers remain outside
@@ -330,6 +337,8 @@ Legacy contrib `agents_*`/Golem tools are separate and are not used as fallback.
   core metadata and operator attribution remain as idempotency/audit tombstones.
   Worklist archive retention is independently owned by the existing worklist.
 
-See `test/agents/README.md` for isolated proofs. O'Brien and reconciliation with
-later main/Background Exo movement remain required external release validation;
+See `test/agents/README.md` for isolated proofs. Local Darwin-remediation tests
+are not a release pass: blocked/answer, interrupt/resume, reconnect and
+owner-crash rows still require a resumed isolated O'Brien matrix after review.
+Reconciliation with later main/Background Exo movement also remains required;
 local proof must never be relabeled as cross-host evidence.
