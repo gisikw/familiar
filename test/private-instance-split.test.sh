@@ -27,7 +27,9 @@ dir = "runtime/subagents"
 session_dir = "runtime/sessions"
 TOML
 chmod 600 "$CFG"
-out=$(cd / && "$REPO/familiar.sh" --config "$CFG" config-check --paths)
+# A Pi-hosted test runner exports its own agent directory. This assertion is
+# about TOML path anchoring, not the intentional environment-override path.
+out=$(cd / && env -u PI_CODING_AGENT_DIR "$REPO/familiar.sh" --config "$CFG" config-check --paths)
 base=$(dirname "$CFG")
 for key in config_dir identity handoff handoff_prompt worklist inbox log voices model artifact subagent sessions pi presence; do
   line=$(printf '%s\n' "$out" | grep "^$key=") || fail "missing $key"
