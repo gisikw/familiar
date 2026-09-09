@@ -380,7 +380,7 @@ run_pi() {
         # Keep the live extension set explicit.
         extensions: (([
           "footer", "handoff", "identity", "private", "stuff", "subscriber",
-          "tiamat", "web", "worklist", "zip", "wake"
+          "tiamat", "web", "worklist", "zip", "wake", "agents"
         ] | map($ext + "/" + .)) + $pluginExts + $extraExts | unique)
       }
       | .defaultProvider //= $provider
@@ -430,6 +430,7 @@ run_pi() {
     # aborts the whole function on any non-zero exit, leaving a dead pane with
     # no supervisor instead of respawning pi.
     command pi \
+      --familiar-agents-owner \
       --continue \
       --no-context-files \
       --no-skills \

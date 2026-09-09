@@ -68,7 +68,7 @@
           FAMILIAR_SHELL = "pi";
           FAMILIAR_INTERACTIVE_SHELL = "${pkgs.bashInteractive}/bin/bash";
           PI_PACKAGE_DIR = "${patchedPi}/lib/node_modules/pi-monorepo";
-          packages = [ patchedPi ] ++ (with pkgs; [ age curl jq sqlite librsvg ffmpeg tmux util-linux git ]);
+          packages = [ patchedPi ] ++ (with pkgs; [ age curl jq sqlite librsvg ffmpeg tmux util-linux git openssh ]);
         });
       in
       {
@@ -99,7 +99,18 @@
           familiar-viewer = viewer.packages.${system}.default;
           familiar-desktop = desktop.packages.${system}.default;
         };
-        checks = { pi-invoke-command = patchedPi; } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+        checks = {
+          pi-invoke-command = patchedPi;
+          agents-ledger = pkgs.runCommand "familiar-agents-ledger" {
+            nativeBuildInputs = with pkgs; [ nodejs_24 python3 git openssh ];
+          } ''
+            export HOME="$TMPDIR/home"
+            mkdir -p "$HOME"
+            node --test ${self}/integrations/pi/extensions/agents/*.node-test.mjs
+            python ${self}/integrations/pi/extensions/agents/test_remote.py
+            touch $out
+          '';
+        } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           drop-serve-lifecycle = pkgs.runCommand "drop-serve-lifecycle" {
             nativeBuildInputs = with pkgs; [ bash coreutils gnugrep gawk netcat-openbsd ];
           } ''
@@ -121,6 +132,12 @@
         devShells = {
           default = piShell;
           pi = piShell;
+          # Isolated Agents proofs/checks, never an alternate resident service.
+          agents = pkgs.mkShell {
+            PI_PACKAGE_DIR = "${patchedPi}/lib/node_modules/pi-monorepo";
+            packages = [ patchedPi (pkgs.python3.withPackages (ps: [ ps.aiohttp ])) ]
+              ++ (with pkgs; [ nodejs_24 bun openssh git ripgrep fd coreutils util-linux bashInteractive age ]);
+          };
           llama = pkgs.mkShell (modelEnv // {
             FAMILIAR_SHELL = "llama";
             packages = with pkgs; [ llama-cpp ];

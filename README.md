@@ -60,6 +60,16 @@ only `index.ts`/`index.js`
 (or a declared package entry) from each immediate subdirectory. This keeps Bun-only
 tests and support modules outside runtime auto-discovery without a second manifest.
 
+## Familiar Agents
+
+[Agents v1](docs/familiar-agents-v1.md) dispatches durable work to explicitly
+Drover-enrolled machines using existing Herdr 0.9.0, a Familiar-owned SQLite
+ledger, and one foreground extension poller. Semantic completion requires an
+atomic agent settlement file; idle is unresolved. Enrollment is full remote
+account shell authority, not a path sandbox. Configuration is explicit, there
+is no local fallback, and no remote Familiar daemon is installed. See the
+[isolated proof harness](test/agents/README.md) before deployment.
+
 ## Durable wakes
 
 The resident `wake` extension stores alarms beneath `FAMILIAR_WAKE_DIR`
