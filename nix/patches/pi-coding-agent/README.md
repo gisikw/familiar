@@ -33,6 +33,8 @@ if (command) await pi.invokeExtensionCommand(command.name, "unchanged args");
   context creation, and report-and-consume error behavior byte-for-byte.
 - Requires a separate owning-session admission predicate to return exactly true:
   `session.isIdle && _agentSettledDispatchDepth === 0`. Unbound runners fail closed.
+  Public calls also reject while **any awaited runner event dispatch is active**,
+  even if the session is idle, with `Extension command unavailable during event dispatch`.
   Active-run tools/events and the entire `_emitAgentSettled` dispatch reject before
   a command context is created; no wait or queue can deadlock on the caller.
   The depth spans both extension dispatch and synchronous session listeners and
@@ -65,17 +67,30 @@ just `agent.state.isStreaming`. This is the upstream lifecycle predicate, not a
 new quiescence implementation. Because `_emitAgentSettled` clears that flag before
 awaiting handlers, the separate session-owned dispatch depth fences that interval
 without changing `ctx.isIdle()` (which is true inside `agent_settled`). Admission
-checks both synchronously. The exclusive slot belongs only to the new public API.
+checks both synchronously, plus runner event dispatch depth, before acquiring the
+public-only exclusive slot.
 
-Other lifecycle callbacks were assessed: `session_start`, model changes and most
-session events use generic `ExtensionRunner.emit`, while `resources_discover` and
-input/tool/provider/message pipelines have distinct emit methods. There is no
-single existing dispatch boundary covering all of them. This patch deliberately
-uses the requested narrow settled fence rather than wrapping every emitter or
-introducing a scheduler. **Other idle lifecycle callbacks are not fenced**; they
-can invoke if the public slot is free. This is not a provenance check, general
-event-pipeline lock, or session-wide lock. Hosts must gate unrelated session actions
-throughout the handler; prompt/public overlap is explicitly permitted by core.
+An exhaustive 0.84.1 runner audit found 11 awaited handler-dispatching methods:
+`emit`, `emitMessageEnd`, `emitToolResult`, `emitToolCall`, `emitUserBash`,
+`emitContext`, `emitBeforeProviderRequest`, `emitBeforeProviderHeaders`,
+`emitBeforeAgentStart`, `emitResourcesDiscover`, and `emitInput`. Each complete
+method body is wrapped in a runner-local depth increment and `try/finally`
+decrement. Nested/concurrent emissions cannot clear each other's fence. Original
+handler order, results, error swallowing, early cancel/handled returns and thrown
+`emitToolCall` errors remain unchanged. Synchronous `emitError` only notifies
+listeners and is not independently guarded (notifications inside an emitter are
+still within its depth). The standalone `emitSessionShutdownEvent` helper delegates
+to guarded `emit`. Standalone `emitProjectTrustEvent` takes a load result, not a
+runner, and runs before runtime binding; public calls there remain uninitialized.
+
+**No other idle lifecycle callbacks are admissible.** This includes shutdown
+(after abort and before disposal), before-switch/fork, compaction/tree,
+startup/reload, model changes and resource/input/provider pipelines. Public calls
+reject while runner event dispatch is active; events themselves are not serialized
+or blocked. This is not a scheduler, provenance check or session-wide action lock.
+Hosts must gate unrelated non-event session actions throughout the handler;
+prompt/public overlap is explicitly permitted by core, and upstream prompt dispatch
+neither checks nor acquires the event guard or public slot.
 
 Do **not** queue slash text via `sendUserMessage(... followUp)` as a substitute:
 in 0.84.1 this is literal model-visible text. 0.84.2's `expandPromptTemplates`
@@ -107,7 +122,11 @@ binding, settled depth/finally, unchanged owning-session getter and default cont
 idle semantics, prompt-before-streaming ordering, direct prompt handler path,
 public-only exclusive guard, and absence of a public bypass/legacy alias. A new
 SHA-256 assertion pins the restored `_tryExecuteExtensionCommand` method byte-for-byte
-to upstream, including its error runner selection and context creation.
+to upstream, including its error runner selection and context creation. The entire
+`prompt` section is also hash-pinned. Shape checks enumerate all async runner
+methods, require complete finally-safe wrappers on all 11 emitters, reject dispatch
+sites outside them, and hash each unwrapped body against pristine upstream (only
+the added indentation is removed). Full pristine file hashes remain unchanged.
 
 On an upstream bump, inspect the new source and nixpkgs build recipe, revisit
 semantics and tests, and only then regenerate hashes/patch. Do not merely relax
@@ -122,7 +141,10 @@ names, sync Error identity and async non-Error normalization, self-invocation an
 A → B exclusion, same/different-name concurrency rejection, busy public/event/tool
 rejection, guard cleanup, real `_emitAgentSettled` execution where ctx.isIdle is
 true but invocation rejects without running the target (including across an await),
-settled dispatch failure cleanup, real `AgentSession.prompt()` execution while busy,
+settled dispatch failure cleanup and synchronous listener-tail rejection, real
+`AgentSession.reload()` shutdown rejection with settings/resource I/O stubbed,
+before-switch/fork cancellation, every non-generic emitter, normal/early/throw
+cleanup, nested/concurrent event depth, real `AgentSession.prompt()` execution while busy,
 prompt/public overlap in both directions, prompt error reporting, and stale API/
 context behavior during and after replacement/reload. Session/resource I/O is stubbed
 at the mode-action boundary; these are not full TUI or disk-backed lifecycle tests.
@@ -133,7 +155,8 @@ installed runtime, plus an installed declaration assertion. Setting `doCheck` or
 `doInstallCheck` false cannot silently skip installed validation. No network, real
 model, operator state, or resident Presence is used.
 
-Revision validation: all commands below were rerun successfully on x86_64-linux,
+Event-fence corrective revision (on top of `798233b`): all commands below were
+rerun successfully on x86_64-linux,
 except the explicitly noted existing all-systems Darwin evaluation failure.
 Both negative checks failed for their intended reasons (version assertion and
 pristine source checksum), and disabled-check-flags validation still passed.

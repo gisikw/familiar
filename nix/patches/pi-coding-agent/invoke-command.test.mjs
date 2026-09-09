@@ -174,6 +174,127 @@ runner.emit = originalEmit;
 assert.equal(session._agentSettledDispatchDepth, 0);
 await pi.invokeExtensionCommand('hello');
 
+// Every runner pipeline rejects even with a genuinely idle owning session.
+// Explicit barriers prove the depth spans awaits, not just synchronous callbacks.
+const eventError = { message: 'Extension command unavailable during event dispatch' };
+const dispatchCases = [
+  ['session_before_switch', r => r.emit({ type: 'session_before_switch', reason: 'switch' }), { cancel: true }],
+  ['session_before_fork', r => r.emit({ type: 'session_before_fork', entryId: 'test' }), { cancel: true }],
+  ['message_end', r => r.emitMessageEnd({ type: 'message_end', message: { role: 'user', content: 'test' } })],
+  ['tool_result', r => r.emitToolResult({ type: 'tool_result' })],
+  ['tool_call', r => r.emitToolCall({ type: 'tool_call' }), { block: true }],
+  ['user_bash', r => r.emitUserBash({ type: 'user_bash' }), { result: { output: 'test', exitCode: 0 } }],
+  ['context', r => r.emitContext([])],
+  ['before_provider_request', r => r.emitBeforeProviderRequest({})],
+  ['before_provider_headers', r => r.emitBeforeProviderHeaders({})],
+  ['before_agent_start', r => r.emitBeforeAgentStart('test', undefined, 'system', {})],
+  ['resources_discover', r => r.emitResourcesDiscover(process.cwd(), 'reload')],
+  ['input', r => r.emitInput('test', undefined, 'interactive'), { action: 'handled' }],
+];
+for (const [event, dispatch, result] of dispatchCases) {
+  const f = await fixture();
+  let runs = 0, checks = 0, resumeEvent;
+  const emittedErrors = [];
+  f.runner.onError(e => emittedErrors.push(e));
+  f.pi.registerCommand('target', { handler: async () => { runs++; } });
+  f.pi.on(event, async (_event, ctx) => {
+    assert.equal(ctx.isIdle(), true);
+    await assert.rejects(f.pi.invokeExtensionCommand('target'), eventError);
+    checks++;
+    await new Promise(resolve => { resumeEvent = resolve; });
+    await assert.rejects(f.pi.invokeExtensionCommand('target'), eventError);
+    checks++;
+    return result;
+  });
+  const pendingEvent = dispatch(f.runner);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(checks, 1, event);
+  await assert.rejects(f.pi.invokeExtensionCommand('target'), eventError);
+  assert.equal(runs, 0, event);
+  resumeEvent();
+  const actual = await pendingEvent;
+  if (result) assert.deepEqual(actual, result);
+  assert.equal(checks, 2, event);
+  assert.deepEqual(emittedErrors, []);
+  assert.equal(f.runner.eventDispatchDepth, 0);
+  await f.pi.invokeExtensionCommand('target');
+  assert.equal(runs, 1, event);
+}
+// Actual reload method calls the shutdown helper before invalidation. Stub only
+// settings/resource rebuilding; the public slot is free throughout shutdown.
+{
+  const f = await fixture();
+  let runs = 0, checked = false;
+  f.pi.registerCommand('target', { handler: async () => { runs++; } });
+  f.pi.on('session_shutdown', async (event, ctx) => {
+    assert.equal(event.reason, 'reload');
+    assert.equal(ctx.isIdle(), true);
+    await assert.rejects(f.pi.invokeExtensionCommand('target'), eventError);
+    await Promise.resolve();
+    await assert.rejects(f.pi.invokeExtensionCommand('target'), eventError);
+    checked = true;
+  });
+  Object.assign(f.session, {
+    settingsManager: { reload: async () => {} },
+    syncQueueModesFromSettings: () => {},
+    getActiveToolNames: () => [],
+    _buildRuntime: () => {},
+  });
+  f.session._resourceLoader.reload = async () => {};
+  await f.session.reload();
+  assert.equal(checked, true);
+  assert.equal(runs, 0);
+  assert.equal(f.runner.eventDispatchDepth, 0);
+  await assert.rejects(f.pi.invokeExtensionCommand('target'), /stale/);
+}
+// Nested and concurrent events must not clear each other's admission fence.
+{
+  const f = await fixture();
+  let releaseOuter, releaseOther;
+  f.pi.registerCommand('target', { handler: async () => {} });
+  f.pi.on('session_start', async () => {
+    await f.runner.emitInput('test', undefined, 'interactive');
+    await assert.rejects(f.pi.invokeExtensionCommand('target'), eventError);
+    await new Promise(resolve => { releaseOuter = resolve; });
+  });
+  f.pi.on('input', async () => ({ action: 'handled' }));
+  f.pi.on('resources_discover', async () => {
+    await new Promise(resolve => { releaseOther = resolve; });
+  });
+  const outer = f.runner.emit({ type: 'session_start' });
+  const other = f.runner.emitResourcesDiscover('.', 'reload');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.runner.eventDispatchDepth, 2);
+  releaseOther(); await other;
+  await assert.rejects(f.pi.invokeExtensionCommand('target'), eventError);
+  releaseOuter(); await outer;
+  await f.pi.invokeExtensionCommand('target');
+  f.pi.on('tool_call', async () => {
+    await assert.rejects(f.pi.invokeExtensionCommand('target'), eventError);
+    throw boom;
+  });
+  await assert.rejects(f.runner.emitToolCall({ type: 'tool_call' }), e => e === boom);
+  assert.equal(f.runner.eventDispatchDepth, 0);
+  await f.pi.invokeExtensionCommand('target');
+  // Upstream prompt dispatch remains outside the event guard too.
+  f.pi.on('session_before_tree', async () => { await f.session.prompt('/target'); });
+  await f.runner.emit({ type: 'session_before_tree' });
+}
+// The synchronous session-listener tail remains fenced after runner emit returns.
+{
+  const f = await fixture();
+  let rejected, runs = 0;
+  f.pi.registerCommand('target', { handler: async () => { runs++; } });
+  f.session._eventListeners.push(() => {
+    assert.equal(f.runner.eventDispatchDepth, 0);
+    rejected = assert.rejects(f.pi.invokeExtensionCommand('target'), /requires an idle AgentSession/);
+  });
+  await f.session._emitAgentSettled();
+  await rejected;
+  assert.equal(runs, 0);
+  await f.pi.invokeExtensionCommand('target');
+}
+
 // Exercise the actual invalidation path used by reload/session replacement. Only
 // the mode's resource/session I/O is stubbed; API, runner and context are real.
 for (const action of ['reload', 'newSession', 'fork', 'switchSession']) {
