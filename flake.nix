@@ -112,6 +112,15 @@
             node ${self}/test/agents/tools.mjs
             touch $out
           '';
+          background-core = pkgs.runCommand "background-core" {
+            nativeBuildInputs = [ pkgs.nodejs_22 ];
+            PI_PACKAGE_DIR = "${patchedPi}/lib/node_modules/pi-monorepo";
+          } ''
+            export HOME="$TMPDIR/home"
+            mkdir -p "$HOME"
+            node --test --test-timeout=60000 ${self}/packages/background/*.test.mjs
+            touch $out
+          '';
         } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           drop-serve-lifecycle = pkgs.runCommand "drop-serve-lifecycle" {
             nativeBuildInputs = with pkgs; [ bash coreutils gnugrep gawk netcat-openbsd ];
