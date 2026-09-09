@@ -36,9 +36,11 @@ both halves sealed with age → appended to the SAME session .jsonl
 
 The session archive stays a single archive. There is no second file, no fork, no
 parallel store to keep in sync. A private compartment is a run of sealed
-`custom` entries inside the ordinary transcript, and Pi excludes `custom`
-entries from model context by construction — so no compaction, branch summary,
-handoff, or upstream request can walk into them.
+`custom` entries inside the ordinary transcript. Pi's tree/fork/export APIs
+retain custom entries as opaque archive data, but `sessionEntryToContextMessages`
+maps them to zero model messages — so no ordinary completion, compaction, branch
+summary, handoff prompt, or upstream request receives their data. Familiar-ui
+independently drops all private record types before browser projection.
 
 ### Why input goes through a modal instead of the `input` hook
 
@@ -127,10 +129,12 @@ while locked, so a crash or an idle auto-lock mid-conversation cannot lose the
 turn that was in flight. Reading requires the identity.
 
 **No transient plaintext.** Plaintext is passed to `age` on a pipe and lives
-only in process memory and inside the modal. Opening staged *ciphertext* to a
+only in process memory and inside the modal. Opening stages *ciphertext* in a
 0600 temp file (because `age` cannot take both its identity and its input on
-stdin) and removes it before returning. Nothing plaintext is ever written to a
-session file, a log, an argument vector, or a temp file.
+stdin) and removes it before returning. Nothing plaintext is written to a
+session file, log, argument vector, or temp file. `familiar.sh pi` also sets the
+inherited core-size limit to zero and refuses startup if that fails, so a
+process crash cannot materialize private memory as a core dump.
 
 **Logging.** The extension logs structural facts only — `unlocked`,
 `turnFailed`, `compartmentClosed`, counts. No value derived from private
@@ -194,7 +198,7 @@ local model drafted it and Kevin approved it, and the record says so.
 | `/private status` | Keyring, lock state, compartment count, live local-provider attestation |
 | `/private export <path>` | Write decrypted content to a 0600 file, behind a loud confirm |
 | `/private forget` | Tombstone every compartment in this session |
-| `/private destroy-key` | Crypto-erasure: make every sealed record everywhere unreadable |
+| `/private destroy-key` | Delete the live keyring (does not revoke backup copies) |
 | `:help` `:history` `:declassify` `:exit` | Inside the modal |
 
 **Lock/unlock.** Restart always comes back locked. Idle auto-lock after
@@ -205,18 +209,22 @@ open. Locking drops the identity; sealing still works.
 
 **Deletion.** Two levels, because they guarantee different things. `forget`
 appends a tombstone and no display path will open those records again, but the
-ciphertext remains in the append-only file. `destroy-key` deletes the identity,
-which makes every sealed record in every session archive permanently unreadable
-in one action. Crypto-erasure is the only deletion primitive here that is honest
-about what it guarantees; rewriting append-only Pi session files in place is
-not attempted.
+ciphertext remains in the append-only file. `destroy-key` deletes the live
+keyring, making records unreadable from current state and backups that did not
+retain a keyring. It cannot revoke wrapped-key copies already retained in
+backups; anyone with such a copy and the passphrase can still decrypt archived
+records. Rewriting append-only Pi files and purging external backups are not
+attempted.
 
 **Multi-device.** Private mode is bound to one attached terminal. Before the
 first sealed entry the extension opens a `familiar-ui/transcript-visibility`
 private span, so browser and iOS clients project nothing from the compartment;
 the span is opened first and closed last, so a crash leaves it open and
-familiar-ui treats it as private on replay. Other devices may see that a private
-conversation is happening. They cannot see into it and cannot type into it.
+familiar-ui treats it as private on replay. The browser command catalogue also
+removes `private`, and direct command resolution refuses it, so a remote client
+cannot invoke setup, unlock, entry, export, deletion, or status. Other devices
+may see the fixed public notice after a private conversation. They cannot see
+into it, type into it, or claim private-mode access.
 
 **Fork / background workstreams.** Sealed entries carry a compartment UUID and
 are read only by that UUID, so a fork or a background workstream that inherits
@@ -240,9 +248,9 @@ special is needed because nothing private is ever in context to be inherited.
   ciphertext plus a passphrase-wrapped key.
 - **Router-side content retention.** Capture is suppressed for locality
   requests. The ledger retains counts and outcomes, never content.
-- **Casual filesystem recovery.** `grep`/`find` over the worktrees and generated
-  test state recovers nothing; a test asserts this against synthetic canaries in
-  UTF-8, base64, and hex.
+- **Casual filesystem recovery.** `grep`/`find` over generated runtime/test
+  state recovers nothing; tests assert this against synthetic canaries in UTF-8,
+  base64, and hex. Canary literals necessarily remain in test source code.
 - **Cross-compartment and cross-room leakage.** Compartments are isolated by
   UUID; the router requires a bearer token on every request and a locality
   header is not an auth bypass.
@@ -256,8 +264,10 @@ Stated plainly, because a private mode that overclaims is worse than none.
 
 - **A compromised running host, or root.** Root can read the pi process's
   memory, attach to the tmux server, replace the extension, or log keystrokes.
-- **The pi process's own memory** while unlocked, including the decrypted
-  identity and the active conversation.
+- **The pi process's own memory** while unlocked, including the passphrase,
+  decrypted identity and active conversation. Mutable key buffers are cleared
+  best-effort, but JavaScript strings, child-process pipe buffers and runtime/
+  OpenSSL copies cannot be reliably zeroed.
 - **The local model's process and its logs.** If llama.cpp is configured to log
   prompts, prompts are on disk in plaintext. That is the operator's
   configuration, outside this code's control.

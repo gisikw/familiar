@@ -30,6 +30,8 @@ export const MARKER_TYPE = "familiar-private/marker";
 
 /** Padding granularity. Every sealed payload rounds up to a multiple of this. */
 export const BUCKET_BYTES = 1024;
+/** Bound hostile/corrupt archive records before allocation or decryption. */
+export const MAX_FRAMED_BYTES = 1024 * 1024;
 
 /** Highest supported on-disk record version. */
 export const RECORD_VERSION = 1;
@@ -85,9 +87,11 @@ export function isSealedRecord(value: unknown): value is SealedRecord {
   return (
     value["v"] === RECORD_VERSION &&
     typeof value["compartment"] === "string" &&
-    typeof value["seq"] === "number" &&
-    typeof value["bucket"] === "number" &&
-    typeof value["ct"] === "string"
+    value["compartment"].length > 0 && value["compartment"].length <= 128 &&
+    Number.isSafeInteger(value["seq"]) && (value["seq"] as number) >= 0 &&
+    Number.isSafeInteger(value["bucket"]) && (value["bucket"] as number) >= BUCKET_BYTES &&
+    (value["bucket"] as number) <= MAX_FRAMED_BYTES && (value["bucket"] as number) % BUCKET_BYTES === 0 &&
+    typeof value["ct"] === "string" && value["ct"].length <= 2 * MAX_FRAMED_BYTES
   );
 }
 
@@ -96,7 +100,8 @@ export function isTombstoneRecord(value: unknown): value is TombstoneRecord {
   return (
     value["v"] === RECORD_VERSION &&
     typeof value["compartment"] === "string" &&
-    typeof value["before"] === "number"
+    value["compartment"].length > 0 && value["compartment"].length <= 128 &&
+    Number.isSafeInteger(value["before"]) && (value["before"] as number) >= 0
   );
 }
 
@@ -113,6 +118,7 @@ export function bucketFor(payloadBytes: number): number {
 export function frame(payload: SealedPayload): Uint8Array {
   const json = new TextEncoder().encode(JSON.stringify(payload));
   const total = bucketFor(json.byteLength);
+  if (total > MAX_FRAMED_BYTES) throw new Error("sealed payload is too large");
   const out = new Uint8Array(total);
   new DataView(out.buffer).setUint32(0, json.byteLength, false);
   out.set(json, 4);
@@ -125,11 +131,25 @@ export function unframe(bytes: Uint8Array): SealedPayload {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const length = view.getUint32(0, false);
   if (length > bytes.byteLength - 4) throw new Error("sealed payload length is out of range");
-  const json = new TextDecoder().decode(bytes.subarray(4, 4 + length));
-  const parsed: unknown = JSON.parse(json);
-  if (!isRecord(parsed) || typeof parsed["text"] !== "string" || typeof parsed["kind"] !== "string") {
-    throw new Error("sealed payload has an invalid shape");
+  const expected = bucketFor(length);
+  if (bytes.byteLength !== expected || expected > MAX_FRAMED_BYTES) throw new Error("sealed payload has invalid padding length");
+  for (const byte of bytes.subarray(4 + length)) {
+    if (byte !== 0) throw new Error("sealed payload has non-zero padding");
   }
+  const json = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(4, 4 + length));
+  const parsed: unknown = JSON.parse(json);
+  if (!isRecord(parsed)) throw new Error("sealed payload has an invalid shape");
+  const kind = parsed["kind"];
+  const role = parsed["role"];
+  if (
+    (kind !== "message" && kind !== "public-context-import" && kind !== "declassification") ||
+    typeof parsed["text"] !== "string" ||
+    !Number.isSafeInteger(parsed["at"]) ||
+    (role !== undefined && role !== "user" && role !== "assistant" && role !== "system") ||
+    (parsed["model"] !== undefined && typeof parsed["model"] !== "string") ||
+    (parsed["provider"] !== undefined && typeof parsed["provider"] !== "string") ||
+    (parsed["approvedAt"] !== undefined && !Number.isSafeInteger(parsed["approvedAt"]))
+  ) throw new Error("sealed payload has an invalid shape");
   return parsed as unknown as SealedPayload;
 }
 

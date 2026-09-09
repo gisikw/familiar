@@ -332,6 +332,10 @@ extra_extensions_json() {
 run_pi() {
   prepare_plugin
   ensure_devshell pi "$@"
+  # Private plaintext necessarily exists in Pi memory while a modal is open.
+  # A core dump would turn that into plaintext at rest, so the process must not
+  # start unless the kernel accepts a zero core-size limit (inherited by age).
+  ulimit -c 0 || { echo 'familiar: cannot disable core dumps; refusing to start Pi' >&2; return 1; }
   mkdir -p "$PI_CODING_AGENT_DIR"
   # A remote/dynamic provider (for example Tiamat) need not configure the
   # optional local llama.cpp backend. Keep both expansions safe under `set -u`
@@ -1018,7 +1022,7 @@ run_tests() {
     --manifest-path "$REPO/services/viewer/Cargo.toml" --all-targets
   run_suite gateway bash -c 'cd "$1" && exec nix shell nixpkgs#bun -c bun test' _ \
     "$REPO/services/gateway"
-  run_suite extensions bash -c 'cd "$1" && exec nix develop "$1/.." -c bun test' _ \
+  run_suite extensions bash -c 'cd "$1" && exec nix develop --no-write-lock-file "$1/.." -c bun test' _ \
     "$REPO/integrations/pi/extensions"
   run_suite presence bash "$REPO/services/presence/test.sh"
   run_suite e2e nix develop "$REPO#e2e" -c "$REPO/test/e2e/run.sh"

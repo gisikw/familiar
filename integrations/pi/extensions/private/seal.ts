@@ -135,12 +135,19 @@ export interface Keyring {
  */
 function derive(passphrase: string, salt: Buffer, params: { N: number; r: number; p: number }): Buffer {
   assertDeterministicKdf();
-  return scryptSync(passphrase.normalize("NFKC"), salt, 32, {
-    N: params.N,
-    r: params.r,
-    p: params.p,
-    maxmem: MAXMEM,
-  });
+  const normalized = Buffer.from(passphrase.normalize("NFKC"), "utf8");
+  try {
+    return scryptSync(normalized, salt, 32, {
+      N: params.N,
+      r: params.r,
+      p: params.p,
+      maxmem: MAXMEM,
+    });
+  } finally {
+    // JavaScript strings and OpenSSL's internal copies cannot be zeroed. This
+    // removes the mutable copy we control; process-memory secrecy is not claimed.
+    normalized.fill(0);
+  }
 }
 
 let kdfChecked = false;
@@ -155,8 +162,13 @@ function assertDeterministicKdf(): void {
   const options = { N: 1 << 12, r: 8, p: 1, maxmem: MAXMEM };
   const first = scryptSync("familiar-private-kdf-selftest", salt, 32, options);
   const second = scryptSync("familiar-private-kdf-selftest", salt, 32, options);
-  if (!first.equals(second)) {
-    throw new SealError("this runtime's scrypt is non-deterministic; refusing to touch the keyring");
+  const expected = Buffer.from("86a3af62f5b4df14e7e3747c5fa68b77ee36958130b8dd5ad371f85495b47dbb", "hex");
+  const valid = first.equals(second) && first.equals(expected);
+  first.fill(0);
+  second.fill(0);
+  expected.fill(0);
+  if (!valid) {
+    throw new SealError("this runtime's scrypt failed its known-answer determinism test; refusing to touch the keyring");
   }
   kdfChecked = true;
 }
@@ -188,16 +200,45 @@ export async function wrapIdentity(identity: Identity, passphrase: string): Prom
   };
 }
 
+function decodeExactBase64(value: unknown, bytes: number, field: string): Buffer {
+  if (typeof value !== "string" || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
+    throw new SealError(`invalid keyring ${field}`);
+  }
+  const decoded = Buffer.from(value, "base64");
+  if (decoded.byteLength !== bytes || decoded.toString("base64") !== value) throw new SealError(`invalid keyring ${field}`);
+  return decoded;
+}
+
+function validateKeyring(keyring: Keyring): { salt: Buffer; nonce: Buffer; tag: Buffer; ct: Buffer } {
+  if (
+    keyring.v !== 1 ||
+    keyring.kdf?.name !== KDF.name ||
+    keyring.kdf.N !== KDF.N ||
+    keyring.kdf.r !== KDF.r ||
+    keyring.kdf.p !== KDF.p
+  ) throw new SealError("unsupported keyring format or KDF parameters");
+  assertRecipient(keyring.recipient);
+  const salt = decodeExactBase64(keyring.salt, 32, "salt");
+  const nonce = decodeExactBase64(keyring.nonce, 12, "nonce");
+  const tag = decodeExactBase64(keyring.tag, 16, "tag");
+  if (typeof keyring.ct !== "string" || keyring.ct.length > 4096) throw new SealError("invalid keyring ciphertext");
+  const ct = Buffer.from(keyring.ct, "base64");
+  if (ct.byteLength < 20 || ct.toString("base64") !== keyring.ct) throw new SealError("invalid keyring ciphertext");
+  return { salt, nonce, tag, ct };
+}
+
 export async function unwrapIdentity(keyring: Keyring, passphrase: string): Promise<string> {
-  if (keyring.v !== 1 || keyring.kdf?.name !== "scrypt") throw new SealError("unsupported keyring format");
-  const salt = Buffer.from(keyring.salt, "base64");
-  const key = derive(passphrase, salt, keyring.kdf);
-  const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(keyring.nonce, "base64"));
+  const { salt, nonce, tag, ct } = validateKeyring(keyring);
+  const key = derive(passphrase, salt, KDF);
+  const decipher = createDecipheriv("aes-256-gcm", key, nonce);
   decipher.setAAD(Buffer.from(keyring.recipient, "utf8"));
-  decipher.setAuthTag(Buffer.from(keyring.tag, "base64"));
+  decipher.setAuthTag(tag);
   try {
-    const secret = Buffer.concat([decipher.update(Buffer.from(keyring.ct, "base64")), decipher.final()]);
-    return secret.toString("utf8");
+    const secret = Buffer.concat([decipher.update(ct), decipher.final()]);
+    const value = secret.toString("utf8");
+    secret.fill(0);
+    if (!/^AGE-SECRET-KEY-1[A-Z0-9]+$/.test(value)) throw new SealError("keyring contains an invalid age identity");
+    return value;
   } catch {
     throw new SealError("wrong passphrase");
   } finally {
@@ -209,6 +250,11 @@ export async function unwrapIdentity(keyring: Keyring, passphrase: string): Prom
 export function samePassphrase(a: string, b: string): boolean {
   const left = Buffer.from(a.normalize("NFKC"), "utf8");
   const right = Buffer.from(b.normalize("NFKC"), "utf8");
-  if (left.length !== right.length) return false;
-  return timingSafeEqual(left, right);
+  try {
+    if (left.length !== right.length) return false;
+    return timingSafeEqual(left, right);
+  } finally {
+    left.fill(0);
+    right.fill(0);
+  }
 }

@@ -34,6 +34,7 @@ import {
   shouldAutoLock,
 } from "./policy.ts";
 import { generateIdentity, open, samePassphrase, seal, unwrapIdentity, wrapIdentity } from "./seal.ts";
+import { readKeyring, writeKeyring } from "./store.ts";
 
 /** Synthetic. Never a real conversation. */
 const CANARY = "CANARY-PRIVATE-e7b41d-the-thing-kevin-said";
@@ -264,6 +265,34 @@ describe("key management and crash/restart unlock", () => {
     expect(await unwrapIdentity(restored, FIXTURE_PASSPHRASE)).toBe(identity.secret);
   });
 
+  test("a corrupt keyring is never mistaken for an absent one or overwritten", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "familiar-private-corrupt-"));
+    const previous = process.env.FAMILIAR_PRIVATE_DIR;
+    process.env.FAMILIAR_PRIVATE_DIR = dir;
+    try {
+      await writeFile(join(dir, "keyring.json"), "{truncated", { mode: 0o600 });
+      await expect(readKeyring()).rejects.toThrow(/unreadable or corrupt/);
+      const identity = await generateIdentity();
+      const keyring = await wrapIdentity(identity, FIXTURE_PASSPHRASE);
+      await expect(writeKeyring(keyring)).rejects.toThrow();
+      expect(await readFile(join(dir, "keyring.json"), "utf8")).toBe("{truncated");
+      await rm(join(dir, "keyring.json"));
+      await writeKeyring(keyring);
+      expect(await unwrapIdentity((await readKeyring())!, FIXTURE_PASSPHRASE)).toBe(identity.secret);
+    } finally {
+      if (previous === undefined) delete process.env.FAMILIAR_PRIVATE_DIR;
+      else process.env.FAMILIAR_PRIVATE_DIR = previous;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("tampered KDF parameters fail closed instead of controlling resource use", async () => {
+    const identity = await generateIdentity();
+    const keyring = await wrapIdentity(identity, FIXTURE_PASSPHRASE);
+    await expect(unwrapIdentity({ ...keyring, kdf: { ...keyring.kdf, N: 2 } }, FIXTURE_PASSPHRASE))
+      .rejects.toThrow(/KDF parameters/);
+  });
+
   test("a wrong passphrase fails without revealing anything", async () => {
     const identity = await generateIdentity();
     const keyring = await wrapIdentity(identity, FIXTURE_PASSPHRASE);
@@ -342,10 +371,16 @@ describe("the sealed compartment inside an ordinary session archive", () => {
     }
   });
 
-  test("framing rejects a corrupted length header instead of returning garbage", () => {
+  test("framing rejects truncation, corrupt length, padding, and payload shape", () => {
     const framed = frame({ kind: "message", text: CANARY, at: 1 });
-    new DataView(framed.buffer).setUint32(0, 0xffffff, false);
-    expect(() => unframe(framed)).toThrow(/out of range/);
+    const badLength = framed.slice();
+    new DataView(badLength.buffer).setUint32(0, 0xffffff, false);
+    expect(() => unframe(badLength)).toThrow(/out of range/);
+    expect(() => unframe(framed.subarray(0, framed.byteLength - 1))).toThrow(/padding length/);
+    const badPadding = framed.slice();
+    badPadding[badPadding.byteLength - 1] = 1;
+    expect(() => unframe(badPadding)).toThrow(/non-zero padding/);
+    expect(() => unframe(frame({ kind: "invented", text: CANARY, at: 1 } as never))).toThrow(/invalid shape/);
   });
 });
 
@@ -481,6 +516,22 @@ describe("no plaintext escapes to disk", () => {
 describe("the extension loads under pi's own loader", () => {
   const packageDir = process.env.PI_PACKAGE_DIR;
   const maybe = packageDir ? test : test.skip;
+
+  maybe("pi's real context builder maps custom entry data to zero model messages", async () => {
+    const { buildSessionContext } = await import(join(packageDir!, "dist/core/session-manager.js"));
+    const entries = [
+      { type: "message", id: "u", parentId: null, timestamp: new Date().toISOString(), message: { role: "user", content: "ordinary" } },
+      { type: "custom", id: "s", parentId: "u", timestamp: new Date().toISOString(), customType: SEALED_TYPE,
+        data: { v: 1, compartment: "A", seq: 0, bucket: 1024, ct: CANARY } },
+      { type: "message", id: "a", parentId: "s", timestamp: new Date().toISOString(), message: { role: "assistant", content: [{ type: "text", text: "after" }] } },
+    ];
+    const context = buildSessionContext(entries, "a", new Map(entries.map((entry) => [entry.id, entry])));
+    const wire = JSON.stringify(context.messages);
+    expect(wire).toContain("ordinary");
+    expect(wire).toContain("after");
+    expect(wire).not.toContain(CANARY);
+    expect(wire).not.toContain(SEALED_TYPE);
+  });
 
   maybe("pi loads /private with no tools and no input hook", async () => {
     const { discoverAndLoadExtensions } = await import(

@@ -10,7 +10,7 @@
  * and renamed so a crash cannot leave a half-written keyring behind.
  */
 
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, open, readFile, rm, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import type { Keyring } from "./seal.ts";
 
@@ -25,30 +25,52 @@ export function keyringPath(): string {
 }
 
 export async function readKeyring(): Promise<Keyring | undefined> {
+  const target = keyringPath();
   try {
-    const raw = await readFile(keyringPath(), "utf8");
+    const info = await lstat(target);
+    if (!info.isFile() || info.isSymbolicLink()) throw new Error("private keyring is not a regular file");
+    const raw = await readFile(target, "utf8");
     const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null) return undefined;
+    if (typeof parsed !== "object" || parsed === null) throw new Error("private keyring is corrupt");
     return parsed as Keyring;
-  } catch {
-    return undefined;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return undefined;
+    // Corruption must never masquerade as absence: /private setup would then
+    // overwrite the only recoverable wrapped identity.
+    throw new Error("private keyring is unreadable or corrupt");
   }
 }
 
 export async function writeKeyring(keyring: Keyring): Promise<void> {
   const dir = privateDir();
   await mkdir(dir, { recursive: true, mode: 0o700 });
+  await chmod(dir, 0o700);
   const target = keyringPath();
-  const staging = `${target}.tmp`;
-  await writeFile(staging, `${JSON.stringify(keyring, null, 2)}\n`, { mode: 0o600 });
-  await rename(staging, target);
+  const staging = `${target}.tmp-${process.pid}-${Date.now()}`;
+  const handle = await open(staging, "wx", 0o600);
+  try {
+    try {
+      await handle.writeFile(`${JSON.stringify(keyring, null, 2)}\n`, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    // Hard-link publication is atomic and refuses EEXIST. Unlike rename, it
+    // cannot overwrite a keyring that appeared after setup's absence check.
+    await link(staging, target);
+    await unlink(staging);
+    const directory = await open(dir, "r");
+    try { await directory.sync(); } finally { await directory.close(); }
+  } catch (error) {
+    await handle.close().catch(() => undefined);
+    await rm(staging, { force: true });
+    throw error;
+  }
 }
 
 /**
- * Crypto-erasure. Destroying the identity makes every sealed record in every
- * session archive permanently unreadable in one action, without rewriting
- * append-only session files. It is the only deletion primitive here that is
- * honest about what it guarantees.
+ * Delete the live wrapped identity. This does not revoke keyring copies already
+ * retained by an external backup; callers must describe that limitation.
  */
 export async function destroyKeyring(): Promise<void> {
   await rm(keyringPath(), { force: true });

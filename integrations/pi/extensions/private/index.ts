@@ -23,7 +23,7 @@
 
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { open as openFile, readFile } from "node:fs/promises";
 import { errorLog } from "../lib/debug.ts";
 import {
   MARKER_TYPE,
@@ -113,7 +113,10 @@ export default function privateMode(pi: ExtensionAPI) {
     const view = readCompartment(ctx.sessionManager.getEntries() as never[], compartment);
     const payloads: SealedPayload[] = [];
     for (const record of view.sealed) {
-      const plaintext = await open(unlocked.identity, Buffer.from(record.ct, "base64"));
+      const ciphertext = Buffer.from(record.ct, "base64");
+      if (ciphertext.toString("base64") !== record.ct) throw new Error("sealed record has invalid ciphertext encoding");
+      const plaintext = await open(unlocked.identity, ciphertext);
+      if (plaintext.byteLength !== record.bucket) throw new Error("sealed record bucket does not match its payload");
       payloads.push(unframe(new Uint8Array(plaintext)));
     }
     return payloads;
@@ -365,7 +368,6 @@ export default function privateMode(pi: ExtensionAPI) {
               [{ role: "system", content: systemPrompt() }, ...history],
               { maxTokens: MAX_OUTPUT_TOKENS },
             );
-            history.push({ role: "assistant", content: answer.text });
             await sealPayload(compartment, seq++, {
               kind: "message",
               role: "assistant",
@@ -374,6 +376,10 @@ export default function privateMode(pi: ExtensionAPI) {
               model: answer.model,
               provider: answer.provider,
             });
+            // Encryption and archive acceptance precede every observer: the
+            // modal and even private in-memory history see output only after it
+            // has a sealed durable counterpart.
+            history.push({ role: "assistant", content: answer.text });
             console_.append({ role: "assistant", text: answer.text });
             lastDeclassifiable = answer.text;
             turns += 2;
@@ -550,8 +556,16 @@ export default function privateMode(pi: ExtensionAPI) {
         sections.push(payload.text);
       }
     }
-    await writeFile(target, `${sections.join("\n\n")}\n`, { mode: 0o600 });
-    ctx.ui.notify(`Exported plaintext to ${target} (mode 0600).`, "warning");
+    // Exclusive creation avoids following a symlink or inheriting permissive
+    // mode bits from an existing file. Refuse rather than overwrite plaintext.
+    const output = await openFile(target, "wx", 0o600);
+    try {
+      await output.writeFile(`${sections.join("\n\n")}\n`, "utf8");
+      await output.sync();
+    } finally {
+      await output.close();
+    }
+    ctx.ui.notify(`Exported plaintext to new file ${target} (mode 0600).`, "warning");
     log({ exported: true });
   };
 
@@ -576,12 +590,12 @@ export default function privateMode(pi: ExtensionAPI) {
   const destroy = async (ctx: ExtensionCommandContext): Promise<void> => {
     const approved = await ctx.ui.confirm(
       "Destroy the private identity?",
-      "Every sealed conversation in every session becomes permanently unreadable. There is no recovery.",
+      "Deletes the live keyring. Backups that retained a wrapped keyring remain decryptable with the passphrase.",
     );
     if (!approved) return;
     await destroyKeyring();
     zeroize();
-    ctx.ui.notify("Private identity destroyed. All sealed content is now unrecoverable.", "warning");
+    ctx.ui.notify("Live private identity deleted. Purge retained keyring backups separately if required.", "warning");
     log({ keyringDestroyed: true });
   };
 
@@ -596,8 +610,15 @@ export default function privateMode(pi: ExtensionAPI) {
       return items.length > 0 ? items : null;
     },
     handler: async (args, ctx) => {
-      const [subcommand, ...rest] = args.trim().split(/\s+/);
-      switch (subcommand) {
+      // Every subcommand is terminal-only, not just conversation entry. Headless
+      // callers may not probe key state, unlock, export, or request deletion.
+      if (ctx.mode !== "tui" || !ctx.hasUI) {
+        ctx.ui.notify("Private mode is available only at the attached terminal.", "error");
+        return;
+      }
+      try {
+        const [subcommand, ...rest] = args.trim().split(/\s+/);
+        switch (subcommand) {
         case "":
         case undefined:
           if (!(await readKeyring())) {
@@ -625,8 +646,14 @@ export default function privateMode(pi: ExtensionAPI) {
           return forget(ctx);
         case "destroy-key":
           return destroy(ctx);
-        default:
-          ctx.ui.notify(`Unknown subcommand "${subcommand}". Try: ${SUBCOMMANDS.join(", ")}`, "error");
+          default:
+            ctx.ui.notify(`Unknown subcommand "${subcommand}". Try: ${SUBCOMMANDS.join(", ")}`, "error");
+        }
+      } catch {
+        // Structural only: filesystem/crypto errors can include paths or child
+        // diagnostics, none of which belong in remote command responses/logs.
+        ctx.ui.notify("Private mode refused because its protected state is unreadable or unavailable.", "error");
+        log({ commandFailed: true });
       }
     },
   });
