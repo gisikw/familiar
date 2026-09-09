@@ -8,6 +8,7 @@ mkdir -p "$TMP/bin" "$TMP/plugin"
 
 cat > "$TMP/bin/pi" <<'EOF'
 #!/usr/bin/env bash
+printf '%s\n' "$@" > "$PI_CODING_AGENT_DIR/cli-args"
 exit 0
 EOF
 cat > "$TMP/bin/nix" <<'EOF'
@@ -73,7 +74,7 @@ set -e
 # counts to prove unique merging across plugin and deployment sources.
 jq -e --arg root "$REPO/integrations/pi/extensions" '
   ([
-    "footer", "handoff", "identity", "stuff", "subscriber",
+    "agents", "footer", "handoff", "identity", "stuff", "subscriber",
     "tiamat", "web", "worklist", "zip", "wake"
   ] | map($root + "/" + .)) as $builtins
   | ($builtins - .extensions | length) == 0
@@ -81,6 +82,7 @@ jq -e --arg root "$REPO/integrations/pi/extensions" '
     and ([.extensions[] | select(. == "/etc/shared/index.js")] | length) == 1
     and ([.extensions[] | select(. == "/etc/familiar-ui-extension/index.js")] | length) == 1
 ' "$state/settings.json" >/dev/null
+grep -qx -- '--familiar-agents-owner' "$state/cli-args"
 
 # Unset (as opposed to explicitly empty) defaults to no deployment extensions.
 unset_state="$TMP/unset"
