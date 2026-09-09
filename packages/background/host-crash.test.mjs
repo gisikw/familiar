@@ -99,6 +99,8 @@ for (const [phase, points] of Object.entries({
                 sessionId: sm.getSessionId(),
                 leafId: sm.getLeafId(),
                 cwd: root,
+                model: { provider: "fixture", id: "model" },
+                thinkingLevel: "medium",
                 idle: true,
                 private: false,
                 entries,

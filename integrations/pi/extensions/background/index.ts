@@ -115,6 +115,10 @@ export default function background(pi: ExtensionAPI) {
       model: context.model
         ? { provider: context.model.provider, id: context.model.id }
         : undefined,
+      // Pi exposes the effective, already model-clamped level on the live
+      // context. Capture it in the same synchronous admission snapshot as the
+      // model; never consult the foreground again while constructing a branch.
+      thinkingLevel: context.thinkingLevel,
       cwd: context.cwd,
       idle: context.isIdle() && (pi as any).isRuntimeControlAvailable(),
       private: privateSpan,
@@ -181,13 +185,7 @@ export default function background(pi: ExtensionAPI) {
           },
         },
         createRuntime: (record: any, owner: any) =>
-          createBranchRuntime(
-            record,
-            owner,
-            record.model,
-            providerPath,
-            client,
-          ),
+          createBranchRuntime(record, owner, providerPath, client),
         onError: fail,
         onChange: publish,
       });

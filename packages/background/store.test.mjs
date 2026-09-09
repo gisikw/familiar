@@ -6,7 +6,12 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { WorkstreamStore } from "./store.mjs";
-import { admission, LIMITS, mergeContent } from "./protocol.mjs";
+import {
+  admission,
+  LIMITS,
+  mergeContent,
+  PI_THINKING_LEVELS,
+} from "./protocol.mjs";
 
 const request = {
   admissionId: "admission-1",
@@ -37,11 +42,18 @@ function fixture(t) {
 }
 function running(store) {
   const r = store.create(request).record;
-  store.prepare(r.id, 1, {
-    file: "/synthetic/branch.jsonl",
-    sha256: "a".repeat(64),
-    sessionId: "branch",
-  });
+  store.prepare(
+    r.id,
+    1,
+    {
+      file: "/synthetic/branch.jsonl",
+      sha256: "a".repeat(64),
+      sessionId: "branch",
+    },
+    undefined,
+    { provider: "fixture", id: "model" },
+    "medium",
+  );
   store.admitReceipt(r.id, 1, {
     userEntryId: "user",
     controlEntryId: "control",
@@ -206,6 +218,110 @@ test("aggregate bounds reject oversized context packets, images and registry gro
     () => store.create({ ...request, admissionId: "over-limit" }),
     /quota/,
   );
+});
+
+test("all Pi thinking levels survive exact SQLite record serialization", () => {
+  for (const level of PI_THINKING_LEVELS) {
+    const root = mkdtempSync(join(tmpdir(), "background-thinking-"));
+    let store = new WorkstreamStore(root);
+    const created = store.create({
+      ...request,
+      admissionId: `thinking-${level}`,
+    }).record;
+    store.prepare(
+      created.id,
+      1,
+      {
+        file: `/synthetic/${level}.jsonl`,
+        sha256: "b".repeat(64),
+        sessionId: `branch-${level}`,
+      },
+      "/synthetic/foreground.jsonl",
+      { provider: "fixture", id: `model-${level}` },
+      level,
+    );
+    store.close();
+    store = new WorkstreamStore(root);
+    const restored = store.get(created.id);
+    assert.equal(restored.thinkingLevel, level);
+    assert.deepEqual(restored.model, {
+      provider: "fixture",
+      id: `model-${level}`,
+    });
+    assert.equal(restored.archive.file, `/synthetic/${level}.jsonl`);
+    store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("missing, alias and invalid persisted thinking levels fail closed", () => {
+  for (const level of [
+    undefined,
+    null,
+    "none",
+    "disabled",
+    "MEDIUM",
+    "bogus",
+  ]) {
+    const root = mkdtempSync(join(tmpdir(), "background-invalid-thinking-"));
+    let store = new WorkstreamStore(root);
+    const created = store.create({
+      ...request,
+      admissionId: `invalid-${String(level)}`,
+    }).record;
+    assert.throws(
+      () =>
+        store.prepare(
+          created.id,
+          1,
+          {
+            file: "/synthetic/branch.jsonl",
+            sha256: "c".repeat(64),
+            sessionId: "branch",
+          },
+          undefined,
+          { provider: "fixture", id: "model" },
+          level,
+        ),
+      /thinking level/,
+    );
+    store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+
+  for (const mutation of ["missing", "invalid", "legacy-version"]) {
+    const root = mkdtempSync(join(tmpdir(), "background-corrupt-thinking-"));
+    let store = new WorkstreamStore(root);
+    const created = store.create({
+      ...request,
+      admissionId: `persisted-${mutation}`,
+    }).record;
+    store.prepare(
+      created.id,
+      1,
+      {
+        file: "/synthetic/branch.jsonl",
+        sha256: "d".repeat(64),
+        sessionId: "branch",
+      },
+      undefined,
+      { provider: "fixture", id: "model" },
+      "medium",
+    );
+    const body = store.get(created.id);
+    if (mutation === "missing") delete body.thinkingLevel;
+    if (mutation === "invalid") body.thinkingLevel = "none";
+    if (mutation === "legacy-version") body.version = 2;
+    store.db
+      .prepare("UPDATE workstreams SET body=? WHERE id=?")
+      .run(JSON.stringify(body), created.id);
+    store.close();
+    assert.throws(
+      () => new WorkstreamStore(root),
+      /thinking level|unsupported workstream/,
+    );
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("attachment/image and bounded project handoff survive byte-exact normalization", () => {

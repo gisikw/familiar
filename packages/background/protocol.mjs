@@ -1,5 +1,21 @@
 import { createHash } from "node:crypto";
 
+export const PI_THINKING_LEVELS = Object.freeze([
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+]);
+
+export function thinkingLevel(value) {
+  if (!PI_THINKING_LEVELS.includes(value))
+    throw new Error("invalid Pi thinking level");
+  return value;
+}
+
 export const LIMITS = Object.freeze({
   active: 4,
   records: 256,

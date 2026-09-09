@@ -47,7 +47,14 @@ mechanically suppresses sibling preparation tools. It does not duplicate that
 entry or copy its own foreground tool call/results into the branch seed.
 
 Branches have independent resource/model/session services, read-only file tools,
-inalienable report/refusal/rejoin controls and branch-owned backend tools. No
+inalienable report/refusal/rejoin controls and branch-owned backend tools. The
+foreground's exact model and effective Pi thinking level are captured together
+in the synchronous admission snapshot and durable scheduling record. Every
+independent runtime applies that captured pair before continuing the admitted
+turn; later foreground changes cannot alter it. Canonical Pi levels are validated
+strictly while Pi retains per-model clamping and provider-specific wire
+normalization. Legacy/missing/alias scheduling values fail closed. This is not
+stock compaction propagation and is not the handoff retry-at-low policy. No
 recursive Background tool, ambient foreground Agents relay, UI or worklist is
 loaded into them. Dispatch, questions, answers, steers, cancellation, artifact
 review and integration references use the existing backend semantics. The
@@ -129,10 +136,14 @@ private tmux Presence, the production UI bridge and scheduler, and three session
 inside **one isolated Pi process**. It discovers a valid model using the existing
 Router catalog on the authorized provider/wire. It does not copy credentials,
 print tokens/headers/request bodies, inspect resident history, or dump real-provider
-panes. Unsupported-model/error records fail the gate even with HTTP 200.
+panes. Unsupported-model/error records fail the gate even with HTTP 200. The
+current probe additionally compares every branch's captured Pi thinking level
+and normalized wire effort with the foreground, and reports both; provider wire
+`none` or an omitted effort may be the normalized representation of Pi `off`.
 
 The following real-provider result belongs to the accepted pre-upgrade Background
-candidate and remains historical evidence for the probe itself. The 0.85.1
+candidate and remains historical evidence for the probe itself. It predates the
+thinking observer and therefore proves no thinking-inheritance claim. The 0.85.1
 integration did not spend provider quota or treat this earlier run as upgrade
 proof:
 
@@ -161,6 +172,10 @@ also passed; the retained `d23f83c` bare-SDK probe is not used as a substitute.
 
 ## Failures that were repaired during implementation
 
+- The reviewed 0.85.1 candidate forced independent branches to Pi `off`, while
+  the real-provider gate observed foreground `medium` and branch wire `none`.
+  Admission now durably captures the effective level with the model and branch
+  construction applies it through Pi before `continueAdmittedTurn`.
 - Real streaming was previously mistaken for successful inference at HTTP 200.
   The probes now discover the model and reject streamed errors.
 - A normalized `integrationRef: null` could not be revalidated by the v2 report

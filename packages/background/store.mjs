@@ -9,6 +9,7 @@ import {
   LIMITS,
   report,
   reportData,
+  thinkingLevel,
 } from "./protocol.mjs";
 
 export const TERMINAL = new Set([
@@ -53,7 +54,33 @@ export class WorkstreamStore {
     this.maxRecords = maxRecords;
     this.childOwners = new Map();
     this.publicRecords = new Map();
-    for (const record of this.list()) this.indexChildren(record);
+    try {
+      for (const record of this.list()) this.indexChildren(record);
+    } catch (error) {
+      this.db.close();
+      throw error;
+    }
+  }
+  validateRecord(record) {
+    if (!record || record.version !== 3)
+      throw new Error(
+        "unsupported workstream record; captured thinking level is unavailable",
+      );
+    if (record.archive) {
+      if (
+        !record.model ||
+        typeof record.model.provider !== "string" ||
+        typeof record.model.id !== "string"
+      )
+        throw new Error("invalid persisted branch model");
+      thinkingLevel(record.thinkingLevel);
+    } else if (
+      record.model !== undefined ||
+      record.thinkingLevel !== undefined
+    ) {
+      throw new Error("incomplete persisted branch configuration");
+    }
+    return record;
   }
   indexChildren(record) {
     const packet = record.packets?.at(-1);
@@ -183,19 +210,19 @@ export class WorkstreamStore {
     const row = this.db
       .prepare("SELECT body FROM workstreams WHERE id=?")
       .get(id(key));
-    return row ? JSON.parse(row.body) : undefined;
+    return row ? this.validateRecord(JSON.parse(row.body)) : undefined;
   }
   byAdmission(key) {
     const row = this.db
       .prepare("SELECT body FROM workstreams WHERE admission_id=?")
       .get(id(key));
-    return row ? JSON.parse(row.body) : undefined;
+    return row ? this.validateRecord(JSON.parse(row.body)) : undefined;
   }
   list() {
     return this.db
       .prepare("SELECT body FROM workstreams ORDER BY rowid LIMIT ?")
       .all(this.maxRecords)
-      .map((r) => JSON.parse(r.body));
+      .map((r) => this.validateRecord(JSON.parse(r.body)));
   }
   transaction(label, fn) {
     // Never accumulate an unbounded WAL behind a reader holding an old snapshot.
@@ -242,7 +269,7 @@ export class WorkstreamStore {
       )
         throw new Error("active workstream quota reached");
       const record = {
-        version: 2,
+        version: 3,
         id: randomUUID(),
         revision: 0,
         generation: 1,
@@ -294,7 +321,14 @@ export class WorkstreamStore {
       return record;
     });
   }
-  prepare(key, generation, archive, canonicalFile, model) {
+  prepare(
+    key,
+    generation,
+    archive,
+    canonicalFile,
+    model,
+    capturedThinkingLevel,
+  ) {
     return this.update(key, generation, "prepare", (r) => {
       if (r.status !== "preparing") throw new Error("not preparing");
       if (
@@ -308,12 +342,15 @@ export class WorkstreamStore {
       bounded(archive, 4096, "archive");
       id(archive.sessionId);
       r.archive = archive;
-      if (model !== undefined) {
-        if (typeof model.provider !== "string" || typeof model.id !== "string")
-          throw new Error("invalid branch model");
-        r.model = { provider: model.provider, id: model.id };
-        bounded(r.model, 1024, "branch model");
-      }
+      if (
+        !model ||
+        typeof model.provider !== "string" ||
+        typeof model.id !== "string"
+      )
+        throw new Error("invalid branch model");
+      r.model = { provider: model.provider, id: model.id };
+      r.thinkingLevel = thinkingLevel(capturedThinkingLevel);
+      bounded(r.model, 1024, "branch model");
       if (canonicalFile !== undefined) {
         if (typeof canonicalFile !== "string" || !canonicalFile.startsWith("/"))
           throw new Error("invalid canonical archive reference");

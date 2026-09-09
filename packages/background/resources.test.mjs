@@ -108,6 +108,8 @@ test("disk reservations bound future writers; retention never evicts live/uncert
         sessionId: name,
         sha256: "0".repeat(64),
       };
+      r.model = { provider: "fixture", id: "model" };
+      r.thinkingLevel = "medium";
     });
     return store.get(record.id);
   };

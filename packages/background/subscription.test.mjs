@@ -119,11 +119,18 @@ function running(store, name) {
     projectId: "project",
     content: "exact",
   });
-  store.prepare(record.id, 1, {
-    file: `/tmp/${name}.jsonl`,
-    sessionId: name,
-    sha256: "0".repeat(64),
-  });
+  store.prepare(
+    record.id,
+    1,
+    {
+      file: `/tmp/${name}.jsonl`,
+      sessionId: name,
+      sha256: "0".repeat(64),
+    },
+    undefined,
+    { provider: "fixture", id: "model" },
+    "medium",
+  );
   store.admitReceipt(record.id, 1, {
     userEntryId: "user",
     controlEntryId: "control",

@@ -13,7 +13,13 @@ import { join } from "node:path";
 import { WorkstreamStore } from "./store.mjs";
 import { ResourcePolicy } from "./resources.mjs";
 import { BranchScheduler } from "./scheduler.mjs";
-import { admission, bounded, LIMITS, mergeContent } from "./protocol.mjs";
+import {
+  admission,
+  bounded,
+  LIMITS,
+  mergeContent,
+  thinkingLevel,
+} from "./protocol.mjs";
 
 function durable(file, content, boundary) {
   const fd = openSync(file, "wx", 0o600);
@@ -122,8 +128,8 @@ export class BackgroundHost {
       snapshot.leafId !== normalized.parentLeafId
     )
       throw new Error("canonical admission conflict");
-    if (this.owner.modelRequired && !snapshot.model)
-      throw new Error("branch model unavailable");
+    if (!snapshot.model) throw new Error("branch model unavailable");
+    thinkingLevel(snapshot.thinkingLevel);
     let messages = snapshot.messages;
     let userTimestamp = Date.now();
     if (existingUserEntryId) {
@@ -215,6 +221,7 @@ export class BackgroundHost {
         archive,
         snapshot.file,
         snapshot.model,
+        snapshot.thinkingLevel,
       );
       const receipt = {
         version: 2,

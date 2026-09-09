@@ -14,6 +14,8 @@ function fixture(createRuntime) {
       sessionId: "parent",
       leafId,
       cwd: root,
+      model: { provider: "fixture", id: "model" },
+      thinkingLevel: "medium",
       idle: true,
       private: false,
       entries: [],

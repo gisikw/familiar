@@ -34,11 +34,18 @@ function setup(t, options = {}) {
       projectId: "project",
       content: `task-${n}`,
     }).record;
-    store.prepare(r.id, 1, {
-      file: `/synthetic/${n}.jsonl`,
-      sessionId: `branch-${n}`,
-      sha256: "a".repeat(64),
-    });
+    store.prepare(
+      r.id,
+      1,
+      {
+        file: `/synthetic/${n}.jsonl`,
+        sessionId: `branch-${n}`,
+        sha256: "a".repeat(64),
+      },
+      undefined,
+      { provider: "fixture", id: "model" },
+      "medium",
+    );
     store.admitReceipt(r.id, 1, {
       userEntryId: `user-${n}`,
       controlEntryId: `control-${n}`,

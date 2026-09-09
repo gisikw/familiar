@@ -9,6 +9,7 @@ import { Type } from "typebox";
 import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 import { OwnedChildren } from "../../../../packages/background/children.mjs";
+import { configureBranchSession } from "../../../../packages/background/runtime-config.mjs";
 import type { BackgroundChildBackend } from "./backend.ts";
 
 const text = Type.String({ maxLength: 32768 });
@@ -27,7 +28,6 @@ const result = (value: unknown, terminate = false) => {
 export async function createBranchRuntime(
   record: any,
   host: any,
-  model: any,
   providerPath: string,
   client: BackgroundChildBackend,
 ) {
@@ -245,10 +245,7 @@ export async function createBranchRuntime(
   };
   try {
     await session.bindExtensions({ mode: "print" });
-    const available = modelRuntime.getModel(model.provider, model.id);
-    if (!available) throw new Error("branch model unavailable");
-    await session.setModel(available);
-    session.setThinkingLevel("off");
+    await configureBranchSession(session, modelRuntime, record);
     // Explicit tool allowlist plus no ambient extensions: recursive tools cannot
     // be re-enabled, while report/refusal remains in the configured registry.
     session.setActiveToolsByName([

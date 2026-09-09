@@ -5,6 +5,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { DatabaseSync } from "node:sqlite";
 const sdk = process.env.PI_PACKAGE_DIR ? await import(pathToFileURL(join(process.env.PI_PACKAGE_DIR, "dist/index.js"))) : null;
 const ui = process.env.FAMILIAR_UI_SOURCE;
 const until = async (fn) => { for (let i = 0; i < 500; i++) { if (await fn()) return; await new Promise((r) => setTimeout(r, 20)); } throw new Error("isolated host deadline"); };
@@ -29,7 +30,7 @@ test("isolated Familiar owner birth: browser HTTP admission -> real SDK branch/r
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   const agentDir = join(root, "pi"); mkdirSync(agentDir);
   const providerPath = join(root, "provider.ts");
-  writeFileSync(providerPath, `export default function(pi) { pi.registerProvider("fixture", { baseUrl: "http://127.0.0.1:${server.address().port}/v1", api: "openai-completions", apiKey: "fixture", models: [{ id: "synthetic", name: "Synthetic", reasoning: false, input: ["text", "image"], contextWindow: 32768, maxTokens: 1024, cost: { input:0, output:0, cacheRead:0, cacheWrite:0 } }] }); }`);
+  writeFileSync(providerPath, `export default function(pi) { pi.registerProvider("fixture", { baseUrl: "http://127.0.0.1:${server.address().port}/v1", api: "openai-completions", apiKey: "fixture", models: [{ id: "synthetic", name: "Synthetic", reasoning: true, input: ["text", "image"], contextWindow: 32768, maxTokens: 1024, cost: { input:0, output:0, cacheRead:0, cacheWrite:0 } }, { id: "synthetic-later", name: "Synthetic Later", reasoning: true, input: ["text", "image"], contextWindow: 32768, maxTokens: 1024, cost: { input:0, output:0, cacheRead:0, cacheWrite:0 } }] }); }`);
   set("FAMILIAR_BACKGROUND_ENABLE", "1");
   set("FAMILIAR_BACKGROUND_STATE_DIR", join(root, "background"));
   set("FAMILIAR_BACKGROUND_PROVIDER_EXTENSION", providerPath);
@@ -47,6 +48,8 @@ test("isolated Familiar owner birth: browser HTTP admission -> real SDK branch/r
     session.extensionRunner.onError((error) => errors.push(error));
     await session.bindExtensions({ mode: "tui", onError: (error) => errors.push(error), uiContext: { ...session.extensionRunner.getUIContext(), notify: (message) => notices.push(message) } });
     await session.setModel(modelRuntime.getModel("fixture", "synthetic"));
+    session.setThinkingLevel("high");
+    assert.equal(session.thinkingLevel, "high");
     assert.equal(errors.length, 0, JSON.stringify(errors));
     assert.ok(existsSync(join(root, "bridge.json")), `production UI extension started: ${JSON.stringify(notices)}`);
     const descriptor = JSON.parse(readFileSync(join(root, "bridge.json"), "utf8"));
@@ -56,14 +59,28 @@ test("isolated Familiar owner birth: browser HTTP admission -> real SDK branch/r
     const receipt = await response.json();
     assert.equal(response.status, 200, JSON.stringify(receipt));
     assert.equal(receipt.status, "accepted", JSON.stringify(receipt));
+    // Change both foreground controls after the synchronous admission. The
+    // deferred branch must still use the captured pair.
+    await session.setModel(modelRuntime.getModel("fixture", "synthetic-later"));
+    session.setThinkingLevel("low");
     await until(() => session.messages.some((m) => m.role === "custom" && m.customType === "familiar.background.merge"));
     assert.equal(errors.length, 0, JSON.stringify(errors));
     assert.equal(requests.length, 1, "only branch provider inference occurred");
+    assert.equal(requests[0].model, "synthetic");
+    assert.equal(requests[0].reasoning_effort, "high");
     assert.ok(requests[0].tools.some((t) => t.function.name === "background_report"));
     assert.ok(!requests[0].tools.some((t) => t.function.name === "background"));
     assert.equal(session.messages.filter((m) => m.role === "assistant").length, 0, "no fabricated foreground assent");
     assert.equal(JSON.parse(session.messages.at(-1).content).disposition, "refused");
     assert.equal(sdk.SessionManager.open(session.sessionFile).buildSessionContext().messages.at(-1).content, session.messages.at(-1).content);
+    const database = new DatabaseSync(join(root, "background", "workstreams.sqlite"));
+    const record = JSON.parse(database.prepare("SELECT body FROM workstreams").get().body);
+    database.close();
+    assert.deepEqual(record.model, { provider: "fixture", id: "synthetic" });
+    assert.equal(record.thinkingLevel, "high");
+    const branchEntries = readFileSync(record.archive.file, "utf8").trimEnd().split("\n").map(JSON.parse);
+    assert.ok(branchEntries.some((entry) => entry.type === "model_change" && entry.provider === "fixture" && entry.modelId === "synthetic"));
+    assert.ok(branchEntries.some((entry) => entry.type === "thinking_level_change" && entry.thinkingLevel === "high"));
   } finally {
     if (session) { await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" }); session.dispose(); }
     server.closeAllConnections(); await new Promise((r) => server.close(r));

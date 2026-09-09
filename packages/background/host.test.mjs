@@ -58,11 +58,16 @@ test(
     const sm = session.sessionManager;
     let starts = 0,
       disposed = 0;
+    let selectedModel = { provider: "fixture", id: "model" };
+    let selectedThinkingLevel = "medium";
+    let runtimeConfiguration;
     const owner = {
       snapshot: () => ({
         sessionId: sm.getSessionId(),
         leafId: sm.getLeafId(),
         cwd: agentDir,
+        model: selectedModel,
+        thinkingLevel: selectedThinkingLevel,
         idle: session.isIdle,
         private: false,
         entries: sm.getBranch(),
@@ -74,17 +79,23 @@ test(
     const host = new BackgroundHost({
       root: stateRoot,
       owner,
-      createRuntime: async (r) => ({
-        sessionId: r.archive.sessionId,
-        file: r.archive.file,
-        async run() {
-          starts++;
-        },
-        async abort() {},
-        dispose() {
-          disposed++;
-        },
-      }),
+      createRuntime: async (r) => {
+        runtimeConfiguration = {
+          model: structuredClone(r.model),
+          thinkingLevel: r.thinkingLevel,
+        };
+        return {
+          sessionId: r.archive.sessionId,
+          file: r.archive.file,
+          async run() {
+            starts++;
+          },
+          async abort() {},
+          dispose() {
+            disposed++;
+          },
+        };
+      },
     });
     try {
       const content = [
@@ -99,6 +110,8 @@ test(
         content,
       };
       const receipt = host.admit(request);
+      selectedModel = { provider: "later", id: "changed" };
+      selectedThinkingLevel = "high";
       assert.equal(starts, 0, "no factory/model execution under admission");
       assert.equal(
         sm
@@ -125,6 +138,10 @@ test(
       );
       for (let i = 0; i < 5; i++) await tick();
       assert.equal(starts, 1);
+      assert.deepEqual(runtimeConfiguration, {
+        model: { provider: "fixture", id: "model" },
+        thinkingLevel: "medium",
+      });
       let r = host.store.get(receipt.workstreamId);
       assert.equal(r.settledRun, r.run);
       const packet = host.report(r.id, r.generation, {

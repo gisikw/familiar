@@ -55,7 +55,8 @@ import { writeFileSync, renameSync } from 'node:fs';
 export default async function(pi) {
   await provider(pi);
   const value = { streaming: false, deltas: 0, toolDeltas: 0, failed: false, pid: process.pid };
-  const save = (ctx) => { const file = ${JSON.stringify(join(root, "progress"))} + '/' + ctx.sessionManager.getSessionId() + '.json'; writeFileSync(file+'.tmp', JSON.stringify(value), {mode:0o600}); renameSync(file+'.tmp', file); };
+  const save = (ctx) => { value.piThinkingLevel=ctx.thinkingLevel; const file = ${JSON.stringify(join(root, "progress"))} + '/' + ctx.sessionManager.getSessionId() + '.json'; writeFileSync(file+'.tmp', JSON.stringify(value), {mode:0o600}); renameSync(file+'.tmp', file); };
+  pi.on('before_provider_request', (event,ctx) => { value.normalizedWireEffort=event.payload?.reasoning?.effort ?? event.payload?.reasoning_effort ?? null; save(ctx); });
   pi.on('message_start', (event,ctx) => { if(event.message.role==='assistant') {value.streaming=true;save(ctx);} });
   pi.on('message_update', (event,ctx) => { if(event.assistantMessageEvent?.type==='error') value.failed=true; if(event.assistantMessageEvent?.type==='text_delta' && event.assistantMessageEvent.delta.length) value.deltas++; if(event.assistantMessageEvent?.type==='toolcall_delta' && event.assistantMessageEvent.delta.length) value.toolDeltas++; save(ctx); });
   pi.on('message_end', (event,ctx) => { if(event.message.role==='assistant') {value.streaming=false;value.stopReason=event.message.stopReason;if(event.message.stopReason==='error') {value.failed=true; value.errorClasses=['unsupported','schema','required','additionalproperties','authentication','rate limit','context','model','reasoning','instructions','tool','max_output_tokens','not found','permission','name','enum'].filter(term => (event.message.errorMessage ?? '').toLowerCase().includes(term));}save(ctx);} });
@@ -167,9 +168,23 @@ export default async function(pi) {
     "real probe must not delegate to the synthetic child fixture",
   );
   const observations = branches.map(progress);
+  const foregroundObservation = progress(snapshot().session.id);
   assert.ok(
-    observations.every((p) => p.pid === progress(snapshot().session.id).pid),
+    observations.every((p) => p.pid === foregroundObservation.pid),
     "foreground and branches must share this isolated resident Pi",
+  );
+  assert.ok(
+    observations.every(
+      (p) => p.piThinkingLevel === foregroundObservation.piThinkingLevel,
+    ),
+    "branches must use the effective Pi thinking level captured at admission",
+  );
+  assert.ok(
+    observations.every(
+      (p) =>
+        p.normalizedWireEffort === foregroundObservation.normalizedWireEffort,
+    ),
+    "captured branch thinking must normalize to the foreground wire effort",
   );
   stage = "cancellation-drain";
   for (const record of snapshot().background) {
@@ -196,6 +211,11 @@ export default async function(pi) {
       foregroundLatencyMs: latency,
       branchTextDeltas: observations.map((p) => p.deltas),
       branchToolArgumentDeltas: observations.map((p) => p.toolDeltas),
+      capturedPiThinkingLevel: foregroundObservation.piThinkingLevel,
+      normalizedWireEffort: foregroundObservation.normalizedWireEffort,
+      branchNormalizedWireEfforts: observations.map(
+        (p) => p.normalizedWireEffort,
+      ),
       inProcessBranchSessions: 2,
       samePiProcess: true,
       cancelledAndDrained: true,
@@ -214,6 +234,8 @@ export default async function(pi) {
         toolDeltas: value.toolDeltas,
         stopReason: value.stopReason,
         failed: value.failed,
+        piThinkingLevel: value.piThinkingLevel,
+        normalizedWireEffort: value.normalizedWireEffort,
         errorClasses: value.errorClasses,
       };
     });

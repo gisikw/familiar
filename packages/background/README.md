@@ -26,11 +26,13 @@ Terminal-only `/private` remains excluded from browser command invocation.
 
 The owner synchronously performs:
 
-1. Validate the exact content, expected parent, idle/lifecycle state, model and
-   resource reservations; take a bounded, non-mutating message-context snapshot.
+1. Validate the exact content, expected parent, idle/lifecycle state, model,
+   Pi's effective thinking level and resource reservations; take one bounded,
+   non-mutating message-context/model/thinking snapshot.
 2. Commit payload-bound admission intent in SQLite (`FULL` WAL transactions).
 3. Write/fsync the independent branch seed, its directory and the owner root;
-   commit its identity, initial digest, canonical reference and selected model.
+   commit its identity, initial digest, canonical reference, selected model and
+   captured effective thinking level.
 4. Through the pinned Pi owner API, atomically commit the actual user entry (or
    reference the existing hands-free entry), a hidden **model-visible typed
    delegation notice**, and a public-identity-only runtime receipt. This is one
@@ -65,15 +67,26 @@ emitter bodies remain hash-checked beneath the admission fences. Source shape an
 installed compiled output are tested unconditionally during Nix installation.
 Upstream's included `56700d42` fix compacts after large tool results before the
 next assistant request in a continuing run while preserving effective thinking;
-Familiar asserts that path and does not patch generic reasoning behavior.
+Familiar asserts that path and does not patch generic reasoning behavior. That
+stock compaction behavior is separate from admission-time branch capture, as is
+any explicit handoff policy that retries another request at low effort.
 
 A post-rename persistence failure poisons that writer. It cannot append or start
 another prompt; recovery requires a new owner reading the archive. Temporary
 control files are bounded and reclaimed under the host lease on rebirth.
 
 Each branch has its own SessionManager/file, ModelRuntime, resource loader,
-settings and extension runtime. The selected model is captured at admission,
-not reread from a later foreground model choice. Ambient extensions, UI,
+settings and extension runtime. The selected model and Pi effective thinking
+level are captured together at admission and stored in the scheduling record;
+neither is reread from later foreground choices. Before the admitted turn is
+continued, the independent runtime selects that exact model and passes the
+captured level through Pi's public setter. Pi still performs its ordinary
+per-model capability clamping, and the provider adapter still performs its wire
+normalization (`off` may therefore be observed as `none` or an omitted effort on
+provider-specific wire formats). Persisted scheduling state accepts only Pi's
+canonical `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max` names;
+missing, legacy, alias, or unknown values fail closed rather than being guessed.
+Ambient extensions, UI,
 subscriber, worklist, prompt templates and skills are not loaded into branches.
 The audited provider extension is loaded independently (Familiar Tiamat by
 default); another configured route requires a trusted provider adapter via
@@ -219,5 +232,8 @@ model output; HTTP 200 headers alone do not. Streamed errors fail the gate.
 Prompts are bounded harmless tutorials. The probe verifies all three sessions
 share the isolated Pi process, cancels/drains both branches, and tears down only
 its own temporary instance. It does not read resident history or log credentials,
-provider payloads or real-provider panes. The older bare-SDK probe remains as a
-separate diagnostic, not a substitute for this release gate.
+provider payloads or real-provider panes. It also requires each branch's Pi
+level and normalized wire effort to equal the foreground values captured for the
+same admitted model, and reports both (including provider-specific off aliases)
+in its bounded result. The older bare-SDK probe remains as a separate diagnostic,
+not a substitute for this release gate.

@@ -14,11 +14,18 @@ const r = store.create({
   projectId: "project",
   content: "exact admitted turn\n",
 }).record;
-store.prepare(r.id, 1, {
-  file: "/synthetic/branch.jsonl",
-  sha256: "a".repeat(64),
-  sessionId: "branch",
-});
+store.prepare(
+  r.id,
+  1,
+  {
+    file: "/synthetic/branch.jsonl",
+    sha256: "a".repeat(64),
+    sessionId: "branch",
+  },
+  undefined,
+  { provider: "fixture", id: "model" },
+  "medium",
+);
 store.admitReceipt(r.id, 1, { userEntryId: "user", controlEntryId: "control" });
 store.start(r.id, 1);
 if (target.startsWith("child-")) {

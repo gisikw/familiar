@@ -22,6 +22,8 @@ const owner = {
     leafId: sm.getLeafId(),
     file: sm.getSessionFile(),
     cwd: root,
+    model: { provider: "fixture", id: "model" },
+    thinkingLevel: "medium",
     idle: true,
     private: false,
     entries: sm.getBranch(),
