@@ -9,7 +9,10 @@ const runner = read('src/core/extensions/runner.ts');
 const types = read('src/core/extensions/types.ts');
 assert.match(session, /isIdle: \(\) => this\.isIdle/);
 assert.match(session, /get isIdle\(\): boolean \{\s*return !this\._isAgentRunActive;/);
-const prompt = session.slice(session.indexOf('async prompt('), session.indexOf('private async _tryExecuteExtensionCommand'));
+assert.match(session, /async prompt\(text: string, options\?: PromptOptions\): Promise<void> \{\s*this\.controlPromptDepth\+\+;\s*try \{ return await this\._promptForOwner\(text, options\); \}\s*finally \{ this\.controlPromptDepth--; \}/);
+// Background adds only a finally-safe no-run admission fence around prompt.
+// Verify the entire original implementation, not a replacement hash.
+const prompt = session.slice(session.indexOf('private async _promptForOwner('), session.indexOf('private async _tryExecuteExtensionCommand')).replace('private async _promptForOwner(', 'async prompt(');
 assert(prompt.indexOf('await this._tryExecuteExtensionCommand(text)') >= 0);
 assert(prompt.indexOf('await this._tryExecuteExtensionCommand(text)') < prompt.indexOf('if (this.isStreaming)'));
 const dispatcher = session.slice(session.indexOf('private async _tryExecuteExtensionCommand'), session.indexOf('\n\t/**', session.indexOf('private async _tryExecuteExtensionCommand')));

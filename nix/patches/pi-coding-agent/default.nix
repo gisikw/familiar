@@ -17,7 +17,7 @@ assert pkgs.lib.assertMsg ((old.patches or []) == [] && (old.prePatch or "") == 
     echo 'Verifying Familiar Pi 0.84.1 patch inputs (fail closed)'
     sha256sum --check --strict ${./upstream.sha256}
   '' + (old.prePatch or "");
-  patches = (old.patches or []) ++ [ ./invoke-command.patch ];
+  patches = (old.patches or []) ++ [ ./invoke-command.patch ./runtime-control.patch ];
 
   postPatch = (old.postPatch or "") + ''
     node ${./invoke-command-shape.test.mjs}
@@ -34,6 +34,7 @@ assert pkgs.lib.assertMsg ((old.patches or []) == [] && (old.prePatch or "") == 
   postInstall = (old.postInstall or "") + ''
     piRoot="$out/lib/node_modules/pi-monorepo"
     node ${./invoke-command.test.mjs} "$piRoot"
+    node ${./runtime-control.test.mjs} "$piRoot"
     grep -F 'invokeExtensionCommand(name: string, args?: string): Promise<void>;' \
       "$piRoot/dist/core/extensions/types.d.ts"
     if grep -E 'invokeCommand\(|invokeExtensionCommandFromPrompt' "$piRoot/dist/core/extensions/types.d.ts"; then

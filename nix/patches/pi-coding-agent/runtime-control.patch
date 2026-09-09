@@ -1,0 +1,231 @@
+diff --git a/packages/coding-agent/src/core/agent-session-runtime.ts b/packages/coding-agent/src/core/agent-session-runtime.ts
+index c3b6056..05d20bb 100644
+--- a/packages/coding-agent/src/core/agent-session-runtime.ts
++++ b/packages/coding-agent/src/core/agent-session-runtime.ts
+@@ -81,0 +82,11 @@ export class AgentSessionRuntime {
++	private runtimeControlReplacementDepth = 0;
++
++	private async withRuntimeControlReplacement<T>(run: () => Promise<T>): Promise<T> {
++		this.runtimeControlReplacementDepth++;
++		try { return await run(); } finally { this.runtimeControlReplacementDepth--; }
++	}
++
++	switchSession(...args: Parameters<AgentSessionRuntime["_switchSession"]>) { return this.withRuntimeControlReplacement(() => this._switchSession(...args)); }
++	newSession(...args: Parameters<AgentSessionRuntime["_newSession"]>) { return this.withRuntimeControlReplacement(() => this._newSession(...args)); }
++	fork(...args: Parameters<AgentSessionRuntime["_fork"]>) { return this.withRuntimeControlReplacement(() => this._fork(...args)); }
++	importFromJsonl(...args: Parameters<AgentSessionRuntime["_importFromJsonl"]>) { return this.withRuntimeControlReplacement(() => this._importFromJsonl(...args)); }
+@@ -90,0 +102 @@ export class AgentSessionRuntime {
++		_session.extensionRunner.bindRuntimeControlOwnerAdmission(() => this.runtimeControlReplacementDepth === 0);
+@@ -181,0 +194 @@ export class AgentSessionRuntime {
++		result.session.extensionRunner.bindRuntimeControlOwnerAdmission(() => this.runtimeControlReplacementDepth === 0);
+@@ -196 +209 @@ export class AgentSessionRuntime {
+-	async switchSession(
++	private async _switchSession(
+@@ -226 +239 @@ export class AgentSessionRuntime {
+-	async newSession(options?: {
++	private async _newSession(options?: {
+@@ -262 +275 @@ export class AgentSessionRuntime {
+-	async fork(
++	private async _fork(
+@@ -361 +374 @@ export class AgentSessionRuntime {
+-	async importFromJsonl(inputPath: string, cwdOverride?: string): Promise<{ cancelled: boolean }> {
++	private async _importFromJsonl(inputPath: string, cwdOverride?: string): Promise<{ cancelled: boolean }> {
+diff --git a/packages/coding-agent/src/core/agent-session.ts b/packages/coding-agent/src/core/agent-session.ts
+index 4aafe13..9a99f22 100644
+--- a/packages/coding-agent/src/core/agent-session.ts
++++ b/packages/coding-agent/src/core/agent-session.ts
+@@ -1067 +1067,9 @@ export class AgentSession {
+-	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
++	/** Start an owned background archive's already-admitted user entry once,
++	 * through the ordinary retry/queue/settled pipeline without re-appending it. */
++	async continueAdmittedTurn(): Promise<void> {
++		this._extensionRunner.assertRuntimeControlAdmission();
++		if (this.messages.at(-1)?.role !== "user") throw new Error("No admitted user turn to continue");
++		await this._runAgentPrompt(undefined);
++	}
++
++	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[] | undefined): Promise<void> {
+@@ -1070 +1078,2 @@ export class AgentSession {
+-			await this.agent.prompt(messages);
++			if (messages === undefined) await this.agent.continue();
++			else await this.agent.prompt(messages);
+@@ -1119,0 +1129,2 @@ export class AgentSession {
++	private controlPromptDepth = 0;
++
+@@ -1120,0 +1132,6 @@ export class AgentSession {
++		this.controlPromptDepth++;
++		try { return await this._promptForOwner(text, options); }
++		finally { this.controlPromptDepth--; }
++	}
++
++	private async _promptForOwner(text: string, options?: PromptOptions): Promise<void> {
+@@ -2342,0 +2360,12 @@ export class AgentSession {
++	/** Durable no-run owner transaction; no awaited callbacks inside its fence. */
++	commitRuntimeControl(sessionId: string, leafId: string | null, entries: import("./session-manager.ts").RuntimeControlInput[]): string[] {
++		this._extensionRunner.assertRuntimeControlAdmission();
++		const ids = this.sessionManager.commitRuntimeControl(sessionId, leafId, entries);
++		this.agent.state.messages = this.sessionManager.buildSessionContext().messages;
++		for (const id of ids) {
++			const entry = this.sessionManager.getEntry(id);
++			if (entry) this._emit({ type: "entry_appended", entry });
++		}
++		return ids;
++	}
++
+@@ -2344,0 +2374 @@ export class AgentSession {
++		runner.bindRuntimeControlPromptAdmission(() => this.controlPromptDepth === 0);
+@@ -2389,0 +2420 @@ export class AgentSession {
++				commitRuntimeControl: (sessionId, leafId, entries) => this.commitRuntimeControl(sessionId, leafId, entries),
+diff --git a/packages/coding-agent/src/core/extensions/loader.ts b/packages/coding-agent/src/core/extensions/loader.ts
+index 25b06ed..e51de47 100644
+--- a/packages/coding-agent/src/core/extensions/loader.ts
++++ b/packages/coding-agent/src/core/extensions/loader.ts
+@@ -199,0 +200,2 @@ export function createExtensionRuntime(): ExtensionRuntime {
++		commitRuntimeControl: notInitialized,
++		isRuntimeControlAvailable: () => false,
+@@ -378,0 +381,7 @@ function createExtensionAPI(
++		isRuntimeControlAvailable() { return runtime.isRuntimeControlAvailable(); },
++
++		commitRuntimeControl(sessionId, leafId, entries) {
++			runtime.assertActive();
++			return runtime.commitRuntimeControl(sessionId, leafId, entries);
++		},
++
+diff --git a/packages/coding-agent/src/core/extensions/runner.ts b/packages/coding-agent/src/core/extensions/runner.ts
+index 8772d34..90d49c1 100644
+--- a/packages/coding-agent/src/core/extensions/runner.ts
++++ b/packages/coding-agent/src/core/extensions/runner.ts
+@@ -339,0 +340,8 @@ export class ExtensionRunner {
++		this.runtime.isRuntimeControlAvailable = () => {
++			try { this.assertRuntimeControlAdmission(); return true; } catch { return false; }
++		};
++		this.runtime.commitRuntimeControl = (sessionId, leafId, entries) => {
++			this.assertRuntimeControlAdmission();
++			if (!actions.commitRuntimeControl) throw new Error("Runtime control unavailable");
++			return actions.commitRuntimeControl(sessionId, leafId, entries);
++		};
+@@ -665,0 +674,12 @@ export class ExtensionRunner {
++	private runtimeControlOwnerAdmission = () => true;
++	private runtimeControlPromptAdmission = () => true;
++	bindRuntimeControlOwnerAdmission(admit: () => boolean): void { this.runtimeControlOwnerAdmission = admit; }
++	bindRuntimeControlPromptAdmission(admit: () => boolean): void { this.runtimeControlPromptAdmission = admit; }
++
++	assertRuntimeControlAdmission(): void {
++		this.assertActive();
++		this.runtime.assertActive();
++		if (!this.commandAdmissionFn() || !this.runtimeControlOwnerAdmission() || !this.runtimeControlPromptAdmission() || this.eventDispatchDepth !== 0 || this.commandActive)
++			throw new Error("Runtime control requires idle owner outside command/event dispatch");
++	}
++
+diff --git a/packages/coding-agent/src/core/extensions/types.ts b/packages/coding-agent/src/core/extensions/types.ts
+index 93f114d..e52f8a3 100644
+--- a/packages/coding-agent/src/core/extensions/types.ts
++++ b/packages/coding-agent/src/core/extensions/types.ts
+@@ -1362,0 +1363,7 @@ export interface ExtensionAPI {
++	/** Familiar owner-only atomic no-run control write. Synchronous, idle/session/leaf fenced.
++	 * Rejects awaited event dispatch, active commands and stale runtimes. Never queues inference.
++	 */
++	commitRuntimeControl(sessionId: string, leafId: string | null, entries: import("../session-manager.ts").RuntimeControlInput[]): string[];
++	/** Non-mutating current eligibility hint. commitRuntimeControl rechecks atomically. */
++	isRuntimeControlAvailable(): boolean;
++
+@@ -1617,0 +1625,2 @@ export interface ExtensionRuntimeState {
++	isRuntimeControlAvailable: ExtensionAPI["isRuntimeControlAvailable"];
++	commitRuntimeControl: ExtensionAPI["commitRuntimeControl"];
+@@ -1644,0 +1654 @@ export interface ExtensionActions {
++	commitRuntimeControl: ExtensionAPI["commitRuntimeControl"];
+diff --git a/packages/coding-agent/src/core/session-manager.ts b/packages/coding-agent/src/core/session-manager.ts
+index 70d3921..35bd729 100644
+--- a/packages/coding-agent/src/core/session-manager.ts
++++ b/packages/coding-agent/src/core/session-manager.ts
+@@ -8,0 +9,3 @@ import {
++	fsyncSync,
++	renameSync,
++	unlinkSync,
+@@ -17 +20 @@ import { readdir, stat } from "fs/promises";
+-import { join, resolve } from "path";
++import { dirname, join, resolve } from "path";
+@@ -31,0 +35,6 @@ export const CURRENT_SESSION_VERSION = 3;
++/** Owner-only no-run batch. Cannot manufacture assistant messages. */
++export type RuntimeControlInput =
++	| { type: "message"; message: Extract<Message, { role: "user" }> }
++	| { type: "custom"; customType: string; data: unknown }
++	| { type: "custom_message"; customType: string; content: string; display: boolean; details?: unknown };
++
+@@ -978,0 +988,68 @@ export class SessionManager {
++	private controlWriteUncertain = false;
++	private persistenceBudget = Number.POSITIVE_INFINITY;
++
++	/** Host-owned branch disk bound; checked before publishing an appended entry. */
++	setPersistenceBudget(bytes: number): void {
++		if (!Number.isSafeInteger(bytes) || bytes < 1024 || bytes > 32 * 1024 * 1024) throw new Error("Invalid persistence budget");
++		this.persistenceBudget = bytes;
++	}
++
++	private assertPersistenceBudget(entry?: SessionEntry): void {
++		if (!Number.isFinite(this.persistenceBudget)) return;
++		let bytes = 0;
++		for (const item of this.fileEntries) bytes += Buffer.byteLength(JSON.stringify(item)) + 1;
++		if (entry) bytes += Buffer.byteLength(JSON.stringify(entry)) + 1;
++		if (bytes > this.persistenceBudget) throw new Error("Session persistence byte budget exceeded");
++	}
++
++	/** Caller owns the writer lease and lifecycle fence. Memory changes only after
++	 * atomic rename + directory fsync. Post-rename failure quarantines this writer.
++	 */
++	commitRuntimeControl(expectedSessionId: string, expectedLeafId: string | null, inputs: RuntimeControlInput[], boundary: (point: string) => void = () => {}): string[] {
++		if (this.controlWriteUncertain) throw new Error("Session writer quarantined");
++		if (this.sessionId !== expectedSessionId || this.leafId !== expectedLeafId) throw new Error("Session/leaf conflict");
++		if (!this.persist || !this.sessionFile) throw new Error("Runtime control requires durable session");
++		if (!Array.isArray(inputs) || inputs.length < 1 || inputs.length > 2) throw new Error("Invalid runtime control batch");
++		const serialized = JSON.stringify(inputs);
++		if (Buffer.byteLength(serialized) > 8 * 1024 * 1024) throw new Error("Runtime control byte budget");
++		const copy = JSON.parse(serialized) as RuntimeControlInput[];
++		for (const input of copy) {
++			if (input.type === "message" ? input.message?.role !== "user" :
++				!["custom", "custom_message"].includes(input.type) || typeof input.customType !== "string")
++				throw new Error("Invalid runtime control entry");
++		}
++		let parentId = this.leafId;
++		const entries: SessionEntry[] = copy.map((input) => {
++			const entry = { ...input, id: randomUUID(), parentId, timestamp: new Date().toISOString() } as SessionEntry;
++			parentId = entry.id;
++			return entry;
++		});
++		const next = [...this.fileEntries, ...entries];
++		const body = next.map((entry) => JSON.stringify(entry)).join("\n") + "\n";
++		if (Buffer.byteLength(body) > Math.min(this.persistenceBudget, 32 * 1024 * 1024)) throw new Error("Canonical context byte budget");
++		const temporary = `${this.sessionFile}.${randomUUID()}.runtime-control.tmp`;
++		let renamed = false;
++		const fd = openSync(temporary, "wx", 0o600);
++		try {
++			writeFileSync(fd, body);
++			boundary("control:written");
++			fsyncSync(fd);
++			boundary("control:fsynced");
++			renameSync(temporary, this.sessionFile);
++			renamed = true;
++			this.controlWriteUncertain = true;
++			boundary("control:renamed");
++			const directory = openSync(dirname(this.sessionFile), "r");
++			try { fsyncSync(directory); } finally { closeSync(directory); }
++			boundary("control:directory-synced");
++			this.fileEntries = next;
++			this._buildIndex();
++			this.flushed = true;
++			this.controlWriteUncertain = false;
++			return entries.map((entry) => entry.id);
++		} finally {
++			closeSync(fd);
++			if (!renamed) unlinkSync(temporary);
++		}
++	}
++
+@@ -979,0 +1057,2 @@ export class SessionManager {
++		this.assertPersistenceBudget();
++		if (this.controlWriteUncertain) throw new Error("Session writer quarantined");
+@@ -1015,0 +1095 @@ export class SessionManager {
++		if (this.controlWriteUncertain) throw new Error("Session writer quarantined");
+@@ -1044,0 +1125,2 @@ export class SessionManager {
++		this.assertPersistenceBudget(entry);
++		if (this.controlWriteUncertain) throw new Error("Session writer quarantined");
