@@ -375,7 +375,7 @@ run_pi() {
       --arg dir "$PI_CODING_AGENT_DIR" \
       --arg ext "$REPO/integrations/pi/extensions" '
       $prev + {
-        lastChangelogVersion: "0.84.1",
+        lastChangelogVersion: "0.85.1",
         theme: "familiar",
         themes: [ ($dir + "/themes") ],
         compaction: { enabled: true, reserveTokens: 4096 },

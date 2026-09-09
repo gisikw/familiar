@@ -24,7 +24,7 @@ function fixture() {
   return { root, agentDir, extensions };
 }
 
-describe("pi 0.84.1 extension discovery contract", () => {
+describe("pi 0.85.1 extension discovery contract", () => {
   test("loads a child index but not colocated helper, test, or Bun-only TypeScript", async () => {
     const { root, agentDir } = fixture();
     const result = await (await loader()).discoverAndLoadExtensions([], root, agentDir);

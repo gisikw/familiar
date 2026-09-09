@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Real pi 0.84.1 loader smoke. Run under the pi dev shell (Node, no Bun globals).
+// Real pi 0.85.1 loader smoke. Run under the pi dev shell (Node, no Bun globals).
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

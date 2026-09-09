@@ -54,13 +54,18 @@ its own tool call/results into the new branch seed.
 
 ## Pi and branch runtime
 
-The minimal downstream patch stays pinned to **Pi 0.84.1** and verified pristine
-source hashes. It adds `commitRuntimeControl`, a non-mutating eligibility hint,
-`continueAdmittedTurn`, and a per-session persistence budget. Control transactions
-reject stale session/leaf, command/event/replacement/settled dispatch, pending
-messages, compaction and bash work. The original prompt/command implementation is
-still hash-checked beneath its admission-fence wrapper. Installed compiled output
-is tested unconditionally during Nix installation.
+The downstream stack is pinned to exact **Pi 0.85.1** tag commit
+`d981de1229ef899957bbe968bc8dcda02a21f477` with verified source/vendor hashes.
+`invoke-command.patch` applies first; `runtime-control.patch` then adds
+`commitRuntimeControl`, a non-mutating eligibility hint, `continueAdmittedTurn`,
+and a per-session persistence budget. Control transactions reject stale
+session/leaf, command/event/replacement/settled dispatch, pending messages,
+compaction and bash work. The original 0.85.1 prompt/command and all wrapped
+emitter bodies remain hash-checked beneath the admission fences. Source shape and
+installed compiled output are tested unconditionally during Nix installation.
+Upstream's included `56700d42` fix compacts after large tool results before the
+next assistant request in a continuing run while preserving effective thinking;
+Familiar asserts that path and does not patch generic reasoning behavior.
 
 A post-rename persistence failure poisons that writer. It cannot append or start
 another prompt; recovery requires a new owner reading the archive. Temporary

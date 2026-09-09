@@ -55,7 +55,7 @@ Familiar follows pi's directory-entry convention: every extension entrypoint is
 remains under `integrations/pi/extensions/lib`, while tests and helpers are
 colocated beneath extension subdirectories. Do not add root
 `integrations/pi/extensions/*.ts` or `integrations/pi/extensions/*.js` files:
-pi 0.84.1 treats every root `.ts`/`.js` file as an extension, whereas it loads
+pi 0.85.1 treats every root `.ts`/`.js` file as an extension, whereas it loads
 only `index.ts`/`index.js`
 (or a declared package entry) from each immediate subdirectory. This keeps Bun-only
 tests and support modules outside runtime auto-discovery without a second manifest.

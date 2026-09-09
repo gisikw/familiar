@@ -168,7 +168,7 @@ existing layering as it matures rather than fork pi.
 
 ### Temporary pi adapter
 
-Pi 0.84.1 has stable interactive and headless RPC modes, but its experimental
+Pi 0.85.1 has stable interactive and headless RPC modes, but its experimental
 persistent server and detachable standard TUI are not yet a complete supported
 workflow. Familiar therefore closes over the current implementation behind two
 replaceable adapters:

@@ -771,7 +771,7 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, params: { level: string; duration_minutes?: number }) {
       const level = params.level;
       // One widened details shape across all branches so the tool's TDetails
-      // unifies (pinned pi 0.84.1 requires a non-optional `details`).
+      // unifies (pinned pi 0.85.1 requires a non-optional `details`).
       const result = (details: Record<string, unknown>, isError = false) => ({
         content: [{ type: "text" as const, text: JSON.stringify(details) }],
         details,

@@ -72,7 +72,7 @@ type Navigate = (
 
 /* Pi intentionally exposes navigateTree only on command contexts because it
  * is unsafe during a live agent run. A model tool, however, needs to schedule
- * the same operation after agent_settled. Pi 0.84.1 has no public deferred
+ * the same operation after agent_settled. Pi 0.85.1 has no public deferred
  * navigation primitive, so install a deliberately narrow bridge on the public
  * ExtensionRunner: ordinary event contexts gain one symbol-keyed action that
  * delegates to the mode's real navigation handler. We call it only from

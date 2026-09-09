@@ -68,11 +68,35 @@ covered. Browser projection strips internal archive paths and raw request bodies
 private classification takes precedence. Nothing was added to the old settings
 Sidebar, and no demo workstreams appear in production.
 
+## Pi 0.85.1 integration assumptions
+
+The release candidate now pins lightweight upstream tag `v0.85.1` at immutable
+commit `d981de1229ef899957bbe968bc8dcda02a21f477`. The verified Nix source hash is
+`sha256-gU8BSiqqOYt2RRuQONHHGvZeSM5KFQVrwif9bmuUXUc=`, npm dependency hash is
+`sha256-jzlsZIQzfl1FCZZ5//dHFWwMfBZQ4nRD6KB4HHifPqE=`, and restored pi-ai model
+data hash is `sha256-r30RmGF5RFzm/oizfVfeIvgjwP/TplyuMcVVt/XpklM=`.
+
+Patch order is deliberate: `invoke-command.patch` first, then
+`runtime-control.patch`. Upstream 0.85.1 still has no equivalent direct awaited
+extension-command API, atomic no-run owner transaction, admitted-turn continuation,
+persistence budget/quarantine, or complete owner/replacement fence, so neither
+patch was dropped. Both were rebased around upstream's changed loader, SDK,
+session/runtime, model and compaction code while retaining upstream method bodies.
+
+Upstream commit `56700d42ed65a94a80af7376adb19a9298065164` (PR #8782,
+issue #6879) is an ancestor of the target. It runs threshold compaction after a
+large tool result and before another assistant request in the same run, then
+republishes the effective model and thinking level. Familiar asserts this in
+source and installed output and adds no generic reasoning-level patch. The
+custom handoff's direct `ModelRegistry.complete()` retry-at-low behavior remains
+separate and tested.
+
 ## Acceptance evidence
 
 | Gate                                            | Result                                                                                                                                                |
 | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Installed pinned Pi 0.84.1                      | Source hashes, unchanged upstream command body, installed JS/declarations and owner-control assertions passed                                         |
+| Installed pinned Pi 0.85.1                      | Exact commit/source/vendor hashes, unchanged upstream command/emitter bodies, installed JS/declarations and owner-control assertions passed             |
+| Upstream mid-turn compaction                    | Source + compiled assertions prove threshold compaction precedes another assistant request and preserves effective thinking                            |
 | Background core / compiled SDK                  | **147 passed**; one cross-repository case intentionally omitted from the standalone Nix closure and run separately                                    |
 | Cross-repository production-extension HTTP flow | **1 passed**, no skip: canonical admission → actual SDK/report tool → durable refusal merge                                                           |
 | Actual process-kill boundaries                  | **102 SIGKILL cases**: 60 retained kernel boundaries, 8 canonical primitive cases, 33 composed admission/rejoin/failure cases, 1 host-held lease case |
@@ -81,7 +105,7 @@ Sidebar, and no demo workstreams appear in production.
 | Familiar shell regression scripts               | **9 scripts passed**                                                                                                                                  |
 | Presence isolated lifecycle                     | **12 passed**                                                                                                                                         |
 | Native viewer                                   | **97 passed**, all targets                                                                                                                            |
-| Gateway Bun suite                               | **75 passed** across 13 files                                                                                                                         |
+| Gateway Bun suite                               | **64 passed** across 12 files                                                                                                                         |
 | Subscriber + zip harness                        | Passed with synthetic attach and matching installed SDK resolution                                                                                    |
 | Native gateway/viewer/Presence browser smoke    | **6 passed**; Kitty translation proven by APC bytes and **11,760 magenta pixels**                                                                     |
 | familiar-ui npm check                           | **267 Node + 163 web passed**, type and format checks passed                                                                                          |
@@ -107,7 +131,10 @@ Router catalog on the authorized provider/wire. It does not copy credentials,
 print tokens/headers/request bodies, inspect resident history, or dump real-provider
 panes. Unsupported-model/error records fail the gate even with HTTP 200.
 
-Latest successful run on the completed code:
+The following real-provider result belongs to the accepted pre-upgrade Background
+candidate and remains historical evidence for the probe itself. The 0.85.1
+integration did not spend provider quota or treat this earlier run as upgrade
+proof:
 
 ```json
 {
@@ -172,10 +199,9 @@ are deployment instructions, not actions performed against production by this jo
    `47a5512748fe41f5d11406a4a51aba383c978b66`; UI HTTPS authentication was unavailable,
    so its remote freshness remains unverified. Nothing was pushed.
 2. Build the reconciled Familiar pinned Pi and UI closures and rerun the paired
-   gates. The tested Pi closure is
-   `/nix/store/mlbwk25lys2ykpfmj6vwfbki6pla34p5-pi-coding-agent-0.84.1`.
-   Rebuilding from a reconciled tree may yield another store path; the pin/hash
-   and installed-output checks, not this path string, are the authority.
+   gates. Store paths vary with the complete repository source; the exact
+   commit, pin/hashes and installed-output checks—not a copied store path—are
+   the authority.
 3. Stage the UI's `$uiOut/share/familiar-ui/web` using the existing hardened
    frontend/broker deployment. Replace the old UI extension entry with
    `$uiOut/share/familiar-ui/packages/extension/dist/index.js` in the instance's
