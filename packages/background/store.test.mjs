@@ -254,7 +254,7 @@ test("all Pi thinking levels survive exact SQLite record serialization", () => {
   }
 });
 
-test("missing, alias and invalid persisted thinking levels fail closed", () => {
+test("missing and alias thinking levels fail closed at preparation", () => {
   for (const level of [
     undefined,
     null,
@@ -288,40 +288,113 @@ test("missing, alias and invalid persisted thinking levels fail closed", () => {
     store.close();
     rmSync(root, { recursive: true, force: true });
   }
+});
 
-  for (const mutation of ["missing", "invalid", "legacy-version"]) {
-    const root = mkdtempSync(join(tmpdir(), "background-corrupt-thinking-"));
-    let store = new WorkstreamStore(root);
-    const created = store.create({
-      ...request,
-      admissionId: `persisted-${mutation}`,
-    }).record;
-    store.prepare(
-      created.id,
-      1,
-      {
-        file: "/synthetic/branch.jsonl",
-        sha256: "d".repeat(64),
-        sessionId: "branch",
-      },
-      undefined,
-      { provider: "fixture", id: "model" },
-      "medium",
-    );
-    const body = store.get(created.id);
-    if (mutation === "missing") delete body.thinkingLevel;
-    if (mutation === "invalid") body.thinkingLevel = "none";
-    if (mutation === "legacy-version") body.version = 2;
-    store.db
-      .prepare("UPDATE workstreams SET body=? WHERE id=?")
-      .run(JSON.stringify(body), created.id);
-    store.close();
-    assert.throws(
-      () => new WorkstreamStore(root),
-      /thinking level|unsupported workstream/,
-    );
+test("mixed corrupt records are quarantined without migration, recovery, or admission replay", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "background-mixed-corrupt-"));
+  let store = new WorkstreamStore(root);
+  t.after(() => {
+    try {
+      store.close();
+    } catch {
+      // The pre-restart handle was already closed.
+    }
     rmSync(root, { recursive: true, force: true });
+  });
+  const valid = running(store);
+  const original = structuredClone(valid);
+  const inserted = [];
+  const insert = (name, mutate, body) => {
+    const record = structuredClone(original);
+    record.id = `corrupt-${name}`;
+    record.admission.admissionId = `fenced-${name}`;
+    mutate?.(record);
+    const encoded = body ?? JSON.stringify(record);
+    store.db
+      .prepare("INSERT INTO workstreams VALUES (?,?,?,?,?)")
+      .run(
+        record.id,
+        record.admission.admissionId,
+        record.admission.digest,
+        record.revision,
+        encoded,
+      );
+    inserted.push({
+      id: record.id,
+      admissionId: record.admission.admissionId,
+      body: encoded,
+    });
+  };
+  insert("malformed", null, `${"operator-secret".repeat(4096)}{`);
+  insert(
+    "oversized",
+    null,
+    "x".repeat(LIMITS.admissionBytes + 8 * 1024 * 1024 + 1),
+  );
+  insert("legacy", (record) => {
+    record.version = 2;
+  });
+  insert("missing-thinking", (record) => {
+    delete record.thinkingLevel;
+  });
+  insert("invalid-thinking", (record) => {
+    record.thinkingLevel = "none";
+  });
+  insert("invalid-model", (record) => {
+    record.model = { provider: "fixture", id: null };
+  });
+  for (let index = 0; index < 64; index++)
+    insert(`malformed-${index}`, null, "{");
+
+  store.close();
+  store = new WorkstreamStore(root);
+  assert.deepEqual(
+    store.list().map((record) => record.id),
+    [valid.id],
+  );
+  const diagnostics = store.quarantineList();
+  assert.equal(diagnostics.length, inserted.length);
+  assert.deepEqual(
+    new Set(diagnostics.map((entry) => entry.reason)),
+    new Set([
+      "malformed-json",
+      "oversized-record",
+      "unsupported-version",
+      "invalid-thinking-level",
+      "invalid-model",
+    ]),
+  );
+  assert.ok(JSON.stringify(diagnostics).length < 16 * 1024);
+  assert.ok(!JSON.stringify(diagnostics).includes("operator-secret"));
+  for (const row of inserted) {
+    assert.throws(
+      () => store.get(row.id),
+      (error) =>
+        error.code === "ERR_BACKGROUND_RECORD_QUARANTINED" &&
+        error.message.length < 128,
+    );
+    assert.throws(
+      () => store.byAdmission(row.admissionId),
+      /quarantined workstream record/,
+    );
   }
+  assert.throws(
+    () => store.create({ ...request, admissionId: "fenced-malformed" }),
+    /quarantined workstream record/,
+  );
+  store.recover(() => false);
+  assert.equal(store.get(valid.id).status, "orphaned");
+  assert.equal(store.list().length, 1);
+  for (const row of inserted)
+    assert.equal(
+      store.db.prepare("SELECT body FROM workstreams WHERE id=?").get(row.id)
+        .body,
+      row.body,
+    );
+  assert.equal(
+    store.db.prepare("SELECT count(*) AS count FROM workstreams").get().count,
+    inserted.length + 1,
+  );
 });
 
 test("attachment/image and bounded project handoff survive byte-exact normalization", () => {

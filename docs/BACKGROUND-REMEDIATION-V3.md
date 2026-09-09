@@ -75,6 +75,42 @@ covered. Browser projection strips internal archive paths and raw request bodies
 private classification takes precedence. Nothing was added to the old settings
 Sidebar, and no demo workstreams appear in production.
 
+## Independent-review P1 availability remediation
+
+The review of thinking-capture candidate `8cae9dc` accepted the core capture path
+but found that one invalid SQLite body aborted the whole store constructor. The
+store now classifies persisted rows independently. Valid v3 rows alone populate
+the public/child indexes and participate in recovery, resource policy and runtime
+operations. Malformed JSON, legacy versions, identity/shape failures, and missing
+or invalid archived model/thinking configuration remain byte-for-byte in SQLite
+and are never recovered or passed to a runtime factory. Their durable primary and
+unique admission columns continue to reject duplicate work. Direct id/admission
+lookup fails closed with a fixed quarantine error instead of inferring or
+migrating state.
+
+Quarantine diagnostics are in-memory, read-only projections containing only a
+bounded record id, fixed reason code, revision and capped body-byte count. Parser
+messages and record/admission content are not exposed. Startup scans no more than
+the 256-row durable quota and uses SQLite length gating so an oversized body is
+not selected into JavaScript. Tests mix a valid running v3 row with malformed
+JSON, legacy v2, missing/invalid thinking, and missing/invalid model rows. They
+also use one secret-like malformed body, 64 additional malformed rows and an
+over-limit body to check diagnostic count, size and SQL length gating. Store
+recovery and the production extension both remain available; valid work is
+orphaned under the existing uncertain-work rule, a fresh unrelated branch runs,
+no invalid branch constructs a runtime, corrupt bodies remain unchanged,
+and replay through an invalid admission id remains fenced.
+
+Remediation checks (no real provider or external API call):
+
+- Focused store + host lifecycle: **77 passed**, 0 failed/skipped.
+- Complete Background Node suite: **152 passed**, 0 failed, 1 intentional
+  cross-repository skip.
+- Cross-repository production extension with the unchanged familiar-ui source and
+  loopback synthetic provider: **1 passed**, 0 failed/skipped; exactly one fresh
+  branch request was observed despite mixed persisted corruption.
+- `git diff --check`: passed.
+
 ## Pi 0.85.1 integration assumptions
 
 The release candidate now pins lightweight upstream tag `v0.85.1` at immutable
@@ -104,7 +140,7 @@ separate and tested.
 | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Installed pinned Pi 0.85.1                      | Exact commit/source/vendor hashes, unchanged upstream command/emitter bodies, installed JS/declarations and owner-control assertions passed             |
 | Upstream mid-turn compaction                    | Source + compiled assertions prove threshold compaction precedes another assistant request and preserves effective thinking                            |
-| Background core / compiled SDK                  | **147 passed**; one cross-repository case intentionally omitted from the standalone Nix closure and run separately                                    |
+| Background core / compiled SDK                  | **152 passed**; one cross-repository case intentionally omitted from the standalone Nix closure and run separately                                    |
 | Cross-repository production-extension HTTP flow | **1 passed**, no skip: canonical admission → actual SDK/report tool → durable refusal merge                                                           |
 | Actual process-kill boundaries                  | **102 SIGKILL cases**: 60 retained kernel boundaries, 8 canonical primitive cases, 33 composed admission/rejoin/failure cases, 1 host-held lease case |
 | Compiled SDK synthetic isolation                | Retained **100 cycles** with independent runtime/loader/session ownership                                                                             |

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
+import { WorkstreamStore } from "./store.mjs";
 const sdk = process.env.PI_PACKAGE_DIR ? await import(pathToFileURL(join(process.env.PI_PACKAGE_DIR, "dist/index.js"))) : null;
 const ui = process.env.FAMILIAR_UI_SOURCE;
 const until = async (fn) => { for (let i = 0; i < 500; i++) { if (await fn()) return; await new Promise((r) => setTimeout(r, 20)); } throw new Error("isolated host deadline"); };
@@ -45,6 +46,29 @@ test("isolated Familiar owner birth: browser HTTP admission -> real SDK branch/r
     await loader.reload();
     assert.deepEqual(loader.getExtensions().errors, []);
     ({ session } = await sdk.createAgentSession({ cwd: agentDir, agentDir, settingsManager, modelRuntime, resourceLoader: loader, sessionManager: sdk.SessionManager.create(agentDir, agentDir), noTools: "builtin" }));
+    // Seed mixed persisted state before session_start constructs the production
+    // extension host. None of these archived invalid rows may reach a runtime.
+    const stateRoot = join(root, "background");
+    const seed = new WorkstreamStore(stateRoot);
+    const validSeed = seed.create({ admissionId: "valid-seed", parentSessionId: session.sessionId, parentLeafId: session.sessionManager.getLeafId(), projectId: "test", content: "valid seed" }).record;
+    seed.prepare(validSeed.id, validSeed.generation, { file: "/synthetic/seed.jsonl", sha256: "f".repeat(64), sessionId: "seed-branch" }, undefined, { provider: "fixture", id: "synthetic" }, "high");
+    seed.admitReceipt(validSeed.id, validSeed.generation, { userEntryId: "seed-user", controlEntryId: "seed-control" });
+    const source = seed.get(validSeed.id);
+    const corruptBodies = new Map();
+    const corrupt = (name, mutate, body) => {
+      const record = structuredClone(source);
+      record.id = `integrated-invalid-${name}`;
+      record.admission.admissionId = `integrated-fenced-${name}`;
+      mutate?.(record);
+      const encoded = body ?? JSON.stringify(record);
+      seed.db.prepare("INSERT INTO workstreams VALUES (?,?,?,?,?)").run(record.id, record.admission.admissionId, record.admission.digest, record.revision, encoded);
+      corruptBodies.set(record.id, encoded);
+    };
+    corrupt("json", null, "{");
+    corrupt("v2", (record) => { record.version = 2; });
+    corrupt("thinking", (record) => { delete record.thinkingLevel; });
+    corrupt("model", (record) => { record.model = { provider: "fixture", id: null }; });
+    seed.close();
     session.extensionRunner.onError((error) => errors.push(error));
     await session.bindExtensions({ mode: "tui", onError: (error) => errors.push(error), uiContext: { ...session.extensionRunner.getUIContext(), notify: (message) => notices.push(message) } });
     await session.setModel(modelRuntime.getModel("fixture", "synthetic"));
@@ -74,7 +98,10 @@ test("isolated Familiar owner birth: browser HTTP admission -> real SDK branch/r
     assert.equal(JSON.parse(session.messages.at(-1).content).disposition, "refused");
     assert.equal(sdk.SessionManager.open(session.sessionFile).buildSessionContext().messages.at(-1).content, session.messages.at(-1).content);
     const database = new DatabaseSync(join(root, "background", "workstreams.sqlite"));
-    const record = JSON.parse(database.prepare("SELECT body FROM workstreams").get().body);
+    const record = JSON.parse(database.prepare("SELECT body FROM workstreams WHERE admission_id=?").get("browser-admission").body);
+    assert.equal(JSON.parse(database.prepare("SELECT body FROM workstreams WHERE id=?").get(validSeed.id).body).status, "orphaned");
+    for (const [id, body] of corruptBodies)
+      assert.equal(database.prepare("SELECT body FROM workstreams WHERE id=?").get(id).body, body);
     database.close();
     assert.deepEqual(record.model, { provider: "fixture", id: "synthetic" });
     assert.equal(record.thinkingLevel, "high");

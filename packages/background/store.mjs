@@ -19,6 +19,24 @@ export const TERMINAL = new Set([
   "orphaned",
 ]);
 const FENCED = new Set([...TERMINAL, "cancelling", "rejoining"]);
+const RECORD_STATUSES = new Set([
+  ...TERMINAL,
+  "preparing",
+  "running",
+  "cancelling",
+  "rejoining",
+]);
+const ARCHIVE_OPTIONAL_STATUSES = new Set(["preparing", "orphaned"]);
+const MAX_PERSISTED_RECORD_BYTES = LIMITS.admissionBytes + 8 * 1024 * 1024;
+
+class QuarantinedRecordError extends Error {
+  constructor(reason) {
+    super(`quarantined workstream record (${reason})`);
+    this.name = "QuarantinedRecordError";
+    this.code = "ERR_BACKGROUND_RECORD_QUARANTINED";
+    this.reason = reason;
+  }
+}
 
 /** Scheduling truth is a single transactional database, not secondary JSON
  * indexes. FULL synchronous WAL commits precede every external side effect.
@@ -26,6 +44,12 @@ const FENCED = new Set([...TERMINAL, "cancelling", "rejoining"]);
  * transaction and MUST be reconciled by packet identity after restart. */
 export class WorkstreamStore {
   constructor(root, { boundary = () => {}, maxRecords = LIMITS.records } = {}) {
+    if (
+      !Number.isSafeInteger(maxRecords) ||
+      maxRecords <= 0 ||
+      maxRecords > LIMITS.records
+    )
+      throw new Error("invalid workstream record limit");
     mkdirSync(root, { recursive: true, mode: 0o700 });
     const stat = lstatSync(root);
     if (!stat.isDirectory() || stat.isSymbolicLink() || stat.mode & 0o077)
@@ -54,6 +78,7 @@ export class WorkstreamStore {
     this.maxRecords = maxRecords;
     this.childOwners = new Map();
     this.publicRecords = new Map();
+    this.quarantinedRecords = new Map();
     try {
       for (const record of this.list()) this.indexChildren(record);
     } catch (error) {
@@ -61,26 +86,169 @@ export class WorkstreamStore {
       throw error;
     }
   }
-  validateRecord(record) {
-    if (!record || record.version !== 3)
-      throw new Error(
-        "unsupported workstream record; captured thinking level is unavailable",
-      );
-    if (record.archive) {
+  validationFailure(record, row) {
+    if (!record || typeof record !== "object" || Array.isArray(record))
+      return "invalid-record";
+    if (record.version !== 3) return "unsupported-version";
+    try {
+      id(record.id);
+      id(record.admission?.admissionId);
+      id(record.admission?.parentSessionId);
+      if (record.admission?.parentLeafId !== null)
+        id(record.admission?.parentLeafId);
+      id(record.admission?.projectId);
+    } catch {
+      return "invalid-record-identity";
+    }
+    if (
+      typeof record.admission.digest !== "string" ||
+      !/^[a-f0-9]{64}$/.test(record.admission.digest) ||
+      (row &&
+        (record.id !== row.id ||
+          record.admission.admissionId !== row.admission_id ||
+          record.admission.digest !== row.digest ||
+          record.revision !== row.revision))
+    )
+      return "identity-mismatch";
+    if (
+      !Number.isSafeInteger(record.revision) ||
+      record.revision < 0 ||
+      !Number.isSafeInteger(record.generation) ||
+      record.generation <= 0 ||
+      !RECORD_STATUSES.has(record.status) ||
+      !Number.isFinite(record.createdAt) ||
+      !Number.isFinite(record.updatedAt) ||
+      !Number.isSafeInteger(record.run) ||
+      record.run < 0 ||
+      (record.settledRun !== null &&
+        (!Number.isSafeInteger(record.settledRun) || record.settledRun < 0)) ||
+      !Array.isArray(record.commands) ||
+      !Array.isArray(record.children) ||
+      !Array.isArray(record.packets) ||
+      record.commands.length > LIMITS.commands ||
+      record.children.length > LIMITS.children ||
+      record.packets.length > LIMITS.packets ||
+      record.commands.some((entry) => !entry || typeof entry !== "object") ||
+      record.children.some((entry) => !entry || typeof entry !== "object") ||
+      record.packets.some((entry) => !entry || typeof entry !== "object")
+    )
+      return "invalid-record-shape";
+    try {
+      bounded(record.admission, LIMITS.admissionBytes, "persisted admission");
+      for (const command of record.commands)
+        bounded(command, LIMITS.commandBytes, "persisted command");
+      for (const child of record.children)
+        bounded(child, LIMITS.commandBytes * 4, "persisted child");
+      for (const packet of record.packets) {
+        id(packet.packetId);
+        if (!Number.isSafeInteger(packet.run) || packet.run < 0)
+          throw new Error("invalid packet run");
+        report(reportData(packet));
+      }
+    } catch {
+      return "invalid-record-shape";
+    }
+    const hasArchive = record.archive !== undefined;
+    if (hasArchive) {
+      if (
+        !record.archive ||
+        typeof record.archive !== "object" ||
+        typeof record.archive.file !== "string" ||
+        !record.archive.file.startsWith("/") ||
+        typeof record.archive.sha256 !== "string" ||
+        !/^[a-f0-9]{64}$/.test(record.archive.sha256)
+      )
+        return "invalid-archive";
+      try {
+        id(record.archive.sessionId);
+      } catch {
+        return "invalid-archive";
+      }
       if (
         !record.model ||
         typeof record.model.provider !== "string" ||
-        typeof record.model.id !== "string"
+        !record.model.provider ||
+        typeof record.model.id !== "string" ||
+        !record.model.id
       )
-        throw new Error("invalid persisted branch model");
-      thinkingLevel(record.thinkingLevel);
+        return "invalid-model";
+      try {
+        bounded(record.model, 1024, "persisted branch model");
+      } catch {
+        return "invalid-model";
+      }
+      try {
+        thinkingLevel(record.thinkingLevel);
+      } catch {
+        return "invalid-thinking-level";
+      }
     } else if (
       record.model !== undefined ||
       record.thinkingLevel !== undefined
     ) {
-      throw new Error("incomplete persisted branch configuration");
+      return "incomplete-branch-configuration";
+    } else if (!ARCHIVE_OPTIONAL_STATUSES.has(record.status)) {
+      return "missing-archive";
     }
+    return null;
+  }
+  rowDiagnostic(row, reason) {
+    return Object.freeze({
+      recordId:
+        typeof row.id === "string" &&
+        /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(row.id)
+          ? row.id
+          : null,
+      reason,
+      revision: Number.isSafeInteger(row.revision) ? row.revision : null,
+      bodyBytes: Number.isSafeInteger(row.body_bytes)
+        ? Math.min(row.body_bytes, MAX_PERSISTED_RECORD_BYTES + 1)
+        : null,
+    });
+  }
+  decodeRow(row, failClosed = false) {
+    let record;
+    let reason;
+    if (
+      !Number.isSafeInteger(row.body_bytes) ||
+      row.body_bytes > MAX_PERSISTED_RECORD_BYTES ||
+      typeof row.body !== "string"
+    ) {
+      reason = "oversized-record";
+    } else {
+      try {
+        record = JSON.parse(row.body);
+      } catch {
+        reason = "malformed-json";
+      }
+      if (!reason) reason = this.validationFailure(record, row);
+    }
+    if (reason) {
+      this.quarantinedRecords.set(
+        row.storage_rowid,
+        this.rowDiagnostic(row, reason),
+      );
+      this.publicRecords.delete(row.id);
+      for (const [jobId, owner] of this.childOwners)
+        if (owner.id === row.id) this.childOwners.delete(jobId);
+      if (failClosed) throw new QuarantinedRecordError(reason);
+      return undefined;
+    }
+    this.quarantinedRecords.delete(row.storage_rowid);
     return record;
+  }
+  selectRows(where = "", value) {
+    const sql = `SELECT rowid AS storage_rowid, id, admission_id, digest,
+      revision, length(CAST(body AS BLOB)) AS body_bytes,
+      CASE WHEN length(CAST(body AS BLOB)) <= ? THEN body END AS body
+      FROM workstreams ${where}`;
+    const statement = this.db.prepare(sql);
+    return value === undefined
+      ? statement.all(MAX_PERSISTED_RECORD_BYTES, this.maxRecords)
+      : statement.all(MAX_PERSISTED_RECORD_BYTES, value);
+  }
+  quarantineList() {
+    return Object.freeze([...this.quarantinedRecords.values()]);
   }
   indexChildren(record) {
     const packet = record.packets?.at(-1);
@@ -207,22 +375,19 @@ export class WorkstreamStore {
     this.db.close();
   }
   get(key) {
-    const row = this.db
-      .prepare("SELECT body FROM workstreams WHERE id=?")
-      .get(id(key));
-    return row ? this.validateRecord(JSON.parse(row.body)) : undefined;
+    const rows = this.selectRows("WHERE id=?", id(key));
+    return rows.length ? this.decodeRow(rows[0], true) : undefined;
   }
   byAdmission(key) {
-    const row = this.db
-      .prepare("SELECT body FROM workstreams WHERE admission_id=?")
-      .get(id(key));
-    return row ? this.validateRecord(JSON.parse(row.body)) : undefined;
+    const rows = this.selectRows("WHERE admission_id=?", id(key));
+    return rows.length ? this.decodeRow(rows[0], true) : undefined;
   }
   list() {
-    return this.db
-      .prepare("SELECT body FROM workstreams ORDER BY rowid LIMIT ?")
-      .all(this.maxRecords)
-      .map((r) => this.validateRecord(JSON.parse(r.body)));
+    const rows = this.selectRows("ORDER BY rowid LIMIT ?");
+    const seen = new Set(rows.map((row) => row.storage_rowid));
+    for (const key of this.quarantinedRecords.keys())
+      if (!seen.has(key)) this.quarantinedRecords.delete(key);
+    return rows.map((row) => this.decodeRow(row)).filter(Boolean);
   }
   transaction(label, fn) {
     // Never accumulate an unbounded WAL behind a reader holding an old snapshot.
@@ -306,11 +471,7 @@ export class WorkstreamStore {
       fn(record);
       record.revision++;
       record.updatedAt = Date.now();
-      const body = bounded(
-        record,
-        LIMITS.admissionBytes + 8 * 1024 * 1024,
-        "record",
-      );
+      const body = bounded(record, MAX_PERSISTED_RECORD_BYTES, "record");
       const result = this.db
         .prepare(
           "UPDATE workstreams SET revision=?, body=? WHERE id=? AND revision=?",

@@ -48,6 +48,18 @@ atomic transaction. Recovery reconciles the durable boundaries. Incomplete or
 uncertain admissions are retained as orphaned records, never automatically
 rerun. A durable user/notice/receipt group cannot be torn into a user-only prefix.
 
+Persistence validation is per row. Malformed JSON, legacy versions, column/body
+identity mismatches, invalid shapes, and archived rows without the exact captured
+model/thinking pair are excluded from indexes, listings, resource collection and
+recovery; unrelated valid v3 rows still start. The original SQLite body and its
+unique `id`/`admission_id` columns are never migrated or deleted, so replay stays
+fenced. Direct lookup fails with `ERR_BACKGROUND_RECORD_QUARANTINED`. The store's
+read-only `quarantineList()` exposes only a bounded record id, fixed reason code,
+revision and capped byte count for local operator inspection—never body content,
+admission content, parser text or credentials. Startup examines at most the
+configured 256-row durable quota and does not materialize bodies above the
+persisted-record byte limit.
+
 The hands-free `background` tool takes no preparation arguments and captures the
 exact current user entry. It terminates the foreground batch and defers admission
 until settlement. Sibling preparation tools in that batch are mechanically
