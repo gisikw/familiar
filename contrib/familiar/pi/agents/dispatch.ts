@@ -21,7 +21,11 @@ export function dispatchWorkspace(p:DispatchWorkspaceArgs){
  const hasProject=p.project!==undefined;
  const hasRepo=p.repo!==undefined;
  if(hasProject===hasRepo)throw new Error("provide exactly one of project or repo; omit the other field entirely");
- if(hasProject){if(!p.project)throw new Error("project must be a non-empty string");return{project:p.project,worktree:p.worktree}}
+ if(hasProject){
+  if(!p.project)throw new Error("project must be a non-empty string");
+  if(p.ref!==undefined)throw new Error("ref is only valid with repo; omit ref when using project");
+  return{project:p.project,worktree:p.worktree};
+ }
  if(!p.repo)throw new Error("repo must be a non-empty string");
  return{repo:p.repo,ref:p.ref,worktree:p.worktree};
 }

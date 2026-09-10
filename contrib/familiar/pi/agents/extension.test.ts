@@ -37,9 +37,15 @@ describe("agents_dispatch contract",()=>{
     expect(dispatchRepoDescription).toContain("Omit repo entirely when using project");
   });
 
-  test("accepts exactly one non-empty selector and builds the matching workspace",()=>{
+  test("accepts project without ref and repo with or without ref",()=>{
     expect(dispatchWorkspace({...base,project:"familiar"})).toEqual({project:"familiar",worktree:"task"});
+    expect(dispatchWorkspace({...base,repo:"https://example.test/repo.git"})).toEqual({repo:"https://example.test/repo.git",ref:undefined,worktree:"task"});
     expect(dispatchWorkspace({...base,repo:"https://example.test/repo.git",ref:"main"})).toEqual({repo:"https://example.test/repo.git",ref:"main",worktree:"task"});
+  });
+
+  test("rejects every present ref when project is selected",()=>{
+    expect(()=>dispatchWorkspace({...base,project:"familiar",ref:"main"})).toThrow("ref is only valid with repo; omit ref when using project");
+    expect(()=>dispatchWorkspace({...base,project:"familiar",ref:""})).toThrow("ref is only valid with repo; omit ref when using project");
   });
 
   test("rejects missing, duplicate, and empty selectors at runtime",()=>{
