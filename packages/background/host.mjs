@@ -86,7 +86,10 @@ export class BackgroundHost {
             if (error.code !== "ENOENT") throw error;
           }
         }
-      this.store.recover((r, packetId) => this.hasPacket(r, packetId));
+      this.store.recover(
+        (r, packetId) => this.hasPacket(r, packetId),
+        (r) => this.hasCanonicalAdmission(r),
+      );
       this.resources.collect(this.store);
     } catch (error) {
       this.store.close();
@@ -116,6 +119,41 @@ export class BackgroundHost {
         }
       })
     );
+  }
+  /** Explicit admission proof, analogous to hasPacket() for a merge. The exact
+   * familiar.background-dispatch control entry is the only durable evidence that
+   * an admission was committed to the canonical parent; write atomicity is never
+   * assumed. The receipt is reconstructed from stable record identity and, once
+   * the ledger recorded it, matched by controlEntryId. Because the batch commits
+   * the dispatch entry last, its presence implies the whole batch landed; its
+   * absence (including a torn trailing line dropped on reopen) means the
+   * admission is not committed and must never be replayed under a fresh id. */
+  hasCanonicalAdmission(record) {
+    if (!record?.archive) return false;
+    const snapshot = this.owner.snapshot();
+    if (snapshot.sessionId !== record.admission.parentSessionId) return false;
+    const receipt = {
+      version: 2,
+      provenance: "runtime-control",
+      workstreamId: record.id,
+      admissionId: record.admission.admissionId,
+      branchSessionId: record.archive.sessionId,
+    };
+    const expected = JSON.stringify(receipt);
+    return snapshot.entries.some((e) => {
+      if (e.type !== "custom" || e.customType !== "familiar.background-dispatch")
+        return false;
+      if (
+        record.foregroundControlEntryId &&
+        e.id !== record.foregroundControlEntryId
+      )
+        return false;
+      try {
+        return JSON.stringify(e.data) === expected;
+      } catch {
+        return false;
+      }
+    });
   }
   admit(request, existingUserEntryId) {
     if (this.closed) throw new Error("host closed");
@@ -149,12 +187,17 @@ export class BackgroundHost {
       messages = messages.slice(0, index);
       userTimestamp = user.message.timestamp ?? userTimestamp;
     }
-    bounded(messages, LIMITS.contextBytes, "context snapshot");
     const userMessage = {
       role: "user",
       content: normalized.content,
       timestamp: userTimestamp,
     };
+    // Bound the exact effective child context that will be written to the branch
+    // archive - the derived context messages plus the admitted user message -
+    // never the owner's raw canonical branch. Refusal happens here, before
+    // store.create: an oversized effective context creates nothing.
+    const childContext = [...messages, userMessage];
+    bounded(childContext, LIMITS.contextBytes, "context snapshot");
     const prior = this.store.byAdmission(normalized.admissionId);
     if (prior) {
       if (prior.admission.digest !== normalized.digest)
@@ -182,7 +225,7 @@ export class BackgroundHost {
         cwd: snapshot.cwd,
       };
       let parentId = null;
-      const entries = [...messages, userMessage].map((message) => {
+      const entries = childContext.map((message) => {
         const entry = {
           type: "message",
           id: randomUUID(),

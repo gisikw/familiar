@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -73,6 +73,11 @@ try {
   );
   const merge =
     '{"type":"familiar.background.merge","packetId":"packet","summary":"bounded report"}';
+  // This second commit runs against an already-flushed file. It must append the
+  // batch in place, never read or rewrite the whole parent: the pre-commit
+  // bytes remain a byte-exact prefix of the post-commit file, and the file
+  // grows only by the serialized batch.
+  const beforeMerge = readFileSync(sm.getSessionFile());
   sm.commitRuntimeControl(sm.getSessionId(), sm.getLeafId(), [
     {
       type: "custom_message",
@@ -81,19 +86,144 @@ try {
       display: true,
     },
   ]);
+  const afterMerge = readFileSync(sm.getSessionFile());
+  assert.deepEqual(afterMerge.subarray(0, beforeMerge.length), beforeMerge);
+  assert.ok(afterMerge.length - beforeMerge.length < 4096);
   assert.equal(
     sdk.SessionManager.open(sm.getSessionFile())
       .buildSessionContext()
       .messages.at(-1).content,
     merge,
   );
-  // Fail before rename: old memory/disk remains reusable. Fail after rename:
-  // memory is not published and the old writer must never append again.
+
+  // FIX 1 (HIGH): a torn trailing line - physical bytes with no terminating
+  // newline left by a partial prior write - must be repaired before an in-place
+  // append. Otherwise O_APPEND joins the batch's first record to the malformed
+  // bytes and the whole line is dropped on reopen, silently losing a durable
+  // commit. Cover both the resident (no-reopen) writer and the reopen path.
+  {
+    // Resident writer, no reopen: the durable batch must survive.
+    const torn = sdk.SessionManager.create(root, root);
+    const tf = torn.getSessionFile();
+    torn.commitRuntimeControl(torn.getSessionId(), torn.getLeafId(), input);
+    appendFileSync(tf, '{"type":"message","id":"deadbeef","parentId":null,"partial');
+    torn.commitRuntimeControl(torn.getSessionId(), torn.getLeafId(), [
+      { type: "custom_message", customType: "familiar.background.merge", content: "durable", display: true },
+    ]);
+    const reopened = sdk.SessionManager.open(tf);
+    assert.equal(
+      reopened.getEntries().filter((e) => e.content === "durable").length,
+      1,
+      "committed batch survives a torn trailing line (resident writer)",
+    );
+    assert.ok(!readFileSync(tf, "utf8").includes("deadbeef"), "torn suffix truncated, not joined");
+  }
+  {
+    // Torn tail, reopen, commit a new batch, reopen again, prove it persists.
+    const s = sdk.SessionManager.create(root, root);
+    const f = s.getSessionFile();
+    s.commitRuntimeControl(s.getSessionId(), s.getLeafId(), input);
+    appendFileSync(f, '{"type":"custom","customType":"torn","data":{"x":1');
+    const r1 = sdk.SessionManager.open(f);
+    r1.commitRuntimeControl(r1.getSessionId(), r1.getLeafId(), [
+      { type: "custom_message", customType: "familiar.background.merge", content: "persisted", display: true },
+    ]);
+    const r2 = sdk.SessionManager.open(f);
+    assert.equal(
+      r2.getEntries().filter((e) => e.content === "persisted").length,
+      1,
+      "committed batch persists across reopen over a torn tail",
+    );
+  }
+  {
+    // Fencing: a fault during the physical repair quarantines the writer.
+    const s = sdk.SessionManager.create(root, root);
+    const f = s.getSessionFile();
+    s.commitRuntimeControl(s.getSessionId(), s.getLeafId(), input);
+    appendFileSync(f, '{"torn":true');
+    assert.throws(
+      () =>
+        s.commitRuntimeControl(
+          s.getSessionId(),
+          s.getLeafId(),
+          [{ type: "custom", customType: "familiar.background.merge", data: {} }],
+          (p) => {
+            if (p === "control:repairing") throw new Error("injected");
+          },
+        ),
+      /injected/,
+    );
+    assert.equal(s.isRuntimeControlQuarantined(), true);
+  }
+
+  // FIX 2 (HIGH): materializing a not-yet-flushed canonical file fsyncs the
+  // containing directory so the new name is durable; an in-place append to an
+  // existing (possibly huge) parent never pays that cost, preserving O(batch).
+  {
+    const seenCreate = [];
+    const creator = sdk.SessionManager.create(root, root);
+    creator.commitRuntimeControl(creator.getSessionId(), creator.getLeafId(), input, (p) => seenCreate.push(p));
+    assert.ok(seenCreate.includes("control:dir-fsynced"), "materialize fsyncs the directory");
+    const seenAppend = [];
+    creator.commitRuntimeControl(
+      creator.getSessionId(),
+      creator.getLeafId(),
+      [{ type: "custom", customType: "familiar.background.merge", data: {} }],
+      (p) => seenAppend.push(p),
+    );
+    assert.ok(!seenAppend.includes("control:dir-fsynced"), "in-place append does not re-fsync the directory");
+  }
+
+  // FIX 3 (MEDIUM): only a genuinely never-materialized session may create the
+  // file. A flushed session whose archive was deleted/replaced is not silently
+  // recreated merely because in-memory session/leaf IDs still match.
+  {
+    const fresh = sdk.SessionManager.create(root, root);
+    const ff = fresh.getSessionFile();
+    assert.equal(existsSync(ff), false, "never-flushed session has no file yet");
+    fresh.commitRuntimeControl(fresh.getSessionId(), fresh.getLeafId(), input);
+    assert.equal(existsSync(ff), true, "never-materialized path creates the file");
+    rmSync(ff);
+    assert.throws(
+      () =>
+        fresh.commitRuntimeControl(fresh.getSessionId(), fresh.getLeafId(), [
+          { type: "custom", customType: "familiar.background.merge", data: {} },
+        ]),
+      /missing|recreate/i,
+    );
+    assert.equal(existsSync(ff), false, "deleted flushed archive is not silently recreated");
+  }
+
+  // FIX 4 (MEDIUM): controlWriteUncertain is cleared only after every descriptor
+  // lifecycle operation succeeds. A fault in the closing phase (a proxy for a
+  // closeSync failure) after mutation/publication keeps the writer quarantined
+  // even though the batch is already durable.
+  {
+    const s = sdk.SessionManager.create(root, root);
+    const f = s.getSessionFile();
+    assert.throws(
+      () =>
+        s.commitRuntimeControl(s.getSessionId(), s.getLeafId(), input, (p) => {
+          if (p === "control:closing") throw new Error("injected");
+        }),
+      /injected/,
+    );
+    assert.equal(s.isRuntimeControlQuarantined(), true, "close-phase failure quarantines the writer");
+    assert.throws(() => s.appendCustomEntry("forbidden", {}), /quarantined/);
+    assert.equal(
+      sdk.SessionManager.open(f).getEntries().length,
+      2,
+      "the batch was durable before the close-phase failure",
+    );
+  }
+  // Fail before the file is touched: the writer is reusable and re-commits.
+  // Fail once the canonical file has been mutated in place: memory is never
+  // published, the writer is quarantined, and the durable file already carries
+  // the committed batch (a torn trailing line reopens safely).
   for (const point of [
+    "control:appending",
     "control:written",
     "control:fsynced",
-    "control:renamed",
-    "control:directory-synced",
   ]) {
     const manager = sdk.SessionManager.create(root, root);
     assert.throws(
@@ -109,7 +239,9 @@ try {
       /injected/,
     );
     assert.equal(manager.getEntries().length, 0);
-    if (["control:renamed", "control:directory-synced"].includes(point)) {
+    if (point === "control:appending") {
+      manager.commitRuntimeControl(manager.getSessionId(), null, input);
+    } else {
       assert.equal(
         sdk.SessionManager.open(manager.getSessionFile()).getEntries().length,
         2,
@@ -118,8 +250,6 @@ try {
         () => manager.appendCustomEntry("forbidden", {}),
         /quarantined/,
       );
-    } else {
-      manager.commitRuntimeControl(manager.getSessionId(), null, input);
     }
   }
   // Incremental accounting includes the header, survives load, admits the exact
@@ -315,7 +445,7 @@ try {
           manager.getLeafId(),
           input,
           (point) => {
-            if (point === "control:renamed") throw new Error("injected");
+            if (point === "control:written") throw new Error("injected");
           },
         ),
       /injected/,

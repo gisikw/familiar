@@ -651,7 +651,7 @@ export class WorkstreamStore {
       r.settledRun = null;
     });
   }
-  recover(hasCanonicalPacket) {
+  recover(hasCanonicalPacket, hasCanonicalAdmission = () => false) {
     // Recovery is called only after a host has acquired exclusive ownership of
     // the runtime, never while another host can still execute these records.
     for (const record of this.list()) {
@@ -663,12 +663,25 @@ export class WorkstreamStore {
         ) {
           r.deliveredPacketId = r.selectedPacketId;
           r.status = "rejoined";
+        } else if (r.status === "preparing") {
+          // Admission was in flight at the crash (its ledger receipt may not
+          // have been written). Decide by explicit canonical proof, never by
+          // write ordering: a committed dispatch entry means the delegation
+          // landed; its absence means it did not. Either way the workstream is
+          // orphaned for inspection and never replayed under a fresh identity.
+          r.status = "orphaned";
+          r.failure = hasCanonicalAdmission(r)
+            ? "Admission committed to the canonical parent before restart; execution requires review"
+            : "Admission outcome uncertain after restart; requires review and is never replayed";
         } else {
           // Never resume an uncertain model/tool/child side effect. Even a
           // previously settled report may have acquired work before the crash.
+          // A committed admission with a missing dispatch entry is a harmful
+          // partial state surfaced explicitly, not silently retried.
           r.status = "orphaned";
-          r.failure =
-            "Host restarted; execution/delivery outcome requires review";
+          r.failure = hasCanonicalAdmission(r)
+            ? "Host restarted; execution/delivery outcome requires review"
+            : "Host restarted; canonical admission proof missing, requires inspection";
         }
         r.generation++;
         r.settledRun = null;

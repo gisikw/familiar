@@ -11,9 +11,7 @@ import { fileURLToPath } from "node:url";
 import { BackgroundHost } from "../../../../packages/background/host.mjs";
 import { acquireHostLease } from "../../../../packages/background/lease.mjs";
 import {
-  bounded,
   id,
-  LIMITS,
   report,
   reportData,
 } from "../../../../packages/background/protocol.mjs";
@@ -97,9 +95,15 @@ export default function background(pi: ExtensionAPI) {
   const snapshot = (options?: { context?: boolean }) => {
     lease?.assertOwned();
     if (!context) throw new Error("Background owner unavailable");
+    // The raw canonical branch is the audit record, not the child's context. It
+    // is scanned in place (private spans, current user entry, parent/leaf fence)
+    // and never copied into a branch archive, so its size is not a child-context
+    // budget: a long-lived compacted session keeps a branch far larger than any
+    // context Pi would send. Only the effective context the host derives is
+    // bounded, by the host, against LIMITS.contextBytes. The owner commits its
+    // admission by appending a tiny batch to this branch, O(batch), so the
+    // parent's size is never an admission refusal either.
     const entries = context.sessionManager.getBranch();
-    if (options?.context)
-      bounded(entries, LIMITS.contextBytes, "canonical snapshot");
     let privateSpan = false;
     for (const entry of entries) {
       if (

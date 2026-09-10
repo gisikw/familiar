@@ -1,5 +1,5 @@
 diff --git a/packages/coding-agent/src/core/agent-session-runtime.ts b/packages/coding-agent/src/core/agent-session-runtime.ts
-index 861c00f..d986885 100644
+index 861c00f7..d9868850 100644
 --- a/packages/coding-agent/src/core/agent-session-runtime.ts
 +++ b/packages/coding-agent/src/core/agent-session-runtime.ts
 @@ -79,6 +79,17 @@ export class AgentSessionRuntime {
@@ -73,7 +73,7 @@ index 861c00f..d986885 100644
  		if (!existsSync(resolvedPath)) {
  			throw new SessionImportFileNotFoundError(resolvedPath);
 diff --git a/packages/coding-agent/src/core/agent-session.ts b/packages/coding-agent/src/core/agent-session.ts
-index 8799d17..d6c9544 100644
+index 8799d17e..d6c95445 100644
 --- a/packages/coding-agent/src/core/agent-session.ts
 +++ b/packages/coding-agent/src/core/agent-session.ts
 @@ -1106,10 +1106,40 @@ export class AgentSession {
@@ -172,7 +172,7 @@ index 8799d17..d6c9544 100644
  					const entryId = this.sessionManager.appendCustomEntry(customType, data);
  					const entry = this.sessionManager.getEntry(entryId);
 diff --git a/packages/coding-agent/src/core/extensions/loader.ts b/packages/coding-agent/src/core/extensions/loader.ts
-index ca87f13..d008a30 100644
+index ca87f135..d008a30f 100644
 --- a/packages/coding-agent/src/core/extensions/loader.ts
 +++ b/packages/coding-agent/src/core/extensions/loader.ts
 @@ -200,6 +200,9 @@ export function createExtensionRuntime(): ExtensionRuntime {
@@ -200,7 +200,7 @@ index ca87f13..d008a30 100644
  			runtime.assertActive();
  			await runtime.invokeExtensionCommand(name, args);
 diff --git a/packages/coding-agent/src/core/extensions/runner.ts b/packages/coding-agent/src/core/extensions/runner.ts
-index 8462592..34ea19a 100644
+index 84625928..34ea19a9 100644
 --- a/packages/coding-agent/src/core/extensions/runner.ts
 +++ b/packages/coding-agent/src/core/extensions/runner.ts
 @@ -206,31 +206,36 @@ export async function emitProjectTrustEvent(
@@ -303,7 +303,7 @@ index 8462592..34ea19a 100644
  		// One slot, acquired before any await: different names can mutate the same session.
  		// Reject rather than queue, since nested A -> B would otherwise self-deadlock.
 diff --git a/packages/coding-agent/src/core/extensions/types.ts b/packages/coding-agent/src/core/extensions/types.ts
-index d8793e3..9f3f980 100644
+index d8793e30..9f3f9806 100644
 --- a/packages/coding-agent/src/core/extensions/types.ts
 +++ b/packages/coding-agent/src/core/extensions/types.ts
 @@ -1424,6 +1424,13 @@ export interface ExtensionAPI {
@@ -340,21 +340,23 @@ index d8793e3..9f3f980 100644
  	sendUserMessage: SendUserMessageHandler;
  	appendEntry: AppendEntryHandler;
 diff --git a/packages/coding-agent/src/core/session-manager.ts b/packages/coding-agent/src/core/session-manager.ts
-index d25b196..1b3381a 100644
+index d25b196..4916e89 100644
 --- a/packages/coding-agent/src/core/session-manager.ts
 +++ b/packages/coding-agent/src/core/session-manager.ts
-@@ -6,6 +6,9 @@ import {
+@@ -6,15 +6,19 @@ import {
  	closeSync,
  	createReadStream,
  	existsSync,
++	fstatSync,
 +	fsyncSync,
-+	renameSync,
-+	unlinkSync,
++	ftruncateSync,
  	mkdirSync,
  	openSync,
  	readdirSync,
-@@ -14,7 +17,7 @@ import {
+ 	readSync,
+ 	statSync,
  	writeFileSync,
++	writeSync,
  } from "fs";
  import { readdir, stat } from "fs/promises";
 -import { join, resolve } from "path";
@@ -362,7 +364,7 @@ index d25b196..1b3381a 100644
  import { createInterface } from "readline";
  import { StringDecoder } from "string_decoder";
  import { APP_NAME, getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.ts";
-@@ -29,6 +32,12 @@ import {
+@@ -29,6 +33,12 @@ import {
  
  export const CURRENT_SESSION_VERSION = 3;
  
@@ -375,7 +377,7 @@ index d25b196..1b3381a 100644
  export interface SessionHeader {
  	type: "session";
  	version?: number; // v1 sessions don't have this
-@@ -938,6 +947,7 @@ export class SessionManager {
+@@ -938,6 +948,7 @@ export class SessionManager {
  			parentSession: options?.parentSession,
  		};
  		this.fileEntries = [header];
@@ -383,7 +385,7 @@ index d25b196..1b3381a 100644
  		this.byId.clear();
  		this.labelsById.clear();
  		this.labelTimestampsById.clear();
-@@ -988,9 +998,110 @@ export class SessionManager {
+@@ -988,9 +999,193 @@ export class SessionManager {
  				}
  			}
  		}
@@ -410,9 +412,55 @@ index d25b196..1b3381a 100644
 +		if (this.persistenceBytes + additionalBytes > this.persistenceBudget) throw new Error("Session persistence byte budget exceeded");
 +	}
 +
-+	/** Caller owns the writer lease and lifecycle fence. Memory changes only after
-+	 * atomic rename + directory fsync. Post-rename failure quarantines this writer.
-+	 */
++	/** Bounded backward scan returning the byte length to which the canonical
++	 * file must be truncated so it ends exactly on a newline. A file already
++	 * ending in "\n" returns unchanged after a single trailing-byte read (O(1)).
++	 * Only a trailing partial line lacking its terminating newline is removed;
++	 * such bytes were never a durably committed JSONL record (a record is durable
++	 * only once its terminating newline reaches disk), so nothing committed is
++	 * lost. Reads only from the end, never the whole parent, so cost is bounded
++	 * and independent of parent size. */
++	private durableNewlineBoundary(fd: number, size: number): number {
++		if (size === 0) return 0;
++		const last = Buffer.allocUnsafe(1);
++		readSync(fd, last, 0, 1, size - 1);
++		if (last[0] === 0x0a) return size;
++		const CHUNK = 64 * 1024;
++		const MAX_TRAILING_LINE = 16 * 1024 * 1024; // beyond the batch/entry byte cap
++		const chunk = Buffer.allocUnsafe(CHUNK);
++		let pos = size;
++		while (pos > 0) {
++			if (size - pos > MAX_TRAILING_LINE) throw new Error("Torn trailing line exceeds recoverable bound");
++			const start = Math.max(0, pos - CHUNK);
++			const toRead = pos - start;
++			readSync(fd, chunk, 0, toRead, start);
++			for (let i = toRead - 1; i >= 0; i--)
++				if (chunk[i] === 0x0a) return start + i + 1;
++			pos = start;
++		}
++		throw new Error("Canonical archive has no newline-terminated prefix to preserve");
++	}
++
++	private writeAllSync(fd: number, data: Buffer, position: number): void {
++		let written = 0;
++		while (written < data.length)
++			written += writeSync(fd, data, written, data.length - written, position + written);
++	}
++
++	/** fsync the containing directory so a freshly materialized file's name is
++	 * durable. O(1); only performed on creation, never on an in-place append. */
++	private fsyncContainingDir(file: string): void {
++		const dirFd = openSync(dirname(file), "r");
++		try { fsyncSync(dirFd); } finally { closeSync(dirFd); }
++	}
++
++	/** Caller owns the writer lease and lifecycle fence. The tiny batch is
++	 * appended to the canonical file and fsynced; in-memory entries/index advance
++	 * only after that append+fsync succeeds. Cost is O(batch): the parent is
++	 * never read, copied or rewritten, so a large canonical parent is never a
++	 * refusal. Once the file has been touched any fault quarantines this writer;
++	 * a torn trailing line reopens safely and the admission is proven by its
++	 * exact control entry, never by write atomicity. */
 +	commitRuntimeControl(expectedSessionId: string, expectedLeafId: string | null, inputs: RuntimeControlInput[], boundary: (point: string) => void = () => {}): string[] {
 +		if (this.controlWriteUncertain) throw new Error("Session writer quarantined");
 +		if (this.sessionId !== expectedSessionId || this.leafId !== expectedLeafId) throw new Error("Session/leaf conflict");
@@ -446,44 +494,81 @@ index d25b196..1b3381a 100644
 +			parentId = entry.id;
 +			return entry;
 +		});
-+		const limit = Math.min(this.persistenceBudget, 32 * 1024 * 1024);
-+		if (this.flushed && (!existsSync(this.sessionFile) || statSync(this.sessionFile).size > limit)) throw new Error("Canonical archive missing or over byte budget");
-+		const next = [...this.fileEntries, ...entries];
-+		let bytes = 0;
-+		const lines: string[] = [];
-+		for (const entry of next) {
-+			const line = encodeWithin(entry, limit - bytes - 1) + "\n";
-+			bytes += Buffer.byteLength(line);
-+			lines.push(line);
-+		}
-+		const body = lines.join("");
-+		// One bounded temporary per canonical file. Only the exclusive owner may
-+		// enter this method, so an existing temporary belongs to its dead birth.
-+		const temporary = `${this.sessionFile}.runtime-control.tmp`;
-+		if (existsSync(temporary)) unlinkSync(temporary);
-+		let renamed = false;
-+		const fd = openSync(temporary, "wx", 0o600);
++		// Serialize only the batch. The whole-file byte budget that once refused a
++		// large canonical parent is gone; the batch stays bounded and the running
++		// total is checked against this writer's persistence budget - unbounded for
++		// a canonical resident owner, a fixed cap only for host-owned branches.
++		let appendedBytes = 0;
++		const appended = entries.map((entry) => {
++			const line = encodeWithin(entry, 8 * 1024 * 1024) + "\n";
++			appendedBytes += Buffer.byteLength(line);
++			return line;
++		}).join("");
++		this.assertPersistenceBudget(appendedBytes);
++		// A previously flushed session already materialized its canonical archive:
++		// append the batch in place, O(batch). Retain the missing-file fence - if a
++		// flushed archive was deleted or replaced out from under us, refuse rather
++		// than silently recreate a divergent file merely because the in-memory
++		// session/leaf IDs still match. Only a genuinely never-materialized (never
++		// flushed) session may create the file, once, from memory.
++		const fileExists = existsSync(this.sessionFile);
++		if (this.flushed && !fileExists)
++			throw new Error("Flushed canonical archive is missing; refusing to recreate it");
++		const materialize = !this.flushed;
++		const bodyBuffer = Buffer.from(
++			materialize
++				? this.fileEntries.map((entry) => JSON.stringify(entry) + "\n").join("") + appended
++				: appended,
++		);
++		boundary("control:appending");
++		// Past this point the canonical file is mutated and cannot be cleanly
++		// un-touched. Quarantine before the first byte; clear it only after every
++		// descriptor lifecycle operation (repair, write, fsync, dir fsync, close)
++		// has succeeded.
++		this.controlWriteUncertain = true;
++		const fd = openSync(this.sessionFile, materialize ? "w" : "r+", 0o600);
 +		try {
-+			writeFileSync(fd, body);
++			let writeAt = 0;
++			if (!materialize) {
++				// Before an in-place continuation, repair any torn trailing suffix: a
++				// partial final line with no terminating newline would otherwise be
++				// physically joined to the batch's first record and corrupt a durably
++				// committed batch on the next reopen. Truncate to the last newline,
++				// preserving the valid newline-delimited prefix byte-for-byte. The
++				// caller owns the writer lease, so no normal writer can race this.
++				const end = fstatSync(fd).size;
++				writeAt = this.durableNewlineBoundary(fd, end);
++				if (writeAt !== end) {
++					boundary("control:repairing");
++					ftruncateSync(fd, writeAt);
++				}
++			}
++			this.writeAllSync(fd, bodyBuffer, writeAt);
 +			boundary("control:written");
 +			fsyncSync(fd);
 +			boundary("control:fsynced");
-+			renameSync(temporary, this.sessionFile);
-+			renamed = true;
-+			this.controlWriteUncertain = true;
-+			boundary("control:renamed");
-+			const directory = openSync(dirname(this.sessionFile), "r");
-+			try { fsyncSync(directory); } finally { closeSync(directory); }
-+			boundary("control:directory-synced");
-+			this.fileEntries = next;
-+			this.persistenceBytes = bytes;
++			if (materialize) {
++				// A freshly created file also needs its directory entry fsynced so the
++				// name is durable. O(1) and only paid on creation, never on an in-place
++				// append to an existing (possibly huge) parent.
++				this.fsyncContainingDir(this.sessionFile);
++				boundary("control:dir-fsynced");
++			}
++			this.fileEntries = [...this.fileEntries, ...entries];
++			this.persistenceBytes += appendedBytes;
 +			this._buildIndex();
 +			this.flushed = true;
++			// The write is certain only once the descriptor is durably closed; a fault
++			// in this closing phase must keep the writer quarantined.
++			boundary("control:closing");
++			closeSync(fd);
 +			this.controlWriteUncertain = false;
 +			return entries.map((entry) => entry.id);
-+		} finally {
-+			closeSync(fd);
-+			if (!renamed) unlinkSync(temporary);
++		} catch (error) {
++			// Any fault after the first byte - a repair, write, fsync or the close
++			// above - leaves this writer quarantined; a new owner must reopen.
++			try { closeSync(fd); } catch { /* descriptor already failed */ }
++			throw error;
 +		}
  	}
  
@@ -494,7 +579,7 @@ index d25b196..1b3381a 100644
  		if (!this.persist || !this.sessionFile) return;
  		const fd = openSync(this.sessionFile, "w");
  		try {
-@@ -1027,6 +1138,7 @@ export class SessionManager {
+@@ -1027,6 +1222,7 @@ export class SessionManager {
  	}
  
  	_persist(entry: SessionEntry): void {
@@ -502,7 +587,7 @@ index d25b196..1b3381a 100644
  		if (!this.persist || !this.sessionFile) return;
  
  		const hasAssistant = this.fileEntries.some((e) => e.type === "message" && e.message.role === "assistant");
-@@ -1056,7 +1168,11 @@ export class SessionManager {
+@@ -1056,7 +1252,11 @@ export class SessionManager {
  	}
  
  	private _appendEntry(entry: SessionEntry): void {

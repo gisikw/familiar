@@ -16,10 +16,9 @@ const transaction = (name) =>
     (point) => `${name}:${point}`,
   );
 const canonical = [
+  "control:appending",
   "control:written",
   "control:fsynced",
-  "control:renamed",
-  "control:directory-synced",
 ];
 for (const [phase, points] of Object.entries({
   admission: [
