@@ -380,8 +380,11 @@ run_pi() {
         themes: [ ($dir + "/themes") ],
         compaction: { enabled: true, reserveTokens: 4096 },
         # Keep the live extension set explicit.
+        # Durable Familiar Agents remains implemented at extensions/agents, but
+        # is deliberately absent from the resident extension set until the
+        # product surface is ready. The separate Golem plugin supplies agents_*.
         extensions: (([
-          "agents", "background", "footer", "handoff", "identity", "private", "stuff", "subscriber",
+          "background", "footer", "handoff", "identity", "private", "stuff", "subscriber",
           "tiamat", "web", "worklist", "zip", "wake"
         ] | map($ext + "/" + .)) + $pluginExts + $extraExts | unique)
       }
@@ -432,7 +435,6 @@ run_pi() {
     # aborts the whole function on any non-zero exit, leaving a dead pane with
     # no supervisor instead of respawning pi.
     command pi \
-      --familiar-agents-owner \
       --continue \
       --no-context-files \
       --no-skills \

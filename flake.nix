@@ -101,6 +101,15 @@
         };
         checks = {
           pi-invoke-command = patchedPi;
+          resident-tool-inventory = pkgs.runCommand "familiar-resident-tool-inventory" {
+            PI_PACKAGE_DIR = "${patchedPi}/lib/node_modules/pi-monorepo";
+            nativeBuildInputs = with pkgs; [ nodejs_24 ];
+          } ''
+            export HOME="$TMPDIR/home"
+            mkdir -p "$HOME"
+            node ${self}/test/resident-tool-inventory.mjs
+            touch $out
+          '';
           agents-ledger = pkgs.runCommand "familiar-agents-ledger" {
             PI_PACKAGE_DIR = "${patchedPi}/lib/node_modules/pi-monorepo";
             nativeBuildInputs = with pkgs; [ nodejs_24 python3 git openssh ];
