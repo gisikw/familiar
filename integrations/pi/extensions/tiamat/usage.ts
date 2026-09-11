@@ -1,3 +1,5 @@
+import { catalogToProviderGroups, type TiamatCatalogRecord } from "./catalog.ts";
+
 export interface TiamatUsageWindow {
   name: string;
   used: string;
@@ -182,4 +184,177 @@ export function formatBudgetUsage(id: string, usage: TiamatProviderUsage["usage"
         : "dim";
   const glyph = tone === "error" ? `${GLYPH_ALERT} ` : tone === "warning" ? `${GLYPH_ALERT_OUTLINE} ` : "";
   return { text: `${glyph}${label} ${parts.join(" · ")}${stale ? " · stale" : ""}`, tone };
+}
+
+/* ==========================================================================
+ * In-process projection of the registered Tiamat providers for a UI bridge.
+ *
+ * `familiar-ui` renders a model picker grouped by *registered provider* (the
+ * Tiamat account label, verbatim) and shows only metadata the router itself
+ * publishes on `GET /tiamat/v1/providers` and `GET /tiamat/v1/models`: kind,
+ * locality, usage windows / spend / credits, and per-model availability. No
+ * upstream vendor identity is inferred from a model id, no prose is authored
+ * here, and nothing with a credential or a base URL leaves this module.
+ *
+ * Discovery mirrors `familiar:background:discover`: a bridge emits
+ * `familiar:tiamat:discover` with an `accept(port)` callback and reads the
+ * port synchronously while building a snapshot. The bridge is told to rebuild
+ * through `familiar:tiamat:changed` after every catalog reconcile or usage
+ * poll. Both events are process-local; the browser cannot reach them.
+ * ========================================================================== */
+
+export interface TiamatPortUsageWindow {
+  name: string;
+  /** Percentage used, 0–100, when the router reported a parseable figure. */
+  used: number | null;
+  /** The router's human-compact form, e.g. "7%". */
+  usedText: string;
+  resetsIn: string;
+  resetsInSeconds?: number;
+}
+
+export interface TiamatPortUsage {
+  windows: TiamatPortUsageWindow[];
+  spend?: { period: string; amount: string; currency: string };
+  credits?: { balance: string };
+  /** Unix ms of the router's own snapshot; absent when it reported none. */
+  fetchedAt?: number;
+}
+
+export interface TiamatPortModel {
+  id: string;
+  availability: "available" | "degraded" | "unavailable";
+  reason?: string;
+  resetsIn?: string;
+}
+
+export interface TiamatPortProvider {
+  /** The registered Tiamat provider id, verbatim (e.g. `claude-code-personal`). */
+  id: string;
+  kind?: "oauth-client" | "api-key";
+  locality?: "remote" | "local";
+  /** Pi provider ids registered for this account (one per wire family). */
+  members: string[];
+  /** Every catalogue model on this account, including ones Pi does not register. */
+  models: TiamatPortModel[];
+  /** `null` when the router reported no telemetry (`usage: {}`). */
+  usage: TiamatPortUsage | null;
+}
+
+export interface TiamatPort {
+  providers(): TiamatPortProvider[];
+  /** Unix ms of the last successful `/tiamat/v1/providers` poll, or `null`. */
+  usageRefreshedAt(): number | null;
+}
+
+const PORT_MAX_PROVIDERS = 64;
+const PORT_MAX_MODELS = 256;
+const PORT_MAX_WINDOWS = 8;
+const PORT_SHORT = 256;
+
+const clip = (value: unknown, max = PORT_SHORT): string | undefined =>
+  typeof value === "string" && value.length > 0 ? value.slice(0, max) : undefined;
+
+const clampPercent = (used: string): number | null => {
+  const parsed = usedPercent(used);
+  return parsed === undefined ? null : Math.max(0, Math.min(100, parsed));
+};
+
+const timestamp = (value: unknown): number | undefined => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string") return undefined;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : undefined;
+};
+
+function projectUsage(raw: unknown): TiamatPortUsage | null {
+  if (!raw || typeof raw !== "object") return null;
+  const usage = raw as Record<string, unknown>;
+  const windows: TiamatPortUsageWindow[] = [];
+  if (Array.isArray(usage.windows)) {
+    for (const item of usage.windows.slice(0, PORT_MAX_WINDOWS)) {
+      if (!item || typeof item !== "object") continue;
+      const w = item as Record<string, unknown>;
+      const name = clip(w.name, 64);
+      const usedText = clip(w.used, 32);
+      if (!name || usedText === undefined) continue;
+      windows.push({
+        name,
+        used: clampPercent(usedText),
+        usedText,
+        resetsIn: clip(w.resetsIn, 32) ?? "",
+        ...(typeof w.resetsInSeconds === "number" && Number.isFinite(w.resetsInSeconds) ? { resetsInSeconds: w.resetsInSeconds } : {}),
+      });
+    }
+  }
+  let spend: TiamatPortUsage["spend"];
+  if (usage.spend && typeof usage.spend === "object") {
+    const s = usage.spend as Record<string, unknown>;
+    const amount = typeof s.amount === "number" ? String(s.amount) : clip(s.amount, 32);
+    const period = clip(s.period, 32);
+    const currency = clip(s.currency, 8);
+    if (amount && period && currency) spend = { period, amount, currency };
+  }
+  let credits: TiamatPortUsage["credits"];
+  if (usage.credits && typeof usage.credits === "object") {
+    const c = usage.credits as Record<string, unknown>;
+    const balance = typeof c.balance === "number" ? String(c.balance) : clip(c.balance, 32);
+    if (balance) credits = { balance };
+  }
+  const fetchedAt = timestamp(usage.fetchedAt);
+  // `usage: {}` is "no telemetry", which the UI must state rather than draw as 0%.
+  if (!windows.length && !spend && !credits) return null;
+  return { windows, ...(spend ? { spend } : {}), ...(credits ? { credits } : {}), ...(fetchedAt === undefined ? {} : { fetchedAt }) };
+}
+
+/**
+ * Pure projection. `providers` is the raw `/tiamat/v1/providers` body (already
+ * shape-checked by `isProviders`), `catalog` the raw `/tiamat/v1/models` body,
+ * and `baseUrl` is used only to recover the Pi provider ids `catalog.ts`
+ * registers for each account — it is never emitted.
+ */
+export function projectProviders(
+  providers: TiamatProviders,
+  catalog: readonly TiamatCatalogRecord[],
+  baseUrl: string,
+): TiamatPortProvider[] {
+  const groups = catalogToProviderGroups(catalog as TiamatCatalogRecord[], baseUrl);
+  const byAccount = new Map<string, TiamatPortProvider>();
+  const ensure = (id: string): TiamatPortProvider | undefined => {
+    let entry = byAccount.get(id);
+    if (!entry) {
+      if (byAccount.size >= PORT_MAX_PROVIDERS) return undefined;
+      entry = { id, members: [], models: [], usage: null };
+      byAccount.set(id, entry);
+    }
+    return entry;
+  };
+  // Catalogue order first: it is the order the router lists accounts in.
+  for (const record of catalog) {
+    const id = clip(record.provider);
+    if (!id) continue;
+    const entry = ensure(id);
+    if (!entry || entry.models.length >= PORT_MAX_MODELS) continue;
+    const model = clip(record.model);
+    if (!model || entry.models.some((m) => m.id === model)) continue;
+    entry.models.push({
+      id: model,
+      availability: record.availability,
+      ...(record.reason ? { reason: clip(record.reason, 64) } : {}),
+      ...(record.resetsIn ? { resetsIn: clip(record.resetsIn, 32) } : {}),
+    });
+  }
+  for (const group of groups) {
+    const entry = ensure(group.tiamatProvider);
+    if (entry && !entry.members.includes(group.id)) entry.members.push(group.id);
+  }
+  for (const [id, raw] of Object.entries(providers)) {
+    const entry = ensure(id.slice(0, PORT_SHORT));
+    if (!entry) continue;
+    const p = raw as Record<string, unknown>;
+    if (p.kind === "oauth-client" || p.kind === "api-key") entry.kind = p.kind;
+    if (p.locality === "remote" || p.locality === "local") entry.locality = p.locality;
+    entry.usage = projectUsage(p.usage);
+  }
+  return [...byAccount.values()];
 }

@@ -10,7 +10,7 @@ import {
   type ProviderGroup,
   type TiamatCatalogRecord,
 } from "./catalog.ts";
-import { formatBudgetUsage, formatUsage, isProviders, providerId, type TiamatProviders } from "./usage.ts";
+import { formatBudgetUsage, formatUsage, isProviders, projectProviders, providerId, type TiamatPort, type TiamatProviders } from "./usage.ts";
 
 const LOG = "tiamat";
 const logError = (value: unknown) => process.env.FAMILIAR_LOG_PATH
@@ -59,6 +59,22 @@ export default async function tiamat(pi: ExtensionAPI) {
   let providers: TiamatProviders = {};
   let usageRefreshedAt = 0;
   let lastUsageStatus = "";
+  let appliedCatalog: TiamatCatalogRecord[] = [];
+
+  // In-process projection for a UI bridge (familiar-ui). Read synchronously
+  // while the bridge builds a snapshot; never carries the token or base URL.
+  const port: TiamatPort = {
+    providers: () => projectProviders(providers, appliedCatalog, baseUrl),
+    usageRefreshedAt: () => (usageRefreshedAt ? usageRefreshedAt : null),
+  };
+  const notifyChanged = () => {
+    // A projection subscriber must never break catalog or usage handling.
+    try { pi.events.emit("familiar:tiamat:changed", {}); } catch { /* ignore */ }
+  };
+  pi.events.on("familiar:tiamat:discover", (value: unknown) => {
+    const accept = (value as { accept?: unknown } | null)?.accept;
+    if (typeof accept === "function") accept(port);
+  });
 
   const token = async () => (await readFile(tokenFile, "utf8")).trim();
   const request = async (method: "GET" | "HEAD", signal?: AbortSignal, etag?: string): Promise<Response> => {
@@ -114,6 +130,7 @@ export default async function tiamat(pi: ExtensionAPI) {
       providers = value;
       usageRefreshedAt = Date.now();
       renderUsage();
+      notifyChanged();
     } catch { /* Usage display must never affect an agent turn or spam logs. */ }
     finally { usageInFlight = false; }
   };
@@ -168,6 +185,8 @@ export default async function tiamat(pi: ExtensionAPI) {
     }
     registered = nextMap;
     appliedEtag = result.etag;
+    appliedCatalog = result.catalog;
+    notifyChanged();
     logDebug({ catalogApplied: true, etag: appliedEtag, providers: next.length, models: next.reduce((n, g) => n + g.models.length, 0) });
   };
 
