@@ -8,7 +8,9 @@ mkdir -p "$TMP/bin" "$TMP/plugin"
 
 cat > "$TMP/bin/pi" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' "$@" > "$PI_CODING_AGENT_DIR/cli-args"
+printf '%s\n' "$@" > "$PI_CODING_AGENT_DIR/cli-args.tmp"
+mv "$PI_CODING_AGENT_DIR/cli-args.tmp" "$PI_CODING_AGENT_DIR/cli-args"
+touch "$PI_CODING_AGENT_DIR/ready"
 exit 0
 EOF
 cat > "$TMP/bin/nix" <<'EOF'
@@ -19,18 +21,48 @@ EOF
 chmod 700 "$TMP/bin/pi" "$TMP/bin/nix"
 
 run_pi() {
-  local state=$1 value=$2
+  local state=$1 pid status attempt
+  shift
+  local -a extra_env=(-u FAMILIAR_PI_EXTRA_EXTENSIONS_JSON)
+  if [ "$#" -gt 0 ]; then
+    extra_env=(FAMILIAR_PI_EXTRA_EXTENSIONS_JSON="$1")
+  fi
   mkdir -p "$state"
   env -u LLAMA_BASE_URL -u FAMILIAR_MODEL_FILE -u NEED_LLAMA \
+    "${extra_env[@]}" \
     PATH="$TMP/bin:$PATH" \
     FAMILIAR_SHELL=pi \
     FAMILIAR_PLUGIN_ROOT="$TMP/plugin" \
     PI_CODING_AGENT_DIR="$state" \
     FAMILIAR_DEFAULT_PROVIDER=test \
     FAMILIAR_DEFAULT_MODEL=test \
-    FAMILIAR_PI_EXTRA_EXTENSIONS_JSON="$value" \
-    timeout 0.5 "$REPO/familiar.sh" pi >/dev/null 2>"$state/stderr"
-  return $?
+    "$REPO/familiar.sh" pi >/dev/null 2>"$state/stderr" &
+  pid=$!
+
+  # Wait for the Pi stub to confirm that settings generation completed and the
+  # complete CLI argument list arrived. A fixed startup timeout races slower
+  # evaluators before either contract is observable.
+  for attempt in $(seq 1 500); do
+    if [ -f "$state/ready" ]; then
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      return 0
+    fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+      if wait "$pid"; then
+        status=0
+      else
+        status=$?
+      fi
+      return "$status"
+    fi
+    sleep 0.01
+  done
+
+  echo 'FAIL: timed out waiting for Pi settings/argument readiness' >&2
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  return 124
 }
 
 expect_rejected_unchanged() {
@@ -67,7 +99,7 @@ set +e
 run_pi "$state" '["/etc/shared/index.js","/etc/familiar-ui-extension/index.js","/etc/familiar-ui-extension/index.js"]'
 status=$?
 set -e
-[ "$status" -eq 124 ] || { cat "$state/stderr" >&2; exit 1; }
+[ "$status" -eq 0 ] || { cat "$state/stderr" >&2; exit 1; }
 
 # Built-ins, plugin paths, and host extras all survive; duplicates collapse.
 # Use set subtraction for the complete required set, then explicit occurrence
@@ -91,15 +123,11 @@ grep -qx -- '--continue' "$state/cli-args"
 
 # Unset (as opposed to explicitly empty) defaults to no deployment extensions.
 unset_state="$TMP/unset"
-mkdir -p "$unset_state"
 set +e
-env -u FAMILIAR_PI_EXTRA_EXTENSIONS_JSON -u LLAMA_BASE_URL -u FAMILIAR_MODEL_FILE -u NEED_LLAMA \
-  PATH="$TMP/bin:$PATH" FAMILIAR_SHELL=pi FAMILIAR_PLUGIN_ROOT="$TMP/plugin" \
-  PI_CODING_AGENT_DIR="$unset_state" FAMILIAR_DEFAULT_PROVIDER=test FAMILIAR_DEFAULT_MODEL=test \
-  timeout 0.5 "$REPO/familiar.sh" pi >/dev/null 2>"$unset_state/stderr"
+run_pi "$unset_state"
 status=$?
 set -e
-[ "$status" -eq 124 ] || { cat "$unset_state/stderr" >&2; exit 1; }
+[ "$status" -eq 0 ] || { cat "$unset_state/stderr" >&2; exit 1; }
 jq -e '.extensions | index("/opt/plugin/index.js") != null' "$unset_state/settings.json" >/dev/null
 
 echo 'pi extra-extension contract tests: ok'
