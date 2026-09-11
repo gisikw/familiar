@@ -5,6 +5,8 @@ REPO=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/familiar-extra-extensions.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin" "$TMP/plugin"
+: > "$TMP/familiar.toml"
+chmod 600 "$TMP/familiar.toml"
 
 cat > "$TMP/bin/pi" <<'EOF'
 #!/usr/bin/env bash
@@ -29,9 +31,11 @@ run_pi() {
   fi
   mkdir -p "$state"
   env -u LLAMA_BASE_URL -u FAMILIAR_MODEL_FILE -u NEED_LLAMA \
+    -u _FAMILIAR_CONFIG_EXPLICIT_ENV -u _FAMILIAR_CONFIG_LOADED_ENV \
     "${extra_env[@]}" \
     PATH="$TMP/bin:$PATH" \
     FAMILIAR_SHELL=pi \
+    FAMILIAR_CONFIG_PATH="$TMP/familiar.toml" \
     FAMILIAR_PLUGIN_ROOT="$TMP/plugin" \
     PI_CODING_AGENT_DIR="$state" \
     FAMILIAR_DEFAULT_PROVIDER=test \
