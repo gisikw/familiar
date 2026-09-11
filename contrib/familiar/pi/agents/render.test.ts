@@ -140,12 +140,13 @@ test("summarizeArtifactFetch: NEVER renders the base64 body (collapsed or expand
 const LONG_PROMPT =
   "Please implement feature Z with these exact steps: " + "step-".repeat(60) + "END_TOKEN_QWERTY";
 
-test("callText(dispatch): full prompt hidden when collapsed, inspectable when expanded", () => {
-  const args = { prompt: LONG_PROMPT, harness: "claude-code", model: "sonnet", project: "golem", worktree: "wt" };
+test("callText(dispatch): union workspace renders and full prompt is only expanded", () => {
+  const args = { prompt: LONG_PROMPT, harness: "claude-code", model: "sonnet", workspace: { project: "golem" }, worktree: "wt" };
   const collapsed = callText("agents_dispatch", args, theme, { expanded: false });
   const expanded = callText("agents_dispatch", args, theme, { expanded: true });
   expect(collapsed).not.toContain("END_TOKEN_QWERTY");
   expect(collapsed).toContain("dispatch");
+  expect(collapsed).toContain("golem @ wt");
   expect(expanded).toContain("END_TOKEN_QWERTY");
 });
 

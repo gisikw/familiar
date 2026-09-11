@@ -1,31 +1,46 @@
-export const dispatchDescription="Dispatch using a harness and model advertised by golemd capabilities. Select exactly one workspace: provide project and omit repo, or provide repo and omit project. Never send both fields or placeholders/empty strings. ref is only for repo workspaces.";
-export const dispatchProjectDescription="Existing project name advertised by agents_capabilities. Use project or repo, never both. Omit project entirely when using repo; do not send an empty string.";
-export const dispatchRepoDescription="Repository clone source. Use repo or project, never both. Omit repo entirely when using project; do not send an empty string.";
-export const dispatchRefDescription="Optional git ref for a repo workspace only; omit it when using project.";
+export const dispatchDescription="Dispatch using a harness and model advertised by golemd capabilities. Select exactly one workspace variant: {project} for an advertised project or {repo, ref?} for a repository clone.";
+export const dispatchWorkspaceDescription="Exactly one workspace variant: project name, or repository clone source with an optional ref.";
+export const dispatchRefDescription="Optional git ref for repo workspaces only.";
 
-// Keep the public schema flat: Pi documents Type.Union/Type.Literal as
-// incompatible with Google's tool API. Runtime validation below owns the XOR.
 export function buildDispatchParameters(Type:any){return Type.Object({
  prompt:Type.String(),
  harness:Type.String(),
  model:Type.String(),
  worktree:Type.String(),
- project:Type.Optional(Type.String({minLength:1,description:dispatchProjectDescription})),
- repo:Type.Optional(Type.String({minLength:1,description:dispatchRepoDescription})),
- ref:Type.Optional(Type.String({description:dispatchRefDescription})),
+ workspace:Type.Union([
+  Type.Object({project:Type.String({minLength:1})},{additionalProperties:false}),
+  Type.Object({
+   repo:Type.String({minLength:1}),
+   ref:Type.Optional(Type.String({minLength:1,description:dispatchRefDescription})),
+  },{additionalProperties:false}),
+ ],{description:dispatchWorkspaceDescription}),
  key:Type.Optional(Type.String()),
-})}
+},{additionalProperties:false})}
 
-type DispatchWorkspaceArgs={project?:string;repo?:string;ref?:string;worktree:string};
-export function dispatchWorkspace(p:DispatchWorkspaceArgs){
- const hasProject=p.project!==undefined;
- const hasRepo=p.repo!==undefined;
- if(hasProject===hasRepo)throw new Error("provide exactly one of project or repo; omit the other field entirely");
- if(hasProject){
-  if(!p.project)throw new Error("project must be a non-empty string");
-  if(p.ref!==undefined)throw new Error("ref is only valid with repo; omit ref when using project");
-  return{project:p.project,worktree:p.worktree};
+type WorkspaceSelector=
+ |{project:string}
+ |{repo:string;ref?:string|null};
+export function dispatchWorkspace(selector:WorkspaceSelector,worktree:string){
+ if("project" in selector){
+  if(!selector.project)throw new Error("project must be a non-empty string");
+  return{project:selector.project,worktree};
  }
- if(!p.repo)throw new Error("repo must be a non-empty string");
- return{repo:p.repo,ref:p.ref,worktree:p.worktree};
+ if(!selector.repo)throw new Error("repo must be a non-empty string");
+ return{repo:selector.repo,...(selector.ref===undefined||selector.ref===null?{}:{ref:selector.ref}),worktree};
+}
+
+// Stored calls from pre-union sessions are prepared before validation. This is
+// compatibility for resumed history, not part of the public schema.
+export function prepareDispatchArguments(p:any){
+ if(p?.workspace!==undefined||!p||typeof p!=="object")return p;
+ const hasProject=p.project!==undefined&&p.project!==null;
+ const hasRepo=p.repo!==undefined&&p.repo!==null;
+ if(hasProject===hasRepo||(hasProject&&p.ref!==undefined&&p.ref!==null))return p;
+ const {project,repo,ref,...rest}=p;
+ return{
+  ...rest,
+  workspace:hasProject
+   ?{project}
+   :{repo,...(ref===undefined||ref===null?{}:{ref})},
+ };
 }

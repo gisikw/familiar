@@ -254,7 +254,8 @@ export function callText(toolName: string, args: unknown, theme: AgentsTheme, co
   switch (toolName) {
     case "agents_dispatch": {
       const harness = str(a.harness), model = str(a.model);
-      const ws = workspaceStr({ project: a.project, repo: a.repo, ref: a.ref, worktree: a.worktree });
+      const workspace = rec(a.workspace) ?? a; // flat fallback renders resumed legacy calls
+      const ws = workspaceStr({ project: workspace.project, repo: workspace.repo, ref: workspace.ref, worktree: a.worktree });
       let s = "";
       if (harness || model) s += theme.fg("accent", `${harness ? harness + "/" : ""}${model || "?"}`);
       if (ws) s += " " + theme.fg("muted", "→ " + ws);
