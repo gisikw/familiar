@@ -109,6 +109,7 @@ describe("Tiamat UI port projection", () => {
     expect(claude.models).toEqual([
       {
         id: "claude-sonnet",
+        route: "tiamat-anthropic-claude-code-personal",
         availability: "available",
         reasoning: false,
         input: ["text"],
@@ -116,6 +117,7 @@ describe("Tiamat UI port projection", () => {
       },
       {
         id: "claude-opus",
+        route: "tiamat-anthropic-claude-code-personal",
         availability: "degraded",
         reason: "upstream",
         reasoning: false,
@@ -153,6 +155,7 @@ describe("Tiamat UI port projection", () => {
     expect(codex.models).toEqual([
       {
         id: "gpt-next",
+        route: "tiamat-responses-codex%2Fpersonal",
         availability: "available",
         reasoning: false,
         input: ["text"],
@@ -160,6 +163,7 @@ describe("Tiamat UI port projection", () => {
       },
       {
         id: "o-pro",
+        route: "tiamat-responses-codex%2Fpersonal",
         availability: "unavailable",
         reason: "quota",
         resetsIn: "25m",

@@ -113,6 +113,22 @@ There is no timeout, cancellation injection, sandbox, or rollback. Fire-and-forg
 work after handler completion is outside the slot lifetime. Admission cannot
 prevent a handler from starting another run or misusing captured raw objects.
 
+## Pre-resolution model bootstrap
+
+`ExtensionAPI.registerModelBootstrap(handler)` is a narrow registration hook,
+not a lifecycle escape hatch. Pi invokes registered handlers after async factories
+finish and before model scope, CLI, restored-session, or configured-default
+resolution. A request identifies its source and carries an exact provider/model
+pair when Pi has one. Bare CLI model patterns deliberately omit `provider`, so an
+extension cannot interpret them as permission to materialize an unbounded
+catalogue. `list` has no identity and permits only an extension-owned bounded seed.
+Handlers have no context/session actions; they may queue provider registrations,
+which Pi flushes into `ModelRuntime` immediately after all awaited handlers.
+Handler and registration errors become startup diagnostics and therefore fail
+closed in non-interactive/worker modes. The same `createRuntime` closure invokes
+the phase for initial startup and `/new`, `/resume`, fork, and import replacement
+flows. Extensions never inspect argv or settings/session files.
+
 ## 0.85.1 rebase assumptions and patch order
 
 Upstream tag `v0.85.1` is the lightweight tag at
@@ -123,6 +139,8 @@ Upstream tag `v0.85.1` is the lightweight tag at
 2. `runtime-control.patch` — atomic no-run owner commits, incrementally accounted
    persistence budget and writer quarantine, admitted-user continuation, and
    owner/session/leaf/idle, command/event and runtime-replacement fences.
+3. `model-bootstrap.patch` — awaited provider-only materialization from the exact
+   effective CLI/restored/default request before any initial model resolution.
 
 Neither facility exists upstream in 0.85.1, so no downstream portion was
 superseded. The rebase preserves the changed upstream loader factory/runtime
@@ -159,7 +177,9 @@ It also asserts absence of nixpkgs patches or a prePatch hook. Before applying
 any downstream patch, SHA-256 checks cover whole `loader.ts`, `runner.ts`,
 `types.ts`, `agent-session.ts`, `session-manager.ts`, `agent-session-runtime.ts`,
 `sdk.ts`, compaction and agent-loop sources, root/coding-agent manifests, lockfile,
-and patched extension API docs. This pins command resolution, context construction,
+and patched extension API docs. Separate hashes pin `extensions/index.ts`,
+`agent-session-services.ts`, and `main.ts` for bootstrap registration exports,
+provider flushing, exact request precedence, and pre-scope invocation. This pins command resolution, context construction,
 prompt dispatch, SDK session construction, getCommands binding, replacement,
 persistence and mid-run compaction internals—not merely nearby patch context.
 Source rearrangements fail before patch application; patch fuzz is not the
@@ -194,6 +214,12 @@ cleanup, nested/concurrent event depth, real `AgentSession.prompt()` execution w
 prompt/public overlap in both directions, prompt error reporting, and stale API/
 context behavior during and after replacement/reload. Session/resource I/O is stubbed
 at the mode-action boundary; these are not full TUI or disk-backed lifecycle tests.
+
+`model-bootstrap-shape.test.mjs` asserts that the callback is extension-owned,
+awaited, flushed before CLI/scope resolution, and does not read `process.argv`.
+`model-bootstrap.test.mjs` runs against compiled and installed output and proves
+arbitrary restored/default identities, a bounded one-model list seed, and no
+provider expansion for a bare CLI pattern.
 
 Source shape checks run in `postPatch`. Runtime tests run in `checkPhase` and again
 unconditionally in `postInstall` against the installed runtime, plus installed

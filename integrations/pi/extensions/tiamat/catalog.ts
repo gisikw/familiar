@@ -82,6 +82,12 @@ export function normalizeBaseUrl(value: string): string {
   return value.replace(/\/+$/, "");
 }
 
+/** Exact generated Pi provider identity for one router catalogue row. */
+export function routeForRecord(record: TiamatCatalogRecord): string {
+  const wire = WIRES[record.api];
+  return `tiamat-${wire.family}-${encodeURIComponent(record.provider)}`;
+}
+
 export function isCatalog(value: unknown): value is TiamatCatalogRecord[] {
   if (!Array.isArray(value)) return false;
   return value.every((record) => {
@@ -130,7 +136,7 @@ export function catalogToProviderGroups(
   for (const record of catalog) {
     if (record.availability === "unavailable") continue;
     const wire = WIRES[record.api];
-    const id = `tiamat-${wire.family}-${encodeURIComponent(record.provider)}`;
+    const id = routeForRecord(record);
     let group = groups.get(id);
     if (!group) {
       const scopedBase = `${base}/${wire.family}/${encodeURIComponent(record.provider)}${wire.baseSuffix}`;

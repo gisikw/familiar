@@ -1,5 +1,6 @@
 96e20f8038027f0b0172f311b6b9d9ddf42123b2f5b2a018f533af026fd3371e  packages/coding-agent/src/core/extensions/types.ts
 7e0e3a70994686f592e19fdf93f07bc65e397c3671f64e0faac3ffa061ba9f63  packages/coding-agent/src/core/extensions/loader.ts
+3502526cb694e66e79b729a72956dd8be4be4556c8c60c3a0b534ac3bf7ad1ce  packages/coding-agent/src/core/extensions/index.ts
 6d5101ab0551c2ddd904a8089cc221b3c448fcfe36c27e36da02cdacc869c084  packages/coding-agent/src/core/extensions/runner.ts
 23e4acac844638fb0ae60047130f8e1050e4c729c1b8e80d37e359ac9c0eef9a  packages/coding-agent/src/core/agent-session.ts
 7e305a4e6382517028f3b6fdf2b2350c38fa89a24e2cbec6ac84e8d99f99ba1d  package.json
@@ -9,5 +10,7 @@ f1738e4b42203e5f22bcb513f13fb2fb224f1e98d1f129ff042f87048665a94c  packages/codin
 57bc70a751567b96c057535766240ae52d9b76d9013ea78049d74dc3b654e915  packages/coding-agent/src/core/session-manager.ts
 5b348a4db837a2564367dd93b343c67f3b0c28a2f753ff71adcb48d08b5644e7  packages/coding-agent/src/core/agent-session-runtime.ts
 938f9f3d484544040e7a06e6f89a07adb72ab007ea660bcaf4a8c1846d20a021  packages/coding-agent/src/core/sdk.ts
+831c56842c394969567199a9e5ccdaebb9a3df7bdde825aa677935b825afedd6  packages/coding-agent/src/core/agent-session-services.ts
+bb0aa846d5976671bfdcdd81ffc1180653c7099bdc42f80945175a7d704ab6b9  packages/coding-agent/src/main.ts
 d3f639c21c4b91ebbe9d5716914636c3eb37a19d434e11bd6653fef8050f1357  packages/coding-agent/src/core/compaction/compaction.ts
 1e16404a231912fbd7643d8317b15ec4cc6245ed8cedc37582a31d430a1cc6ac  packages/agent/src/agent-loop.ts

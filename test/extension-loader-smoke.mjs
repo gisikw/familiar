@@ -35,6 +35,7 @@ try {
     "footer",
     "handoff",
     "identity",
+    "imp",
     "private",
     "stuff",
     "subscriber",

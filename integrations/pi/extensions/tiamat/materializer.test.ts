@@ -23,6 +23,7 @@ class Host {
   selected: any;
   accepted = true;
   failSet = false;
+  failAfterSet = false;
   setCalls = 0;
   setWait: Promise<void> | undefined;
   entries: unknown[] = [];
@@ -45,6 +46,7 @@ class Host {
     if (!this.accepted) return false;
     this.selected = model;
     context.model = model;
+    if (this.failAfterSet) throw new Error("set failed after mutation");
     return true;
   }
   appendEntry(_type: string, data?: unknown) {
@@ -96,7 +98,10 @@ describe("Tiamat session restore", () => {
           },
         ]),
       ),
-    ).toEqual({ provider: "codex/personal", modelId: "gpt-5" });
+    ).toEqual({
+      provider: "tiamat-responses-codex%2Fpersonal",
+      modelId: "gpt-5",
+    });
     expect(
       restoredSelection(
         ctx([
@@ -117,6 +122,23 @@ describe("Tiamat session restore", () => {
 });
 
 describe("Tiamat JIT materialization", () => {
+  test("bootstraps one exact route (or one list seed) without selecting", () => {
+    const { host, materializer } = setup([
+      record("a", "one"),
+      record("b", "outside-mru", "/responses/v1/responses"),
+      record("c", "three"),
+    ]);
+    materializer.bootstrap({
+      provider: "tiamat-responses-b",
+      modelId: "outside-mru",
+    });
+    expect(host.models.has("tiamat-responses-b/outside-mru")).toBe(true);
+    expect(host.setCalls).toBe(0);
+    expect(count(host)).toBe(1);
+    materializer.bootstrap();
+    expect(count(host)).toBe(2);
+  });
+
   test("same-provider replacement stages current and keeps two MRU models", async () => {
     const { host, materializer } = setup([
       record("personal", "one"),
@@ -138,6 +160,31 @@ describe("Tiamat JIT materialization", () => {
       [...host.providers.values()][0].models.map((m: any) => m.id),
     ).toEqual(["three", "two"]);
     expect(count(host)).toBe(2);
+    // A TUI/RPC selection of the previous registered model must update MRU too.
+    const previous = host.models.get("tiamat-anthropic-personal/two");
+    materializer.adopt(previous);
+    expect(materializer.materialized().map((item) => item.modelId)).toEqual([
+      "two",
+      "three",
+    ]);
+    expect(count(host)).toBe(2);
+  });
+
+  test("requires an exact route when account/model exists in multiple wire families", async () => {
+    const { host, materializer } = setup([
+      record("same", "duplicate"),
+      record("same", "duplicate", "/responses/v1/responses"),
+    ]);
+    expect(
+      await materializer.activate({ provider: "same", modelId: "duplicate" }),
+    ).toEqual({ ok: false, error: "not_found" });
+    expect(
+      await materializer.activate({
+        provider: "tiamat-responses-same",
+        modelId: "duplicate",
+      }),
+    ).toEqual({ ok: true });
+    expect(host.selected.provider).toBe("tiamat-responses-same");
   });
 
   test("cross-provider switch prunes only after selection and retains previous", async () => {
@@ -180,6 +227,16 @@ describe("Tiamat JIT materialization", () => {
       await materializer.activate({ provider: "b", modelId: "two" }),
     ).toEqual({ ok: false, error: "failed" });
     expect(host.models.has("tiamat-anthropic-a/one")).toBe(true);
+
+    host.failSet = false;
+    host.failAfterSet = true;
+    expect(
+      await materializer.activate({ provider: "b", modelId: "two" }),
+    ).toEqual({ ok: false, error: "failed" });
+    // Even when setModel throws after mutation (including on rollback), registry
+    // pruning follows the actual model state rather than the attempted target.
+    expect(context.model?.provider).toBe("tiamat-anthropic-a");
+    expect(count(host)).toBeLessThanOrEqual(2);
   });
 
   test("rejects unavailable and unknown semantic selections without mutation", async () => {

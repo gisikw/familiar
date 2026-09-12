@@ -1,5 +1,6 @@
 import {
   catalogToProviderGroups,
+  routeForRecord,
   type TiamatCatalogRecord,
 } from "./catalog.ts";
 
@@ -294,6 +295,8 @@ export interface TiamatPortUsage {
 
 export interface TiamatPortModel {
   id: string;
+  /** Exact generated Pi route; account/model alone can be wire-ambiguous. */
+  route: string;
   availability: "available" | "degraded" | "unavailable";
   reason?: string;
   resetsIn?: string;
@@ -322,7 +325,7 @@ export interface TiamatActivationResult {
 
 export interface TiamatPort {
   providers(): TiamatPortProvider[];
-  /** Atomically materialize and select an account/model semantic identity. */
+  /** Atomically materialize and select an exact generated route/model. */
   activate(provider: string, modelId: string): Promise<TiamatActivationResult>;
   /** Unix ms of the last successful `/tiamat/v1/providers` poll, or `null`. */
   usageRefreshedAt(): number | null;
@@ -432,9 +435,18 @@ export function projectProviders(
     const entry = ensure(id);
     if (!entry || entry.models.length >= PORT_MAX_MODELS) continue;
     const model = clip(record.model);
-    if (!model || entry.models.some((m) => m.id === model)) continue;
+    const route = clip(routeForRecord(record));
+    if (
+      !model ||
+      !route ||
+      entry.models.some((candidate) =>
+        candidate.id === model && candidate.route === route
+      )
+    )
+      continue;
     entry.models.push({
       id: model,
+      route,
       availability: record.availability,
       ...(record.reason ? { reason: clip(record.reason, 64) } : {}),
       ...(record.resetsIn ? { resetsIn: clip(record.resetsIn, 32) } : {}),

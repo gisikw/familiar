@@ -86,6 +86,26 @@ export default async function tiamat(pi: ExtensionAPI) {
     () => context,
   );
 
+  // Pi awaits this narrow phase after extension factories and before CLI,
+  // restored-session, or configured-default model resolution. Exact generated
+  // routes materialize one row; bare/fuzzy CLI patterns intentionally do not
+  // expand Tiamat's control-plane catalogue. List mode gets one deterministic
+  // seed so JIT does not turn health checks into an empty catalogue.
+  pi.registerModelBootstrap((request) => {
+    if (request.source === "list") {
+      materializer.bootstrap();
+      return;
+    }
+    if (
+      request.provider?.startsWith("tiamat-") &&
+      request.modelId
+    )
+      materializer.bootstrap({
+        provider: request.provider,
+        modelId: request.modelId,
+      });
+  });
+
   // In-process projection for a UI bridge (familiar-ui). Read synchronously
   // while the bridge builds a snapshot; never carries the token or base URL.
   const port: TiamatPort = {
@@ -275,11 +295,15 @@ export default async function tiamat(pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     context = ctx;
-    // Pi 0.85.1 resolves a resumed/default model before binding extension
-    // providers. Correct a persisted semantic selection at the first awaited
-    // lifecycle boundary; see README for the remaining default-model hook gap.
+    // Migration defense for old semantic entries or catalogues that were
+    // transiently unavailable during bootstrap. Normal exact routes are already
+    // materialized and selected before this lifecycle event.
     const restored = restoredSelection(ctx);
-    if (restored) {
+    if (
+      restored &&
+      (ctx.model?.provider !== restored.provider ||
+        ctx.model.id !== restored.modelId)
+    ) {
       const result = await materializer.activate(restored, false);
       if ("error" in result)
         logError({
@@ -301,6 +325,7 @@ export default async function tiamat(pi: ExtensionAPI) {
   });
   pi.on("model_select", async (_event, ctx) => {
     context = ctx;
+    materializer.adopt(ctx.model);
     renderUsage();
   });
   pi.on("turn_end", async (_event, ctx) => {
