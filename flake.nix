@@ -64,8 +64,25 @@
         # Runs at runtime (run_tts), keeping mutable operator data out of the
         # world-readable Nix store.
         bakePython = pkgs.python3.withPackages (ps: with ps; [ gguf torch ]);
+        impPackage = pkgs.buildGoModule {
+          pname = "familiar-imp";
+          version = "0.1.0";
+          src = ./packages/imp;
+          vendorHash = null;
+          subPackages = [ "cmd/imp" ];
+          doCheck = true;
+          meta = with pkgs.lib; {
+            description = "Private CLI-shaped model tool for Familiar residents";
+            license = licenses.mit;
+            mainProgram = "imp";
+            platforms = platforms.unix;
+          };
+        };
         piShell = pkgs.mkShell (modelEnv // {
           FAMILIAR_SHELL = "pi";
+          # Deliberately not a package of this shell: familiar.sh adds this
+          # directory to PATH only immediately before it launches resident Pi.
+          FAMILIAR_IMP_BIN = "${impPackage}/bin";
           FAMILIAR_INTERACTIVE_SHELL = "${pkgs.bashInteractive}/bin/bash";
           PI_PACKAGE_DIR = "${patchedPi}/lib/node_modules/pi-monorepo";
           packages = [ patchedPi ] ++ (with pkgs; [ age curl jq sqlite librsvg ffmpeg tmux util-linux git openssh ]);
@@ -74,6 +91,7 @@
       {
         packages = rec {
           pi-coding-agent = patchedPi;
+          imp = impPackage;
           familiar-server = server.packages.${system}.default;
           familiar-llm = llm.packages.${system}.default;
           familiar-stt = stt.packages.${system}.default;
@@ -100,6 +118,13 @@
           familiar-desktop = desktop.packages.${system}.default;
         };
         checks = {
+          imp = impPackage;
+          imp-path-confinement = pkgs.runCommand "familiar-imp-path-confinement" {
+            nativeBuildInputs = with pkgs; [ bash coreutils jq ];
+          } ''
+            bash ${self}/test/imp-path-confinement.test.sh ${self}/familiar.sh ${impPackage}/bin
+            touch $out
+          '';
           pi-invoke-command = patchedPi;
           resident-tool-inventory = pkgs.runCommand "familiar-resident-tool-inventory" {
             PI_PACKAGE_DIR = "${patchedPi}/lib/node_modules/pi-monorepo";

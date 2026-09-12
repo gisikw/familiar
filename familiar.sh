@@ -338,6 +338,15 @@ run_pi() {
   # A core dump would turn that into plaintext at rest, so the process must not
   # start unless the kernel accepts a zero core-size limit (inherited by age).
   ulimit -c 0 || { echo 'familiar: cannot disable core dumps; refusing to start Pi' >&2; return 1; }
+  # Imp is a model capability of this resident, not a general Familiar CLI.
+  # The pi dev shell carries only its immutable bin path; add it to PATH at the
+  # resident launch boundary so Pi and its Bash-tool children inherit it while
+  # unrelated Familiar shells do not.
+  if [ -n "${FAMILIAR_IMP_BIN:-}" ]; then
+    case "$FAMILIAR_IMP_BIN" in /*) ;; *) echo 'familiar: FAMILIAR_IMP_BIN must be absolute' >&2; return 1 ;; esac
+    [ -x "$FAMILIAR_IMP_BIN/imp" ] || { echo 'familiar: imp executable is missing from FAMILIAR_IMP_BIN' >&2; return 1; }
+    export PATH="$FAMILIAR_IMP_BIN:$PATH"
+  fi
   mkdir -p "$PI_CODING_AGENT_DIR"
   # A remote/dynamic provider (for example Tiamat) need not configure the
   # optional local llama.cpp backend. Keep both expansions safe under `set -u`
