@@ -238,8 +238,21 @@ try {
   writeFileSync(outageFlag, "");
   settings({ defaultProvider: "tiamat-anthropic-work", defaultModel: "other-row" });
   result = run("-p", "hi");
+  assert.notEqual(result.status, 0);
+  assert.equal(
+    result.bound.some(
+      (bound) =>
+        bound.provider === "tiamat-anthropic-work" &&
+        bound.id === "other-row",
+    ),
+    false,
+  );
   assert.doesNotMatch(result.stderr, /model bootstrap error/, result.stderr);
-  assert.match(result.stderr, /No models available|not found|error/i, result.stderr);
+  assert.match(
+    result.stderr,
+    /No models available|not found|No API key found|error/i,
+    result.stderr,
+  );
   rmSync(outageFlag, { force: true });
   cases.push("router outage degrades");
 
