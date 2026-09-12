@@ -141,7 +141,7 @@
           } ''
             export HOME="$TMPDIR/home"
             mkdir -p "$HOME"
-            node --test ${self}/integrations/pi/extensions/agents/*.node-test.mjs
+            node --test ${self}/integrations/pi/extensions/agents/*.node-test.mjs ${self}/integrations/pi/extensions/imp/*.node-test.mjs
             python ${self}/integrations/pi/extensions/agents/test_remote.py
             node ${self}/test/agents/tools.mjs
             touch $out

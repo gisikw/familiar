@@ -19,10 +19,12 @@ const agentDir = join(scratch, "agent");
 mkdirSync(agentDir, { recursive: true });
 
 const residentNames = [
+  "agents",
   "background",
   "footer",
   "handoff",
   "identity",
+  "imp",
   "private",
   "stuff",
   "subscriber",
@@ -33,19 +35,6 @@ const residentNames = [
   "wake",
 ];
 const golemExtension = join(repo, "contrib", "familiar", "pi", "agents");
-const expectedFamiliarAgentTools = [
-  "familiar_agents_abandon",
-  "familiar_agents_answer",
-  "familiar_agents_cancel",
-  "familiar_agents_capabilities",
-  "familiar_agents_dispatch",
-  "familiar_agents_reconcile",
-  "familiar_agents_resolve_intent",
-  "familiar_agents_resolve_operation",
-  "familiar_agents_settle",
-  "familiar_agents_status",
-  "familiar_agents_steer",
-];
 const expectedGolemTools = [
   "agents_answer",
   "agents_artifact_fetch",
@@ -96,6 +85,14 @@ try {
     residentPaths.includes(join(golemExtension, "index.ts")),
     "Golem agents extension remains loaded",
   );
+  assert.ok(
+    residentPaths.includes(join(extensionRoot, "agents", "index.ts")),
+    "durable Familiar Agents owner implementation is loaded",
+  );
+  assert.ok(
+    residentPaths.includes(join(extensionRoot, "imp", "index.ts")),
+    "sole resident Imp ingress implementation is loaded",
+  );
   const residentTools = toolNames(resident.extensions);
   assert.deepEqual(
     residentTools.filter((name) => name.startsWith("familiar_agents_")),
@@ -106,25 +103,19 @@ try {
     assert.ok(residentTools.includes(name), `resident tool remains registered: ${name}`);
   }
 
-  // Load the retained implementation separately to make this test fail if the
-  // actual dormant family grows without the resident-absence contract noticing.
-  const dormant = await discoverAndLoadExtensions(
-    [join(extensionRoot, "agents")],
-    scratch,
-    agentDir,
+  // The loaded owner implementation itself must remain schema-free; there is
+  // no dormant first-class family to accidentally activate in another loader.
+  const agentsExtension = resident.extensions.find(
+    (extension) => extension.resolvedPath === join(extensionRoot, "agents", "index.ts"),
   );
+  assert.ok(agentsExtension);
   assert.deepEqual(
-    dormant.errors,
+    [...agentsExtension.tools.keys()].filter((name) => name.startsWith("familiar_agents_")),
     [],
-    `dormant extension load errors: ${JSON.stringify(dormant.errors, null, 2)}`,
-  );
-  assert.deepEqual(
-    toolNames(dormant.extensions).filter((name) => name.startsWith("familiar_agents_")),
-    expectedFamiliarAgentTools,
   );
 
   console.log(
-    `resident tool inventory: ${residentTools.length} tools; Familiar Agents absent, Golem and unrelated tools retained`,
+    `resident tool inventory: ${residentTools.length} tools; Familiar Agents owner + Imp loaded without familiar_agents_ tools; Golem unchanged`,
   );
 } finally {
   rmSync(scratch, { recursive: true, force: true });

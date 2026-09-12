@@ -110,17 +110,18 @@ set -e
 # counts to prove unique merging across plugin and deployment sources.
 jq -e --arg root "$REPO/integrations/pi/extensions" '
   ([
-    "background", "footer", "handoff", "identity", "private", "stuff", "subscriber",
+    "agents", "background", "footer", "handoff", "identity", "imp", "private", "stuff", "subscriber",
     "tiamat", "web", "worklist", "zip", "wake"
   ] | map($root + "/" + .)) as $builtins
   | ($builtins - .extensions | length) == 0
-    and (.extensions | index($root + "/agents")) == null
+    and (.extensions | index($root + "/agents")) != null
+    and (.extensions | index($root + "/imp")) != null
     and (.extensions | index("/opt/plugin/index.js")) != null
     and ([.extensions[] | select(. == "/etc/shared/index.js")] | length) == 1
     and ([.extensions[] | select(. == "/etc/familiar-ui-extension/index.js")] | length) == 1
 ' "$state/settings.json" >/dev/null
-if grep -qx -- '--familiar-agents-owner' "$state/cli-args"; then
-  echo 'FAIL: dormant Familiar Agents owner flag reached Pi' >&2
+if ! grep -qx -- '--familiar-agents-owner' "$state/cli-args"; then
+  echo 'FAIL: Familiar Agents foreground owner authority flag did not reach Pi' >&2
   exit 1
 fi
 grep -qx -- '--continue' "$state/cli-args"

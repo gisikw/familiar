@@ -59,22 +59,37 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(
 		io.WriteString(stdout, rootHelp)
 		return 0
 	}
-	if args[0] != "plate" {
-		return usageError(stderr, "unknown area %q; try 'imp --help'", args[0])
+	area := args[0]
+	if area != "plate" && area != "agent" {
+		return usageError(stderr, "unknown area %q; try 'imp --help'", area)
 	}
 	if len(args) == 1 || isHelp(args[1]) {
-		io.WriteString(stdout, plateHelp)
+		if area == "plate" {
+			io.WriteString(stdout, plateHelp)
+		} else {
+			io.WriteString(stdout, agentHelp)
+		}
 		return 0
 	}
 	if len(args) > 2 && isHelp(args[2]) {
-		if help, ok := commandHelp[args[1]]; ok {
+		helpMap := commandHelp
+		if area == "agent" {
+			helpMap = agentCommandHelp
+		}
+		if help, ok := helpMap[args[1]]; ok {
 			io.WriteString(stdout, help)
 			return 0
 		}
-		return usageError(stderr, "unknown Plate command %q; try 'imp plate --help'", args[1])
+		return usageError(stderr, "unknown %s command %q; try 'imp %s --help'", area, args[1], area)
 	}
 
-	inv, err := parsePlate(args[1:], stdin)
+	var inv invocation
+	var err error
+	if area == "plate" {
+		inv, err = parsePlate(args[1:], stdin)
+	} else {
+		inv, err = parseAgent(args[1:], stdin)
+	}
 	if err != nil {
 		return usageError(stderr, "%v", err)
 	}
@@ -83,13 +98,16 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(
 		fmt.Fprintln(stderr, "imp: FAMILIAR_IMP_SOCKET is not set; this command is available only inside an owning Familiar resident")
 		return ExitUnavailable
 	}
-	result, remote, err := call(path, Request{Version: WireVersion, Area: "plate", Operation: inv.operation, Args: inv.args})
+	result, remote, err := call(path, Request{Version: WireVersion, Area: area, Operation: inv.operation, Args: inv.args})
 	if err != nil {
 		fmt.Fprintf(stderr, "imp: %v\n", err)
 		return ExitProtocol
 	}
 	if remote != nil {
 		fmt.Fprintf(stderr, "imp: %s: %s\n", safeErrorCode(remote.Code), remote.Message)
+		if remote.Code == "unavailable" {
+			return ExitUnavailable
+		}
 		return ExitRemote
 	}
 	if inv.json {
@@ -97,7 +115,12 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(
 		io.WriteString(stdout, "\n")
 		return 0
 	}
-	if err := writeHuman(stdout, inv.operation, result); err != nil {
+	if area == "agent" {
+		err = writeAgentHuman(stdout, inv.operation, result)
+	} else {
+		err = writeHuman(stdout, inv.operation, result)
+	}
+	if err != nil {
 		fmt.Fprintf(stderr, "imp: invalid result: %v\n", err)
 		return ExitProtocol
 	}
@@ -224,6 +247,220 @@ func parsePlate(argv []string, stdin io.Reader) (invocation, error) {
 	return out, nil
 }
 
+func parseAgent(argv []string, stdin io.Reader) (invocation, error) {
+	cmd := argv[0]
+	if _, ok := agentCommandHelp[cmd]; !ok {
+		return invocation{}, fmt.Errorf("unknown Agent command %q; try 'imp agent --help'", cmd)
+	}
+	flags, positional, jsonMode, err := parseFlags(argv[1:])
+	if err != nil {
+		return invocation{}, err
+	}
+	out := invocation{operation: cmd, args: map[string]any{}, json: jsonMode}
+	takeRequired := func(name string, max int) (string, error) {
+		value, ok := flags.take(name)
+		if !ok || strings.TrimSpace(value) == "" {
+			return "", fmt.Errorf("%s requires --%s VALUE", cmd, name)
+		}
+		if len(value) > max || strings.IndexByte(value, 0) >= 0 {
+			return "", fmt.Errorf("--%s is invalid or too long", name)
+		}
+		return value, nil
+	}
+	takeID := func() (string, error) {
+		if len(positional) == 0 || positional[0] == "-" {
+			return "", fmt.Errorf("%s requires a job id", cmd)
+		}
+		id := positional[0]
+		positional = positional[1:]
+		if len(id) > 256 || strings.IndexByte(id, 0) >= 0 {
+			return "", fmt.Errorf("job id is invalid or too long")
+		}
+		return id, nil
+	}
+	putFlag := func(flag, wire string, max int, required bool) error {
+		value, ok := flags.take(flag)
+		if !ok {
+			if required {
+				return fmt.Errorf("%s requires --%s VALUE", cmd, flag)
+			}
+			return nil
+		}
+		if strings.TrimSpace(value) == "" || len(value) > max || strings.IndexByte(value, 0) >= 0 {
+			return fmt.Errorf("--%s is invalid or too long", flag)
+		}
+		out.args[wire] = value
+		return nil
+	}
+	putProse := func(flag, wire string, max int) error {
+		value, rest, err := prose(flags, positional, flag, stdin)
+		if err != nil {
+			return fmt.Errorf("%s: %w", cmd, err)
+		}
+		positional = rest
+		if len(value) > max {
+			return fmt.Errorf("%s exceeds %d bytes", flag, max)
+		}
+		out.args[wire] = value
+		return nil
+	}
+
+	switch cmd {
+	case "capabilities":
+		if len(positional) != 0 {
+			return out, fmt.Errorf("capabilities takes no positional arguments")
+		}
+		if err := putFlag("machine", "machine", 48, false); err != nil {
+			return out, err
+		}
+	case "dispatch":
+		for _, field := range []struct {
+			flag, wire string
+			max        int
+		}{
+			{"key", "key", 256}, {"machine", "machine", 48}, {"harness", "harness", 32},
+			{"model", "model", 256}, {"repo", "repo", 4096}, {"requested-ref", "requested_ref", 256},
+			{"label", "label", 80},
+		} {
+			if err := putFlag(field.flag, field.wire, field.max, true); err != nil {
+				return out, err
+			}
+		}
+		if err := putFlag("thinking", "thinking", 16, false); err != nil {
+			return out, err
+		}
+		if thinking, ok := out.args["thinking"]; ok {
+			switch thinking {
+			case "off", "minimal", "low", "medium", "high", "xhigh", "max":
+			default:
+				return out, fmt.Errorf("thinking must be off, minimal, low, medium, high, xhigh, or max")
+			}
+		}
+		if err := putProse("task", "task", 24576); err != nil {
+			return out, err
+		}
+	case "status":
+		if len(positional) > 1 {
+			return out, fmt.Errorf("status accepts at most one job id")
+		}
+		if len(positional) == 1 {
+			id, err := takeID()
+			if err != nil {
+				return out, err
+			}
+			out.args["id"] = id
+		}
+		if value, ok := flags.take("offset"); ok {
+			var offset int
+			if _, err := fmt.Sscanf(value, "%d", &offset); err != nil || fmt.Sprintf("%d", offset) != value || offset < 0 || offset > 100000 {
+				return out, fmt.Errorf("offset must be an integer from 0 through 100000")
+			}
+			out.args["offset"] = offset
+		}
+	case "steer", "answer":
+		id, err := takeID()
+		if err != nil {
+			return out, err
+		}
+		out.args["id"] = id
+		key, err := takeRequired("key", 256)
+		if err != nil {
+			return out, err
+		}
+		out.args["key"] = key
+		if err := putProse("text", "text", 8192); err != nil {
+			return out, err
+		}
+	case "cancel":
+		id, err := takeID()
+		if err != nil {
+			return out, err
+		}
+		out.args["id"] = id
+		key, err := takeRequired("key", 256)
+		if err != nil {
+			return out, err
+		}
+		out.args["key"] = key
+	case "reconcile":
+		if len(positional) != 0 {
+			return out, fmt.Errorf("reconcile takes no arguments")
+		}
+	case "abandon":
+		id, err := takeID()
+		if err != nil {
+			return out, err
+		}
+		out.args["id"] = id
+		if err := putProse("reason", "reason", 4096); err != nil {
+			return out, err
+		}
+	case "settle":
+		id, err := takeID()
+		if err != nil {
+			return out, err
+		}
+		out.args["id"] = id
+		if len(positional) == 0 {
+			return out, fmt.Errorf("settle requires done, failed, or cancelled")
+		}
+		verdict := positional[0]
+		positional = positional[1:]
+		if verdict != "done" && verdict != "failed" && verdict != "cancelled" {
+			return out, fmt.Errorf("verdict must be done, failed, or cancelled")
+		}
+		out.args["verdict"] = verdict
+		if err := putProse("summary", "summary", 8192); err != nil {
+			return out, err
+		}
+	case "resolve-operation":
+		id, err := takeID()
+		if err != nil {
+			return out, err
+		}
+		out.args["id"] = id
+		if len(positional) < 2 {
+			return out, fmt.Errorf("resolve-operation requires operation and resolution")
+		}
+		op, resolution := positional[0], positional[1]
+		positional = positional[2:]
+		if op != "workspace" && op != "launch" && op != "prompt" {
+			return out, fmt.Errorf("operation must be workspace, launch, or prompt")
+		}
+		if resolution != "retry-confirmed-absent" && resolution != "prompt-confirmed-delivered" {
+			return out, fmt.Errorf("invalid operation resolution")
+		}
+		out.args["operation"], out.args["resolution"] = op, resolution
+		if err := putProse("reason", "reason", 4096); err != nil {
+			return out, err
+		}
+	case "resolve-intent":
+		id, err := takeID()
+		if err != nil {
+			return out, err
+		}
+		out.args["id"] = id
+		if len(positional) == 0 || positional[0] == "-" {
+			return out, fmt.Errorf("resolve-intent requires an intent key")
+		}
+		if len(positional[0]) > 256 {
+			return out, fmt.Errorf("intent key is too long")
+		}
+		out.args["key"] = positional[0]
+		positional = positional[1:]
+		if err := putProse("reason", "reason", 4096); err != nil {
+			return out, err
+		}
+	}
+	if len(positional) != 0 {
+		return out, fmt.Errorf("%s has unexpected arguments", cmd)
+	}
+	if err := flags.finish(); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
 type flagValues map[string][]string
 
 func (f flagValues) take(name string) (string, bool) {
@@ -242,7 +479,12 @@ func (f flagValues) finish() error {
 	return nil
 }
 
-var valueFlags = map[string]bool{"summary": true, "label": true, "assign": true, "accent": true, "note": true}
+var valueFlags = map[string]bool{
+	"summary": true, "label": true, "assign": true, "accent": true, "note": true,
+	"machine": true, "key": true, "harness": true, "model": true, "thinking": true,
+	"repo": true, "requested-ref": true, "task": true, "offset": true, "text": true,
+	"reason": true,
+}
 
 func parseFlags(args []string) (flagValues, []string, bool, error) {
 	f := flagValues{}
@@ -512,6 +754,95 @@ func writeHuman(w io.Writer, operation string, raw json.RawMessage) error {
 	_, err := io.WriteString(w, "ok\n")
 	return err
 }
+func writeAgentHuman(w io.Writer, operation string, raw json.RawMessage) error {
+	var value map[string]any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return err
+	}
+	if operation == "capabilities" {
+		if machines, ok := value["machines"].([]any); ok {
+			if len(machines) == 0 {
+				_, err := io.WriteString(w, "No enrolled agent machines.\n")
+				return err
+			}
+			for _, entry := range machines {
+				machine, _ := entry.(map[string]any)
+				fmt.Fprintf(w, "%v\tmodels=%v\n", machine["machine_id"], machine["model_count"])
+			}
+			return nil
+		}
+		fmt.Fprintf(w, "%v\tharnesses=%v\tmodels=%v\n", value["machine_id"], value["harnesses"], value["models"])
+		return nil
+	}
+	if operation == "status" {
+		if jobs, ok := value["jobs"].([]any); ok {
+			if len(jobs) == 0 {
+				_, err := io.WriteString(w, "No Familiar Agent jobs.\n")
+				return err
+			}
+			for _, entry := range jobs {
+				writeAgentJob(w, entry)
+			}
+			fmt.Fprintf(w, "Showing %v of %v (offset %v).\n", len(jobs), value["total"], value["offset"])
+			return nil
+		}
+	}
+	if value["job_id"] != nil {
+		writeAgentJob(w, value)
+		if hint, ok := value["attach_hint"].(string); ok && hint != "" {
+			fmt.Fprintf(w, "Attach: %s\n", hint)
+		}
+		return nil
+	}
+	if scheduled, ok := value["scheduled"].(bool); ok && scheduled {
+		_, err := io.WriteString(w, "Reconciliation scheduled.\n")
+		return err
+	}
+	_, err := io.WriteString(w, "ok\n")
+	return err
+}
+func writeAgentJob(w io.Writer, entry any) {
+	job, _ := entry.(map[string]any)
+	state := job["semantic_state"]
+	if state == nil {
+		state = job["state"]
+	}
+	fmt.Fprintf(w, "%v\t%v\t%v\t%v\n", job["job_id"], state, job["reachability"], job["label"])
+}
+
+const agentHelp = `Usage: imp agent <command> [options]
+
+Commands:
+  capabilities       List enrolled machines or one machine's exact models
+  dispatch           Admit durable work on an enrolled remote machine
+  status             List a bounded page or inspect one job
+  steer              Persist guidance for a job
+  answer             Answer a freshly observed blocked job
+  cancel             Persist cancellation intent (not settlement)
+  reconcile          Schedule immediate observation
+  abandon            Explicitly abandon unresolved work
+  settle             Explicit controller settlement after inspection
+  resolve-operation  Resolve an uncertain workspace, launch, or prompt
+  resolve-intent     Retire an uncertain input after inspection
+
+Use 'imp agent <command> --help' for command details.
+All commands accept --json. Long prose accepts '-' to read stdin.
+`
+
+var agentCommandHelp = map[string]string{
+	"capabilities":      "Usage: imp agent capabilities [--machine ID] [--json]\n",
+	"dispatch":          "Usage: imp agent dispatch --key KEY --machine ID --harness pi --model PROVIDER/MODEL [--thinking LEVEL] --repo /REMOTE/REPO --requested-ref REF (--task TEXT | -) --label TEXT [--json]\n\nAdmits work; it does not report completion. repo is an absolute path on the enrolled machine. Preserve --key after a lost reply. A lone '-' reads the task from stdin (maximum 24 KiB).\n",
+	"status":            "Usage: imp agent status [JOB_ID] [--offset N] [--json]\n\nLists five jobs per page; JOB_ID returns bounded full status with native attach coordinates.\n",
+	"steer":             "Usage: imp agent steer JOB_ID --key KEY (--text TEXT | -) [--json]\n",
+	"answer":            "Usage: imp agent answer JOB_ID --key KEY (--text TEXT | -) [--json]\n\nRequires a fresh blocked observation.\n",
+	"cancel":            "Usage: imp agent cancel JOB_ID --key KEY [--json]\n\nCancellation is durable intent, not a cancelled verdict.\n",
+	"reconcile":         "Usage: imp agent reconcile [--json]\n\nForces observation; never blindly retries an uncertain mutation.\n",
+	"abandon":           "Usage: imp agent abandon JOB_ID (--reason TEXT | -) [--json]\n",
+	"settle":            "Usage: imp agent settle JOB_ID <done|failed|cancelled> (--summary TEXT | -) [--json]\n\nExplicit controller judgment after inspection; not agent proof.\n",
+	"resolve-operation": "Usage: imp agent resolve-operation JOB_ID <workspace|launch|prompt> <retry-confirmed-absent|prompt-confirmed-delivered> (--reason TEXT | -) [--json]\n",
+	"resolve-intent":    "Usage: imp agent resolve-intent JOB_ID INTENT_KEY (--reason TEXT | -) [--json]\n",
+}
+
 func itemTags(it item) string {
 	var tags []string
 	if it.Label != nil {
@@ -540,8 +871,9 @@ A private model tool for capabilities owned by this Familiar resident.
 
 Areas:
   plate    Read and update the shared Plate
+  agent    Dispatch and control durable Familiar Agents
 
-Run 'imp plate --help' to discover Plate commands.
+Run 'imp <area> --help' to discover commands.
 `
 const plateHelp = `Usage: imp plate <command> [options]
 

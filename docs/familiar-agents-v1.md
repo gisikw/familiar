@@ -246,11 +246,20 @@ public/private span marker. The browser omits the Agents projection while privat
 
 ## Surface
 
-Tools: `familiar_agents_capabilities`, `familiar_agents_dispatch`,
-`familiar_agents_status`, `familiar_agents_steer`, `familiar_agents_answer`,
-`familiar_agents_cancel`, `familiar_agents_reconcile`,
-`familiar_agents_abandon`, `familiar_agents_settle`,
-`familiar_agents_resolve_operation`, `familiar_agents_resolve_intent`.
+The model surface is the singular shell-native `imp agent ...` area inherited
+through resident Pi's Bash tool. No `familiar_agents_*` tools are registered in
+Pi's model schema. Run `imp agent --help` and command-specific help for the full
+catalogue. The fixed operations are `capabilities`, `dispatch`, `status`,
+`steer`, `answer`, `cancel`, `reconcile`, `abandon`, `settle`,
+`resolve-operation`, and `resolve-intent`.
+
+The ordinary resident loads a tiny independent Imp ingress and this Agents
+owner extension. The ingress owns the one private `FAMILIAR_IMP_SOCKET` and
+routes only the fixed `plate` and `agent` areas through same-process Symbols.
+Agents publishes its handler only while the explicit foreground
+`--familiar-agents-owner` authority has a live Owner; missing config/ownership
+returns unavailable without affecting Plate. The CLI cannot provide attribution,
+access SQLite, invoke SSH, or select another session.
 
 All recovery actions are callable by foreground Exo without impersonating a
 human command. Tool decisions are attributed as `exo:<session-id>`; commands
@@ -274,17 +283,21 @@ Both model text and tool details are capped at 48 KB. Oversized results return a
 valid JSON truncation envelope with an explicitly incomplete text preview; the
 full bounded record remains available in the private ledger.
 
-Example Exo workflow (tool arguments, not shell commands):
+Example Exo workflow (shell commands through Bash):
 
-```json
-{"tool":"familiar_agents_capabilities","arguments":{"machine_id":"worker-a"}}
-{"tool":"familiar_agents_dispatch","arguments":{"key":"review-123","machine_id":"worker-a","harness":"pi","model":"tiamat-responses-account/model-id","options":{"thinking":"high"},"repo":"/remote/repo","requested_ref":"main","task":"Implement, test and review the requested change; do not push.","label":"review change"}}
-{"tool":"familiar_agents_status","arguments":{"id":"<returned-job-id>"}}
-{"tool":"familiar_agents_steer","arguments":{"id":"<returned-job-id>","key":"review-123-steer-1","text":"Also check the regression test."}}
+```sh
+imp agent capabilities --machine worker-a --json
+imp agent dispatch --key review-123 --machine worker-a --harness pi \
+  --model tiamat-responses-account/model-id --thinking high \
+  --repo /remote/repo --requested-ref main --label 'review change' \
+  --task 'Implement, test and review the requested change; do not push.' --json
+imp agent status '<returned-job-id>' --json
+imp agent steer '<returned-job-id>' --key review-123-steer-1 \
+  --text 'Also check the regression test.' --json
 ```
 
 Retain the caller key after a lost dispatch reply; do not mint a new one simply
-because the foreground restarted. `familiar_agents_reconcile` forces observation,
+because the foreground restarted. `imp agent reconcile` forces observation,
 not replay of uncertain mutations. A cancel request waits for settlement or
 explicit abandon; it is never represented as a cancelled verdict by itself.
 

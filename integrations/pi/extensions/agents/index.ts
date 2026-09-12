@@ -1,12 +1,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
-import { StringEnum } from "@earendil-works/pi-ai";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { Ledger } from "./ledger.mjs";
 import { Owner } from "./owner.mjs";
 import { configuration, Transport } from "./transport.mjs";
-import { projection, privateSpanActive } from "./contract.mjs";
+import { LIMITS, projection, privateSpanActive, text } from "./contract.mjs";
+import { IMP_AGENT_HANDLER } from "../imp/ingress.mjs";
 import {
   ensureDirs,
   enqueueEnvelopeIdempotent,
@@ -14,8 +13,45 @@ import {
   worklistPaths,
 } from "../worklist/store.ts";
 
-/** Explicit CLI capability, not an inherited environment flag. Only run_pi passes
- * it. Background SDK sessions and child Pi processes do not start an owner. */
+function invalid(message: string): never {
+  const error = new Error(message) as Error & { code?: string };
+  error.code = "invalid_request";
+  throw error;
+}
+function object(args: unknown, allowed: string[]): Record<string, any> {
+  if (
+    !args ||
+    typeof args !== "object" ||
+    Array.isArray(args) ||
+    Object.keys(args).some((key) => !allowed.includes(key))
+  )
+    invalid("invalid or unknown operation arguments");
+  return args as Record<string, any>;
+}
+function requiredString(args: Record<string, any>, key: string, max = 256) {
+  try {
+    return text(args[key], max, key);
+  } catch {
+    invalid(`invalid ${key}`);
+  }
+}
+function optionalString(args: Record<string, any>, key: string, max = 256) {
+  if (args[key] === undefined) return undefined;
+  return requiredString(args, key, max);
+}
+function boundedResult(details: unknown) {
+  const bytes = Buffer.from(JSON.stringify(details));
+  if (bytes.length <= 48000) return details;
+  return {
+    truncated: true,
+    message:
+      "Page status or inspect one machine/job. Full report remains in the private ledger; preview is incomplete JSON text.",
+    preview: bytes.subarray(0, 12000).toString("utf8"),
+  };
+}
+
+/** Durable Familiar Agents owner. No model tools are registered here: the
+ * model reaches these exact operations through Bash -> imp agent -> ingress. */
 export default function (pi: ExtensionAPI) {
   pi.registerFlag("familiar-agents-owner", {
     description: "Own the foreground Familiar Agents reconciler",
@@ -23,12 +59,14 @@ export default function (pi: ExtensionAPI) {
     default: false,
   });
   let owner: Owner | undefined;
+  let agentHandler: { handle: (request: any) => Promise<unknown> } | undefined;
   let provenance = "";
   let context:
     | import("@earendil-works/pi-coding-agent").ExtensionContext
     | undefined;
   const projectionKey = Symbol.for("familiar.agents.projection.v1");
   let source: { read: () => unknown } | undefined;
+
   const current = () => {
     if (context && privateSpanActive(context.sessionManager.getBranch()))
       throw new Error(
@@ -41,26 +79,178 @@ export default function (pi: ExtensionAPI) {
     owner.guard();
     return owner;
   };
-  const result = (details: unknown) => {
-    const bytes = Buffer.from(JSON.stringify(details));
-    if (bytes.length > 48000) {
-      // Keep both the model content and persisted tool details bounded, and the
-      // outer result valid JSON even when the original projection is too large.
-      details = {
-        truncated: true,
-        message:
-          "Page status or inspect one machine/job. Full report remains in the private ledger; preview is incomplete JSON text.",
-        preview: bytes.subarray(0, 12000).toString("utf8"),
-      };
+  const actor = () => `exo:${provenance}`;
+
+  const execute = async (operation: string, rawArgs: unknown) => {
+    let p: Record<string, any>;
+    let result: unknown;
+    switch (operation) {
+      case "capabilities": {
+        p = object(rawArgs, ["machine"]);
+        const machine = optionalString(p, "machine", 48);
+        const transport = current().transport;
+        if (machine) {
+          const enrolled = transport.enrolled(machine);
+          result = {
+            machine_id: enrolled.name,
+            harnesses: ["pi"],
+            models: enrolled.models,
+            profile_mode: enrolled.profile_mode,
+          };
+        } else {
+          result = {
+            machines: transport.config.machines.map((m: any) => ({
+              machine_id: m.name,
+              model_count: m.models.length,
+            })),
+            authority:
+              "arbitrary shell at the enrolled account effective authority; not a sandbox",
+          };
+        }
+        break;
+      }
+      case "dispatch": {
+        p = object(rawArgs, [
+          "key",
+          "machine",
+          "harness",
+          "model",
+          "thinking",
+          "repo",
+          "requested_ref",
+          "task",
+          "label",
+        ]);
+        const thinking = optionalString(p, "thinking", 16);
+        if (
+          thinking !== undefined &&
+          !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(thinking)
+        )
+          invalid("invalid thinking level");
+        result = current().dispatch(
+          {
+            key: requiredString(p, "key"),
+            machine_id: requiredString(p, "machine", 48),
+            harness: requiredString(p, "harness", 32),
+            model: requiredString(p, "model"),
+            ...(thinking === undefined ? {} : { options: { thinking } }),
+            repo: requiredString(p, "repo", 4096),
+            requested_ref: requiredString(p, "requested_ref"),
+            task: requiredString(p, "task", LIMITS.task),
+            label: requiredString(p, "label", 80),
+          },
+          provenance,
+        );
+        break;
+      }
+      case "status": {
+        p = object(rawArgs, ["id", "offset"]);
+        const id = optionalString(p, "id");
+        const offset = p.offset ?? 0;
+        if (!Number.isInteger(offset) || offset < 0 || offset > 100000)
+          invalid("offset must be an integer from 0 through 100000");
+        const o = current();
+        if (id) {
+          const job = o.ledger.get(id);
+          if (!job) throw new Error("unknown job");
+          result = projection(job);
+        } else {
+          result = {
+            total: o.ledger.count(),
+            offset,
+            limit: 5,
+            jobs: o.ledger.list(5, offset).map((job: any) => ({
+              job_id: job.job_id,
+              label: job.label,
+              machine_id: job.machine_id,
+              semantic_state: job.semantic_state,
+              reachability: job.reachability,
+              summary: job.settlement_json
+                ? JSON.parse(job.settlement_json).summary.slice(0, 1024)
+                : job.last_error,
+              updated_at: job.updated_at,
+            })),
+          };
+        }
+        break;
+      }
+      case "steer":
+      case "answer":
+      case "cancel": {
+        p = object(rawArgs, ["id", "key", "text"]);
+        const value = operation === "cancel" ? "" : requiredString(p, "text", 8192);
+        if (operation === "cancel" && p.text !== undefined)
+          invalid("cancel does not accept text");
+        result = current().intent(
+          requiredString(p, "id"),
+          operation,
+          value,
+          requiredString(p, "key"),
+          actor(),
+        );
+        break;
+      }
+      case "reconcile":
+        object(rawArgs, []);
+        current().kick();
+        result = { scheduled: true };
+        break;
+      case "abandon":
+        p = object(rawArgs, ["id", "reason"]);
+        result = current().abandon(
+          requiredString(p, "id"),
+          requiredString(p, "reason", 4096),
+          actor(),
+        );
+        break;
+      case "settle": {
+        p = object(rawArgs, ["id", "verdict", "summary"]);
+        const verdict = requiredString(p, "verdict", 16);
+        if (!["done", "failed", "cancelled"].includes(verdict))
+          invalid("verdict must be done, failed, or cancelled");
+        result = current().operatorSettle(
+          requiredString(p, "id"),
+          verdict,
+          requiredString(p, "summary", 8192),
+          actor(),
+        );
+        break;
+      }
+      case "resolve-operation": {
+        p = object(rawArgs, ["id", "operation", "resolution", "reason"]);
+        const kind = requiredString(p, "operation", 16);
+        const resolution = requiredString(p, "resolution", 32);
+        if (!["workspace", "launch", "prompt"].includes(kind))
+          invalid("operation must be workspace, launch, or prompt");
+        if (
+          !["retry-confirmed-absent", "prompt-confirmed-delivered"].includes(resolution)
+        )
+          invalid("invalid operation resolution");
+        result = current().resolveOperation(
+          requiredString(p, "id"),
+          kind,
+          resolution,
+          requiredString(p, "reason", 4096),
+          actor(),
+        );
+        break;
+      }
+      case "resolve-intent":
+        p = object(rawArgs, ["id", "key", "reason"]);
+        result = current().resolveIntent(
+          requiredString(p, "id"),
+          requiredString(p, "key"),
+          requiredString(p, "reason", 4096),
+          actor(),
+        );
+        break;
+      default:
+        invalid("unknown Imp agent operation");
     }
-    const text = JSON.stringify(details);
-    return {
-      content: [{ type: "text" as const, text }],
-      details: JSON.parse(text),
-    };
+    return boundedResult(result);
   };
-  const str = (maxLength = 256) => Type.String({ minLength: 1, maxLength });
-  pi.on("session_start", (_event, ctx) => {
+
+  pi.on("session_start", async (_event, ctx) => {
     if (
       ctx.mode !== "tui" ||
       pi.getFlag("familiar-agents-owner") !== true ||
@@ -69,6 +259,7 @@ export default function (pi: ExtensionAPI) {
       return;
     provenance = ctx.sessionManager.getSessionId();
     context = ctx;
+    let installed: Owner | undefined;
     try {
       const config = configuration(process.env.FAMILIAR_AGENTS_CONFIG);
       const root =
@@ -80,307 +271,103 @@ export default function (pi: ExtensionAPI) {
         );
       const worklist =
         process.env.FAMILIAR_WORKLIST_DIR || process.env.FAMILIAR_INBOX_DIR;
-      if (!worklist)
-        throw new Error("explicit Familiar worklist root required");
+      if (!worklist) throw new Error("explicit Familiar worklist root required");
       const paths = worklistPaths(worklist);
       ensureDirs(paths);
-      owner = new Owner(
+      installed = new Owner(
         new Ledger(join(root, "agents.sqlite3")),
         new Transport(config, join(root, "transport")),
         async (envelope) => {
-          // Same official store implementation as worklist. Synchronous durable
-          // acceptance avoids loader-isolated capability registries and network
-          // work under foreground dispatch gates. Worklist owns all delivery.
           if (envelope.withdraw) withdrawEnvelopeIdempotent(paths, envelope);
           else enqueueEnvelopeIdempotent(paths, envelope);
           return true;
         },
         { idleGraceMs: config.idle_grace_ms },
       );
-      owner.changed = () => {
-        // Optional projections must never invalidate a committed ledger action
-        // or orphan the process owner when a bridge subscriber throws.
+      installed.changed = () => {
         try {
           pi.events.emit("familiar:agents-changed", {});
         } catch {}
       };
-      owner.start(); // Schedules network work; startup never awaits reconciliation.
-      const installed = owner;
+      installed.start();
+      owner = installed;
+      agentHandler = {
+        handle: (request) => execute(request.operation, request.args),
+      };
+      (process as any)[IMP_AGENT_HANDLER] = agentHandler;
       source = {
         read: () => {
-          installed.guard();
+          installed!.guard();
           return {
             available: true,
             jobs: [
               ...new Map(
                 [
-                  ...installed.ledger
+                  ...installed!.ledger
                     .active()
                     .filter(
-                      (j) =>
+                      (job) =>
                         !["settled", "abandoned", "failed_admission"].includes(
-                          j.semantic_state,
+                          job.semantic_state,
                         ),
                     ),
-                  ...installed.ledger.list(32),
-                ].map((j) => [j.job_id, j]),
+                  ...installed!.ledger.list(32),
+                ].map((job) => [job.job_id, job]),
               ).values(),
             ]
               .slice(0, 32)
-              .map((j) => ({
-                job_id: j.job_id,
-                label: j.label,
-                machine_id: j.machine_id,
-                semantic_state: j.semantic_state,
-                reachability: j.reachability,
+              .map((job: any) => ({
+                job_id: job.job_id,
+                label: job.label,
+                machine_id: job.machine_id,
+                semantic_state: job.semantic_state,
+                reachability: job.reachability,
                 verdict:
-                  j.settlement_verdict ??
-                  (j.settlement_json
-                    ? JSON.parse(j.settlement_json).verdict
+                  job.settlement_verdict ??
+                  (job.settlement_json
+                    ? JSON.parse(job.settlement_json).verdict
                     : null),
-                observation: j.observation ?? null,
-                summary: j.settlement_json
-                  ? JSON.parse(j.settlement_json).summary.slice(0, 2048)
-                  : (j.blocked_context ?? j.last_error ?? "").slice(0, 2048) ||
+                observation: job.observation ?? null,
+                summary: job.settlement_json
+                  ? JSON.parse(job.settlement_json).summary.slice(0, 2048)
+                  : (job.blocked_context ?? job.last_error ?? "").slice(0, 2048) ||
                     null,
-                attach_hint: projection(j).attach_hint,
-                owner_session: j.owner_session.slice(0, 128),
-                updated_at: j.updated_at,
+                attach_hint: projection(job).attach_hint,
+                owner_session: job.owner_session.slice(0, 128),
+                updated_at: job.updated_at,
               })),
           };
         },
       };
       (process as any)[projectionKey] = source;
-      owner.changed();
+      installed.changed();
     } catch {
+      if ((process as any)[IMP_AGENT_HANDLER] === agentHandler)
+        delete (process as any)[IMP_AGENT_HANDLER];
+      agentHandler = undefined;
       owner = undefined;
+      await installed?.stop().catch(() => {});
+      context = undefined;
       ctx.ui.notify(
         "Familiar Agents unavailable: check explicit enrollment/configuration. No local fallback.",
         "warning",
       );
     }
   });
+
   pi.on("session_shutdown", async () => {
     if ((process as any)[projectionKey] === source)
       delete (process as any)[projectionKey];
-    const old = owner;
+    source = undefined;
+    if ((process as any)[IMP_AGENT_HANDLER] === agentHandler)
+      delete (process as any)[IMP_AGENT_HANDLER];
+    agentHandler = undefined;
+    const oldOwner = owner;
     owner = undefined;
-    await old?.stop();
+    context = undefined;
+    await oldOwner?.stop();
   });
-  pi.registerTool({
-    name: "familiar_agents_capabilities",
-    label: "Familiar Agents Enrollment",
-    description:
-      "List explicitly enrolled machine IDs, or exact Pi model choices on one machine. No credentials or native route configuration are returned.",
-    parameters: Type.Object(
-      { machine_id: Type.Optional(str(48)) },
-      { additionalProperties: false },
-    ),
-    execute: async (_id, p) => {
-      const t = current().transport;
-      if (p.machine_id) {
-        const m = t.enrolled(p.machine_id);
-        return result({
-          machine_id: m.name,
-          harnesses: ["pi"],
-          models: m.models,
-          profile_mode: m.profile_mode,
-        });
-      }
-      return result({
-        machines: t.config.machines.map((m) => ({
-          machine_id: m.name,
-          model_count: m.models.length,
-        })),
-        authority:
-          "arbitrary shell at the enrolled account effective authority; not a sandbox",
-      });
-    },
-  });
-  pi.registerTool({
-    name: "familiar_agents_dispatch",
-    label: "Dispatch Familiar Agent",
-    description:
-      "Admit durable work on an explicitly enrolled Drover machine. Pi foreground in a visible Herdr space; arbitrary authority of the enrolled account, no sandbox. repo is an absolute repository path on that machine. Returns admission, not completion.",
-    parameters: Type.Object(
-      {
-        key: str(),
-        machine_id: str(48),
-        harness: str(32),
-        model: str(),
-        options: Type.Optional(
-          Type.Object(
-            {
-              thinking: Type.Optional(
-                StringEnum([
-                  "off",
-                  "minimal",
-                  "low",
-                  "medium",
-                  "high",
-                  "xhigh",
-                  "max",
-                ] as const),
-              ),
-            },
-            { additionalProperties: false },
-          ),
-        ),
-        repo: str(4096),
-        requested_ref: str(),
-        task: str(24576),
-        label: str(80),
-      },
-      { additionalProperties: false },
-    ),
-    execute: async (_id, p) => result(current().dispatch(p, provenance)),
-  });
-  pi.registerTool({
-    name: "familiar_agents_status",
-    label: "Familiar Agent Status",
-    description:
-      "Read the Familiar ledger, including unresolved idle and unknown reachability. Bounded page of five; inspection is not acknowledgment or settlement.",
-    parameters: Type.Object(
-      {
-        id: Type.Optional(str()),
-        offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 100000 })),
-      },
-      { additionalProperties: false },
-    ),
-    execute: async (_id, p) => {
-      const o = current();
-      if (p.id) {
-        const j = o.ledger.get(p.id);
-        if (!j) throw new Error("unknown job");
-        return result(projection(j));
-      }
-      const jobs = o.ledger.list(5, p.offset || 0).map((j) => ({
-        job_id: j.job_id,
-        label: j.label,
-        machine_id: j.machine_id,
-        semantic_state: j.semantic_state,
-        reachability: j.reachability,
-        summary: j.settlement_json
-          ? JSON.parse(j.settlement_json).summary.slice(0, 1024)
-          : j.last_error,
-        updated_at: j.updated_at,
-      }));
-      return result({ total: o.ledger.count(), jobs });
-    },
-  });
-  for (const kind of ["steer", "answer", "cancel"] as const)
-    pi.registerTool({
-      name: `familiar_agents_${kind}`,
-      label: `Familiar Agent ${kind}`,
-      description:
-        "Persist ordered intent. Offline delivery waits; uncertain delivery is not replayed. Cancellation is not semantic settlement.",
-      parameters: Type.Object(
-        {
-          id: str(),
-          key: str(),
-          text: Type.Optional(str(8192)),
-        },
-        { additionalProperties: false },
-      ),
-      execute: async (_id, p) =>
-        result(
-          current().intent(
-            p.id,
-            kind,
-            p.text || "",
-            p.key,
-            `exo:${provenance}`,
-          ),
-        ),
-    });
-  pi.registerTool({
-    name: "familiar_agents_reconcile",
-    label: "Retry Familiar Reconciliation",
-    description:
-      "Schedule immediate reconciliation, never blindly replay uncertain mutations.",
-    parameters: Type.Object({}, { additionalProperties: false }),
-    execute: async () => {
-      current().kick();
-      return result({ scheduled: true });
-    },
-  });
-  pi.registerTool({
-    name: "familiar_agents_abandon",
-    label: "Abandon Familiar Agent",
-    description:
-      "Explicitly retire unresolved work without killing or deleting the remote agent. Requires a reason; attributed to Exo, not a human or agent self-report. Identical retries are safe.",
-    parameters: Type.Object(
-      { id: str(), reason: str(4096) },
-      { additionalProperties: false },
-    ),
-    execute: async (_id, p) =>
-      result(current().abandon(p.id, p.reason, `exo:${provenance}`)),
-  });
-  pi.registerTool({
-    name: "familiar_agents_settle",
-    label: "Explicitly Settle Familiar Agent",
-    description:
-      "Explicit controller settlement after inspection, NOT agent proof. Never infer completion from idle or unreachable. Requires a verdict and summary; attributed to Exo. First accepted settlement wins; identical retries are safe.",
-    parameters: Type.Object(
-      {
-        id: str(),
-        verdict: StringEnum(["done", "failed", "cancelled"] as const),
-        summary: str(8192),
-      },
-      { additionalProperties: false },
-    ),
-    execute: async (_id, p) =>
-      result(
-        current().operatorSettle(
-          p.id,
-          p.verdict,
-          p.summary,
-          `exo:${provenance}`,
-        ),
-      ),
-  });
-  pi.registerTool({
-    name: "familiar_agents_resolve_operation",
-    label: "Resolve Uncertain Familiar Operation",
-    description:
-      "Only after native inspection and allowing in-flight requests to quiesce: authorize retry of a confirmed absent operation, or confirm initial prompt delivery. Reconcile alone never replays uncertain mutations. Reason records inspection evidence, attributed to Exo.",
-    parameters: Type.Object(
-      {
-        id: str(),
-        operation: StringEnum(["workspace", "launch", "prompt"] as const),
-        resolution: StringEnum([
-          "retry-confirmed-absent",
-          "prompt-confirmed-delivered",
-        ] as const),
-        reason: str(4096),
-      },
-      { additionalProperties: false },
-    ),
-    execute: async (_id, p) =>
-      result(
-        current().resolveOperation(
-          p.id,
-          p.operation,
-          p.resolution,
-          p.reason,
-          `exo:${provenance}`,
-        ),
-      ),
-  });
-  pi.registerTool({
-    name: "familiar_agents_resolve_intent",
-    label: "Resolve Uncertain Familiar Input",
-    description:
-      "After native inspection, retire an uncertain intent without redelivery. A new steer/answer/cancel needs a new key. Reason records inspection evidence, attributed to Exo.",
-    parameters: Type.Object(
-      { id: str(), key: str(), reason: str(4096) },
-      { additionalProperties: false },
-    ),
-    execute: async (_id, p) =>
-      result(
-        current().resolveIntent(p.id, p.key, p.reason, `exo:${provenance}`),
-      ),
-  });
+
   pi.registerCommand("familiar-agents", {
     description: "Familiar Agents ledger snapshot (no network wait)",
     handler: async (_args, ctx) => {
@@ -388,11 +375,11 @@ export default function (pi: ExtensionAPI) {
         JSON.stringify(
           current()
             .ledger.list(5)
-            .map((j) => ({
-              job_id: j.job_id,
-              label: j.label,
-              state: j.semantic_state,
-              reachability: j.reachability,
+            .map((job) => ({
+              job_id: job.job_id,
+              label: job.label,
+              state: job.semantic_state,
+              reachability: job.reachability,
             })),
           null,
           2,
@@ -426,7 +413,10 @@ export default function (pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       ctx.ui.notify(
         JSON.stringify(
-          current().queueCleanup(args.trim(), `operator-command:${provenance}`),
+          current().queueCleanup(
+            args.trim(),
+            `operator-command:${provenance}`,
+          ),
         ),
         "info",
       );
@@ -475,12 +465,16 @@ export default function (pi: ExtensionAPI) {
       const [id, ...reason] = args.trim().split(/\s+/);
       if (!id || !reason.length)
         throw new Error("usage: /familiar-agent-abandon <id> <reason>");
-      const r = current().abandon(
-        id,
-        reason.join(" "),
-        `operator-command:${provenance}`,
+      ctx.ui.notify(
+        JSON.stringify(
+          current().abandon(
+            id,
+            reason.join(" "),
+            `operator-command:${provenance}`,
+          ),
+        ),
+        "info",
       );
-      ctx.ui.notify(JSON.stringify(r), "info");
     },
   });
 }

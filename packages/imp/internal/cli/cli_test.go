@@ -68,7 +68,7 @@ func runWithSocket(t *testing.T, args []string, stdin string, response string, i
 }
 
 func TestProgressiveHelpNeedsNoResident(t *testing.T) {
-	cases := [][]string{{"--help"}, {"plate", "--help"}, {"plate", "append-note", "--help"}}
+	cases := [][]string{{"--help"}, {"plate", "--help"}, {"plate", "append-note", "--help"}, {"agent", "--help"}, {"agent", "dispatch", "--help"}}
 	for _, args := range cases {
 		var out, err bytes.Buffer
 		if code := Main(args, strings.NewReader(""), &out, &err, func(string) string { return "" }); code != 0 {
@@ -125,6 +125,60 @@ func TestRequestSpelling(t *testing.T) {
 	}
 }
 
+func TestAgentRequestSpelling(t *testing.T) {
+	cases := []struct {
+		name             string
+		argv             []string
+		stdin, operation string
+		args             map[string]any
+	}{
+		{"capabilities", []string{"agent", "capabilities", "--machine", "worker", "--json"}, "", "capabilities", map[string]any{"machine": "worker"}},
+		{"dispatch", []string{"agent", "dispatch", "--key", "admit-1", "--machine", "worker", "--harness", "pi", "--model", "provider/model", "--thinking", "high", "--repo", "/remote/repo", "--requested-ref", "main", "-", "--label", "review", "--json"}, "do work\n", "dispatch", map[string]any{"key": "admit-1", "machine": "worker", "harness": "pi", "model": "provider/model", "thinking": "high", "repo": "/remote/repo", "requested_ref": "main", "task": "do work", "label": "review"}},
+		{"status-page", []string{"agent", "status", "--offset", "5", "--json"}, "", "status", map[string]any{"offset": float64(5)}},
+		{"status-id", []string{"agent", "status", "agent-1", "--json"}, "", "status", map[string]any{"id": "agent-1"}},
+		{"steer", []string{"agent", "steer", "agent-1", "--key", "s1", "--text", "review", "--json"}, "", "steer", map[string]any{"id": "agent-1", "key": "s1", "text": "review"}},
+		{"answer", []string{"agent", "answer", "agent-1", "--key", "a1", "-", "--json"}, "yes\n", "answer", map[string]any{"id": "agent-1", "key": "a1", "text": "yes"}},
+		{"cancel", []string{"agent", "cancel", "agent-1", "--key", "c1", "--json"}, "", "cancel", map[string]any{"id": "agent-1", "key": "c1"}},
+		{"reconcile", []string{"agent", "reconcile", "--json"}, "", "reconcile", map[string]any{}},
+		{"abandon", []string{"agent", "abandon", "agent-1", "--reason", "superseded", "--json"}, "", "abandon", map[string]any{"id": "agent-1", "reason": "superseded"}},
+		{"settle", []string{"agent", "settle", "agent-1", "done", "--summary", "inspected", "--json"}, "", "settle", map[string]any{"id": "agent-1", "verdict": "done", "summary": "inspected"}},
+		{"resolve-operation", []string{"agent", "resolve-operation", "agent-1", "prompt", "prompt-confirmed-delivered", "--reason", "native proof", "--json"}, "", "resolve-operation", map[string]any{"id": "agent-1", "operation": "prompt", "resolution": "prompt-confirmed-delivered", "reason": "native proof"}},
+		{"resolve-intent", []string{"agent", "resolve-intent", "agent-1", "s1", "-", "--json"}, "inspected natively\n", "resolve-intent", map[string]any{"id": "agent-1", "key": "s1", "reason": "inspected natively"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, out, stderr := runWithSocket(t, tc.argv, tc.stdin, "{\"ok\":true,\"result\":{\"accepted\":true}}\n", func(got Request) {
+				if got.Area != "agent" || got.Operation != tc.operation {
+					t.Errorf("envelope: %#v", got)
+				}
+				want, _ := json.Marshal(tc.args)
+				have, _ := json.Marshal(got.Args)
+				if !bytes.Equal(have, want) {
+					t.Errorf("args=%s want=%s", have, want)
+				}
+			})
+			if code != 0 || stderr != "" || out != "{\"accepted\":true}\n" {
+				t.Fatalf("code=%d out=%q err=%q", code, out, stderr)
+			}
+		})
+	}
+}
+
+func TestAgentValidation(t *testing.T) {
+	bad := [][]string{
+		{"agent", "dispatch", "--key", "k"},
+		{"agent", "dispatch", "--key", "k", "--machine", "m", "--harness", "pi", "--model", "p/m", "--repo", "/r", "--requested-ref", "HEAD", "--task", strings.Repeat("x", 24577), "--label", "x"},
+		{"agent", "status", "--offset", "-1"},
+		{"agent", "settle", "id", "maybe", "--summary", "x"},
+		{"agent", "cancel", "id", "--key", "k", "--text", "not allowed"},
+	}
+	for _, argv := range bad {
+		var out, stderr bytes.Buffer
+		if code := Main(argv, strings.NewReader(""), &out, &stderr, func(string) string { return "" }); code != ExitUsage {
+			t.Errorf("%v code=%d err=%s", argv, code, stderr.String())
+		}
+	}
+}
 func TestUsageAndUnavailableFailures(t *testing.T) {
 	var out, err bytes.Buffer
 	if code := Main([]string{"plate", "add", "--summary", "x", "-"}, strings.NewReader("y"), &out, &err, func(string) string { return "" }); code != ExitUsage {
@@ -197,6 +251,18 @@ func TestSocketPermissionsFailClosed(t *testing.T) {
 	_, _, err = call(path, Request{Version: 1, Area: "plate", Operation: "list", Args: map[string]any{}})
 	if err == nil || !strings.Contains(err.Error(), "not private") {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestAgentHumanOutputAndUnavailableArea(t *testing.T) {
+	result := `{"ok":true,"result":{"total":1,"offset":0,"limit":5,"jobs":[{"job_id":"agent-1","semantic_state":"blocked","reachability":"fresh","label":"review"}]}}` + "\n"
+	code, out, stderr := runWithSocket(t, []string{"agent", "status"}, "", result, nil)
+	if code != 0 || stderr != "" || out != "agent-1\tblocked\tfresh\treview\nShowing 1 of 1 (offset 0).\n" {
+		t.Fatalf("code=%d out=%q err=%q", code, out, stderr)
+	}
+	code, out, stderr = runWithSocket(t, []string{"agent", "status", "--json"}, "", "{\"ok\":false,\"error\":{\"code\":\"unavailable\",\"message\":\"agent owner absent\"}}\n", nil)
+	if code != ExitUnavailable || out != "" || !strings.Contains(stderr, "unavailable") {
+		t.Fatalf("code=%d out=%q err=%q", code, out, stderr)
 	}
 }
 
