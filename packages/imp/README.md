@@ -44,6 +44,23 @@ Keep caller keys after lost replies. Reconcile observes; it does not replay an
 uncertain mutation. Cancel is durable intent, not a cancelled verdict. Settlement
 is controller judgment after inspection and is not agent self-proof.
 
+Agent availability per exact enrolled route and machine is separate state, and
+dispatch always enforces it in the resident:
+
+```sh
+imp agent policy show --json
+imp agent policy on tiamat-responses-account/model-id on
+imp agent policy override tiamat-responses-account/model-id worker-a allow
+imp agent policy fallback tiamat-responses-account/model-id deny
+imp agent policy clear-override tiamat-responses-account/model-id worker-a
+```
+
+`effective(machine) = !on ? deny : (override[machine] ?? fallback)`; absence is
+deny. Policy can only further restrict enrollment — it can never grant an
+unenrolled route, machine or harness — and there is no bypass flag on
+`dispatch`. `--revision REV` makes the resident's compare-and-set explicit.
+See `docs/familiar-agents-v1.md`.
+
 ## Private resident contract
 
 `imp` never reads or writes Plate or Agents state, and never runs SSH. It connects

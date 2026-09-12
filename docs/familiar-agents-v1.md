@@ -25,8 +25,10 @@ still owns all harness detection, observation, keys and attach behavior.
 ## Configuration and enrollment
 
 Export an absolute `FAMILIAR_AGENTS_CONFIG` path in the foreground Familiar
-instance's launch environment. Configuration is private, at most 128 KiB, and
-rejects unknown fields. Do not put credentials in Nix or in this repository.
+instance's launch environment, or set `[familiar] agents_config` in
+`familiar.toml` (see `docs/CONFIG.md`); an ambient explicit variable still wins.
+Configuration is private, at most 128 KiB, and rejects unknown fields. Do not
+put credentials in Nix or in this repository.
 
 Example (public-key placeholders must be replaced with verified public keys;
 **do not paste private keys or bearer values**):
@@ -139,8 +141,9 @@ the dedicated named Herdr space.
 ## Ownership, ledger and reconciliation
 
 Default ledger: `${XDG_STATE_HOME:-~/.local/state}/familiar/agents/agents.sqlite3`.
-`FAMILIAR_AGENTS_STATE_DIR` selects a different private root; use it for isolated
-instances. Keep the WAL database on a local filesystem, not shared across hosts.
+`FAMILIAR_AGENTS_STATE_DIR` (or `[familiar] agents_state_dir`) selects a
+different private root; use it for isolated instances. Keep the WAL database on
+a local filesystem, not shared across hosts.
 Schema v1 initializes transactionally and refuses unsupported versions/shapes;
 there is no import of rejected Golem ledgers or pre-release fixture databases.
 
@@ -206,6 +209,127 @@ Exact pinned source: `b99002ac99b09e00b4ca692436cb15a6b0d676f1`,
 `src/app/api/agents.rs`, and `src/terminal/state.rs`. Drover only adds forwarding
 for workspace.create/close, agent.send_keys, pane.send_input and pane.process_info.
 
+## Agent availability policy (per route, per node)
+
+Enrollment is the hard outer bound; availability policy is a further
+restriction inside it. Provider/model access for delegated Agents is **not**
+carte blanche: each exact route may be enabled on each exact enrolled machine.
+
+* **Route identity** is the complete existing `provider/model` string — the
+  registered Pi/Tiamat provider id and the exact model id, as already enrolled.
+  Vendors are never inferred from model names.
+* **Node identity** is the enrolled machine id (`machines[].name`).
+* **Semantics** (the approved picker wireframe, unchanged):
+
+  ```ts
+  routePolicy = { on: boolean, fallback: "allow" | "deny",
+                  overrides: Record<nodeId, "allow" | "deny"> }
+  effective(node) = !on ? "deny" : (overrides[node] ?? fallback)
+  ```
+
+  Explicit beats fallback; absence is deny; a newly enrolled node inherits the
+  fallback with no state rewrite; turning a route off is non-destructive;
+  offline nodes and routes keep their settings; foreground model selection never
+  mutates policy. Policy can never authorize an unenrolled model, node, harness,
+  provider or credential — a mutation naming an unenrolled route or machine is
+  refused as `invalid_request`.
+
+### Persistence
+
+One private JSON file in the existing Agents state root:
+`${FAMILIAR_AGENTS_STATE_DIR:-${XDG_STATE_HOME:-~/.local/state}/familiar/agents}/agent-policy.json`,
+mode 0600 inside the 0700 state root, written to a unique temporary file, fsynced,
+renamed, and the directory fsynced. The foreground Agents owner is the single
+in-process writer (a process Symbol refuses a second one).
+
+```json
+{"version":1,"seq":3,"routes":[{"route":"provider/model","on":true,"fallback":"deny","overrides":{"worker-a":"allow"}}]}
+```
+
+Serialization is deterministic: routes sorted by exact route string, override
+keys sorted, fixed key order, one trailing newline. The **revision** is the
+first 32 hex characters of the SHA-256 of those canonical bytes, and every
+accepted mutation bumps `seq`, so each accepted write yields a new revision.
+Mutation is compare-and-set against it.
+
+Bounds: 256 routes, 128 overrides per route, 256-byte routes, 128-byte node ids,
+64 KiB file. Known absence is an empty **fail-closed** policy with a real
+revision, so the first mutation needs no hand-edited file. A malformed file, an
+unknown version, an unknown field, a duplicate exact route, a bound violation or
+an unreadable file refuses **both** enforcement and mutation: dispatch denies and
+the operator's file is neither rewritten nor erased. There is no browser
+`localStorage` authority and no generic policy engine.
+
+### Enforcement at dispatch
+
+`imp agent dispatch` validates the basic request and exact enrollment
+(machine, `pi` harness, exact enrolled model) first, then reads the policy file
+and checks the effective decision — **before** any ledger admission, worklist
+notice or Drover/Herdr contact. A denial throws a typed `policy_denied` error
+naming the exact route and machine and leaves no job: nothing was admitted, so a
+rejected admission record would misrepresent work that never entered the ledger.
+The CLI cannot claim approval: no dispatch argument participates in the decision.
+Policy is re-read from the file on each check inside the single resident process,
+so a dispatch already admitted before a later toggle continues to completion
+(expected — the toggle is an admission gate, not a kill switch), while every
+later dispatch sees the newer effective policy.
+
+### Same-process familiar-ui seam
+
+While the foreground Agents owner exists, it publishes a fixed service at
+`Symbol.for("familiar.agent-policy.v1")` and removes it identity-safely on
+shutdown (a later owner's service is never deleted):
+
+```ts
+{ read(): AgentPolicySnapshot;
+  mutate(expectedRevision: string, mutation: AgentPolicyMutation): AgentPolicySnapshot }
+
+AgentPolicySnapshot = {
+  version: 1, revision: string,
+  nodes: { id: string, routes: string[], reachability?: "online" | "offline" }[],
+  routes: { route: string, on: boolean, fallback: "allow" | "deny",
+            overrides: Record<string, "allow" | "deny"> }[] }
+
+AgentPolicyMutation =
+  | { action: "set-on", route: string, on: boolean }
+  | { action: "set-fallback", route: string, fallback: "allow" | "deny" }
+  | { action: "set-override", route: string, node: string, decision: "allow" | "deny" }
+  | { action: "clear-override", route: string, node: string }
+```
+
+Nodes and routes are sorted; `reachability` appears only when truthfully known.
+Familiar currently tracks liveness per job, not per machine, so v1 publishes no
+`reachability` field rather than guessing one; the field exists for a later
+truthful source.
+No credential, remote path, SSH configuration, token, raw Owner or generic
+invocation crosses this seam. Errors are thrown with typed `code`:
+`stale` (revision conflict), `invalid_request` (shape, bound, or unenrolled
+route/machine), `unavailable` (no owner, private span, or refused policy state),
+`policy_denied` (dispatch decision). After an accepted mutation the extension
+emits the narrow `familiar:agent-policy-changed` event so familiar-ui re-reads
+the snapshot. Usage telemetry stays Tiamat-owned, read-only, and is not policy
+state; the UI joins these exact provider/model strings against familiar-ui's own
+truthful Tiamat provider projection.
+
+### Bootstrap and debug from the shell
+
+The same handler, socket and resident CAS back `imp agent policy`:
+
+```sh
+imp agent policy show --json
+imp agent policy on   tiamat-responses-account/model-id on
+imp agent policy fallback tiamat-responses-account/model-id deny
+imp agent policy override  tiamat-responses-account/model-id worker-a allow
+imp agent policy clear-override tiamat-responses-account/model-id worker-a
+```
+
+Enabling one exact route on one exact node for first deployment is therefore two
+commands (`on` then `override … allow`) with no hand-edited file and no race:
+when `--revision` is omitted the resident reads the current revision and applies
+the mutation without an intervening await, and it is the only writer. Supply
+`--revision REV` to make the compare-and-set explicit. There is no bypass verb:
+`dispatch` always enforces the current effective policy server-side.
+
 ## Completion and manual intervention
 
 * working → running; blocked → blocked when Herdr reports it.
@@ -251,7 +375,8 @@ through resident Pi's Bash tool. No `familiar_agents_*` tools are registered in
 Pi's model schema. Run `imp agent --help` and command-specific help for the full
 catalogue. The fixed operations are `capabilities`, `dispatch`, `status`,
 `steer`, `answer`, `cancel`, `reconcile`, `abandon`, `settle`,
-`resolve-operation`, and `resolve-intent`.
+`resolve-operation`, `resolve-intent`, and `policy` (wire operations
+`policy-show` and `policy-set`).
 
 The ordinary resident loads a tiny independent Imp ingress and this Agents
 owner extension. The ingress owns the one private `FAMILIAR_IMP_SOCKET` and
@@ -287,6 +412,7 @@ Example Exo workflow (shell commands through Bash):
 
 ```sh
 imp agent capabilities --machine worker-a --json
+imp agent policy show --json
 imp agent dispatch --key review-123 --machine worker-a --harness pi \
   --model tiamat-responses-account/model-id --thinking high \
   --repo /remote/repo --requested-ref main --label 'review change' \

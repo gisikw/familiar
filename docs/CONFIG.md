@@ -176,6 +176,28 @@ anything a message referenced is kept until an operator removes it. See
 familiar-ui's `docs/ATTACHMENTS.md` for the storage layout and the annotation
 grammar handed to the agent.
 
+### Familiar Agents enrollment and state
+
+Delegated Agent dispatch (`docs/familiar-agents-v1.md`) needs an explicit
+enrollment file and a private state root. Two optional `[familiar]` keys own
+them, so a packaged service keeps enrollment across restarts without a systemd
+drop-in:
+
+| Setting            | Environment                 | Default                           |
+| ------------------ | --------------------------- | --------------------------------- |
+| `agents_config`    | `FAMILIAR_AGENTS_CONFIG`    | unset (Agents stays unavailable)  |
+| `agents_state_dir` | `FAMILIAR_AGENTS_STATE_DIR` | `$XDG_STATE_HOME/familiar/agents` |
+
+Both are resolved against the configuration directory when relative and are
+exported absolute. Ambient explicit variables still win over the file. The
+enrollment file itself is private (mode 0600, at most 128 KiB) and holds the
+Drover URL, token-file reference, SSH coordinates, verified host keys and the
+exact enrolled `provider/model` strings; **never** commit real coordinates,
+tokens or host keys to this repository — reference an operator-provisioned file
+such as `/run/secrets/familiar-agents.json`. The state root holds the private
+Agents ledger and the Agent availability policy file `agent-policy.json`
+(per exact route and enrolled machine); keep it on a local filesystem.
+
 ## Changes and failures
 
 After editing, keep mode 0600, run `./familiar.sh config-check`, then stop and

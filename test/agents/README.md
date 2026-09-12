@@ -35,12 +35,21 @@ name keeps them out of Bun discovery. The normal extension loader itself remains
 safe to load under Bun: SQLite is required only when constructing a real ledger.
 
 `tools.mjs` loads the actual Agents and Imp extensions with the pinned Pi loader,
-then invokes all eleven operations through the real private socket against the
+then invokes all thirteen operations through the real private socket against the
 real ledger/owner, with offline mocked transport. It verifies that no
 `familiar_agents_*` tools are registered, foreground-only ownership, honest Exo
 attribution, recovery actions, private rejection, restart/admission idempotency,
 typed bounded results, strict request validation, and isolation from a failing
-optional projection subscriber. `imp/ingress.node-test.mjs` separately proves
+optional projection subscriber. It also proves the Agent availability policy end
+to end: an empty policy denies dispatch before any ledger admission, an
+unenrolled route/machine cannot be granted, the `familiar.agent-policy.v1`
+service reads and compare-and-set mutates the same state as the `policy-show` /
+`policy-set` operations behind `imp agent policy`, private mode refuses both, and
+the service is removed on shutdown. `policy.node-test.mjs` covers
+persistence/restart, deterministic bytes, malformed/unknown-version fail-closed
+refusal, revision conflicts, exact route collisions, on/off non-destructiveness,
+fallback inheritance by a late node, overrides, bounds, projection privacy and
+the dispatch enforcement point. `imp/ingress.node-test.mjs` separately proves
 the fixed two-area router, dynamic availability, private lifecycle and wire
 bounds. The fast checks do not contact providers or resident services and do
 not build/test the obsolete Rust viewer.

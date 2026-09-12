@@ -46,6 +46,21 @@ claude_oauth_token="placeholder"\n[theme.ansi]\nbright_blue="#abcdef"\n`);chmodS
     expect(()=>validateConfig({familiar:{ui_attachment_max_bytes:"16 MiB"}})).toThrow(ConfigError);
     expect(()=>validateConfig({familiar:{ui_attachment_root:"/srv"}})).toThrow(ConfigError);
   });
+  test("Familiar Agents enrollment and state root are typed configuration",async()=>{
+    const d=mkdtempSync(join(tmpdir(),"familiar-config-"));dirs.push(d);const p=join(d,"familiar.toml");
+    writeFileSync(p,`[familiar]\nagents_config="/run/secrets/familiar-agents.json"\nagents_state_dir="./state/agents"\n`);chmodSync(p,0o600);
+    const loaded=await loadConfig(p,{env:{},defaults:{}});
+    expect(loaded.config.familiar?.agents_config).toBe("/run/secrets/familiar-agents.json");
+    // The generic flattener produces exactly the names the Agents owner reads.
+    expect(loaded.environment.FAMILIAR_AGENTS_CONFIG).toBe("/run/secrets/familiar-agents.json");
+    expect(loaded.environment.FAMILIAR_AGENTS_STATE_DIR).toBe("./state/agents");
+    // Ambient explicit values still win over the file.
+    const overridden=await loadConfig(p,{env:{FAMILIAR_AGENTS_CONFIG:"/run/other.json"},defaults:{}});
+    expect(overridden.config.familiar?.agents_config).toBe("/run/other.json");
+    expect(()=>validateConfig({familiar:{agents_config:1}})).toThrow(ConfigError);
+    expect(()=>validateConfig({familiar:{agents_token:"never"}})).toThrow(ConfigError);
+    expect(()=>validateConfig({agents:{config:"/run/x.json"}})).toThrow(ConfigError);
+  });
   test("rejects malformed, unknown, and invalid settings",()=>{
     expect(()=>validateConfig({flat:1})).toThrow(ConfigError);expect(()=>validateConfig({wat:{key:1}})).toThrow("invalid Familiar configuration");
     expect(()=>applyEnvironment({fetch:{}},{FAMILIAR_FETCH_ALLOW_PRIVATE:"maybe"})).toThrow("true or false");

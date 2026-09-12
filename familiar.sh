@@ -106,7 +106,7 @@ install -d -m 700 "$FAMILIAR_PRIVATE_DIR" 2>/dev/null || true
 # should have friction.
 export PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR:-$STATE_DIR/pi}"
 export PI_CODING_AGENT_DIR="$(resolve_config_path "$PI_CODING_AGENT_DIR")"
-for _familiar_path_var in FAMILIAR_TTS_VOICES_SOURCE FAMILIAR_ARTIFACT_DIR FAMILIAR_SUBAGENT_DIR FAMILIAR_SUBAGENT_SESSION_DIR; do
+for _familiar_path_var in FAMILIAR_TTS_VOICES_SOURCE FAMILIAR_ARTIFACT_DIR FAMILIAR_SUBAGENT_DIR FAMILIAR_SUBAGENT_SESSION_DIR FAMILIAR_AGENTS_CONFIG FAMILIAR_AGENTS_STATE_DIR; do
   if [ -n "${!_familiar_path_var:-}" ]; then
     printf -v "$_familiar_path_var" '%s' "$(resolve_config_path "${!_familiar_path_var}")"
     export "$_familiar_path_var"

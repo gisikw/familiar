@@ -68,7 +68,7 @@ func runWithSocket(t *testing.T, args []string, stdin string, response string, i
 }
 
 func TestProgressiveHelpNeedsNoResident(t *testing.T) {
-	cases := [][]string{{"--help"}, {"plate", "--help"}, {"plate", "append-note", "--help"}, {"agent", "--help"}, {"agent", "dispatch", "--help"}}
+	cases := [][]string{{"--help"}, {"plate", "--help"}, {"plate", "append-note", "--help"}, {"agent", "--help"}, {"agent", "dispatch", "--help"}, {"agent", "policy", "--help"}}
 	for _, args := range cases {
 		var out, err bytes.Buffer
 		if code := Main(args, strings.NewReader(""), &out, &err, func(string) string { return "" }); code != 0 {
@@ -144,6 +144,12 @@ func TestAgentRequestSpelling(t *testing.T) {
 		{"settle", []string{"agent", "settle", "agent-1", "done", "--summary", "inspected", "--json"}, "", "settle", map[string]any{"id": "agent-1", "verdict": "done", "summary": "inspected"}},
 		{"resolve-operation", []string{"agent", "resolve-operation", "agent-1", "prompt", "prompt-confirmed-delivered", "--reason", "native proof", "--json"}, "", "resolve-operation", map[string]any{"id": "agent-1", "operation": "prompt", "resolution": "prompt-confirmed-delivered", "reason": "native proof"}},
 		{"resolve-intent", []string{"agent", "resolve-intent", "agent-1", "s1", "-", "--json"}, "inspected natively\n", "resolve-intent", map[string]any{"id": "agent-1", "key": "s1", "reason": "inspected natively"}},
+		{"policy-show", []string{"agent", "policy", "show", "--json"}, "", "policy-show", map[string]any{}},
+		{"policy-on", []string{"agent", "policy", "on", "provider/model", "on", "--json"}, "", "policy-set", map[string]any{"action": "set-on", "route": "provider/model", "on": true}},
+		{"policy-off", []string{"agent", "policy", "on", "provider/model", "off", "--json"}, "", "policy-set", map[string]any{"action": "set-on", "route": "provider/model", "on": false}},
+		{"policy-fallback", []string{"agent", "policy", "fallback", "provider/model", "deny", "--json"}, "", "policy-set", map[string]any{"action": "set-fallback", "route": "provider/model", "fallback": "deny"}},
+		{"policy-override", []string{"agent", "policy", "override", "provider/model", "worker", "allow", "--revision", "abc123", "--json"}, "", "policy-set", map[string]any{"action": "set-override", "route": "provider/model", "node": "worker", "decision": "allow", "expected_revision": "abc123"}},
+		{"policy-clear", []string{"agent", "policy", "clear-override", "provider/model", "worker", "--json"}, "", "policy-set", map[string]any{"action": "clear-override", "route": "provider/model", "node": "worker"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -171,6 +177,16 @@ func TestAgentValidation(t *testing.T) {
 		{"agent", "status", "--offset", "-1"},
 		{"agent", "settle", "id", "maybe", "--summary", "x"},
 		{"agent", "cancel", "id", "--key", "k", "--text", "not allowed"},
+		// There is no bypass verb and no approval argument on dispatch.
+		{"agent", "dispatch", "--key", "k", "--machine", "m", "--harness", "pi", "--model", "p/m", "--repo", "/r", "--requested-ref", "HEAD", "--task", "t", "--label", "x", "--policy", "allow"},
+		{"agent", "policy"},
+		{"agent", "policy", "allow-everything"},
+		{"agent", "policy", "on", "not-a-route", "on"},
+		{"agent", "policy", "on", "provider/model", "maybe"},
+		{"agent", "policy", "fallback", "provider/model", "sometimes"},
+		{"agent", "policy", "override", "provider/model", "worker"},
+		{"agent", "policy", "override", "provider/model", "worker", "allow", "extra"},
+		{"agent", "policy", "show", "--revision", "abc"},
 	}
 	for _, argv := range bad {
 		var out, stderr bytes.Buffer
@@ -262,6 +278,28 @@ func TestAgentHumanOutputAndUnavailableArea(t *testing.T) {
 	}
 	code, out, stderr = runWithSocket(t, []string{"agent", "status", "--json"}, "", "{\"ok\":false,\"error\":{\"code\":\"unavailable\",\"message\":\"agent owner absent\"}}\n", nil)
 	if code != ExitUnavailable || out != "" || !strings.Contains(stderr, "unavailable") {
+		t.Fatalf("code=%d out=%q err=%q", code, out, stderr)
+	}
+}
+
+func TestAgentPolicyHumanOutput(t *testing.T) {
+	result := `{"ok":true,"result":{"version":1,"revision":"rev1","nodes":[{"id":"worker","routes":["provider/model"]}],"routes":[{"route":"provider/model","on":true,"fallback":"deny","overrides":{"worker":"allow"}}]}}` + "\n"
+	code, out, stderr := runWithSocket(t, []string{"agent", "policy", "show"}, "", result, nil)
+	if code != 0 || stderr != "" {
+		t.Fatalf("code=%d err=%q", code, stderr)
+	}
+	want := "revision rev1\nmachine worker\troutes=1\nprovider/model\ton\tfallback=deny\tworker=allow\n"
+	if out != want {
+		t.Fatalf("out=%q want %q", out, want)
+	}
+	empty := `{"ok":true,"result":{"version":1,"revision":"rev0","nodes":[],"routes":[]}}` + "\n"
+	if _, out, _ = runWithSocket(t, []string{"agent", "policy", "show"}, "", empty, nil); !strings.Contains(out, "every route is denied") {
+		t.Fatalf("out=%q", out)
+	}
+	// A resident policy refusal is surfaced verbatim, never softened to success.
+	denied := "{\"ok\":false,\"error\":{\"code\":\"policy_denied\",\"message\":\"Agent policy denies model p/m on machine worker\"}}\n"
+	code, out, stderr = runWithSocket(t, []string{"agent", "dispatch", "--key", "k", "--machine", "worker", "--harness", "pi", "--model", "p/m", "--repo", "/r", "--requested-ref", "HEAD", "--task", "t", "--label", "x", "--json"}, "", denied, nil)
+	if code != ExitRemote || out != "" || !strings.Contains(stderr, "policy_denied: Agent policy denies model p/m on machine worker") {
 		t.Fatalf("code=%d out=%q err=%q", code, out, stderr)
 	}
 }

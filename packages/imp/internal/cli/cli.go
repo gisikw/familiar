@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -386,6 +387,113 @@ func parseAgent(argv []string, stdin io.Reader) (invocation, error) {
 		if len(positional) != 0 {
 			return out, fmt.Errorf("reconcile takes no arguments")
 		}
+	case "policy":
+		if len(positional) == 0 {
+			return out, fmt.Errorf("policy requires show, on, fallback, override, or clear-override")
+		}
+		sub := positional[0]
+		positional = positional[1:]
+		takeRoute := func() (string, error) {
+			if len(positional) == 0 {
+				return "", fmt.Errorf("policy %s requires an exact PROVIDER/MODEL route", sub)
+			}
+			route := positional[0]
+			positional = positional[1:]
+			if len(route) > 256 || strings.IndexByte(route, 0) >= 0 || !strings.Contains(route, "/") {
+				return "", fmt.Errorf("route must be the exact enrolled PROVIDER/MODEL string")
+			}
+			return route, nil
+		}
+		takeNode := func() (string, error) {
+			if len(positional) == 0 {
+				return "", fmt.Errorf("policy %s requires an enrolled machine id", sub)
+			}
+			node := positional[0]
+			positional = positional[1:]
+			if len(node) > 128 || strings.IndexByte(node, 0) >= 0 {
+				return "", fmt.Errorf("machine id is invalid or too long")
+			}
+			return node, nil
+		}
+		takeDecision := func() (string, error) {
+			if len(positional) == 0 {
+				return "", fmt.Errorf("policy %s requires allow or deny", sub)
+			}
+			value := positional[0]
+			positional = positional[1:]
+			if value != "allow" && value != "deny" {
+				return "", fmt.Errorf("decision must be allow or deny")
+			}
+			return value, nil
+		}
+		switch sub {
+		case "show":
+			out.operation = "policy-show"
+		case "on":
+			out.operation = "policy-set"
+			route, err := takeRoute()
+			if err != nil {
+				return out, err
+			}
+			if len(positional) == 0 {
+				return out, fmt.Errorf("policy on requires on or off")
+			}
+			state := positional[0]
+			positional = positional[1:]
+			if state != "on" && state != "off" {
+				return out, fmt.Errorf("policy on requires on or off")
+			}
+			out.args["action"], out.args["route"], out.args["on"] = "set-on", route, state == "on"
+		case "fallback":
+			out.operation = "policy-set"
+			route, err := takeRoute()
+			if err != nil {
+				return out, err
+			}
+			decision, err := takeDecision()
+			if err != nil {
+				return out, err
+			}
+			out.args["action"], out.args["route"], out.args["fallback"] = "set-fallback", route, decision
+		case "override":
+			out.operation = "policy-set"
+			route, err := takeRoute()
+			if err != nil {
+				return out, err
+			}
+			node, err := takeNode()
+			if err != nil {
+				return out, err
+			}
+			decision, err := takeDecision()
+			if err != nil {
+				return out, err
+			}
+			out.args["action"], out.args["route"] = "set-override", route
+			out.args["node"], out.args["decision"] = node, decision
+		case "clear-override":
+			out.operation = "policy-set"
+			route, err := takeRoute()
+			if err != nil {
+				return out, err
+			}
+			node, err := takeNode()
+			if err != nil {
+				return out, err
+			}
+			out.args["action"], out.args["route"], out.args["node"] = "clear-override", route, node
+		default:
+			return out, fmt.Errorf("unknown policy subcommand %q; try 'imp agent policy --help'", sub)
+		}
+		if revision, ok := flags.take("revision"); ok {
+			if out.operation != "policy-set" {
+				return out, fmt.Errorf("--revision applies only to a policy mutation")
+			}
+			if revision == "" || len(revision) > 64 || strings.IndexByte(revision, 0) >= 0 {
+				return out, fmt.Errorf("--revision is invalid or too long")
+			}
+			out.args["expected_revision"] = revision
+		}
 	case "abandon":
 		id, err := takeID()
 		if err != nil {
@@ -483,7 +591,7 @@ var valueFlags = map[string]bool{
 	"summary": true, "label": true, "assign": true, "accent": true, "note": true,
 	"machine": true, "key": true, "harness": true, "model": true, "thinking": true,
 	"repo": true, "requested-ref": true, "task": true, "offset": true, "text": true,
-	"reason": true,
+	"reason": true, "revision": true,
 }
 
 func parseFlags(args []string) (flagValues, []string, bool, error) {
@@ -787,6 +895,38 @@ func writeAgentHuman(w io.Writer, operation string, raw json.RawMessage) error {
 			return nil
 		}
 	}
+	if routes, ok := value["routes"].([]any); ok && value["revision"] != nil {
+		fmt.Fprintf(w, "revision %v\n", value["revision"])
+		nodes, _ := value["nodes"].([]any)
+		for _, entry := range nodes {
+			node, _ := entry.(map[string]any)
+			enrolled, _ := node["routes"].([]any)
+			fmt.Fprintf(w, "machine %v\troutes=%d\n", node["id"], len(enrolled))
+		}
+		if len(routes) == 0 {
+			_, err := io.WriteString(w, "No route policy recorded; every route is denied.\n")
+			return err
+		}
+		for _, entry := range routes {
+			route, _ := entry.(map[string]any)
+			state := "off"
+			if on, _ := route["on"].(bool); on {
+				state = "on"
+			}
+			overrides, _ := route["overrides"].(map[string]any)
+			keys := make([]string, 0, len(overrides))
+			for node := range overrides {
+				keys = append(keys, node)
+			}
+			sort.Strings(keys)
+			parts := make([]string, 0, len(keys))
+			for _, node := range keys {
+				parts = append(parts, fmt.Sprintf("%s=%v", node, overrides[node]))
+			}
+			fmt.Fprintf(w, "%v\t%s\tfallback=%v\t%s\n", route["route"], state, route["fallback"], strings.Join(parts, ","))
+		}
+		return nil
+	}
 	if value["job_id"] != nil {
 		writeAgentJob(w, value)
 		if hint, ok := value["attach_hint"].(string); ok && hint != "" {
@@ -820,6 +960,7 @@ Commands:
   answer             Answer a freshly observed blocked job
   cancel             Persist cancellation intent (not settlement)
   reconcile          Schedule immediate observation
+  policy             Show or set which exact routes Agents may use on which machines
   abandon            Explicitly abandon unresolved work
   settle             Explicit controller settlement after inspection
   resolve-operation  Resolve an uncertain workspace, launch, or prompt
@@ -837,6 +978,7 @@ var agentCommandHelp = map[string]string{
 	"answer":            "Usage: imp agent answer JOB_ID --key KEY (--text TEXT | -) [--json]\n\nRequires a fresh blocked observation.\n",
 	"cancel":            "Usage: imp agent cancel JOB_ID --key KEY [--json]\n\nCancellation is durable intent, not a cancelled verdict.\n",
 	"reconcile":         "Usage: imp agent reconcile [--json]\n\nForces observation; never blindly retries an uncertain mutation.\n",
+	"policy": "Usage: imp agent policy show [--json]\n       imp agent policy on PROVIDER/MODEL <on|off> [--revision REV] [--json]\n       imp agent policy fallback PROVIDER/MODEL <allow|deny> [--revision REV] [--json]\n       imp agent policy override PROVIDER/MODEL MACHINE <allow|deny> [--revision REV] [--json]\n       imp agent policy clear-override PROVIDER/MODEL MACHINE [--revision REV] [--json]\n\nAgent availability per exact enrolled route and machine:\n  effective(machine) = !on ? deny : (override[machine] ?? fallback)\nAbsence is deny, and policy can only further restrict enrollment; it can never\ngrant an unenrolled route, machine or harness. Dispatch always enforces the\ncurrent effective policy in the resident; no argument can claim approval.\n--revision is an optional compare-and-set guard against a concurrent edit.\n",
 	"abandon":           "Usage: imp agent abandon JOB_ID (--reason TEXT | -) [--json]\n",
 	"settle":            "Usage: imp agent settle JOB_ID <done|failed|cancelled> (--summary TEXT | -) [--json]\n\nExplicit controller judgment after inspection; not agent proof.\n",
 	"resolve-operation": "Usage: imp agent resolve-operation JOB_ID <workspace|launch|prompt> <retry-confirmed-absent|prompt-confirmed-delivered> (--reason TEXT | -) [--json]\n",

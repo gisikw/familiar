@@ -123,7 +123,9 @@ export class ImpIngress {
           finish({
             ok: false,
             error: {
-              code: ["invalid_request", "unavailable"].includes(error?.code)
+              code: ["invalid_request", "unavailable", "stale", "policy_denied"].includes(
+                error?.code,
+              )
                 ? error.code
                 : "operation_failed",
               message: errorMessage(error),

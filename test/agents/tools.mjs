@@ -70,6 +70,23 @@ try {
   assert.equal((await wire("capabilities")).machines[0].machine_id, "test");
   assert.deepEqual((await wire("capabilities", { machine: "test" })).models, ["test/model"]);
   const req = { key: "dispatch", machine: "test", harness: "pi", model: "test/model", thinking: "high", repo: "/repo", requested_ref: "HEAD", task: "test", label: "test" };
+  // Policy starts empty and fail-closed: dispatch is denied before any ledger
+  // admission or network contact.
+  const policySlot = Symbol.for("familiar.agent-policy.v1");
+  const service = process[policySlot];
+  assert.ok(service && typeof service.read === "function", "foreground owner publishes the policy service");
+  assert.deepEqual((await wire("policy-show")).routes, []);
+  assert.deepEqual((await wire("policy-show")).nodes, [{ id: "test", routes: ["test/model"] }]);
+  await assert.rejects(wire("dispatch", req), /policy_denied/);
+  assert.equal(owner.ledger.count(), 0, "a denied dispatch admits no job");
+  await assert.rejects(wire("policy-set", { action: "set-override", route: "other/model", node: "test", decision: "allow" }), /invalid_request/);
+  await assert.rejects(wire("policy-set", { action: "set-override", route: "test/model", node: "absent", decision: "allow" }), /invalid_request/);
+  assert.throws(() => service.mutate("not-the-revision", { action: "set-on", route: "test/model", on: true }), /stale/);
+  await wire("policy-set", { action: "set-on", route: "test/model", on: true });
+  await assert.rejects(wire("dispatch", req), /policy_denied/); // fallback still deny
+  const enabled = await wire("policy-set", { action: "set-override", route: "test/model", node: "test", decision: "allow" });
+  assert.equal(enabled.routes[0].overrides.test, "allow");
+  assert.equal(service.read().revision, enabled.revision);
   const job = await wire("dispatch", req);
   assert.equal((await wire("dispatch", req)).job_id, job.job_id);
   assert.equal(job.options.thinking, "high");
@@ -100,12 +117,15 @@ try {
   await assert.rejects(wire("status", { unexpected: true }), /invalid_request/);
   entries = [{ customType: "familiar-ui/transcript-visibility", data: { visibility: "private" } }];
   await assert.rejects(wire("dispatch", { ...req, key: "private" }), /private/);
+  await assert.rejects(wire("policy-show"), /private/);
+  await assert.rejects(wire("policy-set", { action: "set-on", route: "test/model", on: false }), /private/);
   entries = [];
   await event("session_shutdown");
   assert.equal(process[ownerSlot], undefined);
   assert.equal(process[agentSlot], undefined);
+  assert.equal(process[policySlot], undefined);
   assert.equal(process.env.FAMILIAR_IMP_SOCKET, undefined);
-  console.log("Agents Imp ingress: fixed area, all operations, provenance, private rejection, validation, idempotency and lifecycle passed");
+  console.log("Agents Imp ingress: fixed area, all operations, policy enforcement/seam, provenance, private rejection, validation, idempotency and lifecycle passed");
 } finally {
   await process[ownerSlot]?.stop();
   delete process[agentSlot];

@@ -5,6 +5,14 @@ import { Ledger } from "./ledger.mjs";
 import { Owner } from "./owner.mjs";
 import { configuration, Transport } from "./transport.mjs";
 import { LIMITS, projection, privateSpanActive, text } from "./contract.mjs";
+import {
+  POLICY_CHANGED_EVENT,
+  POLICY_SERVICE,
+  PolicyStore,
+  enrollmentOf,
+  policyFilePath,
+  validateMutation,
+} from "./policy.mjs";
 import { IMP_AGENT_HANDLER } from "../imp/ingress.mjs";
 import {
   ensureDirs,
@@ -66,6 +74,27 @@ export default function (pi: ExtensionAPI) {
     | undefined;
   const projectionKey = Symbol.for("familiar.agents.projection.v1");
   let source: { read: () => unknown } | undefined;
+  let policy: PolicyStore | undefined;
+  let uninstallPolicy: (() => void) | undefined;
+  let policyService:
+    | { read: () => unknown; mutate: (revision: string, mutation: unknown) => unknown }
+    | undefined;
+
+  /** Exact enrolled projection; policy may only restrict it. */
+  const enrollment = () => enrollmentOf(current().transport);
+  const policyStore = () => {
+    current();
+    if (!policy)
+      throw Object.assign(new Error("Agent policy unavailable"), {
+        code: "unavailable",
+      });
+    return policy;
+  };
+  const policyChanged = () => {
+    try {
+      pi.events.emit(POLICY_CHANGED_EVENT, {});
+    } catch {}
+  };
 
   const current = () => {
     if (context && privateSpanActive(context.sessionManager.getBranch()))
@@ -190,6 +219,39 @@ export default function (pi: ExtensionAPI) {
         );
         break;
       }
+      case "policy-show": {
+        object(rawArgs, []);
+        result = policyStore().snapshot(enrollment());
+        break;
+      }
+      case "policy-set": {
+        p = object(rawArgs, [
+          "action",
+          "route",
+          "node",
+          "decision",
+          "on",
+          "fallback",
+          "expected_revision",
+        ]);
+        const store = policyStore();
+        const mutation: Record<string, unknown> = { action: p.action, route: p.route };
+        if (p.node !== undefined) mutation.node = p.node;
+        if (p.decision !== undefined) mutation.decision = p.decision;
+        if (p.on !== undefined) mutation.on = p.on;
+        if (p.fallback !== undefined) mutation.fallback = p.fallback;
+        validateMutation(mutation);
+        // The resident is the single in-process writer; an omitted expected
+        // revision means "current", read and applied without an intervening
+        // await, so bootstrap needs no hand-edit and still cannot race.
+        const expected =
+          p.expected_revision === undefined
+            ? store.current().revision
+            : requiredString(p, "expected_revision", 64);
+        result = store.mutate(expected, mutation, enrollment());
+        policyChanged();
+        break;
+      }
       case "reconcile":
         object(rawArgs, []);
         current().kick();
@@ -274,6 +336,8 @@ export default function (pi: ExtensionAPI) {
       if (!worklist) throw new Error("explicit Familiar worklist root required");
       const paths = worklistPaths(worklist);
       ensureDirs(paths);
+      policy = new PolicyStore(policyFilePath(root));
+      uninstallPolicy = policy.install();
       installed = new Owner(
         new Ledger(join(root, "agents.sqlite3")),
         new Transport(config, join(root, "transport")),
@@ -282,7 +346,7 @@ export default function (pi: ExtensionAPI) {
           else enqueueEnvelopeIdempotent(paths, envelope);
           return true;
         },
-        { idleGraceMs: config.idle_grace_ms },
+        { idleGraceMs: config.idle_grace_ms, policy },
       );
       installed.changed = () => {
         try {
@@ -340,12 +404,34 @@ export default function (pi: ExtensionAPI) {
         },
       };
       (process as any)[projectionKey] = source;
+      // Fixed same-process service for familiar-ui. Exact bounded operations
+      // only: no credentials, remote paths, SSH config, tokens, raw Owner or
+      // generic invocation cross this seam.
+      policyService = {
+        read: () => policyStore().snapshot(enrollment()),
+        mutate: (expectedRevision: string, mutation: unknown) => {
+          const snapshot = policyStore().mutate(
+            expectedRevision,
+            mutation,
+            enrollment(),
+          );
+          policyChanged();
+          return snapshot;
+        },
+      };
+      (process as any)[POLICY_SERVICE] = policyService;
       installed.changed();
     } catch {
       if ((process as any)[IMP_AGENT_HANDLER] === agentHandler)
         delete (process as any)[IMP_AGENT_HANDLER];
       agentHandler = undefined;
       owner = undefined;
+      if ((process as any)[POLICY_SERVICE] === policyService)
+        delete (process as any)[POLICY_SERVICE];
+      policyService = undefined;
+      uninstallPolicy?.();
+      uninstallPolicy = undefined;
+      policy = undefined;
       await installed?.stop().catch(() => {});
       context = undefined;
       ctx.ui.notify(
@@ -359,6 +445,13 @@ export default function (pi: ExtensionAPI) {
     if ((process as any)[projectionKey] === source)
       delete (process as any)[projectionKey];
     source = undefined;
+    // Identity-safe removal: a later owner's service is never deleted.
+    if ((process as any)[POLICY_SERVICE] === policyService)
+      delete (process as any)[POLICY_SERVICE];
+    policyService = undefined;
+    uninstallPolicy?.();
+    uninstallPolicy = undefined;
+    policy = undefined;
     if ((process as any)[IMP_AGENT_HANDLER] === agentHandler)
       delete (process as any)[IMP_AGENT_HANDLER];
     agentHandler = undefined;

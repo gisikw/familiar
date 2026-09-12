@@ -26,6 +26,15 @@ skip_version_check = 1
 # default_provider = "llama.cpp"
 # default_model = "provider/model-id"
 # artifact_dir = "./state/artifacts"
+# Familiar Agents (durable delegated dispatch onto enrolled Drover machines).
+# agents_config is the absolute path of the private enrollment JSON described in
+# docs/familiar-agents-v1.md; it maps to FAMILIAR_AGENTS_CONFIG so enrollment
+# survives service restarts without a systemd drop-in. Never put Drover tokens,
+# host keys or remote coordinates in this repository — reference a private file.
+# agents_state_dir holds the private ledger and the Agent route/node policy file
+# (agent-policy.json); omit it to use $XDG_STATE_HOME/familiar/agents.
+# agents_config = "/run/secrets/familiar-agents.json"
+# agents_state_dir = "./state/agents"
 # familiar-ui durable attachments. The browser uploads images and files through
 # the authenticated bridge; they are stored here (0700) and referenced by
 # history and by agent-visible local paths. Keep it private and back it up with

@@ -87,6 +87,8 @@ export class Owner {
     this.timer = null;
     this.pass = null;
     this.idleGraceMs = options.idleGraceMs ?? LIMITS.idleGraceMs;
+    // Per-route/per-node Agent availability. Absent store = fail closed.
+    this.policy = options.policy ?? null;
     this.delay = 1000;
   }
   start() {
@@ -753,6 +755,35 @@ export class Owner {
     });
     return true;
   }
+  /** Deny is explicit, deterministic and attributable as Agent policy. It is
+   * never satisfiable from CLI/tool arguments: only persisted policy decides. */
+  checkPolicy(model, machineId) {
+    if (!this.policy)
+      throw Object.assign(
+        new Error(
+          "Agent policy unavailable in this resident; dispatch denied (fail closed)",
+        ),
+        { code: "policy_denied" },
+      );
+    let decision;
+    try {
+      decision = this.policy.effective(model, machineId);
+    } catch (error) {
+      throw Object.assign(
+        new Error(
+          `Agent policy unreadable (${error.message}); dispatch denied (fail closed)`,
+        ),
+        { code: "policy_denied" },
+      );
+    }
+    if (decision !== "allow")
+      throw Object.assign(
+        new Error(
+          `Agent policy denies model ${model} on machine ${machineId}; enable that exact route for that exact machine first`,
+        ),
+        { code: "policy_denied" },
+      );
+  }
   dispatch(request, provenance) {
     this.guard();
     this.transport.admissionReady?.();
@@ -761,6 +792,11 @@ export class Owner {
     // harnesses share --model semantics; additional kinds need native proof.
     if (request.harness !== "pi" || !machine.models.includes(request.model))
       throw new Error("requested harness/model not explicitly enrolled");
+    // Policy is enforced after exact enrollment validation and BEFORE any
+    // durable admission or remote contact: a denial writes no ledger job.
+    // A dispatch already admitted before a later toggle continues; only later
+    // dispatches see the newer effective policy.
+    this.checkPolicy(request.model, request.machine_id);
     const job = this.ledger.admit(this.fence, request, machine, provenance);
     this.kick();
     return projection(job);
