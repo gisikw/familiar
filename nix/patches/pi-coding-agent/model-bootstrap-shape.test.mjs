@@ -18,8 +18,11 @@ if (!services.includes("await handler(Object.freeze({ ...request }))")) throw ne
 const bootstrap = services.indexOf("export async function bootstrapExtensionModels");
 const flush = services.indexOf("flushExtensionProviders(services);", bootstrap);
 if (bootstrap < 0 || flush < bootstrap) throw new Error("bootstrap registrations are not flushed");
-const invoke = main.indexOf("await bootstrapExtensionModels(services, bootstrapRequest)");
+const invoke = main.indexOf("await bootstrapExtensionModels(services, requestedModelBootstrap(");
 const scope = main.indexOf("const modelPatterns =", invoke);
 if (invoke < 0 || scope < invoke) throw new Error("bootstrap must precede CLI/scope model resolution");
+// The phase is unconditional: every runtime (startup, /new, /resume, fork,
+// import) asks, even when Pi has no exact identity to offer.
+if (!main.includes("): ModelBootstrapRequest {")) throw new Error("bootstrap request must not be optional");
 if (main.includes("process.argv")) throw new Error("bootstrap must use parsed exact identities, not process.argv");
 console.log("model bootstrap source shape: ok");

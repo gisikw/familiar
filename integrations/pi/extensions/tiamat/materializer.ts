@@ -63,6 +63,7 @@ export class TiamatMaterializer {
   private definitions = new Map<string, ProviderGroup>();
   private operation: Promise<ActivationResult> | undefined;
   private operationKey: string | undefined;
+  private activating = false;
   private tail: Promise<void> = Promise.resolve();
 
   constructor(
@@ -142,6 +143,11 @@ export class TiamatMaterializer {
 
   /** Track a selection made by Pi's TUI/RPC among the bounded registrations. */
   adopt(model: PiModel | undefined): void {
+    // `setModel` during an activation emits `model_select` before that
+    // activation has staged its own MRU; adopting there would interleave a
+    // second registry mutation into an atomic swap that already accounts for
+    // this exact selection.
+    if (this.activating) return;
     const selection = this.selectionForPi(model);
     if (!selection) return;
     this.mru = [selection, ...this.mru]
@@ -315,6 +321,7 @@ export class TiamatMaterializer {
       )
       .slice(0, 2);
     let refused = false;
+    this.activating = true;
     try {
       this.apply(staged, oldModel);
       const model = ctx.modelRegistry.find(
@@ -369,6 +376,8 @@ export class TiamatMaterializer {
         ok: false,
         error: ctx.isIdle() ? (refused ? "forbidden" : "failed") : "busy",
       };
+    } finally {
+      this.activating = false;
     }
   }
 }

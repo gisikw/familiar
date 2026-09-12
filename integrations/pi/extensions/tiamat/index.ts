@@ -88,23 +88,48 @@ export default async function tiamat(pi: ExtensionAPI) {
 
   // Pi awaits this narrow phase after extension factories and before CLI,
   // restored-session, or configured-default model resolution. Exact generated
-  // routes materialize one row; bare/fuzzy CLI patterns intentionally do not
-  // expand Tiamat's control-plane catalogue. List mode gets one deterministic
-  // seed so JIT does not turn health checks into an empty catalogue.
-  pi.registerModelBootstrap((request) => {
-    if (request.source === "list") {
-      materializer.bootstrap();
-      return;
-    }
-    if (
-      request.provider?.startsWith("tiamat-") &&
-      request.modelId
-    )
-      materializer.bootstrap({
-        provider: request.provider,
-        modelId: request.modelId,
-      });
-  });
+  // routes materialize that one row; bare/fuzzy CLI patterns intentionally do
+  // not expand Tiamat's control-plane catalogue. A request with no identity at
+  // all (`--list-models`, or a box with no configured default) gets one
+  // deterministic seed, so JIT never leaves pi with an empty model list.
+  //
+  // A row the router does not publish right now (outage, retirement, a stale
+  // persisted default) must not become a startup error: Pi treats bootstrap
+  // failures as fail-closed diagnostics, so an unreachable control plane would
+  // otherwise block every session, including ones that would have run on a
+  // different provider entirely. Degrade to Pi's own resolution instead and let
+  // `session_start` repair the selection if the catalogue comes back. An exact
+  // request that Pi itself cannot then resolve still fails closed in Pi.
+  //
+  // A host without Familiar's downstream patch (a plain upstream pi, or a
+  // worker that received this profile bundle before its package was updated)
+  // must not lose the whole extension to a missing registration method: the
+  // pre-patch behaviour, `session_start` repair, is still correct, just later.
+  if (typeof pi.registerModelBootstrap !== "function")
+    logError({
+      bootstrapUnavailable: true,
+      reason: "host pi has no registerModelBootstrap",
+    });
+  else
+    pi.registerModelBootstrap((request) => {
+      const exact =
+        request.provider?.startsWith("tiamat-") && request.modelId
+          ? { provider: request.provider, modelId: request.modelId }
+          : undefined;
+      const seedable =
+        request.source !== "cli" && !request.provider && !request.modelId;
+      if (!exact && !seedable) return;
+      try {
+        materializer.bootstrap(exact);
+      } catch (error) {
+        logError({
+          bootstrapSkipped: String(error),
+          source: request.source,
+          provider: request.provider,
+          model: request.modelId,
+        });
+      }
+    });
 
   // In-process projection for a UI bridge (familiar-ui). Read synchronously
   // while the bridge builds a snapshot; never carries the token or base URL.

@@ -24,6 +24,7 @@ class Host {
   accepted = true;
   failSet = false;
   failAfterSet = false;
+  onSet: (() => void) | undefined;
   setCalls = 0;
   setWait: Promise<void> | undefined;
   entries: unknown[] = [];
@@ -46,6 +47,9 @@ class Host {
     if (!this.accepted) return false;
     this.selected = model;
     context.model = model;
+    // Pi emits model_select (and Familiar's extension calls adopt) inside this
+    // call, before the activation has staged its own MRU.
+    this.onSet?.();
     if (this.failAfterSet) throw new Error("set failed after mutation");
     return true;
   }
@@ -139,6 +143,18 @@ describe("Tiamat JIT materialization", () => {
     expect(count(host)).toBe(2);
   });
 
+  test("an unpublished route throws so the caller can decide, without mutating", () => {
+    const { host, materializer } = setup([record("a", "one")]);
+    expect(() =>
+      materializer.bootstrap({ provider: "tiamat-anthropic-a", modelId: "gone" }),
+    ).toThrow(/route not found/);
+    expect(host.providers.size).toBe(0);
+    // An empty catalogue (router outage) has nothing to seed and stays quiet.
+    const outage = setup([]);
+    outage.materializer.bootstrap();
+    expect(outage.host.providers.size).toBe(0);
+  });
+
   test("same-provider replacement stages current and keeps two MRU models", async () => {
     const { host, materializer } = setup([
       record("personal", "one"),
@@ -185,6 +201,34 @@ describe("Tiamat JIT materialization", () => {
       }),
     ).toEqual({ ok: true });
     expect(host.selected.provider).toBe("tiamat-responses-same");
+  });
+
+  test("a model_select adopt raised by the activation itself does not interleave", async () => {
+    const { host, materializer } = setup([
+      record("a", "one"),
+      record("b", "two", "/responses/v1/responses"),
+    ]);
+    await materializer.activate({ provider: "tiamat-anthropic-a", modelId: "one" });
+    host.onSet = () => materializer.adopt(host.selected);
+    expect(
+      await materializer.activate({
+        provider: "tiamat-responses-b",
+        modelId: "two",
+      }),
+    ).toEqual({ ok: true });
+    host.onSet = undefined;
+    expect(materializer.materialized()).toEqual([
+      { provider: "tiamat-responses-b", modelId: "two" },
+      { provider: "tiamat-anthropic-a", modelId: "one" },
+    ]);
+    expect(count(host)).toBe(2);
+    // Outside an activation the same call is exactly how a TUI/RPC selection
+    // re-enters the bounded set.
+    materializer.adopt(host.models.get("tiamat-anthropic-a/one"));
+    expect(materializer.materialized()[0]).toEqual({
+      provider: "tiamat-anthropic-a",
+      modelId: "one",
+    });
   });
 
   test("cross-provider switch prunes only after selection and retains previous", async () => {

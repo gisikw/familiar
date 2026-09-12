@@ -55,7 +55,7 @@ try {
                   api: "openai-completions",
                   models: [model(request.modelId)],
                 });
-              } else if (request.source === "list") {
+              } else if (!request.provider && !request.modelId) {
                 pi.registerProvider("jit-list", {
                   baseUrl: "http://127.0.0.1:9",
                   apiKey: "test",
@@ -106,6 +106,12 @@ try {
   const fuzzy = await make("fuzzy");
   await servicesApi.bootstrapExtensionModels(fuzzy.services, { source: "cli", modelId: "bare-pattern" });
   assert.equal(fuzzy.services.modelRuntime.getProvider("jit-exact"), undefined);
+
+  // No configured default: identity-less, so only the same bounded seed.
+  const seeded = await make("seeded");
+  await servicesApi.bootstrapExtensionModels(seeded.services, { source: "default" });
+  assert(seeded.services.modelRuntime.getModel("jit-list", "health-seed"));
+  assert.equal(seeded.services.modelRuntime.getProvider("jit-exact"), undefined);
 
   console.log("model bootstrap runtime: ok");
 } finally {

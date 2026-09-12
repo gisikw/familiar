@@ -121,13 +121,23 @@ finish and before model scope, CLI, restored-session, or configured-default
 resolution. A request identifies its source and carries an exact provider/model
 pair when Pi has one. Bare CLI model patterns deliberately omit `provider`, so an
 extension cannot interpret them as permission to materialize an unbounded
-catalogue. `list` has no identity and permits only an extension-owned bounded seed.
+catalogue. `list`, and `default` on a box with no configured default, carry no
+identity at all and permit only an extension-owned bounded seed. The phase is
+unconditional: every runtime asks, so an extension sees one request per runtime
+and never has to guess whether Pi skipped it. Scope patterns (`--models`,
+`enabledModels`) are patterns rather than identities and are deliberately not
+part of the request; they still resolve normally against whatever is registered.
 Handlers have no context/session actions; they may queue provider registrations,
 which Pi flushes into `ModelRuntime` immediately after all awaited handlers.
 Handler and registration errors become startup diagnostics and therefore fail
-closed in non-interactive/worker modes. The same `createRuntime` closure invokes
-the phase for initial startup and `/new`, `/resume`, fork, and import replacement
-flows. Extensions never inspect argv or settings/session files.
+closed in non-interactive/worker modes — and, because Pi exits on any error
+diagnostic, in interactive mode too. A handler that wants a missing row to
+degrade to Pi's ordinary resolution must therefore decide that itself, as
+Familiar's Tiamat extension does for a router outage. The same `createRuntime`
+closure invokes the phase for initial startup and `/new`, `/resume`, fork, and
+import replacement flows. Extensions never inspect argv or settings/session files.
+Each runtime has its own `ModelRuntime`, loader and extension instances, so a
+bootstrap registration cannot leak into a replaced runtime.
 
 ## 0.85.1 rebase assumptions and patch order
 
@@ -216,10 +226,21 @@ context behavior during and after replacement/reload. Session/resource I/O is st
 at the mode-action boundary; these are not full TUI or disk-backed lifecycle tests.
 
 `model-bootstrap-shape.test.mjs` asserts that the callback is extension-owned,
-awaited, flushed before CLI/scope resolution, and does not read `process.argv`.
+awaited, flushed before CLI/scope resolution, unconditional, and does not read
+`process.argv`.
 `model-bootstrap.test.mjs` runs against compiled and installed output and proves
-arbitrary restored/default identities, a bounded one-model list seed, and no
-provider expansion for a bare CLI pattern.
+arbitrary restored/default identities, a bounded one-model seed for identity-less
+requests, and no provider expansion for a bare CLI pattern.
+`model-bootstrap-cli.test.mjs` drives the real installed `dist/cli.js` and asserts
+the exact request Pi delivers for `--provider/--model`, no default, a configured
+default and `--list-models`, plus that the seeded provider actually appears in
+`--list-models` output.
+
+Familiar's own `test/pi-tiamat-bootstrap.mjs` (repository root, run in the `pi`
+dev shell) is the end-to-end counterpart: the installed patched CLI, the real
+Tiamat extension and a stub router process on loopback, covering exact CLI,
+canonical `route/model`, configured default, resumed session, bounded seed, bare
+pattern, and router outage.
 
 Source shape checks run in `postPatch`. Runtime tests run in `checkPhase` and again
 unconditionally in `postInstall` against the installed runtime, plus installed
@@ -247,7 +268,9 @@ nix flake check -L
 nix eval --raw .#checks.aarch64-linux.pi-invoke-command.drvPath
 nix eval --raw .#checks.aarch64-darwin.pi-invoke-command.drvPath
 nix develop .#pi -c /nix/store/glcp73hgagq2b24i80jlgbvj28vdb6kk-nodejs-24.19.0/bin/node test/extension-loader-smoke.mjs
+nix develop .#pi -c /nix/store/glcp73hgagq2b24i80jlgbvj28vdb6kk-nodejs-24.19.0/bin/node test/pi-tiamat-bootstrap.mjs
 nix develop .#pi -c bash -c 'bash test/pi-extra-extensions.test.sh && bash test/pi-model-store.test.sh'
+nix develop .#agents -c bun test integrations/pi/extensions/tiamat
 ```
 
 The existing pi shell does not put Node on PATH; the smoke command explicitly uses

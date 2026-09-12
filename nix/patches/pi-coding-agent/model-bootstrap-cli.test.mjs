@@ -19,7 +19,7 @@ export default function (pi) {
   pi.registerModelBootstrap(async request => {
     await Promise.resolve();
     appendFileSync(process.env.BOOTSTRAP_LOG, JSON.stringify(request) + "\\n");
-    if (request.source === "list") pi.registerProvider("jit-list", { baseUrl: "http://127.0.0.1:9", apiKey: "x", api: "openai-completions", models: [model("health-seed")] });
+    if (!request.provider && !request.modelId) pi.registerProvider("jit-list", { baseUrl: "http://127.0.0.1:9", apiKey: "x", api: "openai-completions", models: [model("health-seed")] });
     if (request.provider === "jit-exact" && request.modelId) pi.registerProvider("jit-exact", { baseUrl: "http://127.0.0.1:9", apiKey: "x", api: "openai-completions", models: [model(request.modelId)] });
   });
 }
@@ -32,6 +32,12 @@ export default function (pi) {
   assert.equal(result.status, 0, result.stderr);
   let requests = (await readFile(log, "utf8")).trim().split("\n").map(JSON.parse);
   assert.deepEqual(requests.at(-1), { source: "cli", provider: "jit-exact", modelId: "outside-prior-mru" });
+
+  // No configured default yet: an identity-less request, not a skipped phase.
+  result = run("--help");
+  assert.equal(result.status, 0, result.stderr);
+  requests = (await readFile(log, "utf8")).trim().split("\n").map(JSON.parse);
+  assert.deepEqual(requests.at(-1), { source: "default" });
 
   await writeFile(join(agentDir, "settings.json"), JSON.stringify({ defaultProvider: "jit-exact", defaultModel: "brand-new-default" }));
   result = run("--help");
