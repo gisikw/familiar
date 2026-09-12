@@ -113,6 +113,7 @@ export function workerProfileBundle() {
     [
       "tiamat/index.ts",
       "tiamat/catalog.ts",
+      "tiamat/materializer.ts",
       "tiamat/usage.ts",
       "lib/debug.ts",
     ].map((name) => [

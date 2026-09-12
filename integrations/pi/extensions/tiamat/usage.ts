@@ -1,4 +1,7 @@
-import { catalogToProviderGroups, type TiamatCatalogRecord } from "./catalog.ts";
+import {
+  catalogToProviderGroups,
+  type TiamatCatalogRecord,
+} from "./catalog.ts";
 
 export interface TiamatUsageWindow {
   name: string;
@@ -46,20 +49,33 @@ export function isProviders(value: unknown): value is TiamatProviders {
     if (!usage || typeof usage !== "object") return false;
     const windows = (usage as Record<string, unknown>).windows;
     if (windows === undefined) return true;
-    return Array.isArray(windows) && windows.every((window) => {
-      if (!window || typeof window !== "object") return false;
-      const item = window as Record<string, unknown>;
-      return typeof item.name === "string" && typeof item.used === "string" &&
-        typeof item.resetsIn === "string" && typeof item.resetsInSeconds === "number";
-    });
+    return (
+      Array.isArray(windows) &&
+      windows.every((window) => {
+        if (!window || typeof window !== "object") return false;
+        const item = window as Record<string, unknown>;
+        return (
+          typeof item.name === "string" &&
+          typeof item.used === "string" &&
+          typeof item.resetsIn === "string" &&
+          typeof item.resetsInSeconds === "number"
+        );
+      })
+    );
   });
 }
 
 /** Recover the router provider id from tiamat-<wire family>-<provider id>. */
 export function providerId(piProvider: string | undefined): string | undefined {
-  const match = piProvider?.match(/^tiamat-(?:anthropic|openai|responses)-(.+)$/);
+  const match = piProvider?.match(
+    /^tiamat-(?:anthropic|openai|responses)-(.+)$/,
+  );
   if (!match) return undefined;
-  try { return decodeURIComponent(match[1]); } catch { return match[1]; }
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
 }
 
 /* The browser webfont is double-patched with full plain-Unicode symbol
@@ -89,8 +105,13 @@ function windowLabel(name: string): string {
 const RELATIVE_CUTOFF_SECONDS = 12 * 3600;
 
 /** Claude-desktop style: relative under 12h ("2h 29m"), absolute weekday+time beyond. */
-export function formatReset(resetsInSeconds: number, now = Date.now(), timeZone?: string): string | undefined {
-  if (!Number.isFinite(resetsInSeconds) || resetsInSeconds <= 0) return undefined;
+export function formatReset(
+  resetsInSeconds: number,
+  now = Date.now(),
+  timeZone?: string,
+): string | undefined {
+  if (!Number.isFinite(resetsInSeconds) || resetsInSeconds <= 0)
+    return undefined;
   if (resetsInSeconds < RELATIVE_CUTOFF_SECONDS) {
     const hours = Math.floor(resetsInSeconds / 3600);
     const minutes = Math.round((resetsInSeconds % 3600) / 60);
@@ -99,27 +120,53 @@ export function formatReset(resetsInSeconds: number, now = Date.now(), timeZone?
   }
   try {
     const reset = new Date(now + resetsInSeconds * 1000);
-    const zone = timeZone || process.env.FAMILIAR_TIAMAT_DISPLAY_TZ || undefined;
+    const zone =
+      timeZone || process.env.FAMILIAR_TIAMAT_DISPLAY_TZ || undefined;
     const text = new Intl.DateTimeFormat("en-US", {
-      weekday: "short", hour: "numeric", minute: "2-digit", hour12: true, timeZone: zone,
+      weekday: "short",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+      timeZone: zone,
     }).format(reset);
-    return text.replace(", ", " ").replaceAll(" AM", "am").replaceAll(" PM", "pm");
-  } catch { return undefined; }
+    return text
+      .replace(", ", " ")
+      .replaceAll(" AM", "am")
+      .replaceAll(" PM", "pm");
+  } catch {
+    return undefined;
+  }
 }
 
-export function formatUsage(id: string, windows: TiamatUsageWindow[], stale: boolean, now = Date.now(), timeZone?: string): { text: string; tone: UsageTone } | undefined {
+export function formatUsage(
+  id: string,
+  windows: TiamatUsageWindow[],
+  stale: boolean,
+  now = Date.now(),
+  timeZone?: string,
+): { text: string; tone: UsageTone } | undefined {
   if (!windows.length) return undefined;
   let peak = 0;
   const parts = windows.map((window) => {
     const percent = usedPercent(window.used);
     if (percent !== undefined) peak = Math.max(peak, percent);
     const reset = formatReset(window.resetsInSeconds, now, timeZone);
-    const shown = percent === undefined ? window.used : `${Math.round(percent)}%`;
+    const shown =
+      percent === undefined ? window.used : `${Math.round(percent)}%`;
     return `${windowLabel(window.name)} ${shown}${reset ? ` ${GLYPH_REFRESH}${reset}` : ""}`;
   });
-  const tone: UsageTone = peak >= 100 ? "error" : stale || peak >= 90 ? "warning" : "dim";
-  const glyph = tone === "error" ? `${GLYPH_ALERT} ` : tone === "warning" ? `${GLYPH_ALERT_OUTLINE} ` : "";
-  return { text: `${glyph}${providerLabel(id)} ${parts.join(" · ")}${stale ? " · stale" : ""}`, tone };
+  const tone: UsageTone =
+    peak >= 100 ? "error" : stale || peak >= 90 ? "warning" : "dim";
+  const glyph =
+    tone === "error"
+      ? `${GLYPH_ALERT} `
+      : tone === "warning"
+        ? `${GLYPH_ALERT_OUTLINE} `
+        : "";
+  return {
+    text: `${glyph}${providerLabel(id)} ${parts.join(" · ")}${stale ? " · stale" : ""}`,
+    tone,
+  };
 }
 
 const fmtMoney = (value: number | undefined): string | undefined =>
@@ -138,7 +185,13 @@ const fmtMoney = (value: number | undefined): string | undefined =>
  * Tone: error at <10% key budget remaining (or <10% of balance when no cap),
  * warning at <25% or when stale, dim otherwise.
  */
-export function formatBudgetUsage(id: string, usage: TiamatProviderUsage["usage"], stale: boolean, now = Date.now(), timeZone?: string): { text: string; tone: UsageTone } | undefined {
+export function formatBudgetUsage(
+  id: string,
+  usage: TiamatProviderUsage["usage"],
+  stale: boolean,
+  now = Date.now(),
+  timeZone?: string,
+): { text: string; tone: UsageTone } | undefined {
   if (!usage) return undefined;
   const { credits, balance } = usage;
   if (!credits && !balance) return undefined;
@@ -151,9 +204,15 @@ export function formatBudgetUsage(id: string, usage: TiamatProviderUsage["usage"
     // Numerator is *used* budget (counts up, consistent with the % convention
     // on windowed providers); fall back to limit - remaining when the API
     // omits usage.
-    const spent = credits.used ?? (credits.remaining !== undefined ? credits.limit - credits.remaining : undefined);
-    if (spent !== undefined) parts.push(`${fmtMoney(spent)}/${fmtMoney(credits.limit)}`);
-    else parts.push(`${fmtMoney(credits.remaining)}/${fmtMoney(credits.limit)}`);
+    const spent =
+      credits.used ??
+      (credits.remaining !== undefined
+        ? credits.limit - credits.remaining
+        : undefined);
+    if (spent !== undefined)
+      parts.push(`${fmtMoney(spent)}/${fmtMoney(credits.limit)}`);
+    else
+      parts.push(`${fmtMoney(credits.remaining)}/${fmtMoney(credits.limit)}`);
     if (credits.limit > 0 && credits.remaining !== undefined) {
       budgetFractionUsed = 1 - credits.remaining / credits.limit;
     }
@@ -174,16 +233,28 @@ export function formatBudgetUsage(id: string, usage: TiamatProviderUsage["usage"
   if (!parts.length) return undefined;
   const label = id.startsWith("openrouter") ? "OR" : providerLabel(id);
 
-  const keyFractionUsed = budgetFractionUsed ??
+  const keyFractionUsed =
+    budgetFractionUsed ??
     (balanceFractionUsed !== undefined ? balanceFractionUsed : undefined);
   const tone: UsageTone =
-    (keyFractionUsed !== undefined && keyFractionUsed >= 0.9) || (balanceFractionUsed !== undefined && balanceFractionUsed >= 0.9)
+    (keyFractionUsed !== undefined && keyFractionUsed >= 0.9) ||
+    (balanceFractionUsed !== undefined && balanceFractionUsed >= 0.9)
       ? "error"
-      : stale || (keyFractionUsed !== undefined && keyFractionUsed >= 0.75) || (balanceFractionUsed !== undefined && balanceFractionUsed >= 0.75)
+      : stale ||
+          (keyFractionUsed !== undefined && keyFractionUsed >= 0.75) ||
+          (balanceFractionUsed !== undefined && balanceFractionUsed >= 0.75)
         ? "warning"
         : "dim";
-  const glyph = tone === "error" ? `${GLYPH_ALERT} ` : tone === "warning" ? `${GLYPH_ALERT_OUTLINE} ` : "";
-  return { text: `${glyph}${label} ${parts.join(" · ")}${stale ? " · stale" : ""}`, tone };
+  const glyph =
+    tone === "error"
+      ? `${GLYPH_ALERT} `
+      : tone === "warning"
+        ? `${GLYPH_ALERT_OUTLINE} `
+        : "";
+  return {
+    text: `${glyph}${label} ${parts.join(" · ")}${stale ? " · stale" : ""}`,
+    tone,
+  };
 }
 
 /* ==========================================================================
@@ -226,6 +297,9 @@ export interface TiamatPortModel {
   availability: "available" | "degraded" | "unavailable";
   reason?: string;
   resetsIn?: string;
+  reasoning?: boolean;
+  input?: Array<"text" | "image">;
+  contextWindow?: number;
 }
 
 export interface TiamatPortProvider {
@@ -241,8 +315,15 @@ export interface TiamatPortProvider {
   usage: TiamatPortUsage | null;
 }
 
+export interface TiamatActivationResult {
+  ok: boolean;
+  error?: "busy" | "not_found" | "unavailable" | "forbidden" | "failed";
+}
+
 export interface TiamatPort {
   providers(): TiamatPortProvider[];
+  /** Atomically materialize and select an account/model semantic identity. */
+  activate(provider: string, modelId: string): Promise<TiamatActivationResult>;
   /** Unix ms of the last successful `/tiamat/v1/providers` poll, or `null`. */
   usageRefreshedAt(): number | null;
 }
@@ -253,7 +334,9 @@ const PORT_MAX_WINDOWS = 8;
 const PORT_SHORT = 256;
 
 const clip = (value: unknown, max = PORT_SHORT): string | undefined =>
-  typeof value === "string" && value.length > 0 ? value.slice(0, max) : undefined;
+  typeof value === "string" && value.length > 0
+    ? value.slice(0, max)
+    : undefined;
 
 const clampPercent = (used: string): number | null => {
   const parsed = usedPercent(used);
@@ -283,14 +366,18 @@ function projectUsage(raw: unknown): TiamatPortUsage | null {
         used: clampPercent(usedText),
         usedText,
         resetsIn: clip(w.resetsIn, 32) ?? "",
-        ...(typeof w.resetsInSeconds === "number" && Number.isFinite(w.resetsInSeconds) ? { resetsInSeconds: w.resetsInSeconds } : {}),
+        ...(typeof w.resetsInSeconds === "number" &&
+        Number.isFinite(w.resetsInSeconds)
+          ? { resetsInSeconds: w.resetsInSeconds }
+          : {}),
       });
     }
   }
   let spend: TiamatPortUsage["spend"];
   if (usage.spend && typeof usage.spend === "object") {
     const s = usage.spend as Record<string, unknown>;
-    const amount = typeof s.amount === "number" ? String(s.amount) : clip(s.amount, 32);
+    const amount =
+      typeof s.amount === "number" ? String(s.amount) : clip(s.amount, 32);
     const period = clip(s.period, 32);
     const currency = clip(s.currency, 8);
     if (amount && period && currency) spend = { period, amount, currency };
@@ -298,13 +385,19 @@ function projectUsage(raw: unknown): TiamatPortUsage | null {
   let credits: TiamatPortUsage["credits"];
   if (usage.credits && typeof usage.credits === "object") {
     const c = usage.credits as Record<string, unknown>;
-    const balance = typeof c.balance === "number" ? String(c.balance) : clip(c.balance, 32);
+    const balance =
+      typeof c.balance === "number" ? String(c.balance) : clip(c.balance, 32);
     if (balance) credits = { balance };
   }
   const fetchedAt = timestamp(usage.fetchedAt);
   // `usage: {}` is "no telemetry", which the UI must state rather than draw as 0%.
   if (!windows.length && !spend && !credits) return null;
-  return { windows, ...(spend ? { spend } : {}), ...(credits ? { credits } : {}), ...(fetchedAt === undefined ? {} : { fetchedAt }) };
+  return {
+    windows,
+    ...(spend ? { spend } : {}),
+    ...(credits ? { credits } : {}),
+    ...(fetchedAt === undefined ? {} : { fetchedAt }),
+  };
 }
 
 /**
@@ -318,7 +411,10 @@ export function projectProviders(
   catalog: readonly TiamatCatalogRecord[],
   baseUrl: string,
 ): TiamatPortProvider[] {
-  const groups = catalogToProviderGroups(catalog as TiamatCatalogRecord[], baseUrl);
+  const groups = catalogToProviderGroups(
+    catalog as TiamatCatalogRecord[],
+    baseUrl,
+  );
   const byAccount = new Map<string, TiamatPortProvider>();
   const ensure = (id: string): TiamatPortProvider | undefined => {
     let entry = byAccount.get(id);
@@ -342,18 +438,23 @@ export function projectProviders(
       availability: record.availability,
       ...(record.reason ? { reason: clip(record.reason, 64) } : {}),
       ...(record.resetsIn ? { resetsIn: clip(record.resetsIn, 32) } : {}),
+      reasoning: record.reasoning ?? false,
+      input: record.input?.length ? record.input : ["text"],
+      contextWindow: record.context_window ?? 128_000,
     });
   }
   for (const group of groups) {
     const entry = ensure(group.tiamatProvider);
-    if (entry && !entry.members.includes(group.id)) entry.members.push(group.id);
+    if (entry && !entry.members.includes(group.id))
+      entry.members.push(group.id);
   }
   for (const [id, raw] of Object.entries(providers)) {
     const entry = ensure(id.slice(0, PORT_SHORT));
     if (!entry) continue;
     const p = raw as Record<string, unknown>;
     if (p.kind === "oauth-client" || p.kind === "api-key") entry.kind = p.kind;
-    if (p.locality === "remote" || p.locality === "local") entry.locality = p.locality;
+    if (p.locality === "remote" || p.locality === "local")
+      entry.locality = p.locality;
     entry.usage = projectUsage(p.usage);
   }
   return [...byAccount.values()];
