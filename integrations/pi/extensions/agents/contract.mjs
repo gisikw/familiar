@@ -154,7 +154,14 @@ export function modelGuardPath(job) {
  * true`, `agent_status: "unknown"` and NO `agent` kind while startup is pending
  * or has already failed. That is a truthful pending state, not an agent. */
 export function launchPendingPlaceholder(agent) {
-  return agent.launch_pending === true && agent.agent === undefined;
+  return (
+    agent.launch_pending === true &&
+    agent.agent === undefined &&
+    agent.agent_status === "unknown" &&
+    agent.state_change_seq === 0 &&
+    agent.interactive_ready !== true &&
+    agent.agent_session == null
+  );
 }
 export function provisionedPaths(value, job) {
   if (

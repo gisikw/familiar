@@ -190,13 +190,25 @@ test("a launch-pending placeholder is a truthful pending state, never an interac
   const f = running(t);
   await f.observe();
   const j = f.get();
-  assert.ok(
-    launchPendingPlaceholder({ launch_pending: true, agent_status: "unknown" }),
-  );
-  assert.equal(
-    launchPendingPlaceholder({ launch_pending: false, agent: "pi" }),
-    false,
-  );
+  const placeholder = {
+    launch_pending: true,
+    agent_status: "unknown",
+    state_change_seq: 0,
+    interactive_ready: false,
+  };
+  assert.ok(launchPendingPlaceholder(placeholder));
+  for (const contradiction of [
+    { agent: "pi" },
+    { agent_status: "idle" },
+    { state_change_seq: 1 },
+    { interactive_ready: true },
+    { agent_session: { kind: "id" } },
+    { launch_pending: false },
+  ])
+    assert.equal(
+      launchPendingPlaceholder({ ...placeholder, ...contradiction }),
+      false,
+    );
   // The placeholder is not an identity mismatch and not a launched agent.
   assert.equal(j.phase, "launch_attempted");
   assert.equal(j.observation, "launch_pending");

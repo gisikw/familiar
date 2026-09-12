@@ -1017,9 +1017,7 @@ export class Owner {
         // name, so cleanup must accept exactly that proven-failed shape.
         const failedLaunch = (a) =>
           j.phase === "launch_failed" &&
-          a.agent == null &&
-          a.launch_pending === true &&
-          a.agent_status === "unknown" &&
+          launchPendingPlaceholder(a) &&
           a.name === j.herdr_agent_name &&
           a.pane_id === j.herdr_pane_id &&
           (!j.herdr_pending_terminal_id ||
