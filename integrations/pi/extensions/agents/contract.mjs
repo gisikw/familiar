@@ -11,6 +11,11 @@ export const LIMITS = Object.freeze({
   callMs: 20000,
   leaseMs: 120000,
   idleGraceMs: 300000,
+  // Herdr reports a launch-pending placeholder the moment `agent.start` types the
+  // canonical executable into the pane shell, and never reaps it. A real harness
+  // occupies the pane foreground within a second; this grace bounds how long a
+  // truthful pending state may persist before startup is reported failed.
+  launchGraceMs: 60000,
   concurrency: 4,
   retentionDays: 90,
 });
@@ -138,6 +143,18 @@ export function modelSelection(value) {
 }
 export function modelGuardPath(job) {
   return posix.join(posix.dirname(job.settlement_path), "model-guard.ts");
+}
+// Herdr 0.9 `agent.start --kind <harness>` types the *canonical* executable name
+// into the dedicated pane's interactive shell; `AgentStartParams` carries no env,
+// and the shell's own startup files own PATH by then. Supplying that runtime is
+// the Drover/driver NODE's job, established by its own trusted shell
+// initialisation for every Herdr agent pane. Familiar sends semantic inputs only
+// and never probes, injects, selects or attests a pane environment.
+/** Herdr returns a placeholder carrying the requested name, `launch_pending:
+ * true`, `agent_status: "unknown"` and NO `agent` kind while startup is pending
+ * or has already failed. That is a truthful pending state, not an agent. */
+export function launchPendingPlaceholder(agent) {
+  return agent.launch_pending === true && agent.agent === undefined;
 }
 export function provisionedPaths(value, job) {
   if (

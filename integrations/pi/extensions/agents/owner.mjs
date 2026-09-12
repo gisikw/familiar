@@ -11,6 +11,7 @@ import {
   agentObservation,
   modelSelection,
   modelGuardPath,
+  launchPendingPlaceholder,
 } from "./contract.mjs";
 
 const SLOT = Symbol.for("familiar.agents.owner.v1");
@@ -87,6 +88,9 @@ export class Owner {
     this.timer = null;
     this.pass = null;
     this.idleGraceMs = options.idleGraceMs ?? LIMITS.idleGraceMs;
+    // How long a truthful launch-pending placeholder may persist before the
+    // startup is reported failed (never relaunched).
+    this.launchGraceMs = options.launchGraceMs ?? LIMITS.launchGraceMs;
     // Per-route/per-node Agent availability. Absent store = fail closed.
     this.policy = options.policy ?? null;
     this.delay = 1000;
@@ -337,6 +341,8 @@ export class Owner {
               cwd: job.remote_worktree,
               label: job.label,
               focus: false,
+              // Semantic inputs only. The execution runtime for every agent pane
+              // belongs to the Drover node's own trusted shell initialisation.
               env: {
                 FAMILIAR_AGENT_EXPECTED_MODEL: job.model,
                 PI_CODING_AGENT_DIR: job.remote_profile ?? m.profile,
@@ -383,6 +389,7 @@ export class Owner {
         job = this.save(job, {
           phase: "launch_attempted",
           herdr_pane_id: panes[0].pane_id,
+          launch_attempted_at: Date.now(),
         });
         const started = await this.call((s) =>
           this.transport.rpc(
@@ -415,13 +422,29 @@ export class Owner {
         throw new Error("launch pane changed");
       if (
         agent.workspace_id !== job.herdr_workspace_id ||
-        agent.name !== job.herdr_agent_name ||
-        agent.agent !== job.harness
+        agent.name !== job.herdr_agent_name
       )
+        throw new Error("agent launch identity mismatch");
+      // A launch-pending placeholder is a truthful pending startup, not an
+      // interactive agent: it carries no `agent` kind and never becomes one when
+      // the shell could not execute the harness. Report it as pending, and after
+      // the grace period report the startup failure. Never relaunch.
+      if (launchPendingPlaceholder(agent)) {
+        job = this.save(job, {
+          herdr_pane_id: agent.pane_id,
+          herdr_pending_terminal_id: agent.terminal_id,
+          launch_attempted_at: job.launch_attempted_at ?? Date.now(),
+          last_error: null,
+        });
+        await this.observeLaunchPending(job);
+        return;
+      }
+      if (agent.agent !== job.harness)
         throw new Error("agent launch identity mismatch");
       job = this.save(job, {
         herdr_agent_id: agent.terminal_id,
         herdr_pane_id: agent.pane_id,
+        herdr_pending_terminal_id: null,
         agent_session: agent.agent_session ?? null,
         semantic_state:
           job.semantic_state === "cancel_requested"
@@ -621,6 +644,52 @@ export class Owner {
         `idle-unsettled-${next.idle_episode}`,
       );
     this.save(job, next, note);
+  }
+  /** Herdr never reaps a placeholder whose startup failed (`bash: pi: command
+   * not found` leaves the shell in the foreground forever), and the name stays
+   * taken for that session. Report the failure once the grace has elapsed and
+   * the pane proves no harness process exists; never relaunch it. */
+  async observeLaunchPending(job) {
+    const started = job.launch_attempted_at ?? Date.now();
+    if (Date.now() - started < this.launchGraceMs) {
+      this.save(job, { observation: "launch_pending", last_error: null });
+      return;
+    }
+    const { process_info: p } = await this.call((s) =>
+      this.transport.rpc(
+        job,
+        "pane.process_info",
+        { pane_id: job.herdr_pane_id },
+        s,
+      ),
+    );
+    const foreground =
+      p?.foreground_processes === undefined ? [] : p.foreground_processes;
+    if (
+      !Number.isSafeInteger(p?.shell_pid) ||
+      p.shell_pid <= 0 ||
+      !Number.isSafeInteger(p.foreground_process_group_id) ||
+      !Array.isArray(foreground)
+    )
+      throw new Error("invalid process observation");
+    if (
+      p.foreground_process_group_id !== p.shell_pid ||
+      foreground.some((x) => x?.pid !== p.shell_pid)
+    ) {
+      // Something is genuinely running; remain honestly pending.
+      this.save(job, { observation: "launch_pending", last_error: null });
+      return;
+    }
+    const changes = {
+      phase: "launch_failed",
+      observation: "launch_failed",
+      last_error: `Agent startup failed: Herdr still reports a launch-pending placeholder for ${job.herdr_agent_name} while the dedicated pane has no harness process. The Herdr agent name stays taken for this session, so this job is never relaunched. Inspect the pane natively, then abandon this job and dispatch a fresh one once the node's agent runtime is correct.`,
+    };
+    this.save(
+      job,
+      changes,
+      this.note({ ...job, ...changes }, "launch-failed", 2),
+    );
   }
   async observeGone(job) {
     let reachability = "fresh";
@@ -942,20 +1011,35 @@ export class Owner {
         const workspaceAgents = agents.filter(
           (a) => a.workspace_id === w.workspace_id,
         );
+        // A launch that never started leaves an unreapable placeholder: no
+        // `agent` kind, `launch_pending`, `unknown` status, and no foreground
+        // process at all. Closing that workspace is the only way to release the
+        // name, so cleanup must accept exactly that proven-failed shape.
+        const failedLaunch = (a) =>
+          j.phase === "launch_failed" &&
+          a.agent == null &&
+          a.launch_pending === true &&
+          a.agent_status === "unknown" &&
+          a.name === j.herdr_agent_name &&
+          a.pane_id === j.herdr_pane_id &&
+          (!j.herdr_pending_terminal_id ||
+            a.terminal_id === j.herdr_pending_terminal_id) &&
+          !j.herdr_agent_id;
         if (
           workspaceAgents.length > 1 ||
           workspaceAgents.some(
             (a) =>
-              !correlated(a) ||
-              a.name !== j.herdr_agent_name ||
-              a.terminal_id !== j.herdr_agent_id ||
-              a.pane_id !== j.herdr_pane_id ||
-              a.agent !== j.harness ||
-              !["idle", "done"].includes(a.agent_status) ||
-              a.launch_pending ||
-              (j.agent_session &&
-                JSON.stringify(a.agent_session) !==
-                  JSON.stringify(j.agent_session)),
+              !failedLaunch(a) &&
+              (!correlated(a) ||
+                a.name !== j.herdr_agent_name ||
+                a.terminal_id !== j.herdr_agent_id ||
+                a.pane_id !== j.herdr_pane_id ||
+                a.agent !== j.harness ||
+                !["idle", "done"].includes(a.agent_status) ||
+                a.launch_pending ||
+                (j.agent_session &&
+                  JSON.stringify(a.agent_session) !==
+                    JSON.stringify(j.agent_session))),
           )
         )
           throw new Error("active or replaced workspace");

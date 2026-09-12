@@ -34,6 +34,37 @@ Node tests use Node's SQLite, not Bun's unrelated SQLite API. The `.node-test.mj
 name keeps them out of Bun discovery. The normal extension loader itself remains
 safe to load under Bun: SQLite is required only when constructing a real ledger.
 
+## Real-Herdr launch evidence (opt-in, no inference)
+
+`launch-proof.mjs` is an operator/test harness — not Familiar behaviour — that
+records Herdr 0.9's launch semantics against a **real** pinned Herdr server and a
+real interactive shell, in a private HOME/XDG tree and its own named session. It
+starts no provider requests and costs nothing:
+
+```sh
+nix develop .#agents -c bash -c '
+  export FA_PROOF_HERDR=/absolute/pinned/herdr-0.9.0/bin/herdr
+  export FA_PROOF_PI=$(command -v pi)
+  export FA_PROOF_SHELL=$(command -v bash)
+  node test/agents/launch-proof.mjs
+'
+```
+
+It shows:
+
+* a pane shell without the node's trusted runtime initialisation discards the
+  workspace `PATH` (the exact live failure);
+* `agent.start --kind pi` then leaves a permanent `launch_pending` placeholder
+  with no `agent` kind while the pane shows `command not found` and keeps the
+  shell as its own foreground process; the name cannot be relaunched
+  (`agent_name_taken`) or renamed (`agent_launch_pending`), and only closing the
+  workspace releases it — the facts the Owner's launch-pending/failed
+  reconciliation and cleanup depend on;
+* once the node's own shell initialisation establishes the canonical runtime for
+  agent panes, `agent.start` reaches a real interactive Pi agent with a single
+  `pi` foreground process, while Familiar sends no environment of its own. That
+  node-side change lives on the Drover node, not in this repository.
+
 `tools.mjs` loads the actual Agents and Imp extensions with the pinned Pi loader,
 then invokes all thirteen operations through the real private socket against the
 real ledger/owner, with offline mocked transport. It verifies that no

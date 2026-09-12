@@ -138,6 +138,37 @@ does not contain python3. Provisioning is a short-lived SSH/Python/Git operation
 **not a Herdr space**. Only the subsequently launched real Pi is foreground in
 the dedicated named Herdr space.
 
+### The node execution runtime (where `pi` comes from)
+
+Herdr 0.9 `agent.start --kind pi` **types the canonical executable name into the
+dedicated pane's interactive shell**; `AgentStartParams` (protocol 22) carries
+`name`, `kind`, `pane_id`, `args` and `timeout_ms` only — no environment. By the
+time that line runs, the pane shell's own startup files own PATH. On NixOS this
+is unconditional: `/etc/bashrc` sources `/etc/profile`, which sources
+`set-environment`, which re-exports `PATH`. An environment handed to
+`workspace.create` therefore reaches the pane *process* (variables such as
+`PI_CODING_AGENT_DIR` and `FAMILIAR_AGENT_EXPECTED_MODEL` do survive) while
+`PATH` does not, and the launch fails with `bash: pi: command not found`.
+
+The fix belongs entirely to the **Drover/driver node**: its Herdr terminal spawn
+must source the node's own trusted Drover environment, so the intended canonical
+runtime (Pi plus the runtime bits its agents need) is established for every agent
+pane. That is one consistent node-owned runtime across jobs, provisioned however
+the node is managed (Nix on our fleet). It is **not** part of the per-job
+protocol, and it is configured on the node, not in this repository.
+Project-specific `nix develop` remains separate and optional — the agent's own
+choice inside its worktree.
+
+Familiar sends semantic inputs only — agent kind, exact provider/model, model
+guard, task. It does **not** probe, inject, select or attest the pane PATH: a
+`command -v` style preflight would only show that *some* `pi` is resolvable,
+which is no provenance guarantee, so there is deliberately no such machinery.
+The enrolled `worker_env` is still passed to `workspace.create`, but nothing in
+v1 treats it as proof that the launch will succeed. What Familiar does instead is
+observe the outcome truthfully; see the launch-pending reconciliation below.
+`test/agents/launch-proof.mjs` records the Herdr semantics and the node-side
+fix against a real pinned Herdr 0.9 server.
+
 ## Ownership, ledger and reconciliation
 
 Default ledger: `${XDG_STATE_HOME:-~/.local/state}/familiar/agents/agents.sqlite3`.
@@ -203,6 +234,28 @@ not argv. Pi receives explicit `--provider`, `--model` and the per-job guard
 extension; no wrapper hides its foreground process. Its 300-second startup TTL
 is distinct from the 20-second controller
 network deadline; an expired RPC is an uncertain operation, not a task verdict.
+
+### Launch-pending placeholders and startup failure
+
+`agent.start` returns immediately with a **placeholder**: the requested `name`,
+`launch_pending: true`, `agent_status: "unknown"`, `state_change_seq: 0` and **no
+`agent` kind**. It appears in `agent.list` and `agent.get` alike. Familiar treats
+that exact shape as a truthful *pending startup* (`observation:
+"launch_pending"`, the pending terminal id retained separately as
+`herdr_pending_terminal_id`), never as an interactive agent: it is not an
+identity mismatch, it is not prompted, and it is never relaunched.
+
+Herdr does not reap a placeholder whose startup failed, and the name stays taken
+for that session: a second `agent.start` returns `agent_name_taken`, `agent
+rename` returns `agent_launch_pending`, and `pane.release_agent` /
+`pane.clear_agent_authority` do not remove it. Only closing the workspace
+releases the name. So after the launch grace (60 s), if the pane proves there is
+no harness process (the shell is its own foreground process group), the job moves
+to phase `launch_failed` with one notification and an explicit error. There is no
+automatic relaunch and `resolve-operation launch` does not apply: recovery is
+operator-driven — inspect natively, `abandon`, let cleanup close that workspace
+(cleanup accepts exactly this proven-failed placeholder shape and nothing else),
+and dispatch a fresh job once the node's agent runtime is correct.
 
 Exact pinned source: `b99002ac99b09e00b4ca692436cb15a6b0d676f1`,
 `src/api/schema/{agents,panes,workspaces}.rs`, `src/app/agents.rs`,
