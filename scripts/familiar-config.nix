@@ -24,7 +24,23 @@ let
     && (pluginNames == [] || pathForm != gitForm)
     && ((golem ? git) == (golem ? rev))
     && (!(golem ? rev) || (builtins.isString golem.rev && builtins.match "[0-9a-fA-F]{40}" golem.rev != null));
-  config = if pluginConfigValid then rawConfig else throw "invalid [plugins.golem] source or environment configuration";
+  identityKeys = [ "name" "pronoun_subject" "pronoun_object" "pronoun_possessive_adjective" "pronoun_possessive_pronoun" "pronoun_reflexive" ];
+  nonWhitespace = [ " " "\t" "\r" "\n" ];
+  validIdentityField = value:
+    builtins.isString value
+    && builtins.stringLength value <= 128
+    && builtins.any (c: !(builtins.elem c nonWhitespace)) (chars value);
+  validIdentity = identity:
+    builtins.isAttrs identity
+    && builtins.all (key: builtins.elem key identityKeys) (builtins.attrNames identity)
+    && builtins.all (key: validIdentityField identity.${key}) (builtins.attrNames identity);
+  userConfigValid = !(rawConfig ? user) || validIdentity rawConfig.user;
+  familiarConfigValid = !(rawConfig ? familiar) || (
+    builtins.isAttrs rawConfig.familiar
+    && (!(rawConfig.familiar ? identity) || validIdentity rawConfig.familiar.identity)
+  );
+  config = if pluginConfigValid && userConfigValid && familiarConfigValid then rawConfig
+    else throw "invalid private configuration schema";
   chars = s: builtins.genList (i: builtins.substring i 1 s) (builtins.stringLength s);
   upper = s: builtins.replaceStrings
     (chars "abcdefghijklmnopqrstuvwxyz") (chars "ABCDEFGHIJKLMNOPQRSTUVWXYZ") s;

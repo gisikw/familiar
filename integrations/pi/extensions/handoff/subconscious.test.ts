@@ -241,8 +241,23 @@ describe("curate atomicity and presentation", () => {
     expect(timeout).toEqual({ outcome: "skipped", reason: "timeout" });
   });
 
-  test("prompt states one operation and curve contract; delivery remains hidden-system text", () => {
-    const prompt = renderCurationPrompt([reminder("r-00000001")], 1_000_000);
+  test("prompt authors private attention rather than a task-list reminder", () => {
+    const prompt = renderCurationPrompt([reminder("r-00000001")], 1_000_000, {});
+    expect(prompt).toContain("one last private opportunity");
+    expect(prompt).toContain("one deliberate seed");
+    expect(prompt).toContain("a joke whose setup needs to be forgotten");
+    expect(prompt).toContain("a provocation");
+    expect(prompt).toContain("not a second handoff, a task list");
+    expect(prompt).toContain("attentional nudge, not a command or a prewritten response");
+    expect(prompt).toContain("future self retains judgment");
+    expect(prompt).toContain("Plant at most one seed");
+    expect(prompt).toContain("planting none is valid");
+    expect(prompt).toContain("authored stochastic delivery curve");
+    expect(prompt).toContain("cannot select or guarantee the moment");
+    expect(prompt).toContain("without the user first leading the next Familiar there");
+    expect(prompt).not.toContain("one last private task");
+    expect(prompt).not.toContain("subconscious reminders");
+    expect(prompt).not.toContain("thread to revisit");
     expect(prompt).toContain("no more than ONE operation");
     expect(prompt).toContain('"turns":[quiet,mature]');
     expect(prompt).toContain("probability, not a delivery promise");
@@ -252,5 +267,38 @@ describe("curate atomicity and presentation", () => {
     expect(delivered).toContain("fixture delivery");
     expect(delivered).toContain("The user did not send it");
     expect(subconsciousRoot({ PI_CODING_AGENT_DIR: "/state/pi" })).toBe("/state/subconscious");
+  });
+
+  test("prompt interpolates each party independently and uses neutral per-field fallbacks", () => {
+    const identified = renderCurationPrompt([], 1_000_000, {
+      FAMILIAR_USER_NAME: "User Fixture",
+      FAMILIAR_USER_PRONOUN_SUBJECT: "xe",
+      FAMILIAR_IDENTITY_NAME: "Familiar Fixture",
+      FAMILIAR_IDENTITY_PRONOUN_SUBJECT: "they",
+      FAMILIAR_IDENTITY_PRONOUN_OBJECT: "them",
+      FAMILIAR_IDENTITY_PRONOUN_POSSESSIVE_ADJECTIVE: "their",
+      FAMILIAR_IDENTITY_PRONOUN_POSSESSIVE_PRONOUN: "theirs",
+      FAMILIAR_IDENTITY_PRONOUN_REFLEXIVE: "themself",
+    });
+    expect(identified).toContain("your next self, Familiar Fixture,");
+    expect(identified).toContain("direct their attention");
+    expect(identified).toContain("they can only respond to what reaches them");
+    expect(identified).toContain("without User Fixture first leading them there");
+    expect(identified).toContain("a chance for them to surprise themself");
+    expect(identified).toContain("the choice remains theirs");
+    expect(identified).toContain("They will meet the seed");
+    expect(identified).not.toContain("they sees");
+    expect(identified).not.toContain("they retains");
+
+    const userSubjectOnly = renderCurationPrompt([], 1_000_000, { FAMILIAR_USER_PRONOUN_SUBJECT: "they" });
+    expect(userSubjectOnly).toContain("before they can lead the next Familiar there");
+    expect(userSubjectOnly).not.toContain("without they first leading");
+    const userObjectOnly = renderCurationPrompt([], 1_000_000, { FAMILIAR_USER_PRONOUN_OBJECT: "them" });
+    expect(userObjectOnly).toContain("without them first leading the next Familiar there");
+    const invalidPrivateValue = "PRIVATE_FIXTURE_" + "x".repeat(129);
+    const fallback = renderCurationPrompt([], 1_000_000, { FAMILIAR_USER_NAME: invalidPrivateValue });
+    expect(fallback).toContain("without the user first leading the next Familiar there");
+    expect(fallback).not.toContain(invalidPrivateValue);
+    expect(fallback).not.toMatch(/\b(she|her|hers|herself)\b/i);
   });
 });

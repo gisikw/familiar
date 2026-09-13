@@ -32,6 +32,29 @@ claude_oauth_token="placeholder"\n[theme.ansi]\nbright_blue="#abcdef"\n`);chmodS
     expect(()=>validateConfig({plugins:{golem:{path:"/g",git:"x",rev:"0123456789abcdef0123456789abcdef01234567"}}})).toThrow(ConfigError);
   });
   test("canonical environment naming is deterministic",()=>expect(envName(["theme","ansi","bright-blue"])).toBe("FAMILIAR_THEME_ANSI_BRIGHT_BLUE"));
+  test("loads, projects, overrides, validates, and redacts both private identities",async()=>{
+    const d=mkdtempSync(join(tmpdir(),"familiar-config-"));dirs.push(d);const p=join(d,"familiar.toml");
+    writeFileSync(p,`[user]\nname="User Fixture"\npronoun_subject="they"\npronoun_object="them"\npronoun_possessive_adjective="their"\npronoun_possessive_pronoun="theirs"\npronoun_reflexive="themself"\n[familiar.identity]\nname="Familiar Fixture"\npronoun_subject="she"\npronoun_object="her"\npronoun_possessive_adjective="her"\npronoun_possessive_pronoun="hers"\npronoun_reflexive="herself"\n`);chmodSync(p,0o600);
+    const loaded=await loadConfig(p,{env:{FAMILIAR_USER_NAME:"Ambient User",FAMILIAR_IDENTITY_PRONOUN_SUBJECT:"ze"},defaults:{}});
+    expect(loaded.config.user?.name).toBe("Ambient User");
+    expect(loaded.config.user?.pronoun_possessive_pronoun).toBe("theirs");
+    expect(loaded.config.familiar?.identity?.pronoun_subject).toBe("ze");
+    for(const name of [
+      "FAMILIAR_USER_NAME","FAMILIAR_USER_PRONOUN_SUBJECT","FAMILIAR_USER_PRONOUN_OBJECT",
+      "FAMILIAR_USER_PRONOUN_POSSESSIVE_ADJECTIVE","FAMILIAR_USER_PRONOUN_POSSESSIVE_PRONOUN","FAMILIAR_USER_PRONOUN_REFLEXIVE",
+      "FAMILIAR_IDENTITY_NAME","FAMILIAR_IDENTITY_PRONOUN_SUBJECT","FAMILIAR_IDENTITY_PRONOUN_OBJECT",
+      "FAMILIAR_IDENTITY_PRONOUN_POSSESSIVE_ADJECTIVE","FAMILIAR_IDENTITY_PRONOUN_POSSESSIVE_PRONOUN","FAMILIAR_IDENTITY_PRONOUN_REFLEXIVE",
+    ]) expect(loaded.environment[name]).toBeDefined();
+    const redacted=redactConfig(loaded.config) as any;
+    expect(redacted.user).toBe("[REDACTED]");
+    expect(redacted.familiar?.identity).toBe("[REDACTED]");
+    expect(validateConfig({})).toEqual({});
+    expect(()=>validateConfig({user:{nickname:"private"}})).toThrow(ConfigError);
+    expect(()=>validateConfig({familiar:{identity:{nickname:"private"}}})).toThrow(ConfigError);
+    expect(()=>validateConfig({user:{name:"   "}})).toThrow(ConfigError);
+    expect(()=>validateConfig({familiar:{identity:{name:"x".repeat(129)}}})).toThrow(ConfigError);
+    expect(()=>applyEnvironment({}, {FAMILIAR_USER_NAME:""})).toThrow(ConfigError);
+  });
   test("familiar-ui attachment storage is configurable and typed",async()=>{
     const d=mkdtempSync(join(tmpdir(),"familiar-config-"));dirs.push(d);const p=join(d,"familiar.toml");
     writeFileSync(p,`[familiar]\nui_attachment_dir="/srv/familiar/state/familiar-ui/attachments"\nui_attachment_max_bytes=8388608\n`);chmodSync(p,0o600);

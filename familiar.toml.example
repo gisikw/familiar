@@ -6,6 +6,17 @@
 # FAMILIAR_THEME_ACCENT. Ambient explicit variables override this file.
 # See docs/CONFIG.md for types, normalization, precedence, and restart behavior.
 
+# Private identity used only for natural prompt interpolation. Every field is
+# independent and optional; omitted names or pronouns are never inferred.
+# Values must be nonempty and at most 128 UTF-8 bytes.
+[user]
+# name = "Local User"
+# pronoun_subject = "they"
+# pronoun_object = "them"
+# pronoun_possessive_adjective = "their"
+# pronoun_possessive_pronoun = "theirs"
+# pronoun_reflexive = "themself"
+
 [pi]
 telemetry = 0
 offline = 1
@@ -45,6 +56,16 @@ skip_version_check = 1
 # tz = "America/Chicago"
 # debug_level = "debug"
 # use_stuff = false # nudge the resident agent to discover the Stuff CLI
+
+# Familiar's own private identity is nested here to avoid colliding with
+# identity_path. It maps to FAMILIAR_IDENTITY_* (not FAMILIAR_FAMILIAR_*).
+[familiar.identity]
+# name = "Familiar"
+# pronoun_subject = "she"
+# pronoun_object = "her"
+# pronoun_possessive_adjective = "her"
+# pronoun_possessive_pronoun = "hers"
+# pronoun_reflexive = "herself"
 
 [herdr]
 # Legacy/current herdr session settings (kept as a public contract for existing instances).

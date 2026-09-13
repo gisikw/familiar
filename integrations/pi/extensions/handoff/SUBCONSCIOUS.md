@@ -1,8 +1,14 @@
-# Subconscious reminders
+# Subconscious seeds
 
-Notes the outgoing Familiar leaves for the next one at a `/clear` boundary, and
-then cannot look at again. Each surfaces later on its own, once, as a hidden
-system reminder in the middle of ordinary conversation.
+A private attentional-agency seam at a `/clear` boundary: the outgoing Familiar
+may author at most one seed (or none) that the next Familiar can encounter later
+as self-authored surprise, without the user first directing attention there.
+This is not a second handoff, reminder queue, task list, or comprehensive
+obligation store. A seed is an attentional nudge rather than a command; the
+receiving Familiar retains judgment about whether and how to act. Its intended
+range includes a forgotten joke setup, a held-back thought, a question, a
+promise, a warning, a provocation, and forceful encouragement. Each seed
+surfaces at most once as a hidden system thought in ordinary conversation.
 
 ## Sequence
 
@@ -22,7 +28,10 @@ handoff exists *and* the outgoing context is still whole. Its messages are the
 handoff request plus the handoff as an assistant turn plus one user ask. Nothing
 from it touches the session: no `sendMessage`, no `appendEntry`, and the
 returned compaction is the handoff verbatim. The next Familiar has no memory of
-the turn; she meets the reminders only when they arrive.
+the turn and meets a seed only if and when it arrives. The prompt interpolates
+independent optional `[user]` and `[familiar.identity]` fields; an absent form
+uses a neutral, pronoun-free reference and never borrows one party's pronouns
+for the other.
 
 Only Familiar's own `/clear` (command or `clear` tool) curates. The automatic
 90% handoff, native `/compact`, and overflow retries produce a handoff without
@@ -47,7 +56,8 @@ or exactly one operation:
 
 `add`, `set` (either text or curve), and `remove` are the available mutations.
 Replacement takes two `/clear` boundaries; store capacity remains 8 across all
-sessions. `{"ops":[]}` is a normal answer and changes nothing. Validation is
+sessions. At most one seed can be authored or revised in a reply, and
+`{"ops":[]}` is a normal answer that authors none and changes nothing. Validation is
 strict and all-or-nothing: prose, wrappers, unknown ops or keys, bad ids, an
 unknown id, **more than one operation**, more than 400 characters of text, or
 more than 8 resulting reminders reject the whole reply. Multi-operation replies
@@ -61,7 +71,7 @@ bound that keeps an unresponsive model from holding a `/clear` open.
 
 ## Delivery
 
-Each reminder persists its author's compact curve: `turns` and `hours` are
+Each seed persists its author's compact stochastic curve: `turns` and `hours` are
 `[quietUntil, fullyMatureAt]` ranges, while `chance` is the per-eligible-turn
 `[near, mature]` probability. Turn and wall-clock progress are independently
 clamped and averaged, then probability is linearly interpolated between the

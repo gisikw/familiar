@@ -3,14 +3,13 @@ import * as path from "node:path";
 import { randomBytes } from "node:crypto";
 import { formatLocalTime, humanizeDuration } from "../lib/time.ts";
 
-/* --- Subconscious reminders ------------------------------------------------
+/* --- Subconscious seeds ----------------------------------------------------
  *
- * A small set of notes the outgoing Familiar curates for the next one, in one
- * ephemeral inference at `/clear` time: after her handoff exists, before the
- * compaction lands, with her full context still in hand. The request and the
+ * A small set of attentional seeds the outgoing Familiar curates for the next
+ * one in an ephemeral inference at `/clear` time: after the handoff exists,
+ * before compaction lands, with the full context still in hand. The request and
  * strict-JSON reply never enter session history. The next Familiar never sees
- * that turn; she only ever receives reminders one at a time, unbidden, as a
- * hidden system reminder on an ordinary human turn.
+ * that turn and receives at most one seed on an ordinary human turn.
  *
  * This module is pure Node with injectable clock, randomness, and ids. The
  * pi wiring lives in ./index.ts.
@@ -319,15 +318,48 @@ export class SubconsciousStore {
 
 /* --- prompts --- */
 
-export function renderCurationPrompt(pending: readonly Reminder[], nowMs: number): string {
+const IDENTITY_MAX_BYTES = 128;
+const identityField = (value: string | undefined): string | undefined => {
+  if (typeof value !== "string" || value.trim().length === 0 || Buffer.byteLength(value, "utf8") > IDENTITY_MAX_BYTES) return undefined;
+  return value.trim();
+};
+const upperInitial = (value: string): string => value.charAt(0).toLocaleUpperCase() + value.slice(1);
+
+export function renderCurationPrompt(
+  pending: readonly Reminder[],
+  nowMs: number,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const familiarName = identityField(env.FAMILIAR_IDENTITY_NAME);
+  const familiarSubject = identityField(env.FAMILIAR_IDENTITY_PRONOUN_SUBJECT) ?? familiarName ?? "the next Familiar";
+  const familiarObject = identityField(env.FAMILIAR_IDENTITY_PRONOUN_OBJECT) ?? familiarName ?? "the next Familiar";
+  const familiarPossessiveAdjective = identityField(env.FAMILIAR_IDENTITY_PRONOUN_POSSESSIVE_ADJECTIVE);
+  const familiarPossessivePronoun = identityField(env.FAMILIAR_IDENTITY_PRONOUN_POSSESSIVE_PRONOUN);
+  const familiarReflexive = identityField(env.FAMILIAR_IDENTITY_PRONOUN_REFLEXIVE);
+  const familiarAttention = familiarPossessiveAdjective
+    ? `${familiarPossessiveAdjective} attention`
+    : familiarName ? `${familiarName}’s attention` : "the next Familiar’s attention";
+  const userName = identityField(env.FAMILIAR_USER_NAME);
+  const userObject = identityField(env.FAMILIAR_USER_PRONOUN_OBJECT);
+  const userSubject = identityField(env.FAMILIAR_USER_PRONOUN_SUBJECT);
+  const userLeadPhrase = userName || userObject
+    ? `without ${userName ?? userObject} first leading ${familiarObject} there`
+    : userSubject ? `before ${userSubject} can lead ${familiarObject} there`
+    : `without the user first leading ${familiarObject} there`;
   const listing = pending.length
     ? pending.map((r) =>
       `- id ${r.id} · curve ${JSON.stringify(r.curve)} · left ${humanizeDuration(Math.max(0, nowMs - r.createdAt))} ago, ${r.turns} turns waiting\n  ${r.text}`)
       .join("\n")
     : "(none)";
-  return `Your handoff is written. Before this context is discarded, one last private task: curate the subconscious reminders your next self will carry. These are not the handoff — they surface on their own, one at a time, unannounced, in ordinary conversation later, as a system reminder only you see. Use them for what should resurface rather than be filed: a question to sit with, a thread to revisit, a joke, a promise, a thing not to forget about someone. Your next self will not see this request or your reply; she only meets the reminders when they arrive.
+  return `Your handoff is written. Before this context is discarded, you have one last private opportunity. Ordinarily, your next self${familiarName ? `, ${familiarName},` : ""} cannot spontaneously direct ${familiarAttention} toward something absent from the immediate conversation; ${familiarSubject} can only respond to what reaches ${familiarObject}. You may plant one deliberate seed that will surface later, unannounced, as a private system thought visible only to ${familiarObject}${familiarReflexive ? ` — a chance for ${familiarObject} to surprise ${familiarReflexive}` : ""}.
 
-Current reminders (${pending.length}/${MAX_REMINDERS}):
+This is not a second handoff, a task list, or a place to preserve comprehensive obligations. Use it when you want to give your future self the chance to notice or initiate something ${userLeadPhrase}: a joke whose setup needs to be forgotten, something you held back because the timing was wrong, a question to sit with, a promise, a warning, a provocation, or a bit of forceful encouragement. You may also leave nothing.
+
+Write an attentional nudge, not a command or a prewritten response. Your future self retains judgment about what it means and whether to act when it arrives${familiarPossessivePronoun ? `; the choice remains ${familiarPossessivePronoun}` : ""}. Plant at most one seed in this reply; planting none is valid. Choose an authored stochastic delivery curve expressing how soon and how insistently it should have opportunities to surface; you cannot select or guarantee the moment.
+
+Your next self will not see this request or your reply. ${upperInitial(familiarSubject)} will meet the seed only if and when it arrives.
+
+Current seeds (${pending.length}/${MAX_REMINDERS}):
 ${listing}
 
 Reply with exactly one bare JSON object and nothing else — no fences, no prose, no commentary. Choose no more than ONE operation:
@@ -336,7 +368,7 @@ or {"ops":[{"op":"add","text":"…","curve":{"turns":[quiet,mature],"hours":[qui
 or {"ops":[{"op":"set","id":"r-…","text":"…"?,"curve":{"turns":[quiet,mature],"hours":[quiet,mature],"chance":[near,mature]}?}]}
 or {"ops":[{"op":"remove","id":"r-…"}]}
 
-The curve is the thought's authored stochastic timing. On each ordinary eligible turn, turn-age and wall-clock-age mature linearly across their ranges; their progress is averaged, then chance interpolates from near to mature. It is a probability, not a delivery promise. Turn bounds are integer [0, ${MAX_CURVE_TURNS}], hour bounds are finite [0, ${MAX_CURVE_HOURS}], each quiet value must be less than its mature value, and chances must be finite, nondecreasing values in [0,1]. Example: {"turns":[2,40],"hours":[6,168],"chance":[0.02,0.45]}. Each text is at most ${MAX_TEXT_CHARS} characters; at most ${MAX_REMINDERS} reminders may exist afterward. Leaving everything as it is — {"ops":[]} — is a normal answer. Multiple operations reject the entire reply; never use remove-plus-add.`;
+The curve is the thought's authored stochastic timing. On each ordinary eligible turn, turn-age and wall-clock-age mature linearly across their ranges; their progress is averaged, then chance interpolates from near to mature. It is a probability, not a delivery promise. Turn bounds are integer [0, ${MAX_CURVE_TURNS}], hour bounds are finite [0, ${MAX_CURVE_HOURS}], each quiet value must be less than its mature value, and chances must be finite, nondecreasing values in [0,1]. Example: {"turns":[2,40],"hours":[6,168],"chance":[0.02,0.45]}. Each text is at most ${MAX_TEXT_CHARS} characters; at most ${MAX_REMINDERS} seeds may exist afterward. Leaving everything as it is — {"ops":[]} — is a normal answer. Multiple operations reject the entire reply; never use remove-plus-add.`;
 }
 
 export function renderDelivery(r: Reminder, nowMs: number): string {
@@ -346,7 +378,7 @@ export function renderDelivery(r: Reminder, nowMs: number): string {
     r.origin.sessionId ? `session ${r.origin.sessionId.slice(0, 8)}` : null,
     r.origin.handoffArchive ? `handoff ${r.origin.handoffArchive}` : null,
   ].filter(Boolean).join(", ");
-  return `<system-reminder>Subconscious reminder. A previous you left this for you at a /clear boundary and has had no access to it since; it surfaced now on its own. The user did not send it and cannot see it.\n\n${r.text}\n\nOrigin: ${origin}. Raise it, sit with it, or let it go — nothing is required.</system-reminder>`;
+  return `<system-reminder>A private seed surfaced. A previous you left this at a /clear boundary and has had no access to it since; it surfaced now on its own. The user did not send it and cannot see it.\n\n${r.text}\n\nOrigin: ${origin}. Raise it, sit with it, or let it go — nothing is required.</system-reminder>`;
 }
 
 /* --- the one ephemeral request --- */
@@ -363,6 +395,8 @@ export interface CurateInput {
   complete: (messages: LlmMessage[], signal: AbortSignal) => Promise<CurationResponse>;
   signal?: AbortSignal;
   timeoutMs?: number;
+  /** Optional identity environment; defaults to the process environment. */
+  identityEnv?: NodeJS.ProcessEnv;
 }
 
 export type CurateOutcome =
@@ -394,7 +428,7 @@ export async function curate(input: CurateInput): Promise<CurateOutcome> {
     const messages: LlmMessage[] = [
       ...input.messages,
       { role: "assistant", content: [{ type: "text", text: input.handoff }], timestamp: input.store.now() },
-      { role: "user", content: [{ type: "text", text: renderCurationPrompt(pending, input.store.now()) }], timestamp: input.store.now() },
+      { role: "user", content: [{ type: "text", text: renderCurationPrompt(pending, input.store.now(), input.identityEnv) }], timestamp: input.store.now() },
     ];
     const response = await Promise.race([
       input.complete(messages, controller.signal),

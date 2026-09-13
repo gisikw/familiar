@@ -26,6 +26,8 @@ added unless the flattened name already starts with it. Examples:
 | `api-key = "x"` under `[brave]` | `FAMILIAR_BRAVE_API_KEY=x` |
 | `debug_level = "off"` under `[familiar]` | `FAMILIAR_DEBUG_LEVEL=off` |
 | `use_stuff = true` under `[familiar]` | `FAMILIAR_USE_STUFF=true` |
+| `name = "x"` under `[user]` | `FAMILIAR_USER_NAME=x` |
+| `pronoun_subject = "she"` under `[familiar.identity]` | `FAMILIAR_IDENTITY_PRONOUN_SUBJECT=she` |
 
 Every key must live under a canonical table (`[pi]`, `[anthropic]`, `[familiar]`,
 etc.). Bare top-level keys are rejected: flat spellings such as `pi_offline`,
@@ -70,7 +72,7 @@ same-session JSON-to-setup-token cutover.
 
 ## Canonical groups and migration
 
-Use tables whose names match the established environment prefix: `[pi]`,
+Use tables whose names match the established environment prefix: `[user]`, `[pi]`,
 `[anthropic]`, `[openai]`, `[tiamat]`, `[server]`, `[plugins]`, `[herdr]`,
 `[subagent]`, `[model]`, `[llama]`, `[stt]`, `[tts]`, `[searxng]`, `[brave]`,
 `[fetch]`, `[zip]`, and `[theme]`.
@@ -92,6 +94,30 @@ spellings to the canonical tables (the effective export name is unchanged):
 | `stt_url` | `[stt] url` | `FAMILIAR_STT_URL` |
 | `tts_voice` | `[tts] voice` | `FAMILIAR_TTS_VOICE` |
 | `brave_api_key` | `[brave] api_key` | `FAMILIAR_BRAVE_API_KEY` |
+
+### Private participant identity
+
+The optional `[user]` table describes the user, while optional
+`[familiar.identity]` describes Familiar without colliding with the established
+`[familiar] identity_path`. Both accept the same independent fields:
+
+- `name`
+- `pronoun_subject`
+- `pronoun_object`
+- `pronoun_possessive_adjective`
+- `pronoun_possessive_pronoun`
+- `pronoun_reflexive`
+
+Each supplied value must be a non-whitespace string no longer than 128 UTF-8
+bytes. Unknown keys, empty values, and overlong values fail validation. Every
+field is optional, and the loader never derives a missing form from another
+form. Ambient `FAMILIAR_USER_*` and `FAMILIAR_IDENTITY_*` values take precedence
+as usual. The subconscious curation prompt uses only a supplied, valid form at
+the grammatical point where it belongs; missing user identity becomes “the
+user,” while missing Familiar identity becomes “the next Familiar” or another
+pronoun-free construction. It never substitutes the user's pronouns for
+Familiar's. Identity values are private: typed diagnostic rendering redacts the
+whole identity object, and parser failures suppress file contents.
 
 The `[herdr]` and `[subagent]` tables are retained for the current
 worker/session integration. See `familiar.toml.example` for their complete

@@ -100,6 +100,53 @@ out=$(env -i PATH="$PATH" HOME="${HOME:-/tmp}" FAMILIAR_CONFIG_PATH="$CONFIG" AN
 ' bash "$REPO")
 assert_eq "$out" './identity-grouped|true|0|ambient|https://openai.example.invalid|openai-placeholder|http://localhost:19932|af_test' "grouped mapping, aliases, and precedence"
 
+cat >"$CONFIG" <<'TOML'
+[user]
+name = "User Fixture"
+pronoun_subject = "they"
+pronoun_object = "them"
+pronoun_possessive_adjective = "their"
+pronoun_possessive_pronoun = "theirs"
+pronoun_reflexive = "themself"
+[familiar.identity]
+name = "Familiar Fixture"
+pronoun_subject = "she"
+pronoun_object = "her"
+pronoun_possessive_adjective = "her"
+pronoun_possessive_pronoun = "hers"
+pronoun_reflexive = "herself"
+TOML
+chmod 600 "$CONFIG"
+out=$(env -i PATH="$PATH" HOME="${HOME:-/tmp}" FAMILIAR_CONFIG_PATH="$CONFIG" FAMILIAR_USER_NAME='Ambient User' bash -c '
+  set -eu; source "$1/scripts/familiar-config.sh"; familiar_config_load "$1"
+  printf "%s|%s|%s|%s|%s" "$FAMILIAR_USER_NAME" "$FAMILIAR_USER_PRONOUN_OBJECT" \
+    "$FAMILIAR_IDENTITY_NAME" "$FAMILIAR_IDENTITY_PRONOUN_SUBJECT" "$FAMILIAR_IDENTITY_PRONOUN_REFLEXIVE"
+' bash "$REPO")
+assert_eq "$out" 'Ambient User|them|Familiar Fixture|she|herself' "private identity projection and ambient precedence"
+
+for invalid_identity in \
+  $'[user]\nnickname = "DO_NOT_PRINT_IDENTITY_PRIVATE"' \
+  $'[familiar.identity]\nnickname = "DO_NOT_PRINT_IDENTITY_PRIVATE"' \
+  $'[user]\nname = "   "'; do
+  printf '%s\n' "$invalid_identity" >"$CONFIG"; chmod 600 "$CONFIG"
+  set +e
+  err=$(env -i PATH="$PATH" HOME="${HOME:-/tmp}" FAMILIAR_CONFIG_PATH="$CONFIG" bash -c \
+    'source "$1/scripts/familiar-config.sh"; familiar_config_load "$1"' bash "$REPO" 2>&1)
+  status=$?
+  set -e
+  [ "$status" -ne 0 ] || fail "invalid private identity accepted"
+  [[ $err == *'contents suppressed'* ]] || fail "private identity diagnostic was not generic"
+  [[ $err != *DO_NOT_PRINT_IDENTITY_PRIVATE* ]] || fail "private identity diagnostic exposed a value"
+done
+printf '[user]\nname = "%s"\n' "$(printf '%129s' '' | tr ' ' x)" >"$CONFIG"; chmod 600 "$CONFIG"
+set +e
+err=$(env -i PATH="$PATH" HOME="${HOME:-/tmp}" FAMILIAR_CONFIG_PATH="$CONFIG" bash -c \
+  'source "$1/scripts/familiar-config.sh"; familiar_config_load "$1"' bash "$REPO" 2>&1)
+status=$?
+set -e
+[ "$status" -ne 0 ] || fail "overlong private identity accepted"
+[[ $err == *'contents suppressed'* ]] || fail "overlong private identity diagnostic was not generic"
+
 secret='DO_NOT_PRINT_CONFIG_SECRET_7e21'
 printf 'token = "unterminated %s\n' "$secret" >"$CONFIG"
 chmod 600 "$CONFIG"
