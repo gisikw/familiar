@@ -153,83 +153,89 @@ class Native(unittest.TestCase):
         self.assertEqual(remote.main(dict(cleanup, path=None)), {'complete': True})
 
     def test_real_profile_bundle_against_remote_validation(self):
-        """Regression: ensure transport.mjs workerProfileBundle() matches remote.py acceptance.
-        This test fails if workerProfileBundle() gains/loses files without updating BUNDLE_NAMES
-        or if the total size exceeds BUNDLE_LIMIT, preventing all familiar-tiamat-v1 jobs.
-        """
-        # The authoritative list of bundle files comes from transport.mjs workerProfileBundle().
-        # These must match BUNDLE_NAMES in remote.py exactly.
-        expected_files = [
-            'tiamat/index.ts',
-            'tiamat/catalog.ts',
-            'tiamat/materializer.ts',
-            'tiamat/usage.ts',
-            'lib/debug.ts',
-        ]
-        
-        # Verify BUNDLE_NAMES contains exactly these files
-        self.assertEqual(
-            remote.BUNDLE_NAMES,
-            set(expected_files),
-            f"BUNDLE_NAMES mismatch: {remote.BUNDLE_NAMES} vs {set(expected_files)}"
+        """The controller's exported bundle is the sole regression fixture."""
+        agents_dir = Path(__file__).parent
+        transport_url = (agents_dir / 'transport.mjs').as_uri()
+        contract_url = (agents_dir / 'contract.mjs').as_uri()
+        script = f'''\
+import {{ workerProfileBundle }} from {json.dumps(transport_url)};
+import {{ LIMITS }} from {json.dumps(contract_url)};
+process.stdout.write(JSON.stringify({{
+  bundle: workerProfileBundle(),
+  nativeRequestLimit: LIMITS.nativeRequest,
+}}));
+'''
+        exported = subprocess.run(
+            ['node', '--input-type=module', '--eval', script],
+            check=True, capture_output=True, text=True,
         )
-        
-        # Load actual file contents and test bundle_digest validation
-        # Bundle files are in the parent extensions directory, not in agents/
-        extensions_dir = Path(__file__).parent.parent
-        bundle = {}
-        total_size = 0
-        for filename in expected_files:
-            filepath = extensions_dir / filename
-            self.assertTrue(
-                filepath.exists(),
-                f"Bundle file does not exist: {filepath}"
-            )
-            content = filepath.read_text()
-            bundle[filename] = content
-            total_size += len(content.encode())
-        
-        # Verify total size is within BUNDLE_LIMIT
-        self.assertLessEqual(
-            total_size,
-            remote.BUNDLE_LIMIT,
-            f"Bundle total size {total_size} exceeds BUNDLE_LIMIT {remote.BUNDLE_LIMIT}"
-        )
-        
-        # Test that bundle_digest accepts the real bundle
+        self.assertEqual(exported.stderr, '')
+        controller = json.loads(exported.stdout)
+        bundle = controller['bundle']
+
+        # Exact keys and exact source contents came from workerProfileBundle().
+        self.assertEqual(set(bundle), remote.BUNDLE_NAMES)
+        bundle_size = sum(len(content.encode()) for content in bundle.values())
+        self.assertEqual(bundle_size, 50663)
+        self.assertLessEqual(bundle_size, remote.BUNDLE_LIMIT)
+        self.assertEqual(controller['nativeRequestLimit'], remote.NATIVE_INPUT_LIMIT)
+
         request = dict(
             self.request,
+            operation='plan',
             profile_mode='familiar-tiamat-v1',
-            profile_bundle=bundle
+            profile_bundle=bundle,
         )
-        # This should not raise ValueError
         digest = remote.bundle_digest(request)
-        self.assertIsNotNone(digest)
-        self.assertRegex(digest, r'^[a-f0-9]{64}$', "Invalid SHA256 digest format")
-        
-        # Verify plan accepts it
-        try:
-            plan_result = remote.plan(request)
-            self.assertIn('profile_digest', plan_result)
-            self.assertEqual(plan_result['profile_digest'], digest)
-        except ValueError as e:
-            self.fail(f"plan() rejected valid profile_bundle: {e}")
-        
-        # Verify rejection of oversized bundles
+        self.assertRegex(digest, r'^[a-f0-9]{64}$')
+        plan_result = remote.plan(request)
+        self.assertEqual(plan_result['profile_digest'], digest)
+
+        # Exercise the actual stdin admission boundary with the real exported
+        # contents, then measure both current request shapes after JSON escaping.
+        serialized_plan = json.dumps(
+            request, ensure_ascii=False, separators=(',', ':'),
+        ).encode()
+        provision_request = dict(request, operation='provision', **plan_result)
+        serialized_provision = json.dumps(
+            provision_request, ensure_ascii=False, separators=(',', ':'),
+        ).encode()
+        for serialized in (serialized_plan, serialized_provision):
+            self.assertGreater(len(serialized), bundle_size)
+            self.assertLessEqual(len(serialized), remote.NATIVE_INPUT_LIMIT)
+        run = subprocess.run(
+            [sys.executable, str(agents_dir / 'remote.py')],
+            input=serialized_plan, capture_output=True,
+        )
+        self.assertEqual(run.returncode, 0)
+        self.assertEqual(json.loads(run.stdout)['profile_digest'], digest)
+        self.assertEqual(run.stderr, b'')
+
         oversized = dict(bundle)
-        oversized['lib/debug.ts'] = oversized['lib/debug.ts'] + 'x' * remote.BUNDLE_LIMIT
+        first_name = next(iter(oversized))
+        oversized[first_name] += 'x' * remote.BUNDLE_LIMIT
         with self.assertRaises(ValueError):
             remote.bundle_digest(dict(request, profile_bundle=oversized))
-        
-        # Verify rejection of missing files
-        incomplete = {k: v for k, v in bundle.items() if k != 'tiamat/materializer.ts'}
+
+        incomplete = dict(bundle)
+        incomplete.pop(next(iter(incomplete)))
         with self.assertRaises(ValueError):
             remote.bundle_digest(dict(request, profile_bundle=incomplete))
-        
-        # Verify rejection of extra files
+
         extra = dict(bundle, **{'tiamat/extra.ts': '// should not be here'})
         with self.assertRaises(ValueError):
             remote.bundle_digest(dict(request, profile_bundle=extra))
+
+        too_large = subprocess.run(
+            [sys.executable, str(agents_dir / 'remote.py')],
+            input=b' ' * (remote.NATIVE_INPUT_LIMIT + 1), capture_output=True,
+        )
+        self.assertEqual(too_large.returncode, 1)
+        self.assertEqual(
+            json.loads(too_large.stdout),
+            {'error': 'native operation failed; inspect enrolled machine'},
+        )
+        self.assertEqual(too_large.stderr, b'')
 
 if __name__ == '__main__':
     unittest.main()

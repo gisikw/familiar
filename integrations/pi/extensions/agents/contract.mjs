@@ -7,6 +7,9 @@ export const LIMITS = Object.freeze({
   prompt: 32768,
   task: 24576,
   settlement: 32768,
+  // Complete JSON request sent to remote.py; the profile source has its own
+  // independent 64 KiB admission bound on the receiving side.
+  nativeRequest: 131072,
   response: 1048576,
   callMs: 20000,
   leaseMs: 120000,

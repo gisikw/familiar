@@ -9,8 +9,10 @@ import {
   writePinnedRoute,
   boundedExec,
   configuration,
+  nativeInput,
+  provisionRequest,
 } from "./transport.mjs";
-import { privateSpanActive, projection } from "./contract.mjs";
+import { LIMITS, privateSpanActive, projection } from "./contract.mjs";
 const host_key =
   "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4";
 function fixture(t) {
@@ -204,6 +206,41 @@ test("changing enrolled jump identity fences native actions before execution", a
       new AbortController().signal,
     ),
     /jump enrollment changed/,
+  );
+});
+test("real generated-profile plan and provision requests fit their own bound", (t) => {
+  const { root, config, m } = fixture(t);
+  m.profile_mode = "familiar-tiamat-v1";
+  delete m.profile;
+  const transport = new Transport(config, root);
+  const machine_identity = transport.enrolled("test");
+  const folder =
+    "/home/worker/.local/state/familiar/agents/jobs/agent-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+  const job = {
+    machine_id: "test",
+    machine_identity,
+    job_id: "agent-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    settlement_nonce: "nonce",
+    repo: "/home/worker/source/familiar",
+    requested_ref: "HEAD",
+    settlement_path: `${folder}/settlement.json`,
+    remote_profile: `${folder}/profile`,
+    resolved_head: "a".repeat(40),
+    profile_digest: "b".repeat(64),
+  };
+  const bundleBytes = Object.values(machine_identity.profile_bundle).reduce(
+    (size, source) => size + Buffer.byteLength(source),
+    0,
+  );
+  assert.equal(bundleBytes, 50663);
+  for (const operation of ["plan", "provision"]) {
+    const input = nativeInput(provisionRequest(job, operation));
+    assert.ok(Buffer.byteLength(input) > bundleBytes);
+    assert.ok(Buffer.byteLength(input) <= LIMITS.nativeRequest);
+  }
+  assert.throws(
+    () => nativeInput({ value: "x".repeat(LIMITS.nativeRequest + 1) }),
+    /native request bound/,
   );
 });
 test("private span rejects Agents use until public/declassified context; pending head cannot be hidden", () => {

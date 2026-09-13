@@ -18,6 +18,8 @@ import tempfile
 LIMIT = 32768
 BUNDLE_NAMES = {'tiamat/index.ts', 'tiamat/catalog.ts', 'tiamat/materializer.ts', 'tiamat/usage.ts', 'lib/debug.ts'}
 BUNDLE_LIMIT = 65536
+# The source payload and its JSON/plan/provision envelope are separate bounds.
+NATIVE_INPUT_LIMIT = 131072
 
 
 def sync_directory(path):
@@ -284,8 +286,8 @@ def main(p):
 if __name__ == '__main__':
     request = None
     try:
-        data = sys.stdin.buffer.read(65537)
-        if len(data) > 65536:
+        data = sys.stdin.buffer.read(NATIVE_INPUT_LIMIT + 1)
+        if len(data) > NATIVE_INPUT_LIMIT:
             raise ValueError('native input bound')
         request = json.loads(data)
         print(json.dumps(main(request)))

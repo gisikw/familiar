@@ -122,6 +122,32 @@ export function workerProfileBundle() {
     ]),
   );
 }
+export function nativeInput(data) {
+  const input = JSON.stringify(data);
+  if (Buffer.byteLength(input) > LIMITS.nativeRequest)
+    throw new Error("native request bound");
+  return input;
+}
+export function provisionRequest(job, operation = "provision") {
+  return {
+    operation,
+    settlement_path: job.settlement_path,
+    resolved_head: job.resolved_head,
+    remote_profile: job.remote_profile,
+    profile_digest: job.profile_digest,
+    job_id: job.job_id,
+    nonce: job.settlement_nonce,
+    repo: job.repo,
+    ref: job.requested_ref,
+    profile: job.machine_identity.profile,
+    profile_mode: job.machine_identity.profile_mode ?? "enrolled",
+    model_guard_source: job.machine_identity.model_guard_source,
+    ...(job.machine_identity.profile_mode === "familiar-tiamat-v1"
+      ? { profile_bundle: job.machine_identity.profile_bundle }
+      : {}),
+    herdr: job.machine_identity.herdr_binary,
+  };
+}
 export function configuration(file) {
   if (!file)
     throw new Error("FAMILIAR_AGENTS_CONFIG is required; no local fallback");
@@ -478,7 +504,7 @@ export class Transport {
         m.ssh_alias,
         `${quote(m.python_binary ?? "python3")} -c ${quote(script)}`,
       ],
-      JSON.stringify(data),
+      nativeInput(data),
       signal,
     );
     const result = JSON.parse(raw);
@@ -489,28 +515,7 @@ export class Transport {
     return this.provision(job, signal, "plan");
   }
   provision(job, signal, operation = "provision") {
-    return this.native(
-      job,
-      {
-        operation,
-        settlement_path: job.settlement_path,
-        resolved_head: job.resolved_head,
-        remote_profile: job.remote_profile,
-        profile_digest: job.profile_digest,
-        job_id: job.job_id,
-        nonce: job.settlement_nonce,
-        repo: job.repo,
-        ref: job.requested_ref,
-        profile: job.machine_identity.profile,
-        profile_mode: job.machine_identity.profile_mode ?? "enrolled",
-        model_guard_source: job.machine_identity.model_guard_source,
-        ...(job.machine_identity.profile_mode === "familiar-tiamat-v1"
-          ? { profile_bundle: job.machine_identity.profile_bundle }
-          : {}),
-        herdr: job.machine_identity.herdr_binary,
-      },
-      signal,
-    );
+    return this.native(job, provisionRequest(job, operation), signal);
   }
   readSettlement(job, signal) {
     return this.native(

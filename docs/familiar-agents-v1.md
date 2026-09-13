@@ -102,9 +102,11 @@ loopback; other Drover URLs require HTTPS (normal Node TLS trust applies).
 Two explicit mechanisms are supported:
 
 * `profile_mode: "familiar-tiamat-v1"` creates a **per-job** Pi profile. It copies
-  only four source files from Familiar: Tiamat `index.ts`, `catalog.ts`,
-  `usage.ts`, and `lib/debug.ts`. The code bundle is captured in the admission
-  record, digest-pinned, and retained across controller code changes. It never
+  only five source files from Familiar: Tiamat `index.ts`, `catalog.ts`,
+  `materializer.ts`, `usage.ts`, and `lib/debug.ts`. The source payload is capped
+  independently at 64 KiB; its complete JSON plan/provision request is capped at
+  128 KiB. The code bundle is captured in the admission record, digest-pinned,
+  and retained across controller code changes. It never
   reads/tars a controller Pi profile, auth store, identity, skills or sessions.
   Credentials stay in the operator-provisioned **remote** token file referenced
   by `worker_env`. The profile disables project-resource trust by default;
