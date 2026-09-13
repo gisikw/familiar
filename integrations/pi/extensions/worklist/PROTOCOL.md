@@ -90,7 +90,10 @@ The fixed v1 service exposes only `read()` and `set(enabled)`: enable is the
 user's authoritative 30-minute default and disable clears immediately. Both
 return the persisted bounded `{enabled, expiresAt?}` view. Changes emit
 `familiar:worklist-dnd-changed`; the event is invalidation only, never a second
-state store. A UI with no valid service must expose no working control.
+state store. Expiry is announced by whichever boundary observes it first — the
+scheduler tick, a seam `read()`, or restart — exactly once, so a racing UI read
+cannot consume the only expiry edge. A UI with no valid service must expose no
+working control.
 
 The established model tool name `set_attention` is retained for call-site
 compatibility, but its schema is only `{ enabled, duration_minutes? }` and its

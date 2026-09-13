@@ -105,11 +105,16 @@ export default function (pi: ExtensionAPI) {
     pi.events.emit("familiar:fresh-input", { source: "worklist", at: Math.max(...items.map((item) => item.ts)) });
   };
 
-  /** Expiry is checked at every policy boundary, not delegated to the timer. */
+  /** Expiry is checked at every policy boundary, not delegated to the timer.
+   * Whichever boundary observes it (tick, seam read, restart, before_agent_start)
+   * must project the same invalidation, or a racing UI read would silently
+   * consume the only expiry edge and leave every other listener stale. */
   const expireIfElapsed = (now = Date.now()) => {
     if (dnd && !dndActive(dnd, now)) {
       dnd = null;
       writeDnd(P, null);
+      render();
+      announceDndChanged();
       return true;
     }
     return false;
@@ -168,7 +173,6 @@ export default function (pi: ExtensionAPI) {
     const acknowledged = drainAcknowledgements(P);
     const now = Date.now();
     const elapsed = expireIfElapsed(now);
-    if (elapsed) announceDndChanged();
     const isDnd = active(now);
     let bodyDeliveries = 0;
     const digest: QueueItem[] = [];
@@ -410,10 +414,6 @@ export default function (pi: ExtensionAPI) {
     return { message: { customType: "worklist-nudge", content: `<system-reminder>\n${lines.join("\n")}\n</system-reminder>`, display: false } };
   });
 
-  // User activity neither extends nor clears DND. Pi owns real-user delivery.
-  pi.on("input", async () => guard(render));
-  pi.on("agent_start", async () => { agentBusy = true; guard(render); });
-  pi.on("agent_settled", async () => { agentBusy = false; idleSince = Date.now(); guard(render); tickGuarded(); });
   pi.on("session_start", async (_event, ctx) => {
     ctxRef = ctx;
     guard(() => {

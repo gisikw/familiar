@@ -103,6 +103,26 @@ describe("durable state, migration, and dedup", () => {
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
 
+  test("clock rollback and corrupt persisted state fail closed", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dnd-clock-"));
+    try {
+      const P = worklistPaths(dir); ensureDirs(P);
+      // Familiar wrote a capped 2h window; the wall clock then rolls back a day.
+      writeDnd(P, makeDnd("familiar", 2 * 60 * 60_000, 1e12));
+      const back = 1e12 - 86_400_000;
+      const rolled = readDnd(P, back);
+      expect(rolled === null || rolled.expiresAt - back <= 2 * 60 * 60_000).toBe(true);
+      for (const corrupt of [
+        { enabled: true, setBy: "familiar", setAt: Number.NaN, expiresAt: "soon" },
+        { enabled: true, setBy: "root", setAt: 1, expiresAt: 1e15 },
+        { enabled: true, setBy: "user", setAt: 2e12, expiresAt: 1e12 },
+      ]) {
+        writeJSONAtomic(P.dnd, corrupt);
+        expect(readDnd(P, 1e12)).toBeNull();
+      }
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
   test("incoming stable ids deduplicate across live and archived history", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dnd-dedup-"));
     try {
@@ -140,12 +160,17 @@ async function runtimeHarness(existingDir?: string, initialNow = 10_000_000) {
   const ctx = { hasUI: true, ui: { setStatus() {}, setWidget() {}, notify(text: string) { notices.push(text); } } };
   const mod = await import(`./index.ts?dnd-test=${Math.random()}`);
   const runtime = mod.default(pi as any);
-  await handlers.get("session_start")?.[0]?.({}, ctx);
+  const fire = async (name: string, ...args: any[]) => {
+    const results: any[] = [];
+    for (const handler of handlers.get(name) ?? []) results.push(await handler(...args));
+    return results;
+  };
+  await fire("session_start", {}, ctx);
   return {
-    dir, runtime, handlers, commands, tools, sent, notices, events, ctx,
+    dir, runtime, handlers, commands, tools, sent, notices, events, ctx, fire,
     now: () => now, advance: (ms: number) => { now += ms; },
     async close(remove = !existingDir) {
-      await handlers.get("session_shutdown")?.[0]?.({});
+      await fire("session_shutdown", {});
       Date.now = realNow;
       if (prior === undefined) delete process.env.FAMILIAR_WORKLIST_DIR; else process.env.FAMILIAR_WORKLIST_DIR = prior;
       if (remove) fs.rmSync(dir, { recursive: true, force: true });
@@ -246,6 +271,56 @@ describe("runtime DND contract", () => {
       await tool.execute("old-available", { level: "available", duration_minutes: 10 });
       expect(h.runtime.isDnd()).toBe(false);
     } finally { await h.close(); }
+  });
+
+  test("the scheduler is wired once, so a settle releases exactly one turn-triggering item", async () => {
+    const h = await runtimeHarness();
+    try {
+      // Duplicate lifecycle registration would silently double every tick and
+      // turn the post-expiry release back into a burst.
+      expect(h.handlers.get("agent_settled")!.length).toBe(1);
+      expect(h.handlers.get("agent_start")!.length).toBe(1);
+      expect(h.handlers.get("input")!.length).toBe(1);
+      await h.tools.get("set_attention").execute("on", { enabled: true });
+      for (const id of ["a", "b", "c", "d"]) h.runtime.enqueue({ id, priority: 0, summary: id, body: id });
+      h.advance(30 * 60_000);
+      await h.fire("agent_settled", {});
+      expect(h.sent).toHaveLength(1);
+      await h.fire("agent_settled", {});
+      expect(h.sent).toHaveLength(2);
+      expect(new Set(h.sent.map((s) => s.message.content.match(/id="([^"]+)/)?.[1])).size).toBe(2);
+    } finally { await h.close(); }
+  });
+
+  test("expiry noticed by a seam read still projects invalidation to every listener", async () => {
+    const h = await runtimeHarness();
+    const service = (process as any)[Symbol.for("familiar.worklist.dnd.v1")];
+    try {
+      service.set(true);
+      h.advance(30 * 60_000 + 1);
+      expect(service.read()).toEqual({ enabled: false });
+      const changed = h.events.filter((e) => e.name === "familiar:worklist-dnd-changed");
+      expect(changed.at(-1)!.value).toEqual({ enabled: false });
+      // And it is announced exactly once, not re-announced by the next tick.
+      h.runtime.tick();
+      expect(h.events.filter((e) => e.name === "familiar:worklist-dnd-changed").length).toBe(changed.length);
+    } finally { await h.close(); }
+  });
+
+  test("an older session shutdown cannot evict a newer seam owner", async () => {
+    const key = Symbol.for("familiar.worklist.dnd.v1");
+    const older = await runtimeHarness();
+    const olderService = (process as any)[key];
+    const newer = await runtimeHarness();
+    const newerService = (process as any)[key];
+    try {
+      expect(newerService).not.toBe(olderService);
+      await older.close();
+      expect((process as any)[key]).toBe(newerService);
+    } finally {
+      await newer.close();
+      expect((process as any)[key]).toBeUndefined();
+    }
   });
 
   test("restart preserves remaining DND and durable queue, then injects once after expiry", async () => {
