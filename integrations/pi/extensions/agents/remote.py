@@ -1,6 +1,7 @@
 """Ephemeral native-route operations; no installed service or agent wrapper.
 All git arguments remain argv. Account authority is unrestricted. Planning is
-read-only; apply/cleanup share a persistent per-job lock and retirement marker.
+read-only and answers exactly two questions (project/ref, harness runtime);
+apply/cleanup share a persistent per-job lock and retirement marker.
 """
 import errno
 import fcntl
@@ -16,10 +17,28 @@ import sys
 import tempfile
 
 LIMIT = 32768
-BUNDLE_NAMES = {'tiamat/index.ts', 'tiamat/catalog.ts', 'tiamat/materializer.ts', 'tiamat/usage.ts', 'lib/debug.ts'}
-BUNDLE_LIMIT = 65536
-# The source payload and its JSON/plan/provision envelope are separate bounds.
+# Worker profile artifact: generic bounds only. The remote never knows which
+# files a controller ships; it only refuses unsafe paths and oversized sets.
+ARTIFACT_LIMIT = 65536
+ARTIFACT_FILES = 32
+ARTIFACT_DEPTH = 6
+SEGMENT = re.compile(r'[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}')
+# The artifact and its JSON/plan/provision envelope are separate bounds.
 NATIVE_INPUT_LIMIT = 131072
+HERDR_VERSION = 'herdr 0.9.0'
+
+
+class Definitive(Exception):
+    """A completed read-only refusal. Exactly one fixed code crosses the
+    boundary: never stderr, exception text, paths or credential values."""
+
+    def __init__(self, field, code):
+        super().__init__(code)
+        self.payload = {field: code}
+
+
+def preflight(code):
+    return Definitive('admission_error', code)
 
 
 def sync_directory(path):
@@ -72,6 +91,11 @@ def validate_job(p):
         raise ValueError('invalid job id')
     if not isinstance(p['nonce'], str) or not p['nonce']:
         raise ValueError('missing correlation nonce')
+    if not isinstance(p.get('harness', 'pi'), str) or not re.fullmatch(r'[a-z][a-z0-9-]{0,31}', p.get('harness', 'pi')):
+        raise ValueError('invalid harness name')
+    worker_path = p.get('worker_path')
+    if worker_path is not None and (not isinstance(worker_path, str) or not worker_path or len(worker_path) > 4096 or '\0' in worker_path):
+        raise ValueError('invalid enrolled worker PATH')
 
 
 def current_folder(p):
@@ -88,13 +112,54 @@ def recorded_folder(p):
     return path.parent
 
 
-def bundle_digest(p):
+def safe_relative_path(name, depth):
+    parts = name.split('/') if isinstance(name, str) else []
+    if not 1 <= len(parts) <= depth or any(not SEGMENT.fullmatch(s) for s in parts):
+        raise ValueError('unsafe artifact path')
+    return parts
+
+
+def artifact_digest(artifact):
+    """Generic validation + language-neutral digest of one profile artifact."""
+    if not isinstance(artifact, dict) or set(artifact) != {'extension', 'files'}:
+        raise ValueError('invalid profile artifact')
+    files = artifact['files']
+    if not isinstance(files, dict) or not 0 < len(files) <= ARTIFACT_FILES:
+        raise ValueError('artifact file count bound')
+    names = sorted(files)
+    total = 0
+    for name in names:
+        safe_relative_path(name, ARTIFACT_DEPTH)
+        content = files[name]
+        if not isinstance(content, str) or '\0' in content:
+            raise ValueError('invalid artifact content')
+        total += len(content.encode())
+        if any(other.startswith(name + '/') for other in names):
+            raise ValueError('artifact path is also a directory')
+    if total > ARTIFACT_LIMIT:
+        raise ValueError('artifact size bound')
+    extension = artifact['extension']
+    safe_relative_path(extension, ARTIFACT_DEPTH - 1)
+    if extension + '/index.ts' not in files:
+        raise ValueError('artifact extension entry missing')
+    h = hashlib.sha256()
+    h.update(extension.encode() + b'\0')
+    for name in names:
+        h.update(name.encode() + b'\0' + files[name].encode() + b'\0')
+    return h.hexdigest()
+
+
+def pinned_artifact(p):
+    """Provision-time artifact check, pure, before any lock or mutation."""
     if p.get('profile_mode', 'enrolled') != 'familiar-tiamat-v1':
         return None
-    bundle = p['profile_bundle']
-    if set(bundle) != BUNDLE_NAMES or any(not isinstance(v, str) for v in bundle.values()) or sum(len(v.encode()) for v in bundle.values()) > BUNDLE_LIMIT:
-        raise ValueError('invalid credential-free code bundle')
-    return hashlib.sha256(json.dumps(bundle, sort_keys=True).encode()).hexdigest()
+    try:
+        digest = artifact_digest(p['profile_artifact'])
+    except Exception:
+        raise Definitive('provision_error', 'profile_artifact_rejected')
+    if digest != p.get('profile_digest'):
+        raise Definitive('provision_error', 'profile_artifact_rejected')
+    return digest
 
 
 def profile_path(folder, p):
@@ -104,23 +169,71 @@ def profile_path(folder, p):
     if mode != 'enrolled':
         raise ValueError('unknown worker profile mode')
     path = Path(p['profile'])
-    if not path.is_absolute() or not (path / 'settings.json').is_file():
-        raise ValueError('explicit enrolled worker profile unavailable')
+    if not path.is_absolute():
+        raise ValueError('explicit enrolled worker profile must be absolute')
+    if not (path / 'settings.json').is_file():
+        raise preflight('profile_unavailable')
     return path
 
 
-def plan(p):
-    """No job directory, profile, worktree, lock or marker is created here."""
-    folder = current_folder(p)
-    repo = Path(p['repo'])
+def herdr_version(p):
+    binary = p['herdr']
+    try:
+        if Path(binary).is_absolute() and subprocess.check_output([binary, '--version'], stderr=subprocess.DEVNULL, timeout=5).decode().strip() == HERDR_VERSION:
+            return
+    except Exception:
+        pass
+    raise preflight('herdr_unavailable')
+
+
+def harness_available(p):
+    """Does the enrolled account have the requested harness? Resolved the way a
+    Herdr pane will see it: the account's own shell, started fresh with the
+    enrolled worker PATH, after the node's own shell initialisation has run
+    (which may replace that PATH, exactly as it does for a pane). Availability,
+    not provenance; the launch observation remains the truth."""
+    env = dict(os.environ)
+    # A pane shell starts without an inherited init marker; do not let this
+    # SSH command shell's completed initialisation short-circuit the node's.
+    env.pop('__NIXOS_SET_ENVIRONMENT_DONE', None)
+    if p.get('worker_path'):
+        env['PATH'] = p['worker_path']
+    shell = os.environ.get('SHELL') or '/bin/sh'
+    try:
+        run = subprocess.run([shell, '-lc', 'command -v -- "$1"', 'familiar-preflight', p.get('harness', 'pi')], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+    except Exception:
+        raise preflight('harness_unavailable')
+    if run.returncode != 0:
+        raise preflight('harness_unavailable')
+
+
+def resolve_head(repo, ref):
     if not repo.is_absolute():
         raise ValueError('repo must be an absolute enrolled-machine repository path')
+    try:
+        git('-C', str(repo), 'rev-parse', '--git-dir')
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        raise preflight('repository_unavailable')
+    try:
+        return git('-C', str(repo), 'rev-parse', '--verify', '--end-of-options', ref + '^{commit}')
+    except subprocess.CalledProcessError:
+        raise preflight('ref_unresolvable')
+
+
+def plan(p):
+    """Read-only. No job directory, profile, worktree, lock or marker is created.
+    Exactly: 1. project reachable and ref resolvable; 2. harness runtime
+    (pinned Herdr, harness executable, enrolled profile) available."""
+    folder = current_folder(p)
+    resolved = resolve_head(Path(p['repo']), p['ref'])
+    herdr_version(p)
+    harness_available(p)
+    profile = profile_path(folder, p)
     return {
         'remote_worktree': str(folder / 'worktree'),
         'settlement_path': str(folder / 'settlement.json'),
-        'remote_profile': str(profile_path(folder, p)),
-        'resolved_head': git('-C', str(repo), 'rev-parse', '--verify', '--end-of-options', p['ref'] + '^{commit}'),
-        'profile_digest': bundle_digest(p),
+        'remote_profile': str(profile),
+        'resolved_head': resolved,
     }
 
 
@@ -128,12 +241,13 @@ def provision_profile(folder, p):
     profile = profile_path(folder, p)
     if p.get('profile_mode', 'enrolled') == 'enrolled':
         return profile
+    artifact = p['profile_artifact']
     profile.mkdir(mode=0o700, exist_ok=True)
-    for name, content in p['profile_bundle'].items():
-        path = profile / 'assets' / name
+    for name, content in artifact['files'].items():
+        path = profile / 'assets' / Path(*safe_relative_path(name, ARTIFACT_DEPTH))
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         if path.exists():
-            if read_bytes(path, 36000).decode('utf8') != content:
+            if read_bytes(path, ARTIFACT_LIMIT).decode('utf8') != content:
                 raise ValueError('worker profile edited; refusing overwrite')
             continue
         fd, temp = tempfile.mkstemp(dir=path.parent, prefix='.asset-')
@@ -148,7 +262,7 @@ def provision_profile(folder, p):
                 os.unlink(temp)
     if not (profile / 'settings.json').exists():
         atomic(profile / 'settings.json', {
-            'extensions': [str(profile / 'assets/tiamat')],
+            'extensions': [str(profile / 'assets' / artifact['extension'])],
             'defaultProjectTrust': 'never', 'lastChangelogVersion': '0.84.1',
         })
     return profile
@@ -161,7 +275,7 @@ def provision(folder, p):
     if not re.fullmatch(r'(?:[a-f0-9]{40}|[a-f0-9]{64})', p['resolved_head']):
         raise ValueError('missing pinned source commit')
     profile = profile_path(folder, p)
-    if str(profile) != p['remote_profile'] or bundle_digest(p) != p.get('profile_digest'):
+    if str(profile) != p['remote_profile'] or pinned_artifact(p) != p.get('profile_digest'):
         raise ValueError('durable profile plan mismatch')
     identity = {k: p[k] for k in ['job_id', 'nonce', 'repo', 'ref', 'resolved_head']}
     identity.update(profile=str(profile), profile_mode=p.get('profile_mode', 'enrolled'), profile_digest=p.get('profile_digest'), model_guard_digest=hashlib.sha256(guard.encode()).hexdigest())
@@ -175,7 +289,7 @@ def provision(folder, p):
         recorded = dict(identity, provisioned=False)
         atomic(marker, recorded)
     binary = p['herdr']
-    if not Path(binary).is_absolute() or subprocess.check_output([binary, '--version'], timeout=5).decode().strip() != 'herdr 0.9.0':
+    if not Path(binary).is_absolute() or subprocess.check_output([binary, '--version'], timeout=5).decode().strip() != HERDR_VERSION:
         raise ValueError('explicit pinned Herdr 0.9.0 required')
     provision_profile(folder, p)
     guard_path = folder / 'model-guard.ts'
@@ -264,6 +378,7 @@ def main(p):
         raise ValueError('unknown native operation')
     if p['operation'] == 'provision':
         folder = recorded_folder(p)  # never re-resolve XDG after durable planning
+        pinned_artifact(p)  # definitive refusal before any lock, directory or marker
     else:
         folder = Path(p['path']).parent if p.get('path') else current_folder(p)
         if not folder.is_absolute() or folder.name != p['job_id']:
@@ -280,7 +395,13 @@ def main(p):
                 raise ValueError('retirement correlation mismatch')
             if p['operation'] == 'provision':
                 raise ValueError('provisioning permanently retired')
-        return provision(folder, p) if p['operation'] == 'provision' else cleanup(folder, p, retired)
+        if p['operation'] != 'provision':
+            return cleanup(folder, p, retired)
+        try:
+            return provision(folder, p)
+        except Definitive as refusal:
+            # Past the lock a refusal is no longer provably pre-mutation.
+            raise ValueError(str(refusal))
 
 
 if __name__ == '__main__':
@@ -291,12 +412,19 @@ if __name__ == '__main__':
             raise ValueError('native input bound')
         request = json.loads(data)
         print(json.dumps(main(request)))
-    except Exception:
-        # A completed read-only admission check is definitive, unlike a lost
-        # route or a provisioning mutation with an unknown outcome. No stderr,
-        # credential values, or exception arguments cross this boundary.
-        if isinstance(request, dict) and request.get('operation') == 'plan':
-            print(json.dumps({'admission_error': 'remote_preflight_failed'}))
+    except Definitive as refusal:
+        # A completed read-only refusal is definitive, unlike a lost route or a
+        # provisioning mutation with an unknown outcome. Only the fixed code
+        # crosses this boundary.
+        print(json.dumps(refusal.payload))
+        sys.exit(0)
+    except Exception as exc:
+        # No stderr, credential values, or exception arguments cross this boundary.
+        if isinstance(request, dict) and request.get('operation') == 'plan' and not isinstance(exc, subprocess.TimeoutExpired):
+            # Planning mutates nothing, so a shape/bounds/state-root failure is a
+            # definitive controller/remote contract mismatch, never a project or
+            # harness verdict. A hung git/shell stays an unknown transport outcome.
+            print(json.dumps({'admission_error': 'request_rejected'}))
             sys.exit(0)
         print(json.dumps({'error': 'native operation failed; inspect enrolled machine'}))
         sys.exit(1)

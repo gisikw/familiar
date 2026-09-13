@@ -7,9 +7,13 @@ export const LIMITS = Object.freeze({
   prompt: 32768,
   task: 24576,
   settlement: 32768,
-  // Complete JSON request sent to remote.py; the profile source has its own
-  // independent 64 KiB admission bound on the receiving side.
+  // Complete JSON request sent to remote.py. The read-only plan request is
+  // tiny; only provisioning carries the worker profile artifact, which has its
+  // own independent bounds (below) enforced identically on both sides.
   nativeRequest: 131072,
+  artifact: 65536,
+  artifactFiles: 32,
+  artifactDepth: 6,
   response: 1048576,
   callMs: 20000,
   leaseMs: 120000,
@@ -144,6 +148,107 @@ export function modelSelection(value) {
     throw new Error("exact provider/model required, not a model pattern");
   return { provider: value.slice(0, slash), id: value.slice(slash + 1) };
 }
+/** Remote read-only preflight answers exactly two questions: is the project
+ * reachable and the ref resolvable; is the requested harness runtime available.
+ * Every failure is a fixed code — never remote free text — so a diagnosis
+ * cannot carry credentials or arbitrary remote output into the ledger. */
+export const PREFLIGHT_FAILURES = Object.freeze({
+  repository_unavailable:
+    "Remote preflight: the repository path is not a reachable Git repository on the enrolled machine (or git itself is unavailable there).",
+  ref_unresolvable:
+    "Remote preflight: the repository is reachable, but the requested ref does not resolve to a commit there.",
+  herdr_unavailable:
+    "Remote preflight: the enrolled pinned Herdr binary is missing, not executable, or does not report 0.9.0.",
+  harness_unavailable:
+    "Remote preflight: the enrolled account's login shell (seeded with the enrolled worker PATH) cannot resolve the requested harness executable; the node runtime does not provide it.",
+  profile_unavailable:
+    "Remote preflight: the enrolled worker profile path has no settings.json on the enrolled machine.",
+  request_rejected:
+    "Remote preflight rejected the request itself (shape, bounds or state root), not the project or harness; this is a controller/remote contract mismatch. Inspect the enrolled machine's Python and XDG state root.",
+});
+export const PROVISION_FAILURES = Object.freeze({
+  profile_artifact_rejected:
+    "Remote provisioning refused the worker profile artifact before any mutation (bounds, path safety or digest); this is a controller defect, not a project or harness problem.",
+});
+/** A definitive typed remote refusal, or null when the value is a result. */
+export function definitiveFailure(value, table, field) {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.keys(value).length !== 1 ||
+    typeof value[field] !== "string"
+  )
+    return null;
+  const code = value[field];
+  if (!Object.hasOwn(table, code))
+    throw new Error(`unknown typed remote ${field}`);
+  return {
+    code,
+    message: `${table[code]} Dispatch with a new key after correction.`,
+  };
+}
+export const preflightFailure = (v) =>
+  definitiveFailure(v, PREFLIGHT_FAILURES, "admission_error");
+export const provisionFailure = (v) =>
+  definitiveFailure(v, PROVISION_FAILURES, "provision_error");
+
+// One content-addressed worker profile artifact: a bounded, traversal-safe
+// relative file set plus the extension directory Pi loads. The remote side
+// applies exactly these generic rules and never knows which files exist.
+const SEGMENT = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/;
+function safeRelativePath(name, depth) {
+  if (typeof name !== "string") throw new Error("invalid artifact path");
+  const parts = name.split("/");
+  if (parts.length > depth || parts.some((s) => !SEGMENT.test(s)))
+    throw new Error("unsafe artifact path");
+  return parts;
+}
+export function profileArtifact(value) {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.keys(value).sort().join() !== "extension,files"
+  )
+    throw new Error("invalid profile artifact");
+  const files = value.files;
+  if (!files || typeof files !== "object" || Array.isArray(files))
+    throw new Error("invalid profile artifact");
+  const names = Object.keys(files).sort();
+  if (!names.length || names.length > LIMITS.artifactFiles)
+    throw new Error("artifact file count bound");
+  let total = 0;
+  for (const name of names) {
+    safeRelativePath(name, LIMITS.artifactDepth);
+    const content = files[name];
+    if (typeof content !== "string" || content.includes("\0"))
+      throw new Error("invalid artifact content");
+    total += Buffer.byteLength(content);
+    if (names.some((other) => other.startsWith(name + "/")))
+      throw new Error("artifact path is also a directory");
+  }
+  if (total > LIMITS.artifact) throw new Error("artifact size bound");
+  safeRelativePath(value.extension, LIMITS.artifactDepth - 1);
+  if (!Object.hasOwn(files, value.extension + "/index.ts"))
+    throw new Error("artifact extension entry missing");
+  return {
+    extension: value.extension,
+    files: Object.fromEntries(names.map((n) => [n, files[n]])),
+  };
+}
+/** Language-neutral digest: extension, then each sorted name/content, all
+ * UTF-8 and NUL-terminated. No JSON canonicalization to mirror. */
+export function artifactDigest(artifact) {
+  const h = createHash("sha256");
+  h.update(artifact.extension, "utf8").update("\0");
+  for (const name of Object.keys(artifact.files).sort())
+    h.update(name, "utf8")
+      .update("\0")
+      .update(artifact.files[name], "utf8")
+      .update("\0");
+  return h.digest("hex");
+}
 export function modelGuardPath(job) {
   return posix.join(posix.dirname(job.settlement_path), "model-guard.ts");
 }
@@ -208,12 +313,14 @@ export function provisionedPaths(value, job) {
     !/^[a-f0-9]{64}$/.test(value.profile_digest)
   )
     throw new Error("invalid profile digest");
+  // The artifact digest is pinned locally at admission; a read-only plan
+  // never carries or computes it, provisioning must echo it exactly.
   const result = {
     remote_worktree: value.remote_worktree,
     settlement_path: value.settlement_path,
     remote_profile: value.remote_profile,
     resolved_head: value.resolved_head,
-    profile_digest: value.profile_digest ?? null,
+    profile_digest: value.profile_digest ?? job.profile_digest ?? null,
   };
   for (const k of Object.keys(result))
     if (job[k] != null && job[k] !== result[k])
@@ -303,6 +410,7 @@ export function projection(j) {
     settlement_digest: j.settlement_digest ?? null,
     resolved_head: j.resolved_head ?? null,
     profile_digest: j.profile_digest ?? null,
+    admission_failure: j.admission_failure ?? null,
     details_expired: j.retained_tombstone ?? false,
     owner_session: j.owner_session,
     operator: j.operator,

@@ -12,6 +12,8 @@ import {
   modelSelection,
   modelGuardPath,
   launchPendingPlaceholder,
+  preflightFailure,
+  provisionFailure,
 } from "./contract.mjs";
 
 const SLOT = Symbol.for("familiar.agents.owner.v1");
@@ -210,7 +212,7 @@ export class Owner {
           this.ledger.renew(this.fence);
           if (terminal(j)) await this.cleanup(j);
           else await this.observe(j);
-        } catch {
+        } catch (e) {
           errors++;
           // Re-read only for the reachability/error annotation; never overwrite a
           // concurrent tool's semantic change with the old network snapshot.
@@ -223,7 +225,9 @@ export class Owner {
                   (latest.observation_gap ?? 0) +
                   (latest.reachability === "unknown" ? 0 : 1),
                 last_error:
-                  "Observation unavailable or rejected; outcome unresolved",
+                  typeof e?.diagnostic === "string"
+                    ? e.diagnostic
+                    : "Observation unavailable or rejected; outcome unresolved",
               });
           } catch {}
         }
@@ -287,22 +291,20 @@ export class Owner {
             : "provisioning",
       });
       if (!job.settlement_path) {
-        const planned = await this.call((s) => this.transport.plan(job, s));
-        if (
-          planned?.admission_error === "remote_preflight_failed" &&
-          Object.keys(planned).length === 1
-        ) {
-          const changes = {
-            semantic_state: "failed_admission",
-            last_error:
-              "Remote read-only admission checks failed. Inspect repository/ref, enrolled worker profile and toolchain; dispatch with a new key after correction.",
-            task: null,
-          };
-          this.save(
-            job,
-            changes,
-            this.note({ ...job, ...changes }, "failed-admission", 2),
-          );
+        // Read-only preflight: project/ref and harness runtime, nothing else.
+        // A typed refusal is definitive; a transport failure is not.
+        let planned;
+        try {
+          planned = await this.call((s) => this.transport.plan(job, s));
+        } catch (e) {
+          if (e && typeof e === "object" && e.diagnostic === undefined)
+            e.diagnostic =
+              "Remote preflight did not complete: the native route was unavailable, timed out, or was fenced before the enrolled machine answered. Project and harness were not evaluated; retrying.";
+          throw e;
+        }
+        const refused = preflightFailure(planned);
+        if (refused) {
+          this.failAdmission(job, refused);
           return;
         }
         const plan = provisionedPaths(planned, job);
@@ -310,10 +312,16 @@ export class Owner {
         // A lost apply reply cannot lose the cleanup address or follow a new XDG root.
         job = this.save(job, plan);
       }
-      const paths = provisionedPaths(
-        await this.call((s) => this.transport.provision(job, s)),
-        job,
+      const provisioned = await this.call((s) =>
+        this.transport.provision(job, s),
       );
+      // Artifact refusal happens before any remote mutation and is definitive.
+      const rejected = provisionFailure(provisioned);
+      if (rejected) {
+        this.failAdmission(job, rejected);
+        return;
+      }
+      const paths = provisionedPaths(provisioned, job);
       job = this.save(job, { ...paths, phase: "workspace" });
     }
     if (["workspace", "workspace_attempted"].includes(job.phase)) {
@@ -644,6 +652,21 @@ export class Owner {
         `idle-unsettled-${next.idle_episode}`,
       );
     this.save(job, next, note);
+  }
+  /** Definitive typed remote refusal before any uncontrolled mutation: one
+   * terminal record, one notice, and the exact code retained for the owner. */
+  failAdmission(job, refused) {
+    const changes = {
+      semantic_state: "failed_admission",
+      admission_failure: refused.code,
+      last_error: refused.message,
+      task: null,
+    };
+    this.save(
+      job,
+      changes,
+      this.note({ ...job, ...changes }, "failed-admission", 2),
+    );
   }
   /** Herdr never reaps a placeholder whose startup failed (`bash: pi: command
    * not found` leaves the shell in the foreground forever), and the name stays

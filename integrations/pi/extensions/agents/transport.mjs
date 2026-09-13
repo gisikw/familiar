@@ -1,5 +1,6 @@
 import {
   readFileSync,
+  lstatSync,
   mkdirSync,
   writeFileSync,
   renameSync,
@@ -9,10 +10,17 @@ import {
   readSync,
   constants,
 } from "node:fs";
-import { join } from "node:path";
+import { join, posix, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { LIMITS, text, modelSelection } from "./contract.mjs";
+import {
+  LIMITS,
+  text,
+  modelSelection,
+  profileArtifact,
+  artifactDigest,
+} from "./contract.mjs";
 
 const script = readFileSync(new URL("./remote.py", import.meta.url), "utf8");
 const quote = (s) => `'${s.replaceAll("'", "'\\''")}'`;
@@ -107,20 +115,37 @@ function clientToken(file) {
     throw new Error("invalid Drover token file");
   return value;
 }
-export function workerProfileBundle() {
-  // Fixed source-code allowlist, never a controller profile/auth directory.
-  return Object.fromEntries(
-    [
-      "tiamat/index.ts",
-      "tiamat/catalog.ts",
-      "tiamat/materializer.ts",
-      "tiamat/usage.ts",
-      "lib/debug.ts",
-    ].map((name) => [
-      name,
-      readFileSync(new URL("../" + name, import.meta.url), "utf8"),
-    ]),
-  );
+/** The worker profile artifact is the exact relative-import module graph
+ * reachable from the extension entry, read from this controller's own
+ * extensions source tree. No filename list exists anywhere: adding, renaming
+ * or removing a module changes the artifact and its digest by construction.
+ * Only `.ts` regular files inside the extensions tree are admitted, so a
+ * profile, auth store, token or session file can never be swept in. */
+export function workerProfileArtifact(
+  entry = "tiamat/index.ts",
+  root = fileURLToPath(new URL("../", import.meta.url)),
+) {
+  root = root.replace(/[\\/]$/, "");
+  const files = {};
+  const queue = [posix.normalize(entry)];
+  while (queue.length) {
+    const name = queue.shift();
+    if (Object.hasOwn(files, name)) continue;
+    if (Object.keys(files).length >= LIMITS.artifactFiles)
+      throw new Error("worker profile artifact file count bound");
+    const full = resolve(root, name);
+    if (!full.startsWith(root + sep) || !name.endsWith(".ts"))
+      throw new Error("worker profile source outside the extensions tree");
+    if (!lstatSync(full).isFile())
+      throw new Error("worker profile source must be a regular file");
+    const source = readFileSync(full, "utf8");
+    files[name] = source;
+    for (const m of source.matchAll(
+      /\b(?:from|import)\s*\(?\s*["'](\.{1,2}\/[^"'\n]+)["']/g,
+    ))
+      queue.push(posix.normalize(posix.join(posix.dirname(name), m[1])));
+  }
+  return profileArtifact({ extension: posix.dirname(entry), files });
 }
 export function nativeInput(data) {
   const input = JSON.stringify(data);
@@ -128,24 +153,43 @@ export function nativeInput(data) {
     throw new Error("native request bound");
   return input;
 }
+/** `plan` is the read-only preflight: project/ref plus harness runtime. It
+ * carries no source, digest or model guard. Only `provision` carries the
+ * durable plan, the pinned artifact and the guard. */
 export function provisionRequest(job, operation = "provision") {
-  return {
+  const m = job.machine_identity;
+  const generated = m.profile_mode === "familiar-tiamat-v1";
+  if (generated && !m.profile_artifact)
+    throw Object.assign(
+      new Error(
+        "legacy profile bundle job; abandon and dispatch with a new key",
+      ),
+      {
+        diagnostic:
+          "This job was admitted with the retired five-file profile bundle protocol; abandon it and dispatch again with a new key.",
+      },
+    );
+  const preflight = {
     operation,
-    settlement_path: job.settlement_path,
-    resolved_head: job.resolved_head,
-    remote_profile: job.remote_profile,
-    profile_digest: job.profile_digest,
     job_id: job.job_id,
     nonce: job.settlement_nonce,
     repo: job.repo,
     ref: job.requested_ref,
-    profile: job.machine_identity.profile,
-    profile_mode: job.machine_identity.profile_mode ?? "enrolled",
-    model_guard_source: job.machine_identity.model_guard_source,
-    ...(job.machine_identity.profile_mode === "familiar-tiamat-v1"
-      ? { profile_bundle: job.machine_identity.profile_bundle }
-      : {}),
-    herdr: job.machine_identity.herdr_binary,
+    harness: job.harness,
+    ...(m.profile === undefined ? {} : { profile: m.profile }),
+    profile_mode: m.profile_mode ?? "enrolled",
+    herdr: m.herdr_binary,
+    ...(m.worker_env?.PATH ? { worker_path: m.worker_env.PATH } : {}),
+  };
+  if (operation === "plan") return preflight;
+  return {
+    ...preflight,
+    settlement_path: job.settlement_path,
+    resolved_head: job.resolved_head,
+    remote_profile: job.remote_profile,
+    profile_digest: job.profile_digest,
+    model_guard_source: m.model_guard_source,
+    ...(generated ? { profile_artifact: m.profile_artifact } : {}),
   };
 }
 export function configuration(file) {
@@ -352,7 +396,10 @@ export class Transport {
     if (!stateDir)
       throw new Error("private transport state directory required");
     this.stateDir = stateDir;
-    this.profileBundle = workerProfileBundle();
+    // Built once per resident from its own source tree and validated with the
+    // same generic rules the remote applies; a broken tree fails loudly here.
+    this.profileArtifact = workerProfileArtifact();
+    this.profileDigest = artifactDigest(this.profileArtifact);
     this.modelGuard = readFileSync(
       new URL("./model-guard.ts", import.meta.url),
       "utf8",
@@ -371,7 +418,10 @@ export class Transport {
       profile_mode: m.profile_mode ?? "enrolled",
       model_guard_source: this.modelGuard,
       ...(m.profile_mode === "familiar-tiamat-v1"
-        ? { profile_bundle: this.profileBundle }
+        ? {
+            profile_artifact: this.profileArtifact,
+            profile_digest: this.profileDigest,
+          }
         : {}),
       jump: this.config.jump,
     };

@@ -319,7 +319,7 @@ test("lost workspace response reconciles by identity, never duplicates creation"
   await f.o.observe(f.db.get(f.job.job_id));
   assert.equal(f.db.get(f.job.job_id).phase, "observe");
 });
-test("definitive read-only remote admission failure is loud; route failure stays unresolved", async (t) => {
+test("typed read-only preflight refusal is loud and specific; route failure stays unresolved with a transport diagnosis", async (t) => {
   const f = running(t);
   f.transport.plan = async () => {
     throw new Error("route lost");
@@ -328,19 +328,77 @@ test("definitive read-only remote admission failure is loud; route failure stays
   let j = f.db.get(f.job.job_id);
   assert.equal(j.semantic_state, "provisioning");
   assert.equal(j.reachability, "unknown");
+  assert.match(
+    j.last_error,
+    /Remote preflight did not complete.*not evaluated/,
+  );
+  assert.doesNotMatch(j.last_error, /route lost/);
+  // The retired collapse code is unknown now: never silently terminal.
   f.transport.plan = async () => ({
     admission_error: "remote_preflight_failed",
   });
   await f.o.reconcile();
   j = f.db.get(j.job_id);
+  assert.equal(j.semantic_state, "provisioning");
+  // Extra keys beside a code are not a refusal either.
+  f.transport.plan = async () => ({
+    admission_error: "ref_unresolvable",
+    detail: "leak",
+  });
+  await f.o.reconcile();
+  j = f.db.get(j.job_id);
+  assert.equal(j.semantic_state, "provisioning");
+  f.transport.plan = async () => ({ admission_error: "ref_unresolvable" });
+  await f.o.reconcile();
+  j = f.db.get(j.job_id);
   assert.equal(j.semantic_state, "failed_admission");
-  assert.match(j.last_error, /read-only admission/);
+  assert.equal(j.admission_failure, "ref_unresolvable");
+  assert.match(j.last_error, /repository is reachable, but the requested ref/);
+  assert.equal(j.task, null);
   assert.equal(f.transport.calls.length, 0);
   assert.equal(
     [...f.notes.values()].filter((n) => n.id.endsWith("failed-admission"))
       .length,
     1,
   );
+  assert.equal(
+    JSON.parse(
+      [...f.notes.values()].find((n) => n.id.endsWith("failed-admission")).body,
+    ).admission_failure,
+    "ref_unresolvable",
+  );
+});
+test("every preflight code names project, ref, harness or request; artifact refusal at provisioning is definitive too", async (t) => {
+  for (const [code, pattern] of [
+    ["repository_unavailable", /not a reachable Git repository/],
+    ["herdr_unavailable", /Herdr binary/],
+    ["harness_unavailable", /cannot resolve the requested harness executable/],
+    ["profile_unavailable", /no settings\.json/],
+    ["request_rejected", /rejected the request itself/],
+  ]) {
+    const f = running(t);
+    f.transport.plan = async () => ({ admission_error: code });
+    await f.o.reconcile();
+    const j = f.db.get(f.job.job_id);
+    assert.equal(j.semantic_state, "failed_admission");
+    assert.equal(j.admission_failure, code);
+    assert.match(j.last_error, pattern);
+    assert.match(j.last_error, /new key/);
+  }
+  const f = running(t);
+  const planned = await f.transport.provision(f.job);
+  f.transport.plan = async () => planned;
+  f.transport.provision = async () => ({
+    provision_error: "profile_artifact_rejected",
+  });
+  await f.o.reconcile();
+  let j = f.db.get(f.job.job_id);
+  assert.equal(j.semantic_state, "failed_admission");
+  assert.equal(j.admission_failure, "profile_artifact_rejected");
+  assert.match(j.last_error, /before any mutation/);
+  // The durable plan was pinned before the refusal; nothing else was touched.
+  assert.equal(j.settlement_path, planned.settlement_path);
+  assert.equal(f.transport.calls.length, 0);
 });
 
 test("route loss then reconnect accepts settlement exactly once", async (t) => {

@@ -260,6 +260,9 @@ export class Ledger {
         requested_ref: request.requested_ref,
         remote_worktree: null,
         settlement_path: null,
+        // Content-addressed generated-profile pin, fixed before any remote
+        // contact; provisioning must echo it. Null for enrolled profiles.
+        profile_digest: machine.profile_digest ?? null,
         harness: request.harness,
         model: request.model,
         options:
