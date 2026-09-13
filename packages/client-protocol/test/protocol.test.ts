@@ -19,7 +19,8 @@ describe("client protocol", () => {
   });
   test("covers representative server messages", () => {
     expect(validateMessage({ version:1,type:"presence.status",stream:"presence",sequence:3,sessionId:"epoch",state:"ready" }).ok).toBeTrue();
-    expect(validateMessage({ version:1,type:"worklist.notification",stream:"worklist",sequence:4,id:"wl-1",priority:1,kind:"notify",summary:"done",attention:"available",createdAt:"2026-08-21T00:00:00Z" }).ok).toBeTrue();
+    expect(validateMessage({ version:1,type:"worklist.notification",stream:"worklist",sequence:4,id:"wl-1",priority:1,kind:"notify",summary:"done",dnd:true,createdAt:"2026-08-21T00:00:00Z" }).ok).toBeTrue();
+    expect(validateMessage({ version:1,type:"dnd.status",stream:"worklist",sequence:5,enabled:true,expiresAt:"2026-08-21T00:30:00Z",queued:2 }).ok).toBeTrue();
     expect(validateMessage({ version:1,type:"voice.tts.segment",stream:"voice",sequence:5,messageId:"7",segment:0,status:"ready",audioUrl:"/segments/7/0/audio" }).ok).toBeTrue();
   });
   test("accepts current gateway submit shapes for additive migration", () => {

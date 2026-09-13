@@ -6,19 +6,16 @@ import { errorLog } from "../lib/debug.ts";
 import {
   DEFAULT_CONFIG,
   decideAction,
-  resolveAttention,
-  applyVoiceHold,
-  makeOverride,
-  overrideExpired,
+  dndActive,
+  makeDnd,
   parseWhen,
   parseDurationMs,
   isPending,
   isLive,
   resolveTier,
   shouldEscalate,
-  type Attention,
-  type AttentionMode,
-  type AttentionOverride,
+  type DndActor,
+  type DndState,
   type Priority,
   type QueueItem,
 } from "./policy.ts";
@@ -34,8 +31,8 @@ import {
   worklistPaths,
   listItems,
   putItem,
-  readAttention,
-  writeAttention,
+  readDnd,
+  writeDnd,
   type EnqueueEnvelope,
 } from "./store.ts";
 import {
@@ -47,923 +44,344 @@ import {
   type DurableAcceptance,
 } from "../lib/capabilities.ts";
 
-/* ============================================================================
- * WORKLIST — durable, attention-policed queue of out-of-band items for pi
- * ============================================================================
- *
- * The worklist is a durable, referable collection of OUT-OF-BAND work: subagent
- * settlements, cron wakeups, monitor alerts, self-authored reminders/prompts,
- * questions, and opportunities. It is NOT the durable ticket/task system, and
- * NOT email — real user messages and tool results NEVER pass through it (that's
- * architecture, not policy). ATTENTION is the policy that governs WHEN a
- * worklist item may surface into the live conversation.
- *
- * It works by CONVENTION, not interception: pi's injection is push-only (no
- * veto hook), so senders ENQUEUE here instead of calling pi.sendMessage, and
- * this extension owns the delivery policy. See PROTOCOL.md.
- *
- * Responsibilities:
- *   - own the durable queue (store.ts) and drain cross-process enqueues
- *   - track ATTENTION (open/available/focused/protected) + show it in the
- *     footer AT ALL TIMES, with a live countdown while a manual override holds
- *   - run a scheduler tick that delivers items by tier × attention (policy.ts)
- *   - surface the queue: widget + /peek + /ack
- *   - register a versioned durable-enqueue SINK on the neutral capability
- *     registry so subagent settlements can route through attention without
- *     either extension importing the other
- *
- * No blocking work in hooks; the only timer is a session-scoped setInterval
- * started in session_start and cleared in session_shutdown.
- */
-
+/* Durable synthetic-turn queue. Real user input never passes through this
+ * extension and is therefore always delivered immediately, including in DND. */
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const EXT_DIR = path.dirname(HERE);
-const REPO = path.dirname(EXT_DIR);
-// New canonical path; FAMILIAR_WORKLIST_DIR wins, then legacy FAMILIAR_INBOX_DIR
-// (bounded compat), else state/worklist.
-const WORKLIST_ROOT =
-  process.env.FAMILIAR_WORKLIST_DIR ||
-  process.env.FAMILIAR_INBOX_DIR ||
-  path.join(REPO, "state", "worklist");
+const REPO = path.dirname(path.dirname(HERE));
+const WORKLIST_ROOT = process.env.FAMILIAR_WORKLIST_DIR || process.env.FAMILIAR_INBOX_DIR || path.join(REPO, "state", "worklist");
 const LEGACY_ROOT = path.join(REPO, "state", "inbox");
-
 const TICK_MS = 15_000;
-const VOICE_HOLD_MS = 30_000;
 const CFG = DEFAULT_CONFIG;
-
 const PRI_LABEL = (p: Priority) => `P${p}`;
 
 function ageStr(ts: number, now = Date.now()): string {
-  const s = Math.max(0, Math.floor((now - ts) / 1000));
-  if (s < 60) return `${s}s`;
-  if (s < 3600) return `${Math.floor(s / 60)}m`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h`;
-  return `${Math.floor(s / 86400)}d`;
+  const seconds = Math.max(0, Math.floor((now - ts) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+  return `${Math.floor(seconds / 86400)}d`;
 }
-
-/** Short remaining-time string for an expiry countdown, e.g. "24m", "1h3m". */
-function remainStr(msLeft: number): string {
-  const s = Math.max(0, Math.floor(msLeft / 1000));
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m`;
-  const h = Math.floor(m / 60);
-  return `${h}h${m % 60 ? `${m % 60}m` : ""}`;
+function remainStr(ms: number): string {
+  const minutes = Math.max(0, Math.ceil(ms / 60_000));
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h${minutes % 60 ? `${minutes % 60}m` : ""}`;
 }
-
-/** Parse "30m" / "2h" / "--at 15:00" style durations to a deadline (ms epoch).
- *  Re-exported from policy.ts (pure) so index stays free of duration logic. */
 export { parseWhen, parseDurationMs } from "./policy.ts";
 
 export default function (pi: ExtensionAPI) {
   const P = worklistPaths(WORKLIST_ROOT);
-
-  // In-memory attention inputs. The persisted override survives restart;
-  // activity is re-seeded on session_start (a fresh session starts "focused"
-  // until it settles).
-  let mode: AttentionMode = "auto";
-  let override: AttentionOverride | null = null;
-  let lastActivity = Date.now();
+  let dnd: DndState | null = null;
   let agentBusy = false;
   let idleSince = Date.now();
-  let voiceHoldUntil = 0;
   let ctxRef: ExtensionContext | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
   let sinkDisposer: (() => void) | undefined;
-  // Last time the hidden "you still owe an ack" digest reminder was appended.
-  // In-memory only: cadence, not correctness — a restart re-reminding once is
-  // harmless, and the eventual explicit wake is the real liveness guarantee.
   let lastDigestReminderAt = 0;
-  // Ids withdrawn via the durable sink. A tombstone refuses a later/in-flight
-  // enqueue for the same id so an await-claimed settlement cannot resurface.
   const tombstones = new Set<string>();
 
-  const guard = (fn: () => void) => {
-    try {
-      fn();
-    } catch (err) {
-      errorLog("worklist", { handlerError: String(err) });
-    }
-  };
+  const guard = (fn: () => void) => { try { fn(); } catch (err) { errorLog("worklist", { handlerError: String(err) }); } };
+  const idleForMs = () => agentBusy ? 0 : Date.now() - idleSince;
+  const active = (now = Date.now()) => dndActive(dnd, now);
 
-  // A durable worklist arrival is fresh activity for interruptible wakes. Use
-  // the item's persisted timestamp rather than observation time so wake can
-  // compare correctly when both records are restored after downtime.
   const announceFreshWork = (items: QueueItem[]) => {
-    if (items.length === 0) return;
-    const at = items.reduce((latest, item) => Math.max(latest, item.ts), 0);
-    pi.events.emit("familiar:fresh-input", { source: "worklist", at });
+    if (!items.length) return;
+    pi.events.emit("familiar:fresh-input", { source: "worklist", at: Math.max(...items.map((item) => item.ts)) });
   };
 
-  /** Lazily expire an elapsed override, persisting the clear so the footer and
-   *  disk stay honest. Correctness does not depend on this firing — resolve is
-   *  lazy — but it keeps the persisted file clean. */
-  const expireIfElapsed = (now = Date.now()): boolean => {
-    if (override && overrideExpired(override, now)) {
-      override = null;
-      mode = "auto";
-      writeAttention(P, { mode, override });
+  /** Expiry is checked at every policy boundary, not delegated to the timer. */
+  const expireIfElapsed = (now = Date.now()) => {
+    if (dnd && !dndActive(dnd, now)) {
+      dnd = null;
+      writeDnd(P, null);
       return true;
     }
     return false;
   };
 
-  const currentAttention = (now = Date.now()): Attention =>
-    applyVoiceHold(resolveAttention({ override, lastActivity, agentBusy, now }, CFG), voiceHoldUntil, now);
-
-  const idleForMs = (): number => (agentBusy ? 0 : Date.now() - idleSince);
-
-  /* --- ambient surfaces: footer attention + worklist widget -------------- */
-
-  const GLYPH: Record<Attention, string> = {
-    open: "○",
-    available: "◐",
-    focused: "◑",
-    protected: "●",
-  };
-
-  const renderAttention = () => {
+  const render = () => {
     if (!ctxRef?.hasUI) return;
     const now = Date.now();
-    const a = currentAttention(now);
-    let text = `${GLYPH[a]} ${a}`;
-    if (override && now < override.expiresAt) {
-      text += ` ${remainStr(override.expiresAt - now)}`;
-    }
-    ctxRef.ui.setStatus("attention", text);
-    // Publish for the footer extension (custom footer replaces the built-in
-    // status line, so it re-renders attention itself from this event).
-    pi.events.emit("familiar:attention", { text });
-  };
-
-  const renderWidget = () => {
-    if (!ctxRef?.hasUI) return;
+    const enabled = active(now);
+    const text = enabled && dnd ? `● DND ${remainStr(dnd.expiresAt - now)}` : "○ DND off";
+    ctxRef.ui.setStatus("dnd", text);
+    pi.events.emit("familiar:dnd", { text, enabled, expiresAt: enabled ? dnd?.expiresAt : undefined });
     const pending = listItems(P).filter(isPending);
-    if (pending.length === 0) {
-      ctxRef.ui.setWidget("worklist", undefined);
-      return;
-    }
-    const now = Date.now();
-    const top = pending.reduce<Priority>((m, it) => (it.priority < m ? it.priority : m), 3 as Priority);
-    const a = currentAttention(now);
-    // During a protected override, make the suppression legible, not spooky:
-    // show the held count + the countdown.
-    let line = `📋 ${pending.length} (${PRI_LABEL(top)})`;
-    if (a === "protected" && override) {
-      line = `📋 ${pending.length} held (${PRI_LABEL(top)}) · protected ${remainStr(override.expiresAt - now)}`;
-    }
-    ctxRef.ui.setWidget("worklist", [line]);
+    if (!pending.length) return ctxRef.ui.setWidget("worklist", undefined);
+    const top = pending.reduce<Priority>((p, item) => item.priority < p ? item.priority : p, 3);
+    ctxRef.ui.setWidget("worklist", [enabled ? `📋 ${pending.length} queued (${PRI_LABEL(top)}) · DND` : `📋 ${pending.length} (${PRI_LABEL(top)})`]);
   };
 
-  const refreshSurfaces = () => {
-    renderAttention();
-    renderWidget();
-  };
-
-  /* --- delivery ---------------------------------------------------------- */
-
-  /** Atomically resolve an item: mark delivered+acked, persist, then archive so
-   *  it leaves the live queue (audit survives). Idempotent — archiveItem is a
-   *  no-op once the file is gone. Shared by every ack path (steer/wait auto-ack,
-   *  the user's /ack command, and the agent's ack_worklist tool). */
   const resolveAck = (item: QueueItem) => {
     item.delivered = true;
     item.acked = true;
     putItem(P, item);
     archiveItem(P, item.id);
   };
-
-  const deliverBody = (item: QueueItem, opts: { steer: boolean; autoAck: boolean }) => {
-    const lines = [
-      `<worklist-item id="${item.id}" type="${item.type}" priority="${PRI_LABEL(item.priority)}" source="${item.source}">`,
-      item.body || item.summary,
-      `</worklist-item>`,
-    ];
-    pi.sendMessage(
-      { customType: "worklist-item", content: lines.join("\n"), display: true },
-      opts.steer
-        ? { deliverAs: "steer", triggerTurn: true }
-        : { deliverAs: "followUp" },
-    );
-    item.delivered = true;
-    if (opts.autoAck) {
-      // Resolved items leave the live queue for the archive (audit survives,
-      // but /peek and the widget stay clean and bounded).
-      resolveAck(item);
-    } else {
+  const deliverBody = (item: QueueItem, steer: boolean) => {
+    pi.sendMessage({
+      customType: "worklist-item",
+      content: `<worklist-item id="${item.id}" type="${item.type}" priority="${PRI_LABEL(item.priority)}" source="${item.source}">\n${item.body || item.summary}\n</worklist-item>`,
+      display: true,
+    }, steer ? { deliverAs: "steer", triggerTurn: true } : { deliverAs: "followUp" });
+    resolveAck(item);
+  };
+  const deliverDigest = (items: QueueItem[]) => {
+    const lines = items.map((item) => `  • ${PRI_LABEL(item.priority)} ${item.summary} — agent: ack_worklist id="${item.id}"; user: /ack ${item.id}`);
+    pi.sendMessage({ customType: "worklist-digest", content: `<worklist-digest count="${items.length}">\n${lines.join("\n")}\n</worklist-digest>`, display: true }, { deliverAs: "followUp" });
+    const now = Date.now();
+    for (const item of items) {
+      item.digested = true;
+      item.digestedAt ??= now;
       putItem(P, item);
     }
   };
 
-  /** Surface a one-line nudge without waking the model or delivering its body.
-   *  Normally nudges ride before_agent_start. Under `open`, however, there may
-   *  be no next turn; append one visible nudge so long-idle promotion cannot
-   *  turn into permanent silence. surfacedCount makes the idle path one-shot. */
-  const deliverIdleNudge = (item: QueueItem) => {
-    const line =
-      `📋 worklist: ${item.summary} — agent: ack_worklist id="${item.id}"; Kevin: /ack ${item.id}`;
-    pi.sendMessage({
-      customType: "worklist-nudge",
-      content: `<worklist-nudge id="${item.id}" priority="${PRI_LABEL(item.priority)}">\n${line}\n</worklist-nudge>`,
-      display: true,
-    });
-    item.surfacedCount = (item.surfacedCount ?? 0) + 1;
-    putItem(P, item);
-  };
-
-  // The linger digest: a single line for ALL lingering items, never one-per.
-  // A digest is a followUp COURTESY, not an ack — it stamps digestedAt so the
-  // policy can grant a bounded ack grace and then escalate to an explicit wake
-  // if the agent never acks (via ack_worklist). It does NOT resolve the item.
-  const deliverDigest = (items: QueueItem[]) => {
-    const lines = items.map(
-      (it) =>
-        `  • ${PRI_LABEL(it.priority)} ${it.summary} — agent: ack_worklist id="${it.id}"; Kevin: /ack ${it.id}`,
-    );
-    pi.sendMessage(
-      {
-        customType: "worklist-digest",
-        content: `<worklist-digest count="${items.length}">\n${lines.join("\n")}\n</worklist-digest>`,
-        display: true,
-      },
-      { deliverAs: "followUp" },
-    );
-    const now = Date.now();
-    for (const it of items) {
-      it.digested = true;
-      if (typeof it.digestedAt !== "number") it.digestedAt = now;
-      putItem(P, it);
-    }
-  };
-
-  /**
-   * Scheduler tick: drain cross-process enqueues, apply deadline escalation,
-   * then act on each live item per the pure policy. Nudges are collected and
-   * surfaced on the NEXT turn via before_agent_start (not here) so they ride
-   * the prefix cache without triggering a turn.
-   */
+  /** At most one turn-triggering delivery per tick prevents an expiry herd. */
   const tick = () => {
     ensureDirs(P, LEGACY_ROOT);
     const created = drainIncoming(P);
     announceFreshWork(created);
-    // Process after incoming so an ack request and its enqueue observed in the
-    // same tick resolve deterministically. Unknown ids are still consumed: the
-    // producer's durable claimed marker prevents a later enqueue.
     const acknowledged = drainAcknowledgements(P);
     const now = Date.now();
     const elapsed = expireIfElapsed(now);
-    const attention = currentAttention(now);
-
-    let dirtySurfaces = created.length > 0 || acknowledged.length > 0 || elapsed;
-    const items = listItems(P).filter(isPending);
-    const lingerBatch: QueueItem[] = [];
+    const isDnd = active(now);
+    let bodyDeliveries = 0;
+    const digest: QueueItem[] = [];
+    const items = listItems(P).filter(isPending).sort((a, b) => a.priority - b.priority || a.ts - b.ts);
+    let dirty = !!(created.length || acknowledged.length || elapsed);
 
     for (const item of items) {
-      // Advisory escalation: latch once when the deadline passes.
-      if (shouldEscalate(item, now)) {
-        item.escalated = true;
-        putItem(P, item);
-        dirtySurfaces = true;
-      }
-
-      // Migration repair: an item digested by an OLDER build carries
-      // `digested:true` but no `digestedAt`, so the old code held it forever.
-      // Stamp the grace clock at first sight so it becomes resolvable again
-      // (its ack grace starts now, not retroactively). One-shot per item.
-      if (item.digested && typeof item.digestedAt !== "number") {
-        item.digestedAt = now;
-        putItem(P, item);
-        dirtySurfaces = true;
-      }
-
-      const action = decideAction(item, { attention, now, idleForMs: idleForMs() }, CFG);
-      switch (action) {
-        case "deliver-steer":
-          deliverBody(item, { steer: true, autoAck: true });
-          dirtySurfaces = true;
-          break;
-        case "deliver-wait":
-          // Waiting is a timing policy, not a permanent transport choice. Once
-          // quiet has lasted long enough, wake the model with the full body.
-          deliverBody(item, { steer: true, autoAck: true });
-          dirtySurfaces = true;
-          break;
-        case "digest":
-          lingerBatch.push(item);
-          break;
-        case "nudge":
-          // `open` means solicit during long idle. before_agent_start cannot
-          // help when there is no next turn, so visibly surface the summary
-          // once without waking the model or auto-acking the body.
-          if (attention === "open" && (item.surfacedCount ?? 0) === 0) {
-            deliverIdleNudge(item);
-            dirtySurfaces = true;
-          }
-          break;
-        case "hold":
-          break;
+      if (shouldEscalate(item, now)) { item.escalated = true; putItem(P, item); dirty = true; }
+      if (item.digested && typeof item.digestedAt !== "number") { item.digestedAt = now; putItem(P, item); dirty = true; }
+      const action = decideAction(item, { dnd: isDnd, now, idleForMs: idleForMs() }, CFG);
+      if ((action === "deliver-steer" || action === "deliver-wait") && bodyDeliveries < CFG.maxDeliveriesPerTick) {
+        deliverBody(item, true);
+        bodyDeliveries++;
+        dirty = true;
+      } else if (action === "digest" && bodyDeliveries === 0) {
+        digest.push(item);
       }
     }
-
-    if (lingerBatch.length > 0) {
-      deliverDigest(lingerBatch);
-      dirtySurfaces = true;
-    }
-    if (dirtySurfaces) refreshSurfaces();
-    else renderAttention(); // keep the countdown ticking even when idle
+    if (digest.length) { deliverDigest(digest); dirty = true; }
+    if (dirty || ctxRef?.hasUI) render();
   };
-
   const tickGuarded = () => guard(tick);
 
-  /* --- exported in-process enqueue API ----------------------------------- */
   const enqueue = (env: EnqueueEnvelope): QueueItem => {
     ensureDirs(P, LEGACY_ROOT);
-    const { item, created } = enqueueEnvelopeIdempotent(P, env);
-    if (created) {
-      announceFreshWork([item]);
-      refreshSurfaces();
-    }
-    return item;
+    const result = enqueueEnvelopeIdempotent(P, env);
+    if (result.created) { announceFreshWork([result.item]); render(); }
+    return result.item;
   };
 
-  /* --- durable sink capability (the subagent seam) ----------------------- */
-  // Register a versioned async sink on the NEUTRAL registry. Subagent resolves
-  // it at courtesy-delivery time and awaits durable acceptance; if absent,
-  // rejected, or errored, subagent falls back to its direct relay. Neither
-  // extension imports the other. The sink dedupes on stable id and supports
-  // withdraw() so a settlement claimed by subagent_await can be pulled before
-  // it ever surfaces (the exactly-once invariant — see PROTOCOL.md).
   const sink: DurableSink = {
     async enqueue(env: DurableEnqueueEnvelope): Promise<DurableAcceptance> {
       ensureDirs(P, LEGACY_ROOT);
-      const id = env.id;
-      // Tombstone guard: a concurrent withdraw() (e.g. subagent_await claimed
-      // this settlement while THIS enqueue was in-flight) marks the id dead.
-      // Refuse to queue it — delivery is owned elsewhere. `superseded` tells
-      // the caller NOT to fall back to a direct relay.
-      if (id && tombstones.has(id)) {
-        return { accepted: false, superseded: true, id, reason: "withdrawn before enqueue" };
-      }
-      // Idempotent on id: if already known (live/archived), report accepted
-      // without duplicating — the caller's earlier enqueue owns it.
-      const { item, created } = enqueueEnvelopeIdempotent(P, {
-        id,
-        priority: env.priority,
-        type: (env.type as QueueItem["type"]) ?? "notify",
-        summary: env.summary,
-        body: env.body,
-        source: env.source ?? "subagent",
-        ...(typeof env.suggested_deadline === "number"
-          ? { suggested_deadline: env.suggested_deadline }
-          : {}),
+      if (env.id && tombstones.has(env.id)) return { accepted: false, superseded: true, id: env.id, reason: "withdrawn before enqueue" };
+      const result = enqueueEnvelopeIdempotent(P, {
+        id: env.id, priority: env.priority, type: (env.type as QueueItem["type"]) ?? "notify",
+        summary: env.summary, body: env.body, source: env.source ?? "subagent",
+        ...(typeof env.suggested_deadline === "number" ? { suggested_deadline: env.suggested_deadline } : {}),
       });
-      if (created) {
-        announceFreshWork([item]);
-        refreshSurfaces();
-      }
-      return { accepted: true, id: item.id };
+      if (result.created) { announceFreshWork([result.item]); render(); }
+      return { accepted: true, id: result.item.id };
     },
-    async acknowledge(id: string): Promise<boolean> {
-      // Explicit foreground receipt owns this stable id, including if it races
-      // the relay enqueue. Ambient sidecars never call this path.
-      tombstones.add(id);
-      const acknowledged = acknowledgeItem(P, id);
-      refreshSurfaces();
-      return acknowledged;
-    },
-    async withdraw(id: string): Promise<boolean> {
-      // Set the tombstone FIRST so an enqueue that is still in-flight for this
-      // id will be refused when it resolves. This is what makes the
-      // await-claims-a-queued-settlement race safe in both orderings.
+    async acknowledge(id: string) { tombstones.add(id); const ok = acknowledgeItem(P, id); render(); return ok; },
+    async withdraw(id: string) {
       tombstones.add(id);
       const item = getItem(P, id);
       if (!item) {
         const archived = getArchivedItem(P, id);
-        if (!archived) return true; // tombstone catches a genuinely late enqueue
-        // Terminal history decides ownership after restart: delivered/acked was
-        // already surfaced; withdrawn was explicitly claimed by await.
-        return archived.withdrawn === true ? true : !(archived.delivered || archived.acked);
+        return !archived || archived.withdrawn === true || !(archived.delivered || archived.acked);
       }
-      if (item.delivered || item.acked) return false; // too late — already surfaced
-      item.withdrawn = true;
-      putItem(P, item);
-      archiveItem(P, id);
-      refreshSurfaces();
-      return true;
+      if (item.delivered || item.acked) return false;
+      item.withdrawn = true; putItem(P, item); archiveItem(P, id); render(); return true;
     },
   };
 
-  // Publish during factory initialization, not session_start, so extension
-  // loader order cannot make subagent startup reconciliation bypass attention.
-  // Only advertise after durable storage has been verified.
-  try {
-    ensureDirs(P, LEGACY_ROOT);
-    sinkDisposer = registry.register<DurableSink>(WORKLIST_SINK, WORKLIST_SINK_VERSION, sink);
-  } catch (err) {
-    errorLog("worklist", { storageDisabled: String(err) });
-  }
-
-  // Publish on the shared bus too, so fire-and-forget senders (cron, subscriber)
-  // can enqueue without an import cycle. NOTE: this is fire-and-forget only —
-  // pi.events.emit returns void and gives no acceptance guarantee, so the
-  // subagent seam uses the capability sink above, NOT this event.
+  try { ensureDirs(P, LEGACY_ROOT); sinkDisposer = registry.register<DurableSink>(WORKLIST_SINK, WORKLIST_SINK_VERSION, sink); }
+  catch (err) { errorLog("worklist", { storageDisabled: String(err) }); }
   pi.events.on("worklist:add", (env: unknown) => guard(() => enqueue(env as EnqueueEnvelope)));
-  // Bounded compat: keep the old channel for one release so mid-flight senders
-  // (familiar.sh, cron) don't silently drop items.
   pi.events.on("inbox:add", (env: unknown) => guard(() => enqueue(env as EnqueueEnvelope)));
 
-  // Process-local, fire-and-forget focus signal from subscriber. Active voice
-  // gets a short lease; idle releases immediately. A lost terminal event can
-  // therefore suppress ordinary work for at most VOICE_HOLD_MS.
-  pi.events.on("voice:status", (event: unknown) => guard(() => {
-    const phase = (event as { phase?: unknown })?.phase;
-    if (phase === "capturing" || phase === "transcribing") {
-      voiceHoldUntil = Date.now() + VOICE_HOLD_MS;
-    } else if (phase === "idle") {
-      voiceHoldUntil = 0;
-    } else return;
-    refreshSurfaces();
-  }));
-
-  /* --- attention control (one code path for command, tool, restart) ------ */
-
-  const setOverride = (
-    level: AttentionOverride["level"],
-    durationMs: number,
-    now = Date.now(),
-  ): AttentionOverride | null => {
-    const ov = makeOverride(level, durationMs, now, CFG);
-    if (!ov) return null;
-    override = ov;
-    mode = level;
-    writeAttention(P, { mode, override });
-    refreshSurfaces();
-    return ov;
+  /** Shared authoritative state operation for user command and Familiar tool. */
+  const setDnd = (actor: DndActor, durationMs?: number, now = Date.now()) => {
+    const next = makeDnd(actor, durationMs, now, CFG);
+    if (!next) return null;
+    dnd = next;
+    writeDnd(P, dnd);
+    render();
+    return next;
   };
-
-  const clearOverride = () => {
-    override = null;
-    mode = "auto";
-    writeAttention(P, { mode, override });
-    refreshSurfaces();
-  };
-
-  /* --- commands ---------------------------------------------------------- */
+  const clearDnd = () => { dnd = null; writeDnd(P, null); render(); };
 
   pi.registerCommand("peek", {
-    description: "Worklist: show the queue snapshot (does not deliver or ack)",
+    description: "Show queued synthetic work without delivering or acknowledging it",
     handler: async (_args, ctx) => {
-      const items = listItems(P).filter(isPending);
-      if (items.length === 0) {
-        ctx.ui.notify("📋 worklist empty", "info");
-        return;
-      }
-      const now = Date.now();
-      const attention = currentAttention(now);
-      const rows = items
-        .sort((a, b) => a.priority - b.priority || a.ts - b.ts)
-        .map((it) => {
-          const tier = resolveTier(it, attention, CFG);
-          const dl = it.suggested_deadline
-            ? ` due:${new Date(it.suggested_deadline).toLocaleTimeString()}`
-            : "";
-          return `${PRI_LABEL(it.priority)} [${it.type}] ${it.id}  ${ageStr(it.ts)}  ${tier}${dl}\n    ${it.summary}`;
-        });
-      ctx.ui.notify(`📋 worklist (${items.length}, attention: ${attention})\n${rows.join("\n")}`, "info");
+      const items = listItems(P).filter(isPending).sort((a, b) => a.priority - b.priority || a.ts - b.ts);
+      if (!items.length) return ctx.ui.notify("📋 worklist empty", "info");
+      const rows = items.map((item) => `${PRI_LABEL(item.priority)} [${item.type}] ${item.id}  ${ageStr(item.ts)}  ${resolveTier(item, CFG)}\n    ${item.summary}`);
+      ctx.ui.notify(`📋 worklist (${items.length}${active() ? ", DND" : ""})\n${rows.join("\n")}`, "info");
     },
   });
-
   pi.registerCommand("ack", {
-    description: "Worklist: acknowledge nudged item(s) and inject full body. /ack [id|all]",
-    getArgumentCompletions: (prefix) => {
-      const items = listItems(P).filter(isPending);
-      const opts = [{ value: "all", label: "all" }, ...items.map((it) => ({ value: it.id, label: `${it.id} — ${it.summary}` }))];
-      const f = opts.filter((o) => o.value.startsWith(prefix));
-      return f.length ? f : null;
-    },
+    description: "Acknowledge queued work and show its full body. /ack [id|all]",
     handler: async (args, ctx) => {
       const arg = args.trim();
       const pending = listItems(P).filter(isPending);
-      const targets =
-        arg === "" || arg === "all"
-          ? pending
-          : pending.filter((it) => it.id === arg);
-      if (targets.length === 0) {
-        ctx.ui.notify(arg ? `no pending item "${arg}"` : "📋 nothing to ack", "warning");
-        return;
-      }
-      for (const it of targets) {
-        deliverBody(it, { steer: false, autoAck: true });
-      }
-      refreshSurfaces();
+      const targets = !arg || arg === "all" ? pending : pending.filter((item) => item.id === arg);
+      if (!targets.length) return ctx.ui.notify(arg ? `no pending item "${arg}"` : "📋 nothing to ack", "warning");
+      for (const item of targets) deliverBody(item, false);
+      render();
       ctx.ui.notify(`📋 acked ${targets.length} item(s)`, "info");
     },
   });
-
   pi.registerCommand("remind", {
-    description: "Worklist: enqueue a self-reminder. /remind <text> [--at <time>|--in <duration>]",
+    description: "Queue a reminder. /remind <text> [--at <time>|--in <duration>]",
     handler: async (args, ctx) => {
       const raw = args.trim();
-      if (!raw) {
-        ctx.ui.notify("usage: /remind <text> [--in 30m | --at 15:00]", "warning");
-        return;
-      }
-      let text = raw;
-      let deadline: number | undefined;
-      const m = raw.match(/\s--(in|at)\s+(.+)$/);
-      if (m) {
-        text = raw.slice(0, m.index).trim();
-        deadline = parseWhen(m[2], Date.now());
-      }
-      const item = enqueue({
-        priority: 2,
-        type: "notify",
-        summary: text,
-        body: text,
-        source: "remind",
-        ...(deadline ? { suggested_deadline: deadline } : {}),
-      });
-      ctx.ui.notify(
-        `📋 reminder queued (${item.id})${deadline ? ` due ${new Date(deadline).toLocaleString()}` : ""}`,
-        "info",
-      );
-    },
-  });
-
-  const LEVEL_GLOSS: Record<string, string> = {
-    auto: "auto — infer from conversation activity (open/available/focused)",
-    available: "available — accept important items as they arrive; hold trivia for a lull",
-    focused: "focused — uninterrupted conversation window; ordinary worklist held",
-    protected: "protected — total do-not-disturb, time-bounded, queue stays durable",
-  };
-
-  const DURATION_HINTS = ["15m", "30m", "1h", "2h"];
-
-  pi.registerCommand("attention", {
-    description: "Worklist: show/set attention. /attention [auto|available|focused|protected] [duration]",
-    getArgumentCompletions: (prefix) => {
-      const parts = prefix.split(/\s+/);
-      if (parts.length <= 1) {
-        const opts = ["auto", "available", "focused", "protected"].map((v) => ({
-          value: v,
-          label: v,
-          description: LEVEL_GLOSS[v],
-        }));
-        const f = opts.filter((o) => o.value.startsWith(parts[0] ?? ""));
-        return f.length ? f : null;
-      }
-      // second token: duration hints (not for auto)
-      if (parts[0] === "auto") return null;
-      const durPrefix = parts[1] ?? "";
-      const now = Date.now();
-      const opts = DURATION_HINTS.map((d) => {
-        const when = parseWhen(d, now);
-        return {
-          value: `${parts[0]} ${d}`,
-          label: d,
-          description: when ? `${d} — resume at ${new Date(when).toLocaleTimeString()}` : d,
-        };
-      });
-      const f = opts.filter((o) => o.label.startsWith(durPrefix));
-      return f.length ? f : null;
-    },
-    handler: async (args, ctx) => {
-      const parts = args.trim().split(/\s+/).filter(Boolean);
-      if (parts.length === 0) {
-        const now = Date.now();
-        const a = currentAttention(now);
-        const tail = override && now < override.expiresAt
-          ? ` (manual ${override.level}, ${remainStr(override.expiresAt - now)} left)`
-          : " (auto)";
-        ctx.ui.notify(`attention: ${a}${tail}`, "info");
-        return;
-      }
-      const level = parts[0].toLowerCase();
-      if (level === "auto") {
-        clearOverride();
-        ctx.ui.notify(`attention → auto (now: ${currentAttention()})`, "info");
-        return;
-      }
-      if (level !== "available" && level !== "focused" && level !== "protected") {
-        ctx.ui.notify("usage: /attention [auto|available|focused|protected] [duration e.g. 30m]", "warning");
-        return;
-      }
-      const durSpec = parts[1];
-      if (!durSpec) {
-        ctx.ui.notify(`/attention ${level} needs a duration (e.g. /attention ${level} 30m). It is always time-bounded.`, "warning");
-        return;
-      }
-      const durMs = parseDurationMs(durSpec, Date.now());
-      if (durMs === undefined) {
-        ctx.ui.notify(`bad duration "${durSpec}"`, "warning");
-        return;
-      }
-      const ov = setOverride(level as AttentionOverride["level"], durMs);
-      if (!ov) {
-        ctx.ui.notify(`invalid duration "${durSpec}"`, "warning");
-        return;
-      }
-      ctx.ui.notify(
-        `attention → ${level} until ${new Date(ov.expiresAt).toLocaleTimeString()} (${remainStr(ov.expiresAt - Date.now())})`,
-        "info",
-      );
-    },
-  });
-
-  pi.registerCommand("protect", {
-    description: "Worklist: hold ALL items (even urgent) for a duration, then auto-resume. /protect <duration>",
-    getArgumentCompletions: (prefix) => {
-      const now = Date.now();
-      const opts = DURATION_HINTS.map((d) => {
-        const when = parseWhen(d, now);
-        return {
-          value: d,
-          label: d,
-          description: when
-            ? `protected until ${new Date(when).toLocaleTimeString()} — hold everything, incl. P0`
-            : d,
-        };
-      });
-      const f = opts.filter((o) => o.label.startsWith(prefix));
-      return f.length ? f : null;
-    },
-    handler: async (args, ctx) => {
-      const spec = args.trim();
-      if (!spec) {
-        ctx.ui.notify("usage: /protect <duration e.g. 30m> — hold ALL items until it elapses", "warning");
-        return;
-      }
-      const durMs = parseDurationMs(spec, Date.now());
-      if (durMs === undefined) {
-        ctx.ui.notify(`bad duration "${spec}"`, "warning");
-        return;
-      }
-      const ov = setOverride("protected", durMs);
-      if (!ov) {
-        ctx.ui.notify(`invalid duration "${spec}"`, "warning");
-        return;
-      }
-      ctx.ui.notify(
-        `● protected until ${new Date(ov.expiresAt).toLocaleTimeString()} (${remainStr(ov.expiresAt - Date.now())}) — holding everything, incl. P0`,
-        "info",
-      );
+      if (!raw) return ctx.ui.notify("usage: /remind <text> [--in 30m | --at 15:00]", "warning");
+      let text = raw; let deadline: number | undefined;
+      const match = raw.match(/\s--(in|at)\s+(.+)$/);
+      if (match) { text = raw.slice(0, match.index).trim(); deadline = parseWhen(match[2]); }
+      const item = enqueue({ priority: 2, type: "notify", summary: text, body: text, source: "remind", ...(deadline ? { suggested_deadline: deadline } : {}) });
+      ctx.ui.notify(`📋 reminder queued (${item.id})`, "info");
     },
   });
 
   pi.registerCommand("snooze", {
-    description: "Worklist: suppress an item for a duration. /snooze <id> <duration>",
-    getArgumentCompletions: (prefix) => {
-      const items = listItems(P).filter(isPending);
-      const f = items.map((it) => ({ value: it.id, label: `${it.id} — ${it.summary}` })).filter((o) => o.value.startsWith(prefix));
-      return f.length ? f : null;
-    },
+    description: "Keep one queued item quiet for a duration. /snooze <id> <duration>",
     handler: async (args, ctx) => {
-      const [id, dur] = args.trim().split(/\s+/);
-      if (!id || !dur) {
-        ctx.ui.notify("usage: /snooze <id> <duration e.g. 30m>", "warning");
-        return;
-      }
-      const item = getItem(P, id);
-      if (!item) {
-        ctx.ui.notify(`no item "${id}"`, "warning");
-        return;
-      }
-      const until = parseWhen(dur, Date.now());
-      if (!until) {
-        ctx.ui.notify(`bad duration "${dur}"`, "warning");
-        return;
-      }
-      item.snoozedUntil = until;
-      putItem(P, item);
-      refreshSurfaces();
+      const [id, spec] = args.trim().split(/\s+/);
+      if (!id || !spec) return ctx.ui.notify("usage: /snooze <id> <duration e.g. 30m>", "warning");
+      const queued = getItem(P, id);
+      if (!queued) return ctx.ui.notify(`no item "${id}"`, "warning");
+      const until = parseWhen(spec);
+      if (!until || until <= Date.now()) return ctx.ui.notify(`bad duration "${spec}"`, "warning");
+      queued.snoozedUntil = until;
+      putItem(P, queued);
+      render();
       ctx.ui.notify(`📋 snoozed ${id} until ${new Date(until).toLocaleTimeString()}`, "info");
     },
   });
 
-  /* --- model-callable tool ----------------------------------------------- */
-  // Exo can protect the conversation herself ("Kevin's driving, go protected").
-  // Every non-auto level REQUIRES a duration and is clamped — the tool can
-  // never set an unbounded state.
-  pi.registerTool({
-    name: "set_attention",
-    label: "Set Attention",
-    description:
-      "Time-bound how interruptible the live conversation is to background worklist items. " +
-      "Use 'auto' by default for delegated work, tool-heavy/heads-down work, and while waiting for Golem: " +
-      "'focused' suppresses ordinary worklist traffic and can delay settlements. Use 'focused' only for a " +
-      "deliberately uninterrupted conversational window. Use 'protected' only for true do-not-interrupt; it " +
-      "holds EVERYTHING, even urgent P0. 'available' accepts important items. Any non-auto level REQUIRES " +
-      "duration_minutes and is clamped to a ceiling. On expiry attention returns directly to auto inference. " +
-      "Returns expires_at for a timed override.",
-    promptSnippet: "Time-bound conversational interruption policy; auto is the delegated-work default",
-    promptGuidelines: [
-      "Keep set_attention at auto for delegated work, heads-down/tool-heavy work, and waits for Golem; focused can delay ordinary worklist settlements and is only for an uninterrupted conversational window, while protected is true do-not-interrupt.",
-    ],
-    parameters: Type.Object({
-      level: Type.Union([
-        Type.Literal("auto"),
-        Type.Literal("available"),
-        Type.Literal("focused"),
-        Type.Literal("protected"),
-      ], { description: "Use auto for delegated/tool-heavy work and Golem waits; focused only for an uninterrupted conversation; protected only for true do-not-interrupt. Non-auto values are timed overrides." }),
-      duration_minutes: Type.Optional(Type.Number({ description: "Required for any non-auto level; clamped to the ceiling (8h)." })),
-    }),
-    async execute(_id, params: { level: string; duration_minutes?: number }) {
-      const level = params.level;
-      // One widened details shape across all branches so the tool's TDetails
-      // unifies (pinned pi 0.85.1 requires a non-optional `details`).
-      const result = (details: Record<string, unknown>, isError = false) => ({
-        content: [{ type: "text" as const, text: JSON.stringify(details) }],
-        details,
-        ...(isError ? { isError: true } : {}),
-      });
-      if (level === "auto") {
-        clearOverride();
-        return result({ ok: true, level: currentAttention(), mode: "auto" });
+  const DURATION_HINTS = ["15m", "30m", "1h", "2h"];
+  pi.registerCommand("dnd", {
+    description: "Toggle Do Not Disturb. /dnd [off|duration] (default: 30m)",
+    getArgumentCompletions: (prefix) => {
+      const options = ["off", ...DURATION_HINTS].filter((value) => value.startsWith(prefix)).map((value) => ({ value, label: value }));
+      return options.length ? options : null;
+    },
+    handler: async (args, ctx) => {
+      const spec = args.trim().toLowerCase();
+      if (spec === "off" || spec === "clear" || (!spec && active())) {
+        clearDnd(); ctx.ui.notify("Do Not Disturb off", "info"); return;
       }
-      if (level !== "available" && level !== "focused" && level !== "protected") {
-        return result({ ok: false, error: `unknown level "${level}"` }, true);
-      }
-      const mins = params.duration_minutes;
-      if (typeof mins !== "number" || !(mins > 0)) {
-        return result({ ok: false, error: "duration_minutes is required and must be > 0 for a non-auto level" }, true);
-      }
-      const ov = setOverride(level as AttentionOverride["level"], mins * 60_000);
-      if (!ov) {
-        return result({ ok: false, error: "invalid duration" }, true);
-      }
-      return result({ ok: true, level, expires_at: new Date(ov.expiresAt).toISOString(), minutes: Math.round((ov.expiresAt - Date.now()) / 60000) });
+      const duration = spec ? parseDurationMs(spec) : undefined;
+      if (spec && duration === undefined) return ctx.ui.notify(`bad duration "${spec}"`, "warning");
+      const state = setDnd("user", duration);
+      if (!state) return ctx.ui.notify("duration must be greater than zero", "warning");
+      ctx.ui.notify(`Do Not Disturb on until ${new Date(state.expiresAt).toLocaleTimeString()}`, "info");
     },
   });
 
-  /* --- agent-callable ack tool ------------------------------------------- */
-  // The user's /ack is a slash command (user-only). Without a model-facing
-  // equivalent the agent could never resolve its own worklist, so digested
-  // items would sit pending forever and eventually be surfaced explicitly. This
-  // tool is the agent's honest ack: it returns each item's FULL body inline in
-  // the tool result (that IS the delivery — no sendMessage, so no duplicate
-  // body) and atomically ack/archives it. Idempotent and race-free under pi's
-  // single-threaded loop: once archived an item is no longer pending, so no
-  // subsequent tick can re-surface it.
+  // Keep the established tool name so existing calls do not break; its public
+  // schema and copy expose only the single DND toggle. Legacy level arguments
+  // are accepted inside execute for a bounded compatibility migration.
   pi.registerTool({
-    name: "ack_worklist",
-    label: "Acknowledge Worklist Item",
-    description:
-      "Acknowledge and read out-of-band worklist item(s) (subagent settlements, reminders, alerts). " +
-      "Returns each item's full body and resolves it (archived from the live queue). " +
-      "Pass a specific id, or omit it / pass 'all' to acknowledge every pending item. " +
-      "This is the agent-facing equivalent of the user's /ack. Acknowledging a digested item " +
-      "before its grace elapses prevents it from being surfaced explicitly as a full interruption.",
-    promptSnippet: "Acknowledge + read worklist items (settlements, reminders); resolves them",
+    name: "set_attention",
+    label: "Set Do Not Disturb",
+    description: "Turn Do Not Disturb on or off. While on, user messages still arrive normally; synthetic turns, settlements, and reminders remain durably queued until clear or expiry. It defaults to 30 minutes. You may request a duration up to two hours and may clear it immediately.",
+    promptSnippet: "Toggle Do Not Disturb for synthetic turns; user messages are never delayed",
+    promptGuidelines: ["Use Do Not Disturb only when an uninterrupted conversation is explicitly useful. Clearing it resumes paced delivery of durable queued work."],
     parameters: Type.Object({
-      id: Type.Optional(Type.String({ description: "Item id, or 'all'/omitted for every pending item." })),
+      enabled: Type.Boolean({ description: "true to enable Do Not Disturb; false to clear it immediately" }),
+      duration_minutes: Type.Optional(Type.Number({ description: "Optional duration when enabling; defaults to 30 minutes and is capped at 120 minutes", minimum: 0 })),
     }),
+    async execute(_id, params: { enabled?: boolean; duration_minutes?: number; level?: string }) {
+      const result = (details: Record<string, unknown>, isError = false) => ({ content: [{ type: "text" as const, text: JSON.stringify(details) }], details, ...(isError ? { isError: true } : {}) });
+      // Old auto/available permitted ordinary delivery, so both map to off;
+      // old focused/protected suppression maps to the one DND mode.
+      const enabled = typeof params.enabled === "boolean"
+        ? params.enabled
+        : params.level === "auto" || params.level === "available"
+          ? false
+          : params.level === "focused" || params.level === "protected"
+            ? true
+            : undefined;
+      if (enabled === false) { clearDnd(); return result({ ok: true, enabled: false }); }
+      if (enabled !== true) return result({ ok: false, error: "enabled must be true or false" }, true);
+      const requested = params.duration_minutes === undefined ? undefined : params.duration_minutes * 60_000;
+      const state = setDnd("familiar", requested);
+      if (!state) return result({ ok: false, error: "duration_minutes must be greater than zero" }, true);
+      return result({ ok: true, enabled: true, expires_at: new Date(state.expiresAt).toISOString(), minutes: Math.round((state.expiresAt - Date.now()) / 60_000) });
+    },
+  });
+
+  pi.registerTool({
+    name: "ack_worklist", label: "Acknowledge Worklist Item",
+    description: "Read and acknowledge queued synthetic work. Returns each full body inline and archives it without duplicate injection.",
+    promptSnippet: "Read and resolve queued worklist items",
+    parameters: Type.Object({ id: Type.Optional(Type.String({ description: "Item id, or all/omitted for every pending item" })) }),
     async execute(_id, params: { id?: string }) {
       const arg = (params.id ?? "").trim();
       const pending = listItems(P).filter(isPending);
-      const targets =
-        arg === "" || arg === "all" ? pending : pending.filter((it) => it.id === arg);
-      const acked = targets.map((it) => {
-        resolveAck(it);
-        return {
-          id: it.id,
-          priority: PRI_LABEL(it.priority),
-          type: it.type,
-          source: it.source,
-          summary: it.summary,
-          body: it.body || it.summary,
-        };
-      });
-      if (acked.length > 0) refreshSurfaces();
-      const details = arg && arg !== "all" && acked.length === 0
-        ? { ok: false, error: `no pending worklist item "${arg}"`, acked: [] as unknown[] }
-        : { ok: true, count: acked.length, acked };
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(details) }],
-        details,
-        ...(details.ok ? {} : { isError: true }),
-      };
+      const targets = !arg || arg === "all" ? pending : pending.filter((item) => item.id === arg);
+      const acked = targets.map((item) => { resolveAck(item); return { id: item.id, priority: PRI_LABEL(item.priority), type: item.type, source: item.source, summary: item.summary, body: item.body || item.summary }; });
+      if (acked.length) render();
+      const details = arg && arg !== "all" && !acked.length ? { ok: false, error: `no pending worklist item "${arg}"`, acked: [] } : { ok: true, count: acked.length, acked };
+      return { content: [{ type: "text" as const, text: JSON.stringify(details) }], details, ...(details.ok ? {} : { isError: true }) };
     },
   });
 
-  /* --- nudge prefix injection (rides the next turn, no prefix-cache churn) */
-  pi.on("before_agent_start", async () => {
-    const now = Date.now();
-    expireIfElapsed(now);
-    const attention = currentAttention(now);
-    const live = listItems(P).filter(isPending);
-    const nudges = live.filter(
-      (it) => decideAction(it, { attention, now, idleForMs: idleForMs() }, CFG) === "nudge",
-    );
-    // Digested-but-unacked items owe an ack. A digest is a followUp courtesy,
-    // not an ack, so quietly remind the model (hidden) that it must call
-    // ack_worklist — and that if it doesn't, the item is eventually surfaced
-    // explicitly. Rate-limited so it can never become per-turn spam.
-    const owed =
-      attention !== "protected" && now - lastDigestReminderAt >= CFG.digestReminderMs
-        ? live.filter((it) => isLive(it, now) && it.digested && !it.acked)
-        : [];
-    if (nudges.length === 0 && owed.length === 0) return;
-
-    for (const it of nudges) {
-      it.surfacedCount = (it.surfacedCount ?? 0) + 1;
-      putItem(P, it);
-    }
-    const lines = nudges.map(
-      (it) => `📋 worklist: ${it.summary} — call ack_worklist id="${it.id}" for details`,
-    );
-    if (owed.length > 0) {
-      lastDigestReminderAt = now;
-      lines.push(
-        `📋 ${owed.length} digested worklist item(s) still need an ack — call ack_worklist ` +
-          `(id or 'all') to read + resolve them; unacked items are eventually surfaced explicitly: ` +
-          owed.map((it) => it.id).join(", "),
-      );
-    }
-    return {
-      message: {
-        customType: "worklist-nudge",
-        content: `<system-reminder>\n${lines.join("\n")}\n</system-reminder>`,
-        display: false,
-      },
-    };
-  });
-
-  /* --- attention signal wiring ------------------------------------------- */
-
-  pi.on("input", async () => {
-    lastActivity = Date.now();
-    guard(refreshSurfaces);
-  });
-
-  pi.on("agent_start", async () => {
-    agentBusy = true;
-    lastActivity = Date.now();
-    guard(refreshSurfaces);
-  });
-
+  // User activity is deliberately not a DND lease: observing a real turn must
+  // neither delay that turn nor extend/clear the explicit wall-clock state.
+  pi.on("input", async () => { guard(render); });
+  pi.on("agent_start", async () => { agentBusy = true; guard(render); });
   pi.on("agent_settled", async () => {
     agentBusy = false;
     idleSince = Date.now();
-    guard(refreshSurfaces);
-    // A settle is a natural breakpoint — run a tick so wait/linger items that
-    // just became eligible don't wait a full timer period.
+    guard(render);
     tickGuarded();
   });
 
-  /* --- lifecycle --------------------------------------------------------- */
+  pi.on("before_agent_start", async () => {
+    const now = Date.now();
+    expireIfElapsed(now);
+    if (active(now)) return; // no synthetic prefix may hitchhike on a fresh user turn
+    const live = listItems(P).filter(isPending);
+    const nudges = live.filter((item) => decideAction(item, { dnd: false, now, idleForMs: idleForMs() }, CFG) === "nudge");
+    const owed = now - lastDigestReminderAt >= CFG.digestReminderMs ? live.filter((item) => isLive(item, now) && item.digested && !item.acked) : [];
+    if (!nudges.length && !owed.length) return;
+    for (const item of nudges) { item.surfacedCount = (item.surfacedCount ?? 0) + 1; putItem(P, item); }
+    const lines = nudges.map((item) => `📋 worklist: ${item.summary} — call ack_worklist id="${item.id}" for details`);
+    if (owed.length) { lastDigestReminderAt = now; lines.push(`📋 ${owed.length} queued item(s) still need acknowledgement: ${owed.map((item) => item.id).join(", ")}`); }
+    return { message: { customType: "worklist-nudge", content: `<system-reminder>\n${lines.join("\n")}\n</system-reminder>`, display: false } };
+  });
 
+  // User activity neither extends nor clears DND. Pi owns real-user delivery.
+  pi.on("input", async () => guard(render));
+  pi.on("agent_start", async () => { agentBusy = true; guard(render); });
+  pi.on("agent_settled", async () => { agentBusy = false; idleSince = Date.now(); guard(render); tickGuarded(); });
   pi.on("session_start", async (_event, ctx) => {
     ctxRef = ctx;
-    // One degradation boundary around ALL of startup: an unwritable state tree
-    // (plus, say, an expired override that expireIfElapsed tries to persist)
-    // must cleanly disable worklist, never throw out of session_start and brick
-    // Familiar. Everything that touches disk or UI lives inside the guard.
     guard(() => {
       ensureDirs(P, LEGACY_ROOT);
-      const st = readAttention(P);
-      mode = st.mode;
-      override = st.override;
-      // Discard an already-expired override on load (wall-clock, not
-      // session-relative): a /protect set before a crash still expires on time.
-      expireIfElapsed(Date.now());
-      // A fresh/reloaded session starts "focused" until it settles: safer to
-      // hold a low-priority item than to dump the queue into a resumed agent.
-      lastActivity = Date.now();
-      idleSince = Date.now();
-      agentBusy = false;
-      voiceHoldUntil = 0;
-      // Pending items may have been promoted before the crash (rather than
-      // remaining in incoming/). Replay only their original activity times;
-      // wake compares those against each alarm's scheduledAt.
+      dnd = readDnd(P);
+      expireIfElapsed();
+      agentBusy = false; idleSince = Date.now();
       announceFreshWork(listItems(P).filter(isPending));
-      refreshSurfaces();
-
-      // Factory initialization normally registered the sink before lifecycle
-      // handlers run. Retry here only if storage was unavailable during load,
-      // and only AFTER ensureDirs above verified durable storage this session.
-      if (!sinkDisposer) {
-        sinkDisposer = registry.register<DurableSink>(WORKLIST_SINK, WORKLIST_SINK_VERSION, sink);
-      }
+      render();
+      if (!sinkDisposer) sinkDisposer = registry.register<DurableSink>(WORKLIST_SINK, WORKLIST_SINK_VERSION, sink);
     });
-
     if (timer) clearInterval(timer);
     timer = setInterval(tickGuarded, TICK_MS);
     tickGuarded();
   });
+  pi.on("session_shutdown", async () => { if (timer) clearInterval(timer); timer = undefined; sinkDisposer?.(); sinkDisposer = undefined; });
 
-  pi.on("session_shutdown", async () => {
-    if (timer) clearInterval(timer);
-    timer = undefined;
-    if (sinkDisposer) {
-      sinkDisposer();
-      sinkDisposer = undefined;
-    }
-  });
-
-  // Returned for rare SDK embeds that hold the ExtensionAPI directly. Exposing
-  // tick also lets the runtime wiring (not just pure policy) be tested headlessly.
-  return { enqueue, sink, tick };
+  return { enqueue, sink, tick, setDnd, clearDnd, isDnd: active };
 }
 
 export type { EnqueueEnvelope } from "./store.ts";

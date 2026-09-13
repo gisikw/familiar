@@ -58,8 +58,8 @@ This coexists with today's raw/multipart `/upload`; the Gateway can translate ei
 
 ### Presence and worklist
 - `presence.status` — epoch and starting/ready/busy/degraded/offline state plus capability names.
-- `worklist.notification` — referable priority 0–3 notification/question/review and current attention state.
-- `attention.status` — open/available/focused/protected state, optional expiry and queued count.
+- `worklist.notification` — referable priority 0–3 notification/question/review and current DND state.
+- `dnd.status` — the single on/off Do Not Disturb state, optional expiry and queued count.
 
 ## Incremental adoption
 

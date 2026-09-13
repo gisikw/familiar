@@ -26,8 +26,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import type { QueueItem, Priority, ItemType, AttentionMode, AttentionOverride } from "./policy.ts";
-import { sanitizeOverride } from "./policy.ts";
+import type { QueueItem, Priority, ItemType, DndState } from "./policy.ts";
+import { sanitizeDnd } from "./policy.ts";
 
 export interface WorklistPaths {
   root: string;
@@ -35,6 +35,8 @@ export interface WorklistPaths {
   archive: string;
   incoming: string;
   acknowledgements: string;
+  dnd: string;
+  /** Legacy attention-level state, read only during compatibility migration. */
   attention: string;
 }
 
@@ -45,6 +47,7 @@ export function worklistPaths(root: string): WorklistPaths {
     archive: path.join(root, "items", "archive"),
     incoming: path.join(root, "incoming"),
     acknowledgements: path.join(root, "acknowledgements"),
+    dnd: path.join(root, "dnd.json"),
     attention: path.join(root, "attention.json"),
   };
 }
@@ -122,11 +125,10 @@ function migrateLegacy(legacyRoot: string, p: WorklistPaths): void {
   // compatibility release: an old process may write after initial migration.
   drainIncomingDirectory(p, path.join(legacyRoot, "incoming"));
 
+  // The old posture format had no expiry. Never turn it into an unbounded DND.
+  // It therefore migrates to normal delivery; queued items remain untouched.
   const legacy = readJSON<{ mode?: string }>(path.join(legacyRoot, "posture.json"));
-  if (legacy?.mode && !fs.existsSync(p.attention)) {
-    const mode: AttentionMode = legacy.mode === "available" ? "available" : "auto";
-    writeAttention(p, { mode, override: null });
-  }
+  if (legacy?.mode && !fs.existsSync(p.dnd) && !fs.existsSync(p.attention)) writeDnd(p, null);
 }
 
 /** Atomic write: temp + rename. Cross-process senders depend on this. */
@@ -382,41 +384,31 @@ export function itemExists(p: WorklistPaths, id: string): boolean {
   return getKnownItem(p, id) !== null;
 }
 
-/* --- attention persistence -------------------------------------------------
- * Only the manual override + mode are persisted. Inference inputs (activity,
- * agentBusy) are volatile and reseed each session. The override carries an
- * absolute wall-clock `expiresAt`, so a `/protect 30m` set at 14:00 still
- * expires at 14:30 after a crash — and an already-expired override is discarded
- * on load. Nothing manual is ever unbounded across restart.
- */
-export interface AttentionState {
-  mode: AttentionMode;
-  override: AttentionOverride | null;
-}
-
-export function readAttention(p: WorklistPaths, now = Date.now()): AttentionState {
-  const raw = readJSON<{ mode?: unknown; override?: unknown }>(p.attention);
-  if (!raw) return { mode: "auto", override: null };
-  // Persisted state is untrusted: validate the enum and clamp any far-future
-  // remaining lifetime to the ceiling so a corrupt file, clock rollback, or
-  // older writer can never hold `protected` longer than the hard cap.
-  const override = sanitizeOverride(raw.override, now);
-  const mode: AttentionMode =
-    raw.mode === "available" || raw.mode === "focused" || raw.mode === "protected"
-      ? raw.mode
-      : "auto";
-  // If the persisted override was clamped/dropped, persist the normalized state
-  // atomically so disk stays honest.
-  const rawOv = (raw as { override?: unknown }).override ?? null;
-  const normalizedChanged =
-    JSON.stringify(rawOv) !== JSON.stringify(override) ||
-    (raw.mode ?? "auto") !== mode;
-  if (normalizedChanged) {
-    try { writeAttention(p, { mode, override }); } catch { /* read stays valid even if we can't rewrite */ }
+/* --- Do Not Disturb persistence + one-release attention migration -------- */
+export function readDnd(p: WorklistPaths, now = Date.now()): DndState | null {
+  const existing = readJSON<unknown>(p.dnd);
+  if (existing !== null || fs.existsSync(p.dnd)) {
+    const state = sanitizeDnd(existing, now);
+    if (JSON.stringify(existing) !== JSON.stringify(state)) {
+      try { writeDnd(p, state); } catch { /* a valid read does not depend on cleanup */ }
+    }
+    return state;
   }
-  return { mode, override };
+
+  // Compatibility: focused/protected manual overrides both represented an
+  // explicit request to suppress synthetic traffic. Preserve their wall-clock
+  // expiry, but classify the migrated setter as Familiar and enforce today's
+  // two-hour cap. available/auto did not suppress traffic and migrate to off.
+  const legacy = readJSON<{ mode?: unknown; override?: { level?: unknown; expiresAt?: unknown } }>(p.attention);
+  let migrated: DndState | null = null;
+  const ov = legacy?.override;
+  if ((ov?.level === "focused" || ov?.level === "protected") && typeof ov.expiresAt === "number" && Number.isFinite(ov.expiresAt) && ov.expiresAt > now) {
+    migrated = sanitizeDnd({ enabled: true, setBy: "familiar", setAt: now, expiresAt: ov.expiresAt }, now);
+  }
+  writeDnd(p, migrated);
+  return migrated;
 }
 
-export function writeAttention(p: WorklistPaths, s: AttentionState): void {
-  writeJSONAtomic(p.attention, s);
+export function writeDnd(p: WorklistPaths, state: DndState | null): void {
+  writeJSONAtomic(p.dnd, state);
 }

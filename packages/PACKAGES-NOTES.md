@@ -12,7 +12,7 @@ The v1 schema formalizes the Gateway's existing surfaces without exposing pi-pro
 - `services/gateway/src/ingress.ts`: text submits, chunked voice takes, STT, cancellation, correlation;
 - `services/gateway/src/protocol.ts`, `hub.ts`, and `audio.ts`: session epochs, message revisions/locking, tools, TTS segments, replay;
 - `services/gateway/src/upload.ts`: file relay and Presence notification result;
-- `integrations/pi/extensions/worklist/{policy.ts,store.ts}`: P0–P3 work items and attention levels.
+- `integrations/pi/extensions/worklist/{policy.ts,store.ts}`: P0–P3 synthetic work and durable Do Not Disturb state.
 
 The protocol uses negotiated integer versions, Familiar-owned message names, bearer-auth shape, per-stream monotonic sequences, resume cursors, acknowledgements, replay truncation, and session epochs. Unknown fields are additive. `validateLegacySubmit` gives the current HTTP ingress an immediate low-risk adoption point; later the Gateway can translate SSE/restty/upload routes behind a v1 WebSocket while keeping old routes until clients move.
 

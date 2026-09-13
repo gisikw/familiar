@@ -31,13 +31,13 @@ export interface FileChunk extends BaseMessage<"file.chunk"> { stream: "files"; 
 export interface FileResult extends BaseMessage<"file.result"> { stream: "files"; uploadId: string; ok: boolean; path?: string; notified?: boolean; error?: string }
 
 export interface PresenceStatus extends BaseMessage<"presence.status"> { stream: "presence"; sessionId: string; state: "starting" | "ready" | "busy" | "degraded" | "offline"; capabilities?: string[]; detail?: string }
-export interface WorklistNotification extends BaseMessage<"worklist.notification"> { stream: "worklist"; id: string; priority: 0 | 1 | 2 | 3; kind: "notify" | "question" | "review"; summary: string; body?: string; attention: "open" | "available" | "focused" | "protected"; createdAt: string }
-export interface AttentionStatus extends BaseMessage<"attention.status"> { stream: "worklist"; level: "open" | "available" | "focused" | "protected"; expiresAt?: string; queued?: number }
+export interface WorklistNotification extends BaseMessage<"worklist.notification"> { stream: "worklist"; id: string; priority: 0 | 1 | 2 | 3; kind: "notify" | "question" | "review"; summary: string; body?: string; dnd: boolean; createdAt: string }
+export interface DndStatus extends BaseMessage<"dnd.status"> { stream: "worklist"; enabled: boolean; expiresAt?: string; queued?: number }
 export interface ErrorEnvelope extends BaseMessage<"error"> { stream: StreamName; code: string; message: string; retryable: boolean; details?: Record<string, unknown> }
 export interface AckMessage extends BaseMessage<"ack"> { stream: StreamName; acknowledgedSequence: number }
 
 export type ClientMessage = HelloMessage | TerminalAttach | TerminalInput | TerminalResize | TextSubmit | InteractionCancel | VoiceChunk | FileOffer | FileChunk | AckMessage;
-export type ServerMessage = WelcomeMessage | AuthErrorMessage | TerminalOutput | TerminalStatus | TranscriptMessage | ToolStatus | VoiceTranscript | TtsSegment | FileResult | PresenceStatus | WorklistNotification | AttentionStatus | ErrorEnvelope | AckMessage;
+export type ServerMessage = WelcomeMessage | AuthErrorMessage | TerminalOutput | TerminalStatus | TranscriptMessage | ToolStatus | VoiceTranscript | TtsSegment | FileResult | PresenceStatus | WorklistNotification | DndStatus | ErrorEnvelope | AckMessage;
 export type ProtocolMessage = ClientMessage | ServerMessage;
 
 export type ValidationResult<T> = { ok: true; value: T } | { ok: false; errors: string[] };
@@ -81,8 +81,8 @@ const validators: Record<string, (o: Obj, e: string[]) => void> = {
   "file.chunk"(o,e){ common(o,e); one(o,"stream",["files"],e); str(o,"uploadId",e); num(o,"chunk",e); str(o,"data",e); one(o,"encoding",["base64"],e); },
   "file.result"(o,e){ common(o,e); one(o,"stream",["files"],e); str(o,"uploadId",e); bool(o,"ok",e); },
   "presence.status"(o,e){ common(o,e); one(o,"stream",["presence"],e); str(o,"sessionId",e); one(o,"state",["starting","ready","busy","degraded","offline"],e); },
-  "worklist.notification"(o,e){ common(o,e); one(o,"stream",["worklist"],e); str(o,"id",e); one(o,"priority",[0,1,2,3],e); one(o,"kind",["notify","question","review"],e); str(o,"summary",e); one(o,"attention",["open","available","focused","protected"],e); str(o,"createdAt",e); },
-  "attention.status"(o,e){ common(o,e); one(o,"stream",["worklist"],e); one(o,"level",["open","available","focused","protected"],e); },
+  "worklist.notification"(o,e){ common(o,e); one(o,"stream",["worklist"],e); str(o,"id",e); one(o,"priority",[0,1,2,3],e); one(o,"kind",["notify","question","review"],e); str(o,"summary",e); bool(o,"dnd",e); str(o,"createdAt",e); },
+  "dnd.status"(o,e){ common(o,e); one(o,"stream",["worklist"],e); bool(o,"enabled",e); },
   error(o,e){ common(o,e); str(o,"code",e); str(o,"message",e); bool(o,"retryable",e); },
   ack(o,e){ common(o,e); num(o,"acknowledgedSequence",e); },
 };

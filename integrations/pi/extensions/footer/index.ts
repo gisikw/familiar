@@ -8,7 +8,7 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
  * familiar (the working directory is always the familiar tract). This footer
  * replaces it entirely:
  *
- *   line 1:  (provider) model • thinking              right: attention mode
+ *   line 1:  (provider) model • thinking              right: DND status
  *   line 2:  ↑↓ R W CH $ · ttft/tok/s · context%      right: provider usage
  *
  * Semantics that differ from the built-in totals:
@@ -26,8 +26,8 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
  *     restart starts every model cold.
  *
  * Data sources:
- *   - "familiar:attention" events from the worklist extension (it stays the
- *     single source of truth for attention state).
+ *   - "familiar:dnd" events from the worklist extension (the single source
+ *     of truth for Do Not Disturb state).
  *   - "familiar:provider-usage" events from the tiamat extension (rate-limit
  *     windows; empty for routes that don't expose them).
  *   - /footer toggles back to pi's built-in footer.
@@ -125,7 +125,7 @@ export default function (pi: ExtensionAPI) {
     refresh();
   });
 
-  pi.events.on("familiar:attention", (data: unknown) => {
+  pi.events.on("familiar:dnd", (data: unknown) => {
     const ev = data as { text?: unknown };
     attentionText = typeof ev?.text === "string" && ev.text ? ev.text : undefined;
     refresh();
