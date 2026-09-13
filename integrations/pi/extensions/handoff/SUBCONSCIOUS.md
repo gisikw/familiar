@@ -34,19 +34,25 @@ fail.
 Exactly one bare JSON object, with no markdown fences or prose:
 
 ```json
-{"ops":[
-  {"op":"add","text":"…","priority":"high|normal|low"},
-  {"op":"set","id":"r-…","text":"…","priority":"…"},
-  {"op":"remove","id":"r-…"}
-]}
+{"ops":[]}
 ```
 
-`add`, `set` (either field, amend or reprioritize), `remove`; replace is a
-`remove` and an `add`. `{"ops":[]}` is a normal answer and changes nothing.
-Validation is strict and all-or-nothing: prose, wrappers, unknown ops or keys,
-bad ids, an unknown id, more than 16 ops, more than 400 characters of text, or
-more than 8 resulting reminders reject the whole reply. Anything rejected —
-along with a provider error, a thrown failure, an abort, or the 30 s timeout
+or exactly one operation:
+
+```json
+{"ops":[{"op":"add","text":"…","curve":{"turns":[2,40],"hours":[6,168],"chance":[0.02,0.45]}}]}
+{"ops":[{"op":"set","id":"r-…","text":"…","curve":{"turns":[2,40],"hours":[6,168],"chance":[0.02,0.45]}}]}
+{"ops":[{"op":"remove","id":"r-…"}]}
+```
+
+`add`, `set` (either text or curve), and `remove` are the available mutations.
+Replacement takes two `/clear` boundaries; store capacity remains 8 across all
+sessions. `{"ops":[]}` is a normal answer and changes nothing. Validation is
+strict and all-or-nothing: prose, wrappers, unknown ops or keys, bad ids, an
+unknown id, **more than one operation**, more than 400 characters of text, or
+more than 8 resulting reminders reject the whole reply. Multi-operation replies
+are never truncated. Anything rejected — along with a provider error, a thrown
+failure, an abort, or the 30 s timeout
 (`FAMILIAR_SUBCONSCIOUS_TIMEOUT_MS`) — is logged as a stage name only and
 `/clear` completes with the set untouched. Interrupting the compaction while
 curation is in flight cancels the whole `/clear` (Pi cancels a manual compaction
@@ -55,18 +61,19 @@ bound that keeps an unresponsive model from holding a `/clear` open.
 
 ## Delivery
 
-Priority is the timing. Per eligible turn — one that entered through the input
-hook while no handoff is running and orientation is over — every reminder ages
-by one turn and the chance it surfaces is zero during a grace window, ramps
-linearly, and is certain at a ceiling, so the set drains:
+Each reminder persists its author's compact curve: `turns` and `hours` are
+`[quietUntil, fullyMatureAt]` ranges, while `chance` is the per-eligible-turn
+`[near, mature]` probability. Turn and wall-clock progress are independently
+clamped and averaged, then probability is linearly interpolated between the
+chance bounds. The contract is bounded and monotonic, but not a delivery
+promise: a mature chance may remain below 1.
 
-| priority | grace | ramp | certain by |
-|---|---|---|---|
-| high | 1 | 15% → 50% over 15 turns | 40 |
-| normal | 5 | 3% → 25% over 60 turns | 200 |
-| low | 20 | 1% → 10% over 200 turns | 600 |
-
-At most one surfaces per turn. It is removed from the store before it is
+An eligible turn is one that entered through the input hook while no handoff is
+running and orientation is over. Pending reminders are evaluated in persisted
+order. The scan stops immediately at the first stochastic success, so at most
+one surfaces in a turn. There is deliberately no refractory period, session
+budget, handoff gate, or turn cliff; reminders can naturally arrive on adjacent
+turns. A surfaced reminder is removed from the store before it is
 injected as a hidden `subconscious-reminder` message (`display: false`, no
 renderer) carrying its text, age, originating session, and handoff archive.
 That message is ordinary session context for the Familiar who received it.
@@ -81,6 +88,14 @@ One file, `reminders.json`, under `FAMILIAR_SUBCONSCIOUS_DIR` (default
 that fails validation reads as empty and is renamed `*.corrupt` rather than
 overwritten in place. Bodies are plaintext; the running Familiar has no tool,
 command, or renderer that reads the file, but a `bash` child on this host can.
+
+Schema v2 stores authored curves directly. Deployed schema-v1 records hydrate
+without reading their bodies for migration logic and receive bounded defaults
+based on their old priority; they are not eagerly rewritten. Their next normal
+store mutation or draw atomically persists the whole file as v2. Defaults are:
+`high` `[1,40]` turns / `[6,168]` hours / `[.15,.5]` chance; `normal`
+`[5,200]` / `[24,720]` / `[.03,.25]`; `low` `[20,600]` / `[168,2160]` /
+`[.01,.1]`. Unlike the old turn cliff, none creates a delivery guarantee.
 
 Each write replaces the file atomically, but a draw is read-modify-write with no
 lock: the store assumes the single resident Familiar of one `STATE_DIR`. Two

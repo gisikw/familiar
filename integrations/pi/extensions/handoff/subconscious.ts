@@ -16,12 +16,16 @@ import { formatLocalTime, humanizeDuration } from "../lib/time.ts";
  * pi wiring lives in ./index.ts.
  */
 
-export const SUBCONSCIOUS_VERSION = 1 as const;
+export const SUBCONSCIOUS_VERSION = 2 as const;
+export const LEGACY_SUBCONSCIOUS_VERSION = 1 as const;
 export const MAX_REMINDERS = 8;
 export const MAX_TEXT_CHARS = 400;
-export const MAX_OPS = 16;
+/** One /clear may make one mutation, independently of total store capacity. */
+export const MAX_OPS = 1;
 export const MAX_RESPONSE_CHARS = 16_384;
 export const MAX_FILE_BYTES = 65_536;
+export const MAX_CURVE_TURNS = 10_000;
+export const MAX_CURVE_HOURS = 8_760;
 /**
  * The curation request is awaited inside `session_before_compact`, so it is
  * added latency on an interactive `/clear`, and Pi cancels a manual compaction
@@ -33,13 +37,24 @@ export const MAX_FILE_BYTES = 65_536;
  */
 export const DEFAULT_TIMEOUT_MS = 30_000;
 
-export type Priority = "high" | "normal" | "low";
-export const PRIORITIES: readonly Priority[] = ["high", "normal", "low"];
+export type LegacyPriority = "high" | "normal" | "low";
+
+/**
+ * Compact authored delivery curve. Each pair is [quietUntil, fullyMatureAt].
+ * `chance` is [near, mature] per eligible turn. Turn and wall-clock maturity
+ * are averaged, so each temporal component contributes and probability never
+ * decreases with age.
+ */
+export interface DeliveryCurve {
+  turns: [number, number];
+  hours: [number, number];
+  chance: [number, number];
+}
 
 export interface Reminder {
   id: string;
   text: string;
-  priority: Priority;
+  curve: DeliveryCurve;
   /** Eligible turns evaluated since creation. */
   turns: number;
   createdAt: number;
@@ -47,60 +62,94 @@ export interface Reminder {
 }
 
 export type Op =
-  | { op: "add"; text: string; priority: Priority }
-  | { op: "set"; id: string; text?: string; priority?: Priority }
+  | { op: "add"; text: string; curve: DeliveryCurve }
+  | { op: "set"; id: string; text?: string; curve?: DeliveryCurve }
   | { op: "remove"; id: string };
 
 const ID_RE = /^r-[0-9a-f]{8}$/;
 
-/* --- delivery curve ---
- *
- * Priority is the whole delivery language. Per eligible turn the chance is 0
- * inside the grace window, ramps linearly to a ceiling, and becomes certain at
- * `mustBy`, so the set provably drains.
- */
-const CURVES: Record<Priority, { grace: number; start: number; end: number; ramp: number; mustBy: number }> = {
-  high: { grace: 1, start: 0.15, end: 0.5, ramp: 15, mustBy: 40 },
-  normal: { grace: 5, start: 0.03, end: 0.25, ramp: 60, mustBy: 200 },
-  low: { grace: 20, start: 0.01, end: 0.1, ramp: 200, mustBy: 600 },
+const LEGACY_CURVES: Record<LegacyPriority, DeliveryCurve> = {
+  high: { turns: [1, 40], hours: [6, 168], chance: [0.15, 0.5] },
+  normal: { turns: [5, 200], hours: [24, 720], chance: [0.03, 0.25] },
+  low: { turns: [20, 600], hours: [168, 2160], chance: [0.01, 0.1] },
 };
 
-export function hazard(priority: Priority, turns: number): number {
-  const c = CURVES[priority];
-  if (turns <= c.grace) return 0;
-  if (turns >= c.mustBy) return 1;
-  return c.start + (c.end - c.start) * Math.min(1, (turns - c.grace) / c.ramp);
+const progress = (age: number, range: readonly [number, number]): number =>
+  Math.max(0, Math.min(1, (age - range[0]) / (range[1] - range[0])));
+
+/** Per-eligible-turn delivery probability at the supplied turn and wall age. */
+export function deliveryProbability(curve: DeliveryCurve, turns: number, elapsedMs: number): number {
+  const maturity = (progress(turns, curve.turns) + progress(elapsedMs / 3_600_000, curve.hours)) / 2;
+  return curve.chance[0] + (curve.chance[1] - curve.chance[0]) * maturity;
 }
 
 /* --- validation --- */
 
-const isPriority = (v: unknown): v is Priority => PRIORITIES.includes(v as Priority);
 const isText = (v: unknown): v is string => typeof v === "string" && v.trim().length > 0 && v.trim().length <= MAX_TEXT_CHARS;
 const isId = (v: unknown): v is string => typeof v === "string" && ID_RE.test(v);
 const onlyKeys = (o: object, allowed: string[]) => Object.keys(o).every((k) => allowed.includes(k));
+const isFiniteIn = (v: unknown, min: number, max: number): v is number =>
+  typeof v === "number" && Number.isFinite(v) && v >= min && v <= max;
+const validRange = (v: unknown, max: number, integer: boolean): v is [number, number] =>
+  Array.isArray(v) && v.length === 2
+  && isFiniteIn(v[0], 0, max) && isFiniteIn(v[1], 0, max)
+  && (!integer || (Number.isSafeInteger(v[0]) && Number.isSafeInteger(v[1])))
+  && v[0] < v[1];
+
+export function validCurve(v: unknown): v is DeliveryCurve {
+  if (!v || typeof v !== "object" || Array.isArray(v) || !onlyKeys(v, ["turns", "hours", "chance"])) return false;
+  const c = v as Partial<DeliveryCurve>;
+  return validRange(c.turns, MAX_CURVE_TURNS, true)
+    && validRange(c.hours, MAX_CURVE_HOURS, false)
+    && Array.isArray(c.chance) && c.chance.length === 2
+    && isFiniteIn(c.chance[0], 0, 1) && isFiniteIn(c.chance[1], 0, 1)
+    && c.chance[0] <= c.chance[1];
+}
+
+const validOrigin = (v: unknown): v is Reminder["origin"] =>
+  !!v && typeof v === "object" && !Array.isArray(v)
+  && onlyKeys(v, ["sessionId", "handoffArchive"])
+  && (((v as Reminder["origin"]).sessionId === null) || typeof (v as Reminder["origin"]).sessionId === "string")
+  && (((v as Reminder["origin"]).handoffArchive === null) || typeof (v as Reminder["origin"]).handoffArchive === "string");
 
 export function validReminder(v: unknown): v is Reminder {
-  if (!v || typeof v !== "object") return false;
+  if (!v || typeof v !== "object" || Array.isArray(v)
+    || !onlyKeys(v, ["id", "text", "curve", "turns", "createdAt", "origin"])) return false;
   const r = v as Partial<Reminder>;
-  return isId(r.id) && isText(r.text) && r.text === r.text.trim() && isPriority(r.priority)
+  return isId(r.id) && isText(r.text) && r.text === r.text.trim() && validCurve(r.curve)
     && Number.isSafeInteger(r.turns) && (r.turns as number) >= 0
     && Number.isSafeInteger(r.createdAt) && (r.createdAt as number) >= 0
-    && !!r.origin && typeof r.origin === "object"
-    && (r.origin.sessionId === null || typeof r.origin.sessionId === "string")
-    && (r.origin.handoffArchive === null || typeof r.origin.handoffArchive === "string");
+    && validOrigin(r.origin);
+}
+
+type LegacyReminder = Omit<Reminder, "curve"> & { priority: LegacyPriority };
+const isLegacyPriority = (v: unknown): v is LegacyPriority => v === "high" || v === "normal" || v === "low";
+
+function hydrateLegacyReminder(v: unknown): Reminder {
+  if (!v || typeof v !== "object" || Array.isArray(v)
+    || !onlyKeys(v, ["id", "text", "priority", "turns", "createdAt", "origin"])) throw new Error("legacy record");
+  const r = v as Partial<LegacyReminder>;
+  if (!isId(r.id) || !isText(r.text) || r.text !== r.text.trim() || !isLegacyPriority(r.priority)
+    || !Number.isSafeInteger(r.turns) || (r.turns as number) < 0
+    || !Number.isSafeInteger(r.createdAt) || (r.createdAt as number) < 0
+    || !validOrigin(r.origin)) throw new Error("legacy record");
+  return {
+    id: r.id, text: r.text, curve: structuredClone(LEGACY_CURVES[r.priority]),
+    turns: r.turns, createdAt: r.createdAt, origin: r.origin,
+  };
 }
 
 function validOp(v: unknown): v is Op {
-  if (!v || typeof v !== "object") return false;
+  if (!v || typeof v !== "object" || Array.isArray(v)) return false;
   const o = v as Record<string, unknown>;
   switch (o.op) {
     case "add":
-      return onlyKeys(o, ["op", "text", "priority"]) && isText(o.text) && isPriority(o.priority);
+      return onlyKeys(o, ["op", "text", "curve"]) && isText(o.text) && validCurve(o.curve);
     case "set":
-      return onlyKeys(o, ["op", "id", "text", "priority"]) && isId(o.id)
-        && (o.text !== undefined || o.priority !== undefined)
+      return onlyKeys(o, ["op", "id", "text", "curve"]) && isId(o.id)
+        && (o.text !== undefined || o.curve !== undefined)
         && (o.text === undefined || isText(o.text))
-        && (o.priority === undefined || isPriority(o.priority));
+        && (o.curve === undefined || validCurve(o.curve));
     case "remove":
       return onlyKeys(o, ["op", "id"]) && isId(o.id);
     default:
@@ -137,7 +186,8 @@ export function applyOps(
   ops: readonly Op[],
   mint: { now: () => number; id: () => string; origin: Reminder["origin"] },
 ): Reminder[] {
-  const next = existing.map((r) => ({ ...r }));
+  if (ops.length > MAX_OPS) throw new Error(`more than ${MAX_OPS} operation`);
+  const next = existing.map((r) => ({ ...r, curve: { ...r.curve, turns: [...r.curve.turns], hours: [...r.curve.hours], chance: [...r.curve.chance] } as DeliveryCurve }));
   const find = (id: string) => {
     const index = next.findIndex((r) => r.id === id);
     if (index < 0) throw new Error(`unknown reminder ${id}`);
@@ -146,13 +196,13 @@ export function applyOps(
   for (const op of ops) {
     if (op.op === "add") {
       next.push({
-        id: mint.id(), text: op.text.trim(), priority: op.priority, turns: 0,
+        id: mint.id(), text: op.text.trim(), curve: op.curve, turns: 0,
         createdAt: mint.now(), origin: { ...mint.origin },
       });
     } else if (op.op === "set") {
       const r = next[find(op.id)];
       if (op.text !== undefined) r.text = op.text.trim();
-      if (op.priority !== undefined) r.priority = op.priority;
+      if (op.curve !== undefined) r.curve = op.curve;
     } else {
       next.splice(find(op.id), 1);
     }
@@ -205,9 +255,16 @@ export class SubconsciousStore {
       if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_FILE_BYTES) throw new Error("unsafe");
       parsed = JSON.parse(fs.readFileSync(this.file, "utf8"));
       const doc = parsed as { version?: unknown; reminders?: unknown };
-      if (doc?.version !== SUBCONSCIOUS_VERSION || !Array.isArray(doc.reminders)) throw new Error("shape");
-      if (doc.reminders.length > MAX_REMINDERS || !doc.reminders.every(validReminder)) throw new Error("record");
-      return doc.reminders;
+      if (!doc || typeof doc !== "object" || Array.isArray(doc) || !onlyKeys(doc, ["version", "reminders"])
+        || !Array.isArray(doc.reminders) || doc.reminders.length > MAX_REMINDERS) throw new Error("shape");
+      if (doc.version === SUBCONSCIOUS_VERSION) {
+        if (!doc.reminders.every(validReminder)) throw new Error("record");
+        return doc.reminders;
+      }
+      if (doc.version === LEGACY_SUBCONSCIOUS_VERSION) {
+        return doc.reminders.map(hydrateLegacyReminder);
+      }
+      throw new Error("version");
     } catch {
       try { fs.renameSync(this.file, `${this.file}.${this.now()}.corrupt`); } catch { /* leave it */ }
       return [];
@@ -240,15 +297,22 @@ export class SubconsciousStore {
   draw(): Reminder | null {
     const reminders = this.list();
     if (!reminders.length) return null;
-    let selected: Reminder | null = null;
-    const kept: Reminder[] = [];
-    for (const r of reminders) {
-      const aged = { ...r, turns: r.turns + 1 };
-      const chance = hazard(aged.priority, aged.turns);
-      if (!selected && (chance >= 1 || this.random() < chance)) selected = aged;
-      else kept.push(aged);
+    // Age all records because they all experienced this eligible turn, but
+    // evaluate in persisted order and stop consuming randomness immediately
+    // on success. Thus a turn can never select a second reminder.
+    const aged = reminders.map((r) => ({ ...r, turns: r.turns + 1 }));
+    const now = this.now();
+    let selectedIndex = -1;
+    for (let i = 0; i < aged.length; i++) {
+      const r = aged[i];
+      const chance = deliveryProbability(r.curve, r.turns, Math.max(0, now - r.createdAt));
+      if (chance >= 1 || this.random() < chance) {
+        selectedIndex = i;
+        break;
+      }
     }
-    this.save(kept);
+    const selected = selectedIndex < 0 ? null : aged.splice(selectedIndex, 1)[0];
+    this.save(aged);
     return selected;
   }
 }
@@ -258,7 +322,7 @@ export class SubconsciousStore {
 export function renderCurationPrompt(pending: readonly Reminder[], nowMs: number): string {
   const listing = pending.length
     ? pending.map((r) =>
-      `- id ${r.id} · ${r.priority} · left ${humanizeDuration(Math.max(0, nowMs - r.createdAt))} ago, ${r.turns} turns waiting\n  ${r.text}`)
+      `- id ${r.id} · curve ${JSON.stringify(r.curve)} · left ${humanizeDuration(Math.max(0, nowMs - r.createdAt))} ago, ${r.turns} turns waiting\n  ${r.text}`)
       .join("\n")
     : "(none)";
   return `Your handoff is written. Before this context is discarded, one last private task: curate the subconscious reminders your next self will carry. These are not the handoff — they surface on their own, one at a time, unannounced, in ordinary conversation later, as a system reminder only you see. Use them for what should resurface rather than be filed: a question to sit with, a thread to revisit, a joke, a promise, a thing not to forget about someone. Your next self will not see this request or your reply; she only meets the reminders when they arrive.
@@ -266,14 +330,13 @@ export function renderCurationPrompt(pending: readonly Reminder[], nowMs: number
 Current reminders (${pending.length}/${MAX_REMINDERS}):
 ${listing}
 
-Reply with exactly one bare JSON object and nothing else — no fences, no prose, no commentary:
-{"ops":[
-  {"op":"add","text":"…","priority":"high"|"normal"|"low"},
-  {"op":"set","id":"r-…","text":"…"?,"priority":"…"?},
-  {"op":"remove","id":"r-…"}
-]}
+Reply with exactly one bare JSON object and nothing else — no fences, no prose, no commentary. Choose no more than ONE operation:
+{"ops":[]}
+or {"ops":[{"op":"add","text":"…","curve":{"turns":[quiet,mature],"hours":[quiet,mature],"chance":[near,mature]}}]}
+or {"ops":[{"op":"set","id":"r-…","text":"…"?,"curve":{"turns":[quiet,mature],"hours":[quiet,mature],"chance":[near,mature]}?}]}
+or {"ops":[{"op":"remove","id":"r-…"}]}
 
-Priority is the timing: "high" surfaces within roughly the next few dozen exchanges, "normal" drifts in over the next couple hundred, "low" is far out. Each text is at most ${MAX_TEXT_CHARS} characters; at most ${MAX_REMINDERS} reminders may exist afterward. Leaving everything as it is — {"ops":[]} — is a normal answer.`;
+The curve is the thought's authored stochastic timing. On each ordinary eligible turn, turn-age and wall-clock-age mature linearly across their ranges; their progress is averaged, then chance interpolates from near to mature. It is a probability, not a delivery promise. Turn bounds are integer [0, ${MAX_CURVE_TURNS}], hour bounds are finite [0, ${MAX_CURVE_HOURS}], each quiet value must be less than its mature value, and chances must be finite, nondecreasing values in [0,1]. Example: {"turns":[2,40],"hours":[6,168],"chance":[0.02,0.45]}. Each text is at most ${MAX_TEXT_CHARS} characters; at most ${MAX_REMINDERS} reminders may exist afterward. Leaving everything as it is — {"ops":[]} — is a normal answer. Multiple operations reject the entire reply; never use remove-plus-add.`;
 }
 
 export function renderDelivery(r: Reminder, nowMs: number): string {

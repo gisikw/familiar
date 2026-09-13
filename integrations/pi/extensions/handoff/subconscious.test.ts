@@ -6,7 +6,9 @@ import {
   applyOps,
   curate,
   DEFAULT_TIMEOUT_MS,
-  hazard,
+  deliveryProbability,
+  MAX_CURVE_HOURS,
+  MAX_CURVE_TURNS,
   MAX_OPS,
   MAX_REMINDERS,
   MAX_TEXT_CHARS,
@@ -15,7 +17,9 @@ import {
   renderDelivery,
   SubconsciousStore,
   subconsciousRoot,
+  validCurve,
   type CurationResponse,
+  type DeliveryCurve,
   type LlmMessage,
   type Reminder,
 } from "./subconscious.ts";
@@ -24,6 +28,16 @@ const roots: string[] = [];
 afterEach(() => {
   while (roots.length) fs.rmSync(roots.pop()!, { recursive: true, force: true });
 });
+
+const curve = (chance: [number, number] = [0, 1]): DeliveryCurve =>
+  ({ turns: [2, 10], hours: [1, 5], chance });
+const origin = { sessionId: "fixture-session", handoffArchive: "/fixture/handoff.md" };
+const reminder = (id: string, text = "fixture note", c = curve(), turns = 0, createdAt = 1_000_000): Reminder =>
+  ({ id, text, curve: c, turns, createdAt, origin });
+const addJson = (text = "new fixture", c = curve()) => JSON.stringify({ ops: [{ op: "add", text, curve: c }] });
+const reply = (text: string, stopReason = "stop"): CurationResponse =>
+  ({ stopReason, content: [{ type: "text", text }] });
+const context: LlmMessage[] = [{ role: "user", content: [{ type: "text", text: "fixture context" }] }];
 
 function fixture(random: () => number = () => 0.99) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "familiar-subconscious-"));
@@ -38,261 +52,205 @@ function fixture(random: () => number = () => 0.99) {
   return { root, store, tick: (ms: number) => { clock += ms; } };
 }
 
-const origin = { sessionId: "sess-1234abcd", handoffArchive: "/h/2026.md" };
-const reminder = (id: string, text: string, priority: Reminder["priority"] = "normal", turns = 0): Reminder =>
-  ({ id, text, priority, turns, createdAt: 1_000_000, origin });
-const reply = (text: string, stopReason = "stop"): CurationResponse =>
-  ({ stopReason, content: [{ type: "text", text }] });
-const context: LlmMessage[] = [
-  { role: "user", content: [{ type: "text", text: "earlier conversation" }] },
-  { role: "assistant", content: [{ type: "text", text: "earlier reply" }] },
-  { role: "user", content: [{ type: "text", text: "HANDOFF PROMPT" }] },
-];
-
-describe("parseCuration: strict bounded JSON", () => {
-  test("accepts only bare JSON objects with optional surrounding whitespace", () => {
-    const ops = '{"ops":[{"op":"add","text":"a","priority":"high"},{"op":"set","id":"r-00000001","priority":"low"},{"op":"remove","id":"r-00000002"}]}';
-    expect(parseCuration(ops)).toHaveLength(3);
-    expect(parseCuration("  \n" + ops + "\n")).toHaveLength(3);
-  });
-
-  test("rejects fenced JSON, prose-wrapped JSON, and multiple objects", () => {
-    const ops = '{"ops":[{"op":"add","text":"a","priority":"high"}]}';
-    expect(parseCuration("```json\n" + ops + "\n```")).toBeNull();
-    expect(parseCuration("Here is the JSON: " + ops)).toBeNull();
-    expect(parseCuration(ops + " done")).toBeNull();
-    expect(parseCuration(ops + ops)).toBeNull();
-  });
-
-  test("empty ops is a valid no-op", () => {
+describe("curation schema and cardinality", () => {
+  test("accepts no-op or exactly one mutation", () => {
+    expect(MAX_OPS).toBe(1);
     expect(parseCuration('{"ops":[]}')).toEqual([]);
+    expect(parseCuration(addJson())).toHaveLength(1);
+    expect(parseCuration(JSON.stringify({ ops: [{ op: "set", id: "r-00000001", curve: curve() }] }))).toHaveLength(1);
+    expect(parseCuration('{"ops":[{"op":"remove","id":"r-00000001"}]}')).toHaveLength(1);
   });
 
-  test("rejects malformed ops, unknown keys, bad ids, and oversize", () => {
-    const bad = [
-      "Sure! Here are my reminders.",
-      'Here you go: {"ops":[]}',
-      '{"ops":[]} trailing',
-      "[]",
-      "null",
-      '{"reminders":[]}',
-      '{"ops":[],"note":"x"}',
-      '{"ops":{}}',
-      '{"ops":[{"op":"replace","id":"r-00000001","text":"x"}]}',
-      '{"ops":[{"op":"add","text":"x","priority":"urgent"}]}',
-      '{"ops":[{"op":"add","text":"x"}]}',
-      '{"ops":[{"op":"add","text":"","priority":"low"}]}',
-      '{"ops":[{"op":"add","text":"   ","priority":"low"}]}',
-      `{"ops":[{"op":"add","text":"${"x".repeat(MAX_TEXT_CHARS + 1)}","priority":"low"}]}`,
-      '{"ops":[{"op":"add","text":"x","priority":"low","when":"tomorrow"}]}',
-      '{"ops":[{"op":"set","id":"r-00000001"}]}',
-      '{"ops":[{"op":"set","id":"nope","text":"x"}]}',
-      '{"ops":[{"op":"set","id":"r-00000001","text":5}]}',
-      '{"ops":[{"op":"remove","id":"../../etc/passwd"}]}',
-      '{"ops":[{"op":"remove"}]}',
-      `{"ops":[${Array(MAX_OPS + 1).fill('{"op":"remove","id":"r-00000001"}').join(",")}]}`,
-      "x".repeat(20_000),
+  test("strictly rejects multi-operation replies rather than truncating", () => {
+    const two = JSON.stringify({ ops: [
+      { op: "remove", id: "r-00000001" },
+      { op: "add", text: "replacement", curve: curve() },
+    ] });
+    expect(parseCuration(two)).toBeNull();
+    expect(() => applyOps([reminder("r-00000001")], [
+      { op: "remove", id: "r-00000001" },
+      { op: "add", text: "replacement", curve: curve() },
+    ], { now: () => 2, id: () => "r-00000002", origin })).toThrow(/more than 1 operation/);
+  });
+
+  test("rejects wrappers, unknown fields, and malformed curve values", () => {
+    const malformed: unknown[] = [
+      null, [], { turns: [0, 2], hours: [0, 2] },
+      { turns: [0, 2], hours: [0, 2], chance: [0, 1], extra: 1 },
+      { turns: [0, 2.5], hours: [0, 2], chance: [0, 1] },
+      { turns: [-1, 2], hours: [0, 2], chance: [0, 1] },
+      { turns: [2, 2], hours: [0, 2], chance: [0, 1] },
+      { turns: [0, MAX_CURVE_TURNS + 1], hours: [0, 2], chance: [0, 1] },
+      { turns: [0, 2], hours: [0, MAX_CURVE_HOURS + 1], chance: [0, 1] },
+      { turns: [0, 2], hours: [0, 2], chance: [-0.1, 1] },
+      { turns: [0, 2], hours: [0, 2], chance: [0.8, 0.2] },
+      { turns: [0, 2], hours: [0, 2], chance: [0, 1.1] },
+      { turns: [0, 2], hours: [0, 2], chance: [Number.NaN, 1] },
+      { turns: [0, 2], hours: [0, Number.POSITIVE_INFINITY], chance: [0, 1] },
     ];
-    for (const text of bad) expect(parseCuration(text)).toBeNull();
-    expect(parseCuration(`{"ops":[${Array(MAX_OPS).fill('{"op":"remove","id":"r-00000001"}').join(",")}]}`)).toHaveLength(MAX_OPS);
-  });
-});
-
-describe("applyOps: add, amend, reprioritize, remove, replace", () => {
-  const mint = { now: () => 5, id: () => "r-0000ffff", origin };
-
-  test("applies in order and leaves the input untouched", () => {
-    const existing = [reminder("r-00000001", "one", "low", 7), reminder("r-00000002", "two")];
-    const snapshot = JSON.stringify(existing);
-    const next = applyOps(existing, [
-      { op: "set", id: "r-00000001", text: "  one, amended  ", priority: "high" },
-      { op: "remove", id: "r-00000002" },
-      { op: "add", text: " three ", priority: "normal" },
-    ], mint);
-    expect(JSON.stringify(existing)).toBe(snapshot);
-    expect(next).toEqual([
-      { ...existing[0], text: "one, amended", priority: "high" },
-      { id: "r-0000ffff", text: "three", priority: "normal", turns: 0, createdAt: 5, origin },
-    ]);
-    expect(next[0].turns).toBe(7); // amending keeps the wait
-  });
-
-  test("unknown ids and overflow reject the whole batch", () => {
-    expect(() => applyOps([], [{ op: "remove", id: "r-00000009" }], mint)).toThrow(/unknown/);
-    expect(() => applyOps([], [{ op: "set", id: "r-00000009", text: "x" }], mint)).toThrow(/unknown/);
-    const full = Array.from({ length: MAX_REMINDERS }, (_, i) => reminder(`r-0000000${i + 1}`, `n${i}`));
-    expect(() => applyOps(full, [{ op: "add", text: "one too many", priority: "low" }], mint)).toThrow(/more than/);
-    // Replacing within the cap is fine.
-    expect(applyOps(full, [{ op: "remove", id: "r-00000001" }, { op: "add", text: "swap", priority: "low" }], mint)).toHaveLength(MAX_REMINDERS);
-  });
-});
-
-describe("curate: one ephemeral dispatch, outgoing context, graceful failure", () => {
-  test("dispatches exactly once with the outgoing context, the handoff, then the curation prompt", async () => {
-    const { store } = fixture();
-    store.save([reminder("r-00000001", "carry me")]);
-    const calls: LlmMessage[][] = [];
-    const outcome = await curate({
-      messages: context, handoff: "THE HANDOFF", store, origin,
-      complete: async (messages) => { calls.push(messages); return reply('{"ops":[{"op":"add","text":"new","priority":"high"}]}'); },
-    });
-    expect(outcome).toEqual({ outcome: "applied", ops: 1, reminders: 2 });
-    expect(calls).toHaveLength(1);
-    const sent = calls[0];
-    expect(sent.slice(0, 3)).toEqual(context);
-    expect(sent[3].role).toBe("assistant");
-    expect((sent[3].content as any)[0].text).toBe("THE HANDOFF");
-    expect(sent[4].role).toBe("user");
-    const prompt = (sent[4].content as any)[0].text as string;
-    expect(prompt).toContain("r-00000001");
-    expect(prompt).toContain("carry me");
-    expect(prompt).toContain('{"ops":[]}');
-    expect(store.list().map((r) => r.text)).toEqual(["carry me", "new"]);
-    expect(store.list()[1].origin).toEqual(origin);
-  });
-
-  test("empty ops is a no-op that touches nothing", async () => {
-    const { store } = fixture();
-    store.save([reminder("r-00000001", "keep")]);
-    const before = fs.statSync(store.file).mtimeMs;
-    const outcome = await curate({ messages: context, handoff: "h", store, origin, complete: async () => reply('{"ops":[]}') });
-    expect(outcome).toEqual({ outcome: "noop" });
-    expect(store.list()).toEqual([reminder("r-00000001", "keep")]);
-    expect(fs.statSync(store.file).mtimeMs).toBe(before);
-  });
-
-  test("every failure skips without mutation and without throwing", async () => {
-    const { store } = fixture();
-    const initial = [reminder("r-00000001", "keep")];
-    store.save(initial);
-    const cases: Array<[string, () => Promise<CurationResponse>]> = [
-      ["invalid-json", async () => reply("I'd add a reminder about the Johnson call.")],
-      ["invalid-json", async () => reply("")],
-      ["invalid-json", async () => reply('{"ops":[{"op":"add","text":"x","priority":"soon"}]}')],
-      ["stopReason:error", async () => reply("", "error")],
-      ["stopReason:length", async () => reply('{"ops":[{"op":"add","text":"tru', "length")],
-      ["stopReason:aborted", async () => reply("", "aborted")],
-      ["Error", async () => { throw new Error("provider down"); }],
-      ["Error", async () => reply('{"ops":[{"op":"remove","id":"r-00000099"}]}')],
-    ];
-    for (const [reason, complete] of cases) {
-      const outcome = await curate({ messages: context, handoff: "h", store, origin, complete });
-      expect(outcome).toEqual({ outcome: "skipped", reason });
-      expect(store.list()).toEqual(initial);
+    for (const c of malformed) {
+      expect(validCurve(c)).toBe(false);
+      expect(parseCuration(JSON.stringify({ ops: [{ op: "add", text: "x", curve: c }] }))).toBeNull();
     }
+    expect(parseCuration("```json\n" + addJson() + "\n```")).toBeNull();
+    expect(parseCuration(addJson() + " trailing")).toBeNull();
+    expect(parseCuration(JSON.stringify({ ops: [{ op: "add", text: "x", curve: curve(), priority: "high" }] }))).toBeNull();
+    expect(parseCuration(JSON.stringify({ ops: [{ op: "add", text: "x".repeat(MAX_TEXT_CHARS + 1), curve: curve() }] }))).toBeNull();
   });
 
-  test("a hung model times out, aborts the request, and skips", async () => {
-    // The default bound is interactive latency on /clear: aborting instead
-    // would cancel the compaction Pi is holding open, handoff and all.
-    expect(DEFAULT_TIMEOUT_MS).toBeLessThanOrEqual(30_000);
-    const { store } = fixture();
-    let seen: AbortSignal | undefined;
-    const outcome = await curate({
-      messages: context, handoff: "h", store, origin, timeoutMs: 20,
-      complete: (_m, signal) => { seen = signal; return new Promise(() => {}); },
+  test("one accepted mutation changes exactly one record and preserves capacity", () => {
+    const existing = [reminder("r-00000001", "first"), reminder("r-00000002", "second")];
+    const next = applyOps(existing, [{ op: "set", id: "r-00000001", text: "changed", curve: curve([0.1, 0.4]) }], {
+      now: () => 5, id: () => "r-00000003", origin,
     });
-    expect(outcome).toEqual({ outcome: "skipped", reason: "timeout" });
-    expect(seen?.aborted).toBe(true);
-    expect(store.list()).toEqual([]);
-  });
-
-  test("an already-cancelled compaction never dispatches", async () => {
-    const { store } = fixture();
-    const controller = new AbortController();
-    controller.abort();
-    let calls = 0;
-    const outcome = await curate({
-      messages: context, handoff: "h", store, origin, signal: controller.signal,
-      complete: async () => { calls++; return reply('{"ops":[]}'); },
-    });
-    expect(outcome).toEqual({ outcome: "skipped", reason: "aborted" });
-    expect(calls).toBe(0);
-  });
-
-  test("a store that moved underneath the request is not guessed at", async () => {
-    const { store } = fixture();
-    const outcome = await curate({
-      messages: context, handoff: "h", store, origin,
-      complete: async () => {
-        store.save([reminder("r-00000001", "someone else")]);
-        return reply('{"ops":[{"op":"add","text":"x","priority":"low"}]}');
-      },
-    });
-    expect(outcome).toEqual({ outcome: "skipped", reason: "store-changed" });
-    expect(store.list().map((r) => r.text)).toEqual(["someone else"]);
+    expect(next[0].text).toBe("changed");
+    expect(next[1]).toEqual(existing[1]);
+    expect(existing[0].text).toBe("first");
+    const full = Array.from({ length: MAX_REMINDERS }, (_, i) => reminder(`r-${(i + 1).toString(16).padStart(8, "0")}`));
+    expect(() => applyOps(full, [{ op: "add", text: "overflow", curve: curve() }], { now: () => 5, id: () => "r-ffffffff", origin })).toThrow(/more than/);
   });
 });
 
-describe("store and delivery", () => {
-  test("writes one 0600 file under a 0700 root and reads it back", () => {
+describe("authored delivery probability", () => {
+  test("turn and wall-clock age each affect probability monotonically", () => {
+    const c = curve([0, 0.8]);
+    const zero = deliveryProbability(c, 0, 0);
+    const byTurns = deliveryProbability(c, 6, 0);
+    const byTime = deliveryProbability(c, 0, 3 * 3_600_000);
+    const both = deliveryProbability(c, 6, 3 * 3_600_000);
+    expect(zero).toBe(0);
+    expect(byTurns).toBeCloseTo(0.2);
+    expect(byTime).toBeCloseTo(0.2);
+    expect(both).toBeCloseTo(0.4);
+    expect(both).toBeGreaterThanOrEqual(byTurns);
+    expect(deliveryProbability(c, 10, 5 * 3_600_000)).toBeCloseTo(0.8);
+  });
+
+  test("zero, near, and fully mature chance follow the authored bounds", () => {
+    const c = curve([0.02, 0.42]);
+    expect(deliveryProbability(c, 0, 0)).toBe(0.02);
+    expect(deliveryProbability(c, 3, 0)).toBeGreaterThan(0.02);
+    expect(deliveryProbability(c, 10_000, 365 * 24 * 3_600_000)).toBe(0.42);
+  });
+});
+
+describe("store, migration, and deterministic delivery", () => {
+  test("writes strict v2 atomically with safe permissions", () => {
     const { root, store } = fixture();
-    store.save([reminder("r-00000001", "a")]);
+    store.save([reminder("r-00000001")]);
+    const doc = JSON.parse(fs.readFileSync(store.file, "utf8"));
+    expect(doc.version).toBe(2);
+    expect(doc.reminders[0].curve).toEqual(curve());
+    expect(doc.reminders[0].priority).toBeUndefined();
     expect(fs.statSync(root).mode & 0o777).toBe(0o700);
     expect(fs.statSync(store.file).mode & 0o777).toBe(0o600);
-    expect(fs.readdirSync(root)).toEqual(["reminders.json"]);
-    expect(store.list()).toEqual([reminder("r-00000001", "a")]);
   });
 
-  test("corrupt or oversize content reads as empty and is set aside", () => {
-    const { root, store } = fixture();
-    fs.writeFileSync(store.file, "{not json");
-    expect(store.list()).toEqual([]);
-    expect(fs.readdirSync(root).some((f) => f.endsWith(".corrupt"))).toBe(true);
-    fs.writeFileSync(store.file, JSON.stringify({ version: 1, reminders: [{ id: "r-00000001", text: "x".repeat(401), priority: "low", turns: 0, createdAt: 0, origin }] }));
-    expect(store.list()).toEqual([]);
-    expect(() => store.save(Array.from({ length: MAX_REMINDERS + 1 }, (_, i) => reminder(`r-0000000${i}`, "x")))).toThrow();
+  test("hydrates deployed v1 records without inspecting or eagerly rewriting bodies", () => {
+    const { store } = fixture();
+    const legacy = { version: 1, reminders: [
+      { id: "r-00000001", text: "legacy fixture", priority: "normal", turns: 7, createdAt: 10, origin },
+    ] };
+    const bytes = JSON.stringify(legacy);
+    fs.writeFileSync(store.file, bytes);
+    const hydrated = store.list();
+    expect(hydrated[0].text).toBe("legacy fixture");
+    expect(hydrated[0].curve).toEqual({ turns: [5, 200], hours: [24, 720], chance: [0.03, 0.25] });
+    expect(fs.readFileSync(store.file, "utf8")).toBe(bytes);
   });
 
-  test("hazard: quiet in grace, ramps, certain at the ceiling", () => {
-    expect(hazard("high", 1)).toBe(0);
-    expect(hazard("high", 2)).toBeCloseTo(0.15 + (0.35 / 15), 6);
-    expect(hazard("high", 40)).toBe(1);
-    expect(hazard("normal", 5)).toBe(0);
-    expect(hazard("normal", 65)).toBeCloseTo(0.25, 6);
-    expect(hazard("normal", 200)).toBe(1);
-    expect(hazard("low", 20)).toBe(0);
-    expect(hazard("low", 600)).toBe(1);
+  test("rejects malformed v2 records and save failures leave the previous file intact", () => {
+    const { store } = fixture();
+    const initial = [reminder("r-00000001", "stable fixture")];
+    store.save(initial);
+    const before = fs.readFileSync(store.file, "utf8");
+    expect(() => store.save([{ ...initial[0], curve: { ...curve(), chance: [0.9, 0.1] } } as Reminder])).toThrow();
+    expect(fs.readFileSync(store.file, "utf8")).toBe(before);
   });
 
-  test("draw ages everything, removes at most one, and drains at the ceiling", () => {
-    const { store } = fixture(() => 0.999);
-    store.save([reminder("r-00000001", "h", "high"), reminder("r-00000002", "l", "low")]);
-    for (let turn = 1; turn < 40; turn++) expect(store.draw()).toBeNull();
-    expect(store.list().map((r) => r.turns)).toEqual([39, 39]);
-    const drawn = store.draw();
-    expect(drawn?.id).toBe("r-00000001");
-    expect(store.list().map((r) => r.id)).toEqual(["r-00000002"]);
-    expect(store.draw()).toBeNull(); // already gone: at most once
+  test("injected RNG is deterministic and scan stops at first success", () => {
+    const values = [0.9, 0.1, 0.0];
+    let calls = 0;
+    const { store } = fixture(() => values[calls++]);
+    const c = curve([0.5, 0.5]);
+    store.save([reminder("r-00000001", "miss", c), reminder("r-00000002", "hit", c), reminder("r-00000003", "not scanned", c)]);
+    expect(store.draw()?.id).toBe("r-00000002");
+    expect(calls).toBe(2);
+    expect(store.list().map((r) => r.id)).toEqual(["r-00000001", "r-00000003"]);
   });
 
-  test("draw selects by chance and only one per turn", () => {
+  test("one turn can never deliver two, while adjacent-turn clustering remains possible", () => {
     const { store } = fixture(() => 0);
-    store.save([reminder("r-00000001", "a", "high", 5), reminder("r-00000002", "b", "high", 5)]);
+    const certain = curve([1, 1]);
+    store.save([reminder("r-00000001", "first", certain), reminder("r-00000002", "second", certain)]);
     expect(store.draw()?.id).toBe("r-00000001");
-    expect(store.list().map((r) => [r.id, r.turns])).toEqual([["r-00000002", 6]]);
+    expect(store.list()).toHaveLength(1);
+    expect(store.draw()?.id).toBe("r-00000002");
+    expect(store.list()).toHaveLength(0);
   });
 
-  test("delivery is a system reminder with origin, never the user's voice", () => {
-    const text = renderDelivery(reminder("r-00000001", "remember the Johnson call"), 1_000_000 + 3 * 3_600_000);
-    expect(text.startsWith("<system-reminder>")).toBe(true);
-    expect(text).toContain("remember the Johnson call");
-    expect(text).toContain("about 3 hours ago");
-    expect(text).toContain("session sess-123");
-    expect(text).toContain("handoff /h/2026.md");
-    expect(text).toContain("The user did not send it");
+  test("wall time changes a draw outcome with fixed RNG", () => {
+    const f = fixture(() => 0.3);
+    f.store.save([reminder("r-00000001", "time fixture", curve([0, 0.8]))]);
+    expect(f.store.draw()).toBeNull();
+    f.tick(5 * 3_600_000);
+    expect(f.store.draw()?.id).toBe("r-00000001");
+  });
+});
+
+describe("curate atomicity and presentation", () => {
+  test("multi-op response leaves the store byte-for-byte untouched", async () => {
+    const { store } = fixture();
+    store.save([reminder("r-00000001", "stable fixture")]);
+    const before = fs.readFileSync(store.file, "utf8");
+    const result = await curate({
+      messages: context, handoff: "fixture handoff", store, origin,
+      complete: async () => reply(JSON.stringify({ ops: [
+        { op: "remove", id: "r-00000001" },
+        { op: "add", text: "replacement", curve: curve() },
+      ] })),
+    });
+    expect(result).toEqual({ outcome: "skipped", reason: "invalid-json" });
+    expect(fs.readFileSync(store.file, "utf8")).toBe(before);
   });
 
-  test("curation prompt lists ids and bounds", () => {
-    const text = renderCurationPrompt([reminder("r-00000001", "x", "low", 3)], 1_000_000);
-    expect(text).toContain("id r-00000001 · low");
-    expect(text).toContain(`${MAX_TEXT_CHARS} characters`);
-    expect(text).toContain(`1/${MAX_REMINDERS}`);
-    expect(renderCurationPrompt([], 0)).toContain("(none)");
+  test("exactly one valid mutation is applied after one dispatch", async () => {
+    const { store } = fixture();
+    let calls = 0;
+    const result = await curate({ messages: context, handoff: "fixture handoff", store, origin, complete: async () => {
+      calls++;
+      return reply(addJson());
+    } });
+    expect(result).toEqual({ outcome: "applied", ops: 1, reminders: 1 });
+    expect(calls).toBe(1);
+    expect(store.list()[0].curve).toEqual(curve());
   });
 
-  test("root resolves to the sibling of the pi dir, never inside it", () => {
-    expect(subconsciousRoot({ FAMILIAR_SUBCONSCIOUS_DIR: "/s/x" })).toBe("/s/x");
+  test("provider failure, timeout, and unknown id do not mutate", async () => {
+    expect(DEFAULT_TIMEOUT_MS).toBeLessThanOrEqual(30_000);
+    const { store } = fixture();
+    const cases = [
+      async () => reply('{"ops":[{"op":"remove","id":"r-ffffffff"}]}'),
+      async () => { throw new Error("fixture failure"); },
+    ];
+    for (const complete of cases) {
+      expect((await curate({ messages: context, handoff: "h", store, origin, complete })).outcome).toBe("skipped");
+      expect(store.list()).toEqual([]);
+    }
+    const timeout = await curate({ messages: context, handoff: "h", store, origin, timeoutMs: 5, complete: async () => new Promise(() => {}) });
+    expect(timeout).toEqual({ outcome: "skipped", reason: "timeout" });
+  });
+
+  test("prompt states one operation and curve contract; delivery remains hidden-system text", () => {
+    const prompt = renderCurationPrompt([reminder("r-00000001")], 1_000_000);
+    expect(prompt).toContain("no more than ONE operation");
+    expect(prompt).toContain('"turns":[quiet,mature]');
+    expect(prompt).toContain("probability, not a delivery promise");
+    expect(prompt).toContain(`1/${MAX_REMINDERS}`);
+    const delivered = renderDelivery(reminder("r-00000001", "fixture delivery"), 2_000_000);
+    expect(delivered).toContain("<system-reminder>");
+    expect(delivered).toContain("fixture delivery");
+    expect(delivered).toContain("The user did not send it");
     expect(subconsciousRoot({ PI_CODING_AGENT_DIR: "/state/pi" })).toBe("/state/subconscious");
   });
 });

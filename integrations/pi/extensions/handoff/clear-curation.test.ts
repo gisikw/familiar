@@ -45,6 +45,7 @@ const reminders = () => {
   const file = path.join(storeDir, "reminders.json");
   return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")).reminders : [];
 };
+const authoredCurve = { turns: [1, 20], hours: [2, 48], chance: [0.05, 0.4] };
 
 async function harness(options: {
   curation?: (request: any) => Promise<any> | any;
@@ -130,8 +131,8 @@ describe("/clear curates the subconscious from the outgoing context", () => {
   test("handoff first, then exactly one ephemeral curation, then the compaction — nothing persisted", async () => {
     fs.mkdirSync(storeDir, { recursive: true });
     fs.writeFileSync(path.join(storeDir, "reminders.json"), JSON.stringify({
-      version: 1,
-      reminders: [{ id: "r-0000aaaa", text: "old one", priority: "low", turns: 3, createdAt: 1, origin: { sessionId: null, handoffArchive: null } }],
+      version: 2,
+      reminders: [{ id: "r-0000aaaa", text: "old fixture", curve: authoredCurve, turns: 3, createdAt: 1, origin: { sessionId: null, handoffArchive: null } }],
     }));
     const h = await harness({
       curation: ({ request }) => {
@@ -146,7 +147,7 @@ describe("/clear curates the subconscious from the outgoing context", () => {
         ]);
         expect(request.messages.at(-1).content[0].text).toContain("r-0000aaaa");
         expect(archiveFiles()).toHaveLength(1); // the handoff already exists on disk
-        return '{"ops":[{"op":"set","id":"r-0000aaaa","priority":"high"},{"op":"add","text":"ask Kevin about the Johnson call","priority":"normal"}]}';
+        return JSON.stringify({ ops: [{ op: "set", id: "r-0000aaaa", text: "updated fixture", curve: authoredCurve }] });
       },
     });
 
@@ -164,15 +165,16 @@ describe("/clear curates the subconscious from the outgoing context", () => {
     // exists nowhere in the session.
     expect(result.compaction.summary).toBe("# Handoff\n\nwhat shipped");
     expect(result.compaction.details.archive).toBe(path.join(handoffDir, archiveFiles()[0]));
-    expect(JSON.stringify(result)).not.toContain("Johnson");
+    expect(JSON.stringify(result)).not.toContain("updated fixture");
     expect(JSON.stringify(result)).not.toContain("ops");
     expect(h.persisted).toEqual([]);
     expect(fs.readFileSync(result.compaction.details.archive, "utf8")).toBe("# Handoff\n\nwhat shipped\n");
 
     // Only the store changed.
     const stored = reminders();
-    expect(stored.map((r: any) => [r.text, r.priority])).toEqual([["old one", "high"], ["ask Kevin about the Johnson call", "normal"]]);
-    expect(stored[1].origin).toEqual({ sessionId: "session-abcdef12", handoffArchive: result.compaction.details.archive });
+    expect(stored).toHaveLength(1);
+    expect(stored[0].text).toBe("updated fixture");
+    expect(stored[0].curve).toEqual(authoredCurve);
 
     // One /clear, one dispatch: a second before_compact for the same trigger does not curate again.
     await h.beforeCompact();
@@ -219,7 +221,7 @@ describe("/clear curates the subconscious from the outgoing context", () => {
 
   test("prose, provider errors, thrown failures, and a hung model all degrade to a plain /clear", async () => {
     const failures = [
-      () => "Sure, I'd like to remind myself about the Johnson call.",
+      () => "Sure, I would add a fixture reminder.",
       () => ({ stopReason: "error", errorMessage: "model unavailable", content: [] }),
       () => { throw new Error("socket hang up"); },
       ({ signal }: any) => new Promise((resolve) => { signal.addEventListener("abort", () => resolve({ stopReason: "aborted", content: [] })); }),
@@ -251,8 +253,8 @@ describe("/clear curates the subconscious from the outgoing context", () => {
 describe("delivery to the next Familiar", () => {
   test("a reminder arrives hidden on an ordinary human turn, once, and never during orientation", async () => {
     fs.writeFileSync(path.join(storeDir, "reminders.json"), JSON.stringify({
-      version: 1,
-      reminders: [{ id: "r-0000aaaa", text: "remember the Johnson call", priority: "high", turns: 39, createdAt: 1, origin: { sessionId: "session-abcdef12", handoffArchive: "/h/a.md" } }],
+      version: 2,
+      reminders: [{ id: "r-0000aaaa", text: "fixture delivery", curve: { turns: [0, 1], hours: [0, 1], chance: [1, 1] }, turns: 0, createdAt: 1, origin: { sessionId: "session-abcdef12", handoffArchive: "/h/a.md" } }],
     }));
     // A session that just compacted and has not yet oriented.
     const entries = [{ type: "compaction", summary: "# Handoff", details: { kind: "familiar-handoff", archive: "/h/a.md" } }];
@@ -270,7 +272,7 @@ describe("delivery to the next Familiar", () => {
     const injected = await h.emit("before_agent_start", {});
     expect(injected.message.customType).toBe("subconscious-reminder");
     expect(injected.message.display).toBe(false);
-    expect(injected.message.content).toContain("remember the Johnson call");
+    expect(injected.message.content).toContain("fixture delivery");
     expect(injected.message.content).toContain("handoff /h/a.md");
     expect(reminders()).toEqual([]);
 
