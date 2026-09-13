@@ -109,17 +109,15 @@ function validOp(v: unknown): v is Op {
 }
 
 /**
- * Strict parse of the curation reply. A single JSON object `{"ops":[...]}`,
- * optionally inside one ```json fence. Anything else is null: no mutation.
+ * Strict parse of the curation reply. Exactly one bare JSON object `{"ops":[...]}`;
+ * no fenced blocks, prose, or multiple objects. Whitespace around the JSON is allowed
+ * because JSON.parse permits it. Anything else is null: no mutation.
  */
 export function parseCuration(text: string): Op[] | null {
   if (typeof text !== "string" || text.length > MAX_RESPONSE_CHARS) return null;
-  let body = text.trim();
-  const fenced = /^```(?:json)?\s*\n([\s\S]*?)\n```$/.exec(body);
-  if (fenced) body = fenced[1].trim();
   let parsed: unknown;
   try {
-    parsed = JSON.parse(body);
+    parsed = JSON.parse(text);
   } catch {
     return null;
   }
@@ -268,7 +266,7 @@ export function renderCurationPrompt(pending: readonly Reminder[], nowMs: number
 Current reminders (${pending.length}/${MAX_REMINDERS}):
 ${listing}
 
-Reply with exactly one JSON object and nothing else — no prose, no commentary:
+Reply with exactly one bare JSON object and nothing else — no fences, no prose, no commentary:
 {"ops":[
   {"op":"add","text":"…","priority":"high"|"normal"|"low"},
   {"op":"set","id":"r-…","text":"…"?,"priority":"…"?},

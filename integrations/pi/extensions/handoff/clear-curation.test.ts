@@ -4,14 +4,22 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 // Drive the real handoff extension through a fake pi/ctx. Pi's packages are
-// mocked at the module boundary; the extension code under test is unmodified.
+// mocked at the module boundary; retain their real exports because Bun mocks
+// are process-global and the canonical suite later exercises Pi's real loader.
+const piPackageDir = process.env.PI_PACKAGE_DIR;
+if (!piPackageDir) throw new Error("PI_PACKAGE_DIR is required (run in Familiar's pi or agents dev shell)");
+const realCodingAgent = await import(path.join(piPackageDir, "dist/index.js"));
+const realPiAi = await import(path.join(piPackageDir, "node_modules/@earendil-works/pi-ai/dist/index.js"));
+const realTypebox = await import(path.join(piPackageDir, "node_modules/typebox/build/index.mjs"));
 mock.module("@earendil-works/pi-coding-agent", () => ({
+  ...realCodingAgent,
   buildSessionContext: (entries: any[]) => ({ messages: entries.map((e) => e.message) }),
   convertToLlm: (messages: any[]) => messages.map((m) => ({ ...m })),
 }));
-mock.module("@earendil-works/pi-ai", () => ({ uuidv7: () => "uuid-v7" }));
+mock.module("@earendil-works/pi-ai", () => ({ ...realPiAi, uuidv7: () => "uuid-v7" }));
 mock.module("typebox", () => ({
-  Type: { Object: (o: any) => o, Optional: (o: any) => o, String: (o: any) => o },
+  ...realTypebox,
+  Type: { ...realTypebox.Type, Object: (o: any) => o, Optional: (o: any) => o, String: (o: any) => o },
 }));
 
 type Handler = (event: any, ctx: any) => Promise<any>;

@@ -31,7 +31,7 @@ fail.
 
 ## Reply schema
 
-Exactly one JSON object, optionally in a single ```` ```json ```` fence:
+Exactly one bare JSON object, with no markdown fences or prose:
 
 ```json
 {"ops":[

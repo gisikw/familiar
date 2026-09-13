@@ -50,18 +50,25 @@ const context: LlmMessage[] = [
 ];
 
 describe("parseCuration: strict bounded JSON", () => {
-  test("accepts the three ops, bare or fenced", () => {
+  test("accepts only bare JSON objects with optional surrounding whitespace", () => {
     const ops = '{"ops":[{"op":"add","text":"a","priority":"high"},{"op":"set","id":"r-00000001","priority":"low"},{"op":"remove","id":"r-00000002"}]}';
     expect(parseCuration(ops)).toHaveLength(3);
-    expect(parseCuration("```json\n" + ops + "\n```")).toHaveLength(3);
     expect(parseCuration("  \n" + ops + "\n")).toHaveLength(3);
+  });
+
+  test("rejects fenced JSON, prose-wrapped JSON, and multiple objects", () => {
+    const ops = '{"ops":[{"op":"add","text":"a","priority":"high"}]}';
+    expect(parseCuration("```json\n" + ops + "\n```")).toBeNull();
+    expect(parseCuration("Here is the JSON: " + ops)).toBeNull();
+    expect(parseCuration(ops + " done")).toBeNull();
+    expect(parseCuration(ops + ops)).toBeNull();
   });
 
   test("empty ops is a valid no-op", () => {
     expect(parseCuration('{"ops":[]}')).toEqual([]);
   });
 
-  test("rejects prose, wrappers, unknown ops, unknown keys, bad ids, and oversize", () => {
+  test("rejects malformed ops, unknown keys, bad ids, and oversize", () => {
     const bad = [
       "Sure! Here are my reminders.",
       'Here you go: {"ops":[]}',
