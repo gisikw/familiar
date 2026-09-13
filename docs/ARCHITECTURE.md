@@ -248,6 +248,7 @@ pi-owned session state
 Familiar-owned continuity state
 ├── identity and canon
 ├── handoffs and continuity metadata
+├── subconscious reminders (curated at /clear, unread by the running agent)
 ├── Familiar configuration
 └── client/device preferences
 ```

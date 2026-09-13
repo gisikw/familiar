@@ -70,6 +70,16 @@ account shell authority, not a path sandbox. Configuration is explicit, there
 is no local fallback, and no remote Familiar daemon is installed. See the
 [isolated proof harness](test/agents/README.md) before deployment.
 
+## Subconscious reminders
+
+At `/clear`, after the outgoing Familiar has written her handoff and before the
+compaction lands, she gets one ephemeral request to curate a small set of
+reminders for her next self — strict JSON, never persisted to the session. Each
+later surfaces on its own, once, as a hidden system reminder during ordinary
+conversation. The store is one atomically replaced file beneath
+`FAMILIAR_SUBCONSCIOUS_DIR` (default private `state/subconscious`). See
+[SUBCONSCIOUS.md](integrations/pi/extensions/handoff/SUBCONSCIOUS.md).
+
 ## Durable wakes
 
 The resident `wake` extension stores alarms beneath `FAMILIAR_WAKE_DIR`

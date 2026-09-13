@@ -95,6 +95,11 @@ export FAMILIAR_PRESENCE_CTL="${FAMILIAR_PRESENCE_CTL:-$REPO/services/presence/p
 # Durable extension state belongs to the private runtime, never the source tree.
 export FAMILIAR_WAKE_DIR="${FAMILIAR_WAKE_DIR:-$STATE_DIR/wakes}"
 export FAMILIAR_WAKE_DIR="$(resolve_config_path "$FAMILIAR_WAKE_DIR")"
+# Subconscious reminders: the small set the outgoing Familiar curates for the
+# next one at /clear. Self-addressed and unread by the running agent; 0700.
+export FAMILIAR_SUBCONSCIOUS_DIR="${FAMILIAR_SUBCONSCIOUS_DIR:-$STATE_DIR/subconscious}"
+export FAMILIAR_SUBCONSCIOUS_DIR="$(resolve_config_path "$FAMILIAR_SUBCONSCIOUS_DIR")"
+install -d -m 700 "$FAMILIAR_SUBCONSCIOUS_DIR" 2>/dev/null || true
 # Private-mode keyring. Holds a public age recipient and the matching identity
 # wrapped under Kevin's passphrase; never conversation content. Mode 0700.
 export FAMILIAR_PRIVATE_DIR="${FAMILIAR_PRIVATE_DIR:-$STATE_DIR/private}"

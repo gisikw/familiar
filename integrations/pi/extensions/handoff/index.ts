@@ -5,6 +5,14 @@ import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { errorLog } from "../lib/debug.ts";
 import { completeHandoff, handoffMaxTokens } from "./request.ts";
+import {
+  curate,
+  DEFAULT_TIMEOUT_MS,
+  renderDelivery,
+  SubconsciousStore,
+  subconsciousRoot,
+  type LlmMessage,
+} from "./subconscious.ts";
 import { Type } from "typebox";
 
 // Context compaction becomes an active-model-authored handoff, followed by
@@ -26,6 +34,7 @@ Do not address the user. Do not say hello. Do not summarize what you'll help wit
 
 const MASK = "*⟨continuity — private⟩*";
 const KIND = "familiar-handoff";
+const SUBCONSCIOUS_MESSAGE = "subconscious-reminder";
 const ORIENTATION_ENTRY = "handoff-orientation-output";
 // Durable, projection-only controls understood by the familiar-ui bridge.
 // appendEntry() state never participates in model context.
@@ -94,6 +103,24 @@ export default function handoffExtension(pi: ExtensionAPI) {
   let automaticHandoffPending = false;
   let saturationLevel = 0;
   const knownPrivateOutputs = new Set<string>();
+
+  // Subconscious reminders. Curated once per explicit /clear by the outgoing
+  // context inside session_before_compact; delivered one at a time on ordinary
+  // human turns. The store is opened lazily; a broken store disables both.
+  let curateOnClear = false;
+  let humanTurnPending = false;
+  let store: SubconsciousStore | null = null;
+  let storeBroken = false;
+  const openStore = (): SubconsciousStore | null => {
+    if (store || storeBroken) return store;
+    try {
+      store = new SubconsciousStore(subconsciousRoot());
+    } catch (err) {
+      storeBroken = true;
+      errorLog("handoff", { subconsciousUnavailable: String(err) });
+    }
+    return store;
+  };
 
   const saturation = (ctx: ExtensionContext): number | null => {
     const usage = ctx.getContextUsage();
@@ -165,6 +192,7 @@ export default function handoffExtension(pi: ExtensionAPI) {
       return;
     }
     compactionRunning = true;
+    curateOnClear = !automatic;
     continuationAfterCompaction = continuation?.trim() || undefined;
     if (ctx.hasUI) ctx.ui.setWorkingMessage("Writing handoff…");
 
@@ -189,6 +217,7 @@ export default function handoffExtension(pi: ExtensionAPI) {
       },
       onError: (error) => {
         compactionRunning = false;
+        curateOnClear = false;
         continuationAfterCompaction = undefined;
         if (ctx.hasUI) {
           ctx.ui.setWorkingMessage();
@@ -205,6 +234,8 @@ export default function handoffExtension(pi: ExtensionAPI) {
     continuationAfterCompaction = undefined;
     automaticHandoffPending = false;
     saturationLevel = 0;
+    curateOnClear = false;
+    humanTurnPending = false;
 
     const branch = ctx.sessionManager.getBranch();
     virginSession = branch.length === 0;
@@ -233,6 +264,10 @@ export default function handoffExtension(pi: ExtensionAPI) {
   });
 
   pi.on("session_before_compact", async (event, ctx) => {
+    // Consumed here, before anything can fail, so one /clear is one curation
+    // dispatch at most — even if this handler runs again.
+    const curateNow = curateOnClear && event.reason === "manual" && !event.willRetry;
+    curateOnClear = false;
     const handoffDir = process.env.FAMILIAR_HANDOFF_PATH;
     if (!handoffDir) {
       if (ctx.hasUI) ctx.ui.notify("FAMILIAR_HANDOFF_PATH is not set; compaction cancelled", "error");
@@ -304,6 +339,40 @@ export default function handoffExtension(pi: ExtensionAPI) {
       await writeFile(archive, `${summary}\n`, "utf-8");
       knownPrivateOutputs.add(summary);
 
+      // The handoff exists and the outgoing context is still whole: exactly
+      // one ephemeral curation request, same model, same context. Nothing
+      // from it is sent or appended to the session; only the store changes.
+      // Whatever happens here, the compaction below still returns.
+      const reminderStore = curateNow ? openStore() : null;
+      if (reminderStore) {
+        if (ctx.hasUI) ctx.ui.setWorkingMessage("Curating subconscious…");
+        const outgoing = ctx.model!;
+        const outcome = await curate({
+          messages: messages as LlmMessage[],
+          handoff: summary,
+          store: reminderStore,
+          origin: { sessionId: ctx.sessionManager.getSessionId() || null, handoffArchive: archive },
+          signal: event.signal,
+          timeoutMs: Number(process.env.FAMILIAR_SUBCONSCIOUS_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
+          complete: (curationMessages, signal) => completeHandoff((reasoning) => ctx.modelRegistry.complete(
+            outgoing,
+            { systemPrompt: ctx.getSystemPrompt(), messages: curationMessages as any },
+            {
+              signal,
+              cacheRetention: "short",
+              ...(reasoning === undefined ? {} : { reasoningEffort: reasoning }),
+              sessionId: ctx.sessionManager.getSessionId() || uuidv7(),
+              ...(handoffMaxTokens(outgoing.provider, 2048) === undefined ? {} : { maxTokens: 2048 }),
+            },
+          ) as any, signal),
+        });
+        if (outcome.outcome === "skipped") errorLog("handoff", { subconsciousSkipped: outcome.reason });
+        if (event.signal.aborted) {
+          compactionRunning = false;
+          return { cancel: true };
+        }
+      }
+
       return {
         compaction: {
           summary,
@@ -340,7 +409,25 @@ export default function handoffExtension(pi: ExtensionAPI) {
   });
 
   pi.on("before_agent_start", async (_event, ctx) => {
+    const human = humanTurnPending;
+    humanTurnPending = false;
     if (phase !== "done") return;
+
+    // One hidden reminder at most per ordinary human turn. It takes the
+    // injected-message slot; saturation advice simply fires on a later turn.
+    if (human && !compactionRunning) {
+      try {
+        const reminder = openStore()?.draw();
+        if (reminder) {
+          return {
+            message: { customType: SUBCONSCIOUS_MESSAGE, content: renderDelivery(reminder, Date.now()), display: false },
+          };
+        }
+      } catch (err) {
+        errorLog("handoff", { subconsciousDrawError: err instanceof Error ? err.name : "error" });
+      }
+    }
+
     const percent = saturation(ctx);
     if (percent == null) return;
 
@@ -377,6 +464,7 @@ export default function handoffExtension(pi: ExtensionAPI) {
   });
 
   pi.on("input", async (event, ctx) => {
+    humanTurnPending = true;
     if (phase === "done") return { action: "continue" as const };
     stash.push({ text: event.text, images: event.images as unknown[] });
     if (phase === "pending") await beginOrientation(ctx);
@@ -447,6 +535,8 @@ export default function handoffExtension(pi: ExtensionAPI) {
   });
 
   pi.registerMessageRenderer("handoff-orientation", () => undefined);
+  // Never rendered: a reminder is for the model, not the scrollback.
+  pi.registerMessageRenderer(SUBCONSCIOUS_MESSAGE, () => undefined);
 
   pi.registerMarkdownTransformer((markdown, { messageType }) => {
     if (messageType === "user") return markdown;
