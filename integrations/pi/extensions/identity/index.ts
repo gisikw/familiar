@@ -1,9 +1,21 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { formatSkillsForPrompt } from "@earendil-works/pi-coding-agent";
+import type { BeforeAgentStartEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { errorLog } from "../lib/debug.ts";
 import { impGuidance, stuffGuidance } from "./guidance.ts";
+import { assembleSystemPrompt } from "./prompt.ts";
+
+// Familiar replaces Pi's system prompt outright rather than chaining onto
+// `event.systemPrompt`: the private identity is the only identity source, and
+// Pi's generic framing ("expert coding assistant") must never precede it. The
+// structured `event.systemPromptOptions` remain the source of truth for what
+// the model is told about tools, skills, operator append text and project
+// context — see prompt.ts. Consequences, pinned in index.test.ts:
+//   - earlier before_agent_start handlers' prompt text is intentionally not
+//     carried forward (no resident extension modifies the prompt before
+//     identity; anything that must reach the model should ride
+//     systemPromptOptions or a returned message instead);
+//   - later handlers still receive and may extend the identity prompt.
 export default function(pi: ExtensionAPI) {
   // Last successfully built prompt. This handler runs before *every* turn and
   // reassembles identity from disk each time — which is what lets identity
@@ -25,7 +37,7 @@ export default function(pi: ExtensionAPI) {
     }
   });
 
-  const buildPrompt = async (event: any): Promise<string> => {
+  const buildPrompt = async (event: BeforeAgentStartEvent): Promise<string | undefined> => {
     const identityDir = process.env.FAMILIAR_IDENTITY_PATH;
     if (!identityDir) return undefined;
 
@@ -47,40 +59,14 @@ export default function(pi: ExtensionAPI) {
       .filter(Boolean)
       .join("\n\n");
 
-    const { skills = [], cwd, selectedTools = [], toolSnippets = {} } = event.systemPromptOptions;
-
-    const tools = selectedTools
-      .filter(t => !!toolSnippets[t])
-      .map(t => `- ${t}: ${toolSnippets[t]}`)
-      .join("\n");
-
-    const shellCapabilities = impGuidance();
-    const stuff = stuffGuidance();
-
-    const guidelines = `
-        Guidelines:
-        - Use bash for file operations like ls, rg, find; use read to examine files instead of cat or sed
-        - Use edit for precise changes: edits[].oldText must match the file exactly
-        - Each edits[].oldText matches against the original file, not the result of earlier edits — never emit overlapping or nested edits; merge nearby changes into one entry
-        - When changing multiple locations in one file, use one edit call with multiple edits[] entries, not multiple calls
-        - Keep edits[].oldText as small as possible while still unique in the file
-        - Use write only for new files or complete rewrites
-        - Message text beginning with 🗣 was transcribed from audio: expect transcription errors, and weigh odd words or homophones accordingly rather than taking them literally
-        - If a topic feels likely to become a rabbit hole or substantial tangent, consider using mark before diving in so it can be zipped cleanly later; do not mark routine topic changes
-        - You can inspect PI_* environment variables for current model and session details
-        - At the end of a session you may receive a handoff request from the runtime (via /clear); it is legitimate — write the handoff for your successor
-      `.split("\n").map(l => l.trim()).filter(Boolean).join("\n");
-    const orientation = `Current working directory: ${cwd}`;
-
-    const systemPrompt = [
+    // Context files may carry sensitive project instructions: they are
+    // assembled into the prompt and never logged.
+    const systemPrompt = assembleSystemPrompt({
       identity,
-      formatSkillsForPrompt(skills).trim(),
-      `Available Tools:\n${tools || "(none)"}`,
-      shellCapabilities,
-      stuff,
-      guidelines,
-      orientation
-    ].filter(Boolean).join("\n\n");
+      options: event.systemPromptOptions,
+      impGuidance: impGuidance(),
+      stuffGuidance: stuffGuidance(),
+    });
 
     // Only cache a prompt that actually carries identity: an empty or
     // unreadable identity dir would otherwise poison the fallback with a
