@@ -101,16 +101,23 @@ loopback; other Drover URLs require HTTPS (normal Node TLS trust applies).
 
 Two explicit mechanisms are supported:
 
-* `profile_mode: "familiar-tiamat-v1"` creates a **per-job** Pi profile. It copies
-  only five source files from Familiar: Tiamat `index.ts`, `catalog.ts`,
-  `materializer.ts`, `usage.ts`, and `lib/debug.ts`. The source payload is capped
-  independently at 64 KiB; its complete JSON plan/provision request is capped at
-  128 KiB. The code bundle is captured in the admission record, digest-pinned,
-  and retained across controller code changes. It never
-  reads/tars a controller Pi profile, auth store, identity, skills or sessions.
-  Credentials stay in the operator-provisioned **remote** token file referenced
-  by `worker_env`. The profile disables project-resource trust by default;
-  this is resource-loading policy, **not** a filesystem sandbox.
+* `profile_mode: "familiar-tiamat-v1"` creates a **per-job** Pi profile from one
+  content-addressed **worker profile artifact**: the exact relative-import
+  module graph reachable from Familiar's `tiamat/index.ts`, read from this
+  controller's own extensions source tree at resident start (today that graph
+  is the Tiamat sources plus `lib/debug.ts`; it is derived, never listed). Only
+  regular `.ts` files inside the extensions tree can be reached, so a profile,
+  auth store, token or session file can never be swept in. The artifact is
+  bounded to 32 files, 6 path segments and 64 KiB; the complete provisioning
+  request is bounded to 128 KiB. Its SHA-256 digest is pinned in the admission
+  record before any remote contact; provisioning must echo it exactly. The
+  remote side applies only generic rules — safe relative paths, bounds, digest —
+  and has **no knowledge of which files exist**. Credentials stay in the
+  operator-provisioned **remote** token file referenced by `worker_env`. The
+  profile disables project-resource trust by default; this is resource-loading
+  policy, **not** a filesystem sandbox. See
+  `docs/familiar-agents-admission-preflight.md` for why the former five-file
+  allowlist was removed.
 * `profile_mode: "enrolled"` (the compatibility default) requires an absolute
   `profile` path to an already configured remote Pi profile with settings.json.
   This supports explicitly installed worker tools/providers. No content from a
@@ -162,12 +169,14 @@ Project-specific `nix develop` remains separate and optional — the agent's own
 choice inside its worktree.
 
 Familiar sends semantic inputs only — agent kind, exact provider/model, model
-guard, task. It does **not** probe, inject, select or attest the pane PATH: a
-`command -v` style preflight would only show that *some* `pi` is resolvable,
-which is no provenance guarantee, so there is deliberately no such machinery.
-The enrolled `worker_env` is still passed to `workspace.create`, but nothing in
-v1 treats it as proof that the launch will succeed. What Familiar does instead is
-observe the outcome truthfully; see the launch-pending reconciliation below.
+guard, task. It does **not** inject, select or attest the pane PATH. The
+read-only preflight asks the enrolled account one availability question — does
+your own shell, started fresh with the enrolled `worker_env.PATH` and after the
+node's shell initialisation, resolve `pi`? — and reports `harness_unavailable`
+if not. That is availability, not provenance: it cannot prove *which* `pi` a
+pane will run, so nothing in v1 treats a passed preflight as proof that the
+launch will succeed. What Familiar does instead is observe the outcome
+truthfully; see the launch-pending reconciliation below.
 `test/agents/launch-proof.mjs` records the Herdr semantics and the node-side
 fix against a real pinned Herdr 0.9 server.
 
@@ -209,14 +218,26 @@ existing familiar-ui snapshot bridge—no additional listener or bearer token.
 
 ### Durable phases and uncertain operations
 
-1. A **read-only plan** resolves the remote XDG paths, source commit and profile.
-   A completed failed plan returns a fixed credential-free admission error and
-   marks `failed_admission`, with one worklist notice. A lost route remains
-   unknown and retryable, never terminal.
+1. A **read-only preflight** (`plan`) answers exactly two questions on the
+   enrolled machine: is the repository reachable and does the requested ref
+   resolve to a commit; is the harness runtime available (pinned Herdr 0.9.0,
+   the `pi` executable, the enrolled profile's `settings.json`). It resolves
+   the remote XDG paths and pinned commit and carries no source, digest or
+   guard. A completed refusal returns exactly one fixed code —
+   `repository_unavailable`, `ref_unresolvable`, `herdr_unavailable`,
+   `harness_unavailable`, `profile_unavailable` or `request_rejected` — which
+   the owner records as `admission_failure` with a specific message and one
+   worklist notice, marking `failed_admission`. No remote free text ever
+   crosses that boundary. A lost or fenced route remains unknown and
+   retryable, never terminal, and says so ("Remote preflight did not
+   complete…").
    The controller persists this plan before any provisioning mutation. Changing
    a ref/XDG environment after a crash cannot move the job or its cleanup path.
 2. Native provisioning is idempotent under a per-job lock; a remote marker pins
    the initial commit. It preserves later human work rather than resetting it.
+   For generated profiles it carries the pinned artifact; a rejected or
+   mismatched artifact is refused with `profile_artifact_rejected` before any
+   lock, directory or marker exists and is likewise definitive.
 3. Create/recover the uniquely named workspace, then start/recover the named Pi.
    Names encode the full UUID (base36) rather than a collision-prone short prefix.
 4. Send the task and atomic settlement contract with `agent.prompt`.
@@ -526,7 +547,7 @@ Legacy contrib `agents_*`/Golem tools are separate and are not used as fallback.
 * Per-job lock inodes and tiny nonce-correlated retirement markers remain outside
   the removed job directory. They prevent a delayed old provisioning call from
   resurrecting cleaned work. They are not a remote semantic ledger/service.
-* After completed cleanup and 90 days, ledger GC removes report/code-bundle/intent
+* After completed cleanup and 90 days, ledger GC removes report/artifact/intent
   details in bounded batches. Admission IDs/hashes, source/report digests, verdict,
   core metadata and operator attribution remain as idempotency/audit tombstones.
   Worklist archive retention is independently owned by the existing worklist.

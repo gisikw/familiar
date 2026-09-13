@@ -67,9 +67,14 @@ Drover catalog identity, coordinator/native SSH route, exact worker binaries,
 model choices and one of two explicit worker profile mechanisms:
 
 1. An already enrolled remote profile; or
-2. `familiar-tiamat-v1`: copy only the four allowlisted Tiamat/debug **source
-   files** and a per-job exact-model guard, with credentials referenced by an
-   operator-provisioned **remote** `FAMILIAR_TIAMAT_TOKEN_FILE`.
+2. `familiar-tiamat-v1`: install one content-addressed worker profile artifact
+   (the Tiamat extension's import graph, derived from the controller's own
+   source tree, never a listed filename set) and a per-job exact-model guard,
+   with credentials referenced by an operator-provisioned **remote**
+   `FAMILIAR_TIAMAT_TOKEN_FILE`. Historical note: this review originally
+   described a four-file allowlist; that protocol was retired after it bricked
+   dispatch when a fifth module was legitimately added (see
+   `familiar-agents-admission-preflight.md`).
 
 The generated profile now uses Pi's actual `defaultProjectTrust: "never"` value.
 There is no tar/import of ambient controller auth, profile, sessions or identity.
