@@ -16,8 +16,9 @@ web deployment.
 
 - **Window chrome:** one frameless/edgeless window. A slim
   `-webkit-app-region: drag` strip (provided by the served page and by our
-  offline page) keeps it movable. macOS traffic lights float over a hidden
-  titlebar; `Cmd-Q` / `Cmd-W`, copy/paste, and zoom live in a minimal menu.
+  offline page) keeps it movable. macOS traffic lights are hidden so they do
+  not cover that custom UI; `Cmd-Q` / `Cmd-W`, copy/paste, and zoom live in a
+  minimal menu.
 - **Zoom chords:** `Cmd/Ctrl` `+` / `-` / `0` map to `webContents` zoom
   (`setZoomLevel`). They're intercepted in the main process *before* reaching
   the page, so a remote TUI can't eat them.
@@ -157,10 +158,13 @@ There is deliberately no `renderer/` tree anymore — the UI is the remote page.
 ## Verify (headless)
 
 ```bash
+npm test              # deterministic platform-specific window-controls tests
 npm run selftest      # electron . --selftest
 ```
 
-The harness checks:
+The unit test verifies that Electron's native window-button API is called only
+for macOS; it does not claim to prove pixel placement. The Electron harness
+checks:
 
 1. **config** — `normalizeBaseUrl` cases and `resolveBaseUrl` precedence
    (env > `config.json` > default); window-bounds round-trip through the JSON.

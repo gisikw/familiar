@@ -60,6 +60,10 @@ jobs:
         if: steps.gate.outputs.released != 'true'
         working-directory: apps/desktop
         run: npm ci
+      - name: Desktop unit tests
+        if: steps.gate.outputs.released != 'true'
+        working-directory: apps/desktop
+        run: npm test
       - name: Desktop self-test
         if: steps.gate.outputs.released != 'true'
         working-directory: apps/desktop

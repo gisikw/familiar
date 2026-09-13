@@ -1,12 +1,13 @@
 {
   "name": "familiar-client",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "description": "Familiar — a thin Electron chrome shell around the familiar server's browser terminal.",
   "private": true,
   "main": "src/main/main.js",
   "scripts": {
     "prestart": "node scripts/ensure-app-name.js",
     "start": "electron .",
+    "test": "node --test src/main/window-controls.test.js",
     "selftest": "electron . --selftest",
     "check-version": "node scripts/check-version.js",
     "make-icns": "bash scripts/make-icns.sh",

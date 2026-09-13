@@ -22,6 +22,7 @@ if (process.argv.includes("--selftest")) {
 const { resolveBaseUrl, readConfigFile, writeConfigFile } = require("./config");
 const { createAuthManager } = require("./auth");
 const { isAllowedBundledFile } = require("./security");
+const { hideMacWindowButtons } = require("./window-controls");
 
 // ---------------------------------------------------------------------------
 // Familiar is a DUMB CLIENT: a thin, near-chromeless Electron window that loads
@@ -167,8 +168,6 @@ function createWindow() {
     // carry a slim -webkit-app-region:drag strip so the window stays draggable.
     frame: false,
     titleBarStyle: process.platform === "darwin" ? "hidden" : "default",
-    trafficLightPosition:
-      process.platform === "darwin" ? { x: 12, y: 10 } : undefined,
     webPreferences: {
       preload: path.join(__dirname, "..", "preload", "preload.js"),
       partition: PARTITION, // persistent -> auth cookie survives restarts
@@ -177,6 +176,10 @@ function createWindow() {
       sandbox: true,
     },
   });
+
+  // Electron's supported macOS API removes the traffic lights entirely. This
+  // leaves the custom drag strip unobstructed without changing other platforms.
+  hideMacWindowButtons(mainWindow);
 
   // ---------------------------------------------------------------------------
   // Zoom chords. The page is a real web document now, so Cmd/Ctrl +/-/0 map to
