@@ -88,7 +88,7 @@ class Native(unittest.TestCase):
 
     def test_generated_tiamat_profile_copies_only_explicit_code_bundle(self):
         (self.profile / 'auth.json').write_text('DO_NOT_COPY_AMBIENT_AUTH')
-        bundle = {name: '// credential-free source' for name in ['tiamat/index.ts', 'tiamat/catalog.ts', 'tiamat/usage.ts', 'lib/debug.ts']}
+        bundle = {name: '// credential-free source' for name in ['tiamat/index.ts', 'tiamat/catalog.ts', 'tiamat/materializer.ts', 'tiamat/usage.ts', 'lib/debug.ts']}
         request = dict(self.request, profile_mode='familiar-tiamat-v1', profile_bundle=bundle)
         request.update(remote.main(dict(request, operation='plan')))
         paths = remote.main(request)
@@ -151,6 +151,85 @@ class Native(unittest.TestCase):
         # Partial/unstarted provisioning can also be explicitly cleaned without
         # inventing an absolute path from the controller's own XDG root.
         self.assertEqual(remote.main(dict(cleanup, path=None)), {'complete': True})
+
+    def test_real_profile_bundle_against_remote_validation(self):
+        """Regression: ensure transport.mjs workerProfileBundle() matches remote.py acceptance.
+        This test fails if workerProfileBundle() gains/loses files without updating BUNDLE_NAMES
+        or if the total size exceeds BUNDLE_LIMIT, preventing all familiar-tiamat-v1 jobs.
+        """
+        # The authoritative list of bundle files comes from transport.mjs workerProfileBundle().
+        # These must match BUNDLE_NAMES in remote.py exactly.
+        expected_files = [
+            'tiamat/index.ts',
+            'tiamat/catalog.ts',
+            'tiamat/materializer.ts',
+            'tiamat/usage.ts',
+            'lib/debug.ts',
+        ]
+        
+        # Verify BUNDLE_NAMES contains exactly these files
+        self.assertEqual(
+            remote.BUNDLE_NAMES,
+            set(expected_files),
+            f"BUNDLE_NAMES mismatch: {remote.BUNDLE_NAMES} vs {set(expected_files)}"
+        )
+        
+        # Load actual file contents and test bundle_digest validation
+        # Bundle files are in the parent extensions directory, not in agents/
+        extensions_dir = Path(__file__).parent.parent
+        bundle = {}
+        total_size = 0
+        for filename in expected_files:
+            filepath = extensions_dir / filename
+            self.assertTrue(
+                filepath.exists(),
+                f"Bundle file does not exist: {filepath}"
+            )
+            content = filepath.read_text()
+            bundle[filename] = content
+            total_size += len(content.encode())
+        
+        # Verify total size is within BUNDLE_LIMIT
+        self.assertLessEqual(
+            total_size,
+            remote.BUNDLE_LIMIT,
+            f"Bundle total size {total_size} exceeds BUNDLE_LIMIT {remote.BUNDLE_LIMIT}"
+        )
+        
+        # Test that bundle_digest accepts the real bundle
+        request = dict(
+            self.request,
+            profile_mode='familiar-tiamat-v1',
+            profile_bundle=bundle
+        )
+        # This should not raise ValueError
+        digest = remote.bundle_digest(request)
+        self.assertIsNotNone(digest)
+        self.assertRegex(digest, r'^[a-f0-9]{64}$', "Invalid SHA256 digest format")
+        
+        # Verify plan accepts it
+        try:
+            plan_result = remote.plan(request)
+            self.assertIn('profile_digest', plan_result)
+            self.assertEqual(plan_result['profile_digest'], digest)
+        except ValueError as e:
+            self.fail(f"plan() rejected valid profile_bundle: {e}")
+        
+        # Verify rejection of oversized bundles
+        oversized = dict(bundle)
+        oversized['lib/debug.ts'] = oversized['lib/debug.ts'] + 'x' * remote.BUNDLE_LIMIT
+        with self.assertRaises(ValueError):
+            remote.bundle_digest(dict(request, profile_bundle=oversized))
+        
+        # Verify rejection of missing files
+        incomplete = {k: v for k, v in bundle.items() if k != 'tiamat/materializer.ts'}
+        with self.assertRaises(ValueError):
+            remote.bundle_digest(dict(request, profile_bundle=incomplete))
+        
+        # Verify rejection of extra files
+        extra = dict(bundle, **{'tiamat/extra.ts': '// should not be here'})
+        with self.assertRaises(ValueError):
+            remote.bundle_digest(dict(request, profile_bundle=extra))
 
 if __name__ == '__main__':
     unittest.main()

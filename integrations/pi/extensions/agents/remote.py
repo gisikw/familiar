@@ -16,7 +16,8 @@ import sys
 import tempfile
 
 LIMIT = 32768
-BUNDLE_NAMES = {'tiamat/index.ts', 'tiamat/catalog.ts', 'tiamat/usage.ts', 'lib/debug.ts'}
+BUNDLE_NAMES = {'tiamat/index.ts', 'tiamat/catalog.ts', 'tiamat/materializer.ts', 'tiamat/usage.ts', 'lib/debug.ts'}
+BUNDLE_LIMIT = 65536
 
 
 def sync_directory(path):
@@ -89,7 +90,7 @@ def bundle_digest(p):
     if p.get('profile_mode', 'enrolled') != 'familiar-tiamat-v1':
         return None
     bundle = p['profile_bundle']
-    if set(bundle) != BUNDLE_NAMES or any(not isinstance(v, str) for v in bundle.values()) or sum(len(v.encode()) for v in bundle.values()) > 36000:
+    if set(bundle) != BUNDLE_NAMES or any(not isinstance(v, str) for v in bundle.values()) or sum(len(v.encode()) for v in bundle.values()) > BUNDLE_LIMIT:
         raise ValueError('invalid credential-free code bundle')
     return hashlib.sha256(json.dumps(bundle, sort_keys=True).encode()).hexdigest()
 
