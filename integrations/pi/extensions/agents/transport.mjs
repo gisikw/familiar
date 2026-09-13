@@ -120,7 +120,13 @@ function clientToken(file) {
  * extensions source tree. No filename list exists anywhere: adding, renaming
  * or removing a module changes the artifact and its digest by construction.
  * Only `.ts` regular files inside the extensions tree are admitted, so a
- * profile, auth store, token or session file can never be swept in. */
+ * profile, auth store, token or session file can never be swept in.
+ * Every relative specifier the walker meets must be a literal `.ts` path it
+ * can follow: a form it cannot resolve (interpolated template, `.js` or
+ * extensionless specifier, `require`) is refused by name rather than silently
+ * omitted, because an omitted module is a worker that cannot start. */
+const RELATIVE_SPECIFIER =
+  /\b(?:from|import|require)\s*\(?\s*(["'`])(\.{1,2}\/[^"'`\n]*)\1/g;
 export function workerProfileArtifact(
   entry = "tiamat/index.ts",
   root = fileURLToPath(new URL("../", import.meta.url)),
@@ -134,16 +140,21 @@ export function workerProfileArtifact(
     if (Object.keys(files).length >= LIMITS.artifactFiles)
       throw new Error("worker profile artifact file count bound");
     const full = resolve(root, name);
-    if (!full.startsWith(root + sep) || !name.endsWith(".ts"))
+    if (!full.startsWith(root + sep))
       throw new Error("worker profile source outside the extensions tree");
+    if (!name.endsWith(".ts"))
+      throw new Error(`worker profile source ${name} is not a .ts module`);
     if (!lstatSync(full).isFile())
       throw new Error("worker profile source must be a regular file");
     const source = readFileSync(full, "utf8");
     files[name] = source;
-    for (const m of source.matchAll(
-      /\b(?:from|import)\s*\(?\s*["'](\.{1,2}\/[^"'\n]+)["']/g,
-    ))
-      queue.push(posix.normalize(posix.join(posix.dirname(name), m[1])));
+    for (const [, , specifier] of source.matchAll(RELATIVE_SPECIFIER)) {
+      if (specifier.includes("${") || !specifier.endsWith(".ts"))
+        throw new Error(
+          `worker profile import ${specifier} in ${name} is not a literal relative .ts path`,
+        );
+      queue.push(posix.normalize(posix.join(posix.dirname(name), specifier)));
+    }
   }
   return profileArtifact({ extension: posix.dirname(entry), files });
 }
@@ -397,9 +408,16 @@ export class Transport {
       throw new Error("private transport state directory required");
     this.stateDir = stateDir;
     // Built once per resident from its own source tree and validated with the
-    // same generic rules the remote applies; a broken tree fails loudly here.
-    this.profileArtifact = workerProfileArtifact();
-    this.profileDigest = artifactDigest(this.profileArtifact);
+    // same generic rules the remote applies. A derivation defect is a
+    // generated-profile defect only: it must name itself when such a machine is
+    // dispatched, never disable Agents for enrolled-profile machines that ship
+    // no artifact at all. That coupling is the incident this protocol retired.
+    try {
+      this.profileArtifact = workerProfileArtifact();
+      this.profileDigest = artifactDigest(this.profileArtifact);
+    } catch (e) {
+      this.artifactError = e;
+    }
     this.modelGuard = readFileSync(
       new URL("./model-guard.ts", import.meta.url),
       "utf8",
@@ -413,6 +431,8 @@ export class Transport {
     const m = this.config.machines.find((m) => m.name === id);
     if (!m)
       throw new Error("machine is not explicitly enrolled; no local fallback");
+    if (m.profile_mode === "familiar-tiamat-v1" && this.artifactError)
+      throw this.artifactError;
     return {
       ...m,
       profile_mode: m.profile_mode ?? "enrolled",

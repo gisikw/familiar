@@ -377,7 +377,7 @@ test("worker profile artifact is the exact import graph from the extensions tree
     }
     assert.throws(
       () => workerProfileArtifact("ext/index.ts", tree),
-      /outside the extensions tree|regular file/,
+      /outside the extensions tree|regular file|literal relative \.ts path/,
     );
   }
   rmSync(join(tree, "..", "outside-secret.ts"), { force: true });
@@ -400,6 +400,48 @@ test("worker profile artifact is the exact import graph from the extensions tree
   assert.throws(
     () => workerProfileArtifact("ext/index.ts", tree),
     /file count bound/,
+  );
+  // A relative specifier the walker cannot follow is named, never silently
+  // dropped: an omitted module is a worker Pi that cannot load its extension.
+  for (const source of [
+    "const m = await import(`./gen${x}.ts`);\n",
+    'import "./sibling.js";\n',
+    'import "./sibling";\n',
+    'const r = require("./sibling.json");\n',
+  ]) {
+    writeFileSync(join(tree, "ext/index.ts"), source);
+    writeFileSync(join(tree, "ext/sibling.ts"), "export const s = 1;\n");
+    assert.throws(
+      () => workerProfileArtifact("ext/index.ts", tree),
+      /is not a literal relative \.ts path/,
+      source,
+    );
+  }
+  // ... while every form it does follow still ships, and cycles terminate.
+  writeFileSync(
+    join(tree, "ext/index.ts"),
+    'import "./sibling.ts";\nconst d = await import("./dyn.ts");\nexport * from "./star.ts";\n',
+  );
+  writeFileSync(join(tree, "ext/dyn.ts"), 'import "./index.ts";\n');
+  writeFileSync(join(tree, "ext/star.ts"), "export const z = 1;\n");
+  assert.deepEqual(
+    Object.keys(workerProfileArtifact("ext/index.ts", tree).files).sort(),
+    ["ext/dyn.ts", "ext/index.ts", "ext/sibling.ts", "ext/star.ts"],
+  );
+});
+test("an artifact derivation defect cannot disable Agents for enrolled-profile machines", (t) => {
+  const { root, config, m } = fixture(t);
+  const transport = new Transport(config, root);
+  transport.artifactError = new Error("synthetic derivation defect");
+  // Enrolled profiles ship no artifact; dispatch and native calls continue.
+  assert.equal(transport.enrolled("test").profile_mode, "enrolled");
+  assert.equal(transport.enrolled("test").profile_artifact, undefined);
+  // Only a generated-profile machine is refused, by the exact defect.
+  m.profile_mode = "familiar-tiamat-v1";
+  delete m.profile;
+  assert.throws(
+    () => transport.enrolled("test"),
+    /synthetic derivation defect/,
   );
 });
 test("private span rejects Agents use until public/declassified context; pending head cannot be hidden", () => {

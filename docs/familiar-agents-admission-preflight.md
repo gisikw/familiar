@@ -99,6 +99,16 @@ tree are admissible (no symlinks, no `../` escapes, no `.json`), which is where
 credential exclusion actually lives — at the controller source, not on the
 remote.
 
+The walk must never *silently* omit a runtime dependency: an omitted module is
+a worker Pi that cannot load its extension, which is the same class of incident
+as the retired filename allowlist. So every relative specifier it meets must be
+a literal `.ts` path it can follow — `import`/`export … from`, side-effect
+`import`, static `import()` and `require()` all count — and any form it cannot
+resolve (interpolated template, `.js` or extensionless specifier, `.json`) is
+refused by name. Symmetrically, a derivation defect is a *generated-profile*
+defect only: it is raised when such a machine is dispatched and never disables
+Agents for enrolled-profile machines, which ship no artifact at all.
+
 The remote validates the artifact by **generic** rules only, identically to the
 controller (`profileArtifact()` in `contract.mjs`, `artifact_digest()` in
 `remote.py`, cross-checked by `test_remote.py` against the same vectors):
