@@ -129,9 +129,10 @@ async function runtimeHarness(existingDir?: string, initialNow = 10_000_000) {
   const tools = new Map<string, any>();
   const sent: Array<{ message: any; options: any }> = [];
   const notices: string[] = [];
+  const events: Array<{ name: string; value: unknown }> = [];
   const pi = {
     on(name: string, fn: (...args: any[]) => any) { const a = handlers.get(name) ?? []; a.push(fn); handlers.set(name, a); },
-    events: { on() {}, emit() {} },
+    events: { on() {}, emit(name: string, value: unknown) { events.push({ name, value }); } },
     registerCommand(name: string, def: any) { commands.set(name, def); },
     registerTool(def: any) { tools.set(def.name, def); },
     sendMessage(message: any, options: any) { sent.push({ message, options }); },
@@ -141,7 +142,7 @@ async function runtimeHarness(existingDir?: string, initialNow = 10_000_000) {
   const runtime = mod.default(pi as any);
   await handlers.get("session_start")?.[0]?.({}, ctx);
   return {
-    dir, runtime, handlers, commands, tools, sent, notices, ctx,
+    dir, runtime, handlers, commands, tools, sent, notices, events, ctx,
     now: () => now, advance: (ms: number) => { now += ms; },
     async close(remove = !existingDir) {
       await handlers.get("session_shutdown")?.[0]?.({});
@@ -196,6 +197,25 @@ describe("runtime DND contract", () => {
       expect(capped.details.minutes).toBe(120);
       expect(readDnd(worklistPaths(h.dir), h.now())?.expiresAt).toBe(h.now() + 120 * 60_000);
     } finally { await h.close(); }
+  });
+
+  test("the fixed UI seam reads durable state and applies only the 30m user toggle", async () => {
+    const h = await runtimeHarness();
+    const key = Symbol.for("familiar.worklist.dnd.v1");
+    try {
+      const service = (process as any)[key];
+      expect(service?.read()).toEqual({ enabled: false });
+      expect(service.set(true)).toEqual({ enabled: true, expiresAt: h.now() + 30 * 60_000 });
+      expect(readDnd(worklistPaths(h.dir), h.now())).toMatchObject({ enabled: true, setBy: "user", expiresAt: h.now() + 30 * 60_000 });
+      expect(h.events.at(-1)).toEqual({ name: "familiar:worklist-dnd-changed", value: { enabled: true, expiresAt: h.now() + 30 * 60_000 } });
+      h.advance(30 * 60_000);
+      expect(service.read()).toEqual({ enabled: false });
+      expect(readDnd(worklistPaths(h.dir), h.now())).toBeNull();
+      expect(service.set(false)).toEqual({ enabled: false });
+    } finally {
+      await h.close();
+      expect((process as any)[key]).toBeUndefined();
+    }
   });
 
   test("Familiar and user can both clear immediately", async () => {

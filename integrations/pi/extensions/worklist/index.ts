@@ -54,6 +54,21 @@ const TICK_MS = 15_000;
 const CFG = DEFAULT_CONFIG;
 const PRI_LABEL = (p: Priority) => `P${p}`;
 
+/**
+ * Fixed process-global seam for same-process UIs. Pi's extension loader may
+ * isolate module instances, so this cannot use the module-local capability
+ * registry. The worklist remains the only state owner: callers can read the
+ * bounded projection and ask for the user toggle (30m on, immediate off).
+ */
+export const DND_SERVICE_SYMBOL = Symbol.for("familiar.worklist.dnd.v1");
+export const DND_CHANGED_EVENT = "familiar:worklist-dnd-changed";
+export interface DndService {
+  read(): { enabled: false } | { enabled: true; expiresAt: number };
+  set(enabled: boolean): { enabled: false } | { enabled: true; expiresAt: number };
+}
+type ProcessGlobals = Record<PropertyKey, unknown>;
+const processGlobals = process as unknown as ProcessGlobals;
+
 function ageStr(ts: number, now = Date.now()): string {
   const seconds = Math.max(0, Math.floor((now - ts) / 1000));
   if (seconds < 60) return `${seconds}s`;
@@ -77,6 +92,7 @@ export default function (pi: ExtensionAPI) {
   let ctxRef: ExtensionContext | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
   let sinkDisposer: (() => void) | undefined;
+  let dndServiceDisposer: (() => void) | undefined;
   let lastDigestReminderAt = 0;
   const tombstones = new Set<string>();
 
@@ -98,6 +114,13 @@ export default function (pi: ExtensionAPI) {
     }
     return false;
   };
+  const dndView = (now = Date.now()): ReturnType<DndService["read"]> => {
+    expireIfElapsed(now);
+    return dnd && dndActive(dnd, now)
+      ? { enabled: true, expiresAt: dnd.expiresAt }
+      : { enabled: false };
+  };
+  const announceDndChanged = () => pi.events.emit(DND_CHANGED_EVENT, dndView());
 
   const render = () => {
     if (!ctxRef?.hasUI) return;
@@ -145,6 +168,7 @@ export default function (pi: ExtensionAPI) {
     const acknowledged = drainAcknowledgements(P);
     const now = Date.now();
     const elapsed = expireIfElapsed(now);
+    if (elapsed) announceDndChanged();
     const isDnd = active(now);
     let bodyDeliveries = 0;
     const digest: QueueItem[] = [];
@@ -212,9 +236,35 @@ export default function (pi: ExtensionAPI) {
     dnd = next;
     writeDnd(P, dnd);
     render();
+    announceDndChanged();
     return next;
   };
-  const clearDnd = () => { dnd = null; writeDnd(P, null); render(); };
+  const clearDnd = () => {
+    dnd = null;
+    writeDnd(P, null);
+    render();
+    announceDndChanged();
+  };
+
+  const dndService: DndService = {
+    read: () => dndView(),
+    set(enabled) {
+      if (typeof enabled !== "boolean") throw Object.assign(new Error("enabled must be boolean"), { code: "invalid_request" });
+      if (!enabled) {
+        clearDnd();
+        return { enabled: false };
+      }
+      const next = setDnd("user");
+      if (!next) throw Object.assign(new Error("DND unavailable"), { code: "unavailable" });
+      return { enabled: true, expiresAt: next.expiresAt };
+    },
+  };
+  const publishDndService = () => {
+    processGlobals[DND_SERVICE_SYMBOL] = dndService;
+    dndServiceDisposer = () => {
+      if (processGlobals[DND_SERVICE_SYMBOL] === dndService) delete processGlobals[DND_SERVICE_SYMBOL];
+    };
+  };
 
   pi.registerCommand("peek", {
     description: "Show queued synthetic work without delivering or acknowledging it",
@@ -370,16 +420,25 @@ export default function (pi: ExtensionAPI) {
       ensureDirs(P, LEGACY_ROOT);
       dnd = readDnd(P);
       expireIfElapsed();
+      if (!dndServiceDisposer) publishDndService();
       agentBusy = false; idleSince = Date.now();
       announceFreshWork(listItems(P).filter(isPending));
       render();
+      announceDndChanged();
       if (!sinkDisposer) sinkDisposer = registry.register<DurableSink>(WORKLIST_SINK, WORKLIST_SINK_VERSION, sink);
     });
     if (timer) clearInterval(timer);
     timer = setInterval(tickGuarded, TICK_MS);
     tickGuarded();
   });
-  pi.on("session_shutdown", async () => { if (timer) clearInterval(timer); timer = undefined; sinkDisposer?.(); sinkDisposer = undefined; });
+  pi.on("session_shutdown", async () => {
+    if (timer) clearInterval(timer);
+    timer = undefined;
+    sinkDisposer?.();
+    sinkDisposer = undefined;
+    dndServiceDisposer?.();
+    dndServiceDisposer = undefined;
+  });
 
   return { enqueue, sink, tick, setDnd, clearDnd, isDnd: active };
 }

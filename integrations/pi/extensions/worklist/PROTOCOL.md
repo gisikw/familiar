@@ -85,6 +85,13 @@ unavailable, the sender retains its existing direct-delivery fallback.
 - `/remind ...` adds a durable synthetic reminder.
 - `/snooze <id> <duration>` remains an item-specific queue control.
 
+A same-process UI may discover `process[Symbol.for("familiar.worklist.dnd.v1")]`.
+The fixed v1 service exposes only `read()` and `set(enabled)`: enable is the
+user's authoritative 30-minute default and disable clears immediately. Both
+return the persisted bounded `{enabled, expiresAt?}` view. Changes emit
+`familiar:worklist-dnd-changed`; the event is invalidation only, never a second
+state store. A UI with no valid service must expose no working control.
+
 The established model tool name `set_attention` is retained for call-site
 compatibility, but its schema is only `{ enabled, duration_minutes? }` and its
 copy describes DND only. For one compatibility migration, execution also maps
