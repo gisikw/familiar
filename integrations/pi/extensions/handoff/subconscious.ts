@@ -22,7 +22,16 @@ export const MAX_TEXT_CHARS = 400;
 export const MAX_OPS = 16;
 export const MAX_RESPONSE_CHARS = 16_384;
 export const MAX_FILE_BYTES = 65_536;
-export const DEFAULT_TIMEOUT_MS = 60_000;
+/**
+ * The curation request is awaited inside `session_before_compact`, so it is
+ * added latency on an interactive `/clear`, and Pi cancels a manual compaction
+ * outright when its signal aborts during the hook — interrupting a stuck
+ * curation therefore throws away a handoff that is already written. The timeout
+ * is the only graceful exit, so it is bounded well under a minute; the reply is
+ * a few hundred tokens of JSON capped at 2048. Override with
+ * FAMILIAR_SUBCONSCIOUS_TIMEOUT_MS for slow local models.
+ */
+export const DEFAULT_TIMEOUT_MS = 30_000;
 
 export type Priority = "high" | "normal" | "low";
 export const PRIORITIES: readonly Priority[] = ["high", "normal", "low"];

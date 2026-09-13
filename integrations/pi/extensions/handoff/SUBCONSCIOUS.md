@@ -46,9 +46,12 @@ Exactly one JSON object, optionally in a single ```` ```json ```` fence:
 Validation is strict and all-or-nothing: prose, wrappers, unknown ops or keys,
 bad ids, an unknown id, more than 16 ops, more than 400 characters of text, or
 more than 8 resulting reminders reject the whole reply. Anything rejected —
-along with a provider error, a thrown failure, an abort, or the 60 s timeout
+along with a provider error, a thrown failure, an abort, or the 30 s timeout
 (`FAMILIAR_SUBCONSCIOUS_TIMEOUT_MS`) — is logged as a stage name only and
-`/clear` completes with the set untouched.
+`/clear` completes with the set untouched. Interrupting the compaction while
+curation is in flight cancels the whole `/clear` (Pi cancels a manual compaction
+whose signal aborted inside the hook), so the timeout — not the user — is the
+bound that keeps an unresponsive model from holding a `/clear` open.
 
 ## Delivery
 
@@ -78,6 +81,14 @@ One file, `reminders.json`, under `FAMILIAR_SUBCONSCIOUS_DIR` (default
 that fails validation reads as empty and is renamed `*.corrupt` rather than
 overwritten in place. Bodies are plaintext; the running Familiar has no tool,
 command, or renderer that reads the file, but a `bash` child on this host can.
+
+Each write replaces the file atomically, but a draw is read-modify-write with no
+lock: the store assumes the single resident Familiar of one `STATE_DIR`. Two
+processes sharing a store could lose or repeat a reminder. The curation request
+is a direct `modelRegistry.complete()` call, so its tokens are billed by the
+provider but never appear in Pi's session usage or cost display; it is bounded
+by one dispatch, a 2048-token reply (uncapped only where the provider rejects
+`max_output_tokens`), and the 16 KiB parse ceiling.
 
 ## Tests
 

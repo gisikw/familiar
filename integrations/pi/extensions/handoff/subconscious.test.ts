@@ -5,6 +5,7 @@ import * as path from "node:path";
 import {
   applyOps,
   curate,
+  DEFAULT_TIMEOUT_MS,
   hazard,
   MAX_OPS,
   MAX_REMINDERS,
@@ -175,6 +176,9 @@ describe("curate: one ephemeral dispatch, outgoing context, graceful failure", (
   });
 
   test("a hung model times out, aborts the request, and skips", async () => {
+    // The default bound is interactive latency on /clear: aborting instead
+    // would cancel the compaction Pi is holding open, handoff and all.
+    expect(DEFAULT_TIMEOUT_MS).toBeLessThanOrEqual(30_000);
     const { store } = fixture();
     let seen: AbortSignal | undefined;
     const outcome = await curate({
