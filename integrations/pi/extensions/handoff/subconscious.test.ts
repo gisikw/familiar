@@ -4,9 +4,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
   applyOps,
+  commissioningEnabled,
+  COMMISSIONING_ENV,
   curate,
   DEFAULT_TIMEOUT_MS,
   deliveryProbability,
+  formatCurationReport,
+  formatDeliveryLine,
   MAX_CURVE_HOURS,
   MAX_CURVE_TURNS,
   MAX_OPS,
@@ -300,5 +304,33 @@ describe("curate atomicity and presentation", () => {
     expect(fallback).toContain("without the user first leading the next Familiar there");
     expect(fallback).not.toContain(invalidPrivateValue);
     expect(fallback).not.toMatch(/\b(she|her|hers|herself)\b/i);
+  });
+});
+
+describe("commissioning flag and operator-facing text", () => {
+  test("only an explicit 1/true enables the mode", () => {
+    expect(COMMISSIONING_ENV).toBe("FAMILIAR_SUBCONSCIOUS_COMMISSIONING");
+    for (const value of ["1", "true", "TRUE", " true ", " 1"]) {
+      expect(commissioningEnabled({ [COMMISSIONING_ENV]: value })).toBe(true);
+    }
+    for (const value of ["", "0", "false", "off", "no", "yes", "2", "commissioning"]) {
+      expect(commissioningEnabled({ [COMMISSIONING_ENV]: value })).toBe(false);
+    }
+    expect(commissioningEnabled({})).toBe(false);
+  });
+
+  test("the visible delivery line carries the seed text and nothing around it", () => {
+    expect(formatDeliveryLine("  check the kettle  ")).toBe("[subconscious: check the kettle]");
+    expect(formatDeliveryLine("")).toBe("[subconscious: ]");
+  });
+
+  test("reports name the stage and counts, never a body or a provider message", () => {
+    expect(formatCurationReport({ outcome: "applied", ops: 1, reminders: 1 }))
+      .toEqual({ text: "Subconscious (commissioning): curation applied 1 operation, 1 seed stored", level: "info" });
+    expect(formatCurationReport({ outcome: "applied", ops: 1, reminders: 3 }).text).toContain("3 seeds stored");
+    expect(formatCurationReport({ outcome: "noop" }))
+      .toEqual({ text: 'Subconscious (commissioning): curation ran and changed nothing ({"ops":[]})', level: "info" });
+    expect(formatCurationReport({ outcome: "skipped", reason: "timeout" }))
+      .toEqual({ text: "Subconscious (commissioning): curation skipped (timeout)", level: "warning" });
   });
 });

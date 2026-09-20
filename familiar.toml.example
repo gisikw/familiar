@@ -56,6 +56,17 @@ skip_version_check = 1
 # tz = "America/Chicago"
 # debug_level = "debug"
 # use_stuff = false # nudge the resident agent to discover the Stuff CLI
+# Subconscious seeds live under state/subconscious by default:
+# subconscious_dir = "./state/subconscious"
+# subconscious_timeout_ms = 30000
+# Temporary commissioning instrumentation for the subconscious seam. OFF unless
+# this is exactly true (or FAMILIAR_SUBCONSCIOUS_COMMISSIONING=1). While on, the
+# automatic 90% handoff curates too, each curation outcome is reported to the
+# operator, and a delivered seed renders in the transcript as
+# "[subconscious: …]" instead of arriving privately. It is deliberately
+# non-private: enable it to commission the feature, then turn it off. See
+# integrations/pi/extensions/handoff/SUBCONSCIOUS.md.
+# subconscious_commissioning = false
 
 # Familiar's own private identity is nested here to avoid colliding with
 # identity_path. It maps to FAMILIAR_IDENTITY_* (not FAMILIAR_FAMILIAR_*).

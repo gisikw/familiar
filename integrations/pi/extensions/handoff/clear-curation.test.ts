@@ -11,12 +11,14 @@ if (!piPackageDir) throw new Error("PI_PACKAGE_DIR is required (run in Familiar'
 const realCodingAgent = await import(path.join(piPackageDir, "dist/index.js"));
 const realPiAi = await import(path.join(piPackageDir, "node_modules/@earendil-works/pi-ai/dist/index.js"));
 const realTypebox = await import(path.join(piPackageDir, "node_modules/typebox/build/index.mjs"));
+const realPiTui = await import(path.join(piPackageDir, "node_modules/@earendil-works/pi-tui/dist/index.js"));
 mock.module("@earendil-works/pi-coding-agent", () => ({
   ...realCodingAgent,
   buildSessionContext: (entries: any[]) => ({ messages: entries.map((e) => e.message) }),
   convertToLlm: (messages: any[]) => messages.map((m) => ({ ...m })),
 }));
 mock.module("@earendil-works/pi-ai", () => ({ ...realPiAi, uuidv7: () => "uuid-v7" }));
+mock.module("@earendil-works/pi-tui", () => ({ ...realPiTui }));
 mock.module("typebox", () => ({
   ...realTypebox,
   Type: { ...realTypebox.Type, Object: (o: any) => o, Optional: (o: any) => o, String: (o: any) => o },
@@ -36,8 +38,10 @@ beforeEach(() => {
   process.env.FAMILIAR_SUBCONSCIOUS_DIR = storeDir;
   process.env.FAMILIAR_DEBUG_LEVEL = "off";
   process.env.FAMILIAR_SUBCONSCIOUS_TIMEOUT_MS = "200";
+  delete process.env.FAMILIAR_SUBCONSCIOUS_COMMISSIONING;
 });
 afterEach(() => {
+  delete process.env.FAMILIAR_SUBCONSCIOUS_COMMISSIONING;
   while (roots.length) fs.rmSync(roots.pop()!, { recursive: true, force: true });
 });
 
@@ -50,10 +54,13 @@ const authoredCurve = { turns: [1, 20], hours: [2, 48], chance: [0.05, 0.4] };
 async function harness(options: {
   curation?: (request: any) => Promise<any> | any;
   entries?: any[];
+  hasUI?: boolean;
 } = {}) {
   const handlers = new Map<string, Handler[]>();
   const commands = new Map<string, { handler: (args: string, ctx: any) => Promise<void> }>();
   const tools = new Map<string, any>();
+  const renderers = new Map<string, (message: any, options?: any, theme?: any) => any>();
+  const notices: Array<{ text: string; type?: string }> = [];
   const persisted: Array<{ kind: string; payload: unknown }> = [];
   const trace: string[] = [];
   const completions: Array<{ model: unknown; request: any; options: any }> = [];
@@ -61,7 +68,7 @@ async function harness(options: {
     on: (name: string, handler: Handler) => { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
     registerCommand: (name: string, command: any) => { commands.set(name, command); },
     registerTool: (tool: any) => { tools.set(tool.name, tool); },
-    registerMessageRenderer: () => {},
+    registerMessageRenderer: (type: string, renderer: any) => { renderers.set(type, renderer); },
     registerMarkdownTransformer: () => {},
     sendMessage: (message: unknown, options: unknown) => { persisted.push({ kind: "sendMessage", payload: { message, options } }); },
     appendEntry: (type: string, data: unknown) => { persisted.push({ kind: "appendEntry", payload: { type, data } }); },
@@ -74,7 +81,7 @@ async function harness(options: {
   ];
   let compactRequest: { onComplete: () => void; onError: (e: Error) => void } | null = null;
   const ctx = {
-    hasUI: false,
+    hasUI: options.hasUI ?? false,
     model,
     modelRegistry: {
       complete: async (m: unknown, request: any, opts: any) => {
@@ -100,7 +107,10 @@ async function harness(options: {
     compact: (request: any) => { trace.push("ctx.compact"); compactRequest = request; },
     waitForIdle: async () => {},
     getContextUsage: () => ({ tokens: 1000, contextWindow: 200_000 }),
-    ui: { notify() {}, setWorkingMessage() {} },
+    ui: {
+      notify(text: string, type?: string) { notices.push({ text, type }); },
+      setWorkingMessage() {},
+    },
   };
   const { default: handoffExtension } = await import("./index.ts");
   handoffExtension(pi as any);
@@ -120,7 +130,7 @@ async function harness(options: {
     ...extra,
   });
   return {
-    pi, ctx, emit, commands, tools, persisted, trace, completions, beforeCompact, model,
+    pi, ctx, emit, commands, tools, persisted, trace, completions, beforeCompact, model, renderers, notices,
     compactRequest: () => compactRequest,
   };
 }
@@ -272,13 +282,177 @@ describe("delivery to the next Familiar", () => {
     const injected = await h.emit("before_agent_start", {});
     expect(injected.message.customType).toBe("subconscious-reminder");
     expect(injected.message.display).toBe(false);
+    expect(injected.message.details).toBeUndefined();
     expect(injected.message.content).toContain("fixture delivery");
     expect(injected.message.content).toContain("handoff /h/a.md");
+    // Hidden means hidden: the renderer declines a private delivery outright,
+    // so nothing of it can reach the transcript.
+    expect(h.renderers.get("subconscious-reminder")!(injected.message)).toBeUndefined();
     expect(reminders()).toEqual([]);
 
     // Nothing is left, and turns that did not come from input never draw.
     expect(await h.emit("before_agent_start", {})).toBeUndefined();
     await h.emit("input", { text: "again" });
     expect(await h.emit("before_agent_start", {})).toBeUndefined();
+  });
+});
+
+// Temporary, deliberately non-private commissioning instrumentation. Every
+// behavior below must be invisible unless FAMILIAR_SUBCONSCIOUS_COMMISSIONING
+// is explicitly enabled before the session starts.
+describe("commissioning mode (FAMILIAR_SUBCONSCIOUS_COMMISSIONING=1)", () => {
+  const commission = () => { process.env.FAMILIAR_SUBCONSCIOUS_COMMISSIONING = "1"; };
+  const curations = (h: { trace: string[] }) => h.trace.filter((t) => t === "curation-inference").length;
+
+  test("the ordinary automatic 90% handoff curates, and reports its outcome after the compaction", async () => {
+    commission();
+    const h = await harness({
+      hasUI: true,
+      curation: () => JSON.stringify({ ops: [{ op: "add", text: "commissioned seed", curve: authoredCurve }] }),
+    });
+
+    h.ctx.getContextUsage = () => ({ tokens: 190_000, contextWindow: 200_000 });
+    await h.emit("turn_end");
+    await h.emit("agent_settled");
+    expect(h.trace).toEqual(["ctx.compact"]);
+
+    const result = await h.beforeCompact();
+    expect(curations(h)).toBe(1);
+    expect(result.compaction.summary).toBe("# Handoff\n\nwhat shipped");
+    expect(JSON.stringify(result)).not.toContain("commissioned seed");
+    expect(h.persisted).toEqual([]);
+    expect(reminders().map((r: any) => r.text)).toEqual(["commissioned seed"]);
+
+    // Nothing is shown from inside the hook: Pi rebuilds the transcript at
+    // compaction_end. The report lands once the compaction has completed.
+    expect(h.notices).toEqual([]);
+    h.compactRequest()!.onComplete();
+    expect(h.notices.map((n) => n.text)).toEqual([
+      "Subconscious (commissioning): curation applied 1 operation, 1 seed stored",
+      "Context crossed 90%; handoff compacted before further work",
+    ]);
+    expect(h.notices[0].type).toBe("info");
+
+    // One handoff is one dispatch, in this mode too.
+    await h.beforeCompact();
+    expect(curations(h)).toBe(1);
+  });
+
+  test("a successful no-op is reported as loudly as a mutation", async () => {
+    commission();
+    const h = await harness({ hasUI: true, curation: () => '{"ops":[]}' });
+    await h.commands.get("clear")!.handler("", h.ctx);
+    await h.beforeCompact();
+    expect(curations(h)).toBe(1);
+    expect(fs.existsSync(path.join(storeDir, "reminders.json"))).toBe(false);
+    h.compactRequest()!.onComplete();
+    expect(h.notices[0]).toEqual({
+      text: 'Subconscious (commissioning): curation ran and changed nothing ({"ops":[]})',
+      type: "info",
+    });
+  });
+
+  test("skipped outcomes surface as warnings naming the stage, never the reply", async () => {
+    commission();
+    const h = await harness({ hasUI: true, curation: () => "Sure, I would add a fixture reminder." });
+    await h.commands.get("clear")!.handler("", h.ctx);
+    await h.beforeCompact();
+    h.compactRequest()!.onComplete();
+    expect(h.notices[0]).toEqual({
+      text: "Subconscious (commissioning): curation skipped (invalid-json)",
+      type: "warning",
+    });
+    expect(JSON.stringify(h.notices)).not.toContain("fixture reminder");
+    expect(reminders()).toEqual([]);
+  });
+
+  test("an unusable store is reported instead of failing silently", async () => {
+    commission();
+    fs.rmSync(storeDir, { recursive: true, force: true });
+    fs.writeFileSync(storeDir, "not a directory");
+    const h = await harness({ hasUI: true });
+    await h.commands.get("clear")!.handler("", h.ctx);
+    await h.beforeCompact();
+    expect(curations(h)).toBe(0);
+    h.compactRequest()!.onComplete();
+    expect(h.notices[0].text).toBe("Subconscious (commissioning): curation skipped (store-unavailable)");
+    fs.rmSync(storeDir, { force: true });
+    fs.mkdirSync(storeDir);
+  });
+
+  test("overflow retries still never curate, and the consumed trigger cannot come back", async () => {
+    commission();
+    const h = await harness();
+    h.ctx.getContextUsage = () => ({ tokens: 190_000, contextWindow: 200_000 });
+    await h.emit("turn_end");
+    await h.emit("agent_settled");
+    await h.beforeCompact({ reason: "overflow", willRetry: true });
+    expect(curations(h)).toBe(0);
+    // The trigger was consumed by the retry pass; the retry's own compaction
+    // cannot curate afterwards either.
+    await h.beforeCompact();
+    expect(curations(h)).toBe(0);
+  });
+
+  test("a native /compact is still not a Familiar handoff trigger", async () => {
+    commission();
+    const h = await harness();
+    await h.beforeCompact();
+    expect(h.trace).toEqual(["handoff-inference"]);
+  });
+
+  test("delivery renders as [subconscious: …] and carries only the seed's own text", async () => {
+    commission();
+    fs.writeFileSync(path.join(storeDir, "reminders.json"), JSON.stringify({
+      version: 2,
+      reminders: [{ id: "r-0000aaaa", text: "fixture delivery", curve: { turns: [0, 1], hours: [0, 1], chance: [1, 1] }, turns: 0, createdAt: 1, origin: { sessionId: "session-abcdef12", handoffArchive: "/h/a.md" } }],
+    }));
+    const h = await harness({ hasUI: true });
+    expect(await h.emit("input", { text: "hi" })).toEqual({ action: "continue" });
+    const injected = await h.emit("before_agent_start", {});
+
+    expect(injected.message.display).toBe(true);
+    expect(injected.message.details).toEqual({ commissioning: true, text: "fixture delivery" });
+    // Model context is unchanged by the mode.
+    expect(injected.message.content).toContain("fixture delivery");
+    expect(injected.message.content).toContain("<system-reminder>");
+
+    const rendered = h.renderers.get("subconscious-reminder")!(injected.message).render(80).join("\n");
+    expect(rendered).toContain("[subconscious: fixture delivery]");
+    expect(rendered).not.toContain("system-reminder");
+    expect(rendered).not.toContain("The user did not send it");
+    expect(reminders()).toEqual([]);
+  });
+
+  test("disabled by default: no automatic curation, no reports, no visible delivery", async () => {
+    fs.writeFileSync(path.join(storeDir, "reminders.json"), JSON.stringify({
+      version: 2,
+      reminders: [{ id: "r-0000aaaa", text: "fixture delivery", curve: { turns: [0, 1], hours: [0, 1], chance: [1, 1] }, turns: 0, createdAt: 1, origin: { sessionId: null, handoffArchive: null } }],
+    }));
+    for (const value of [undefined, "", "0", "false", "off", "yes"]) {
+      if (value === undefined) delete process.env.FAMILIAR_SUBCONSCIOUS_COMMISSIONING;
+      else process.env.FAMILIAR_SUBCONSCIOUS_COMMISSIONING = value;
+      const h = await harness({ hasUI: true });
+
+      h.ctx.getContextUsage = () => ({ tokens: 190_000, contextWindow: 200_000 });
+      await h.emit("turn_end");
+      await h.emit("agent_settled");
+      await h.beforeCompact();
+      expect(curations(h)).toBe(0);
+      h.compactRequest()!.onComplete();
+      expect(h.notices.map((n) => n.text)).toEqual(["Context crossed 90%; handoff compacted before further work"]);
+
+      h.ctx.getContextUsage = () => ({ tokens: 1000, contextWindow: 200_000 });
+      await h.emit("input", { text: "hi" });
+      const injected = await h.emit("before_agent_start", {});
+      expect(injected.message.display).toBe(false);
+      expect(injected.message.details).toBeUndefined();
+      expect(h.renderers.get("subconscious-reminder")!(injected.message)).toBeUndefined();
+      // Restore the fixture for the next spelling.
+      fs.writeFileSync(path.join(storeDir, "reminders.json"), JSON.stringify({
+        version: 2,
+        reminders: [{ id: "r-0000aaaa", text: "fixture delivery", curve: { turns: [0, 1], hours: [0, 1], chance: [1, 1] }, turns: 0, createdAt: 1, origin: { sessionId: null, handoffArchive: null } }],
+      }));
+    }
   });
 });

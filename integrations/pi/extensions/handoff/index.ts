@@ -3,14 +3,19 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { buildSessionContext, convertToLlm } from "@earendil-works/pi-coding-agent";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { Text } from "@earendil-works/pi-tui";
 import { errorLog } from "../lib/debug.ts";
 import { completeHandoff, handoffMaxTokens } from "./request.ts";
 import {
+  commissioningEnabled,
   curate,
   DEFAULT_TIMEOUT_MS,
+  formatCurationReport,
+  formatDeliveryLine,
   renderDelivery,
   SubconsciousStore,
   subconsciousRoot,
+  type CurateOutcome,
   type LlmMessage,
 } from "./subconscious.ts";
 import { Type } from "typebox";
@@ -107,8 +112,14 @@ export default function handoffExtension(pi: ExtensionAPI) {
   // Subconscious reminders. Curated once per explicit /clear by the outgoing
   // context inside session_before_compact; delivered one at a time on ordinary
   // human turns. The store is opened lazily; a broken store disables both.
-  let curateOnClear = false;
+  let curateOnHandoff = false;
   let humanTurnPending = false;
+  // Temporary opt-in commissioning instrumentation (FAMILIAR_SUBCONSCIOUS_COMMISSIONING):
+  // curate on ordinary automatic handoffs as well, report each outcome to the
+  // operator, and render delivered seeds in the transcript. Read once per
+  // session rather than per event so one session cannot change mode midway.
+  let commissioning = commissioningEnabled();
+  let curationReport: { text: string; level: "info" | "warning" } | null = null;
   let store: SubconsciousStore | null = null;
   let storeBroken = false;
   const openStore = (): SubconsciousStore | null => {
@@ -120,6 +131,21 @@ export default function handoffExtension(pi: ExtensionAPI) {
       errorLog("handoff", { subconsciousUnavailable: String(err) });
     }
     return store;
+  };
+
+  // Outcome visibility is commissioning-only and transient: a notification,
+  // never a session entry, a model message, or anything remote. Held until the
+  // compaction finishes, because Pi rebuilds the transcript at compaction_end
+  // and would discard anything shown from inside the hook.
+  const reportCuration = (outcome: CurateOutcome) => {
+    if (!commissioning) return;
+    errorLog("handoff", { subconsciousCommissioning: outcome });
+    curationReport = formatCurationReport(outcome);
+  };
+  const flushCurationReport = (ctx: ExtensionContext) => {
+    const report = curationReport;
+    curationReport = null;
+    if (report && ctx.hasUI) ctx.ui.notify(report.text, report.level);
   };
 
   const saturation = (ctx: ExtensionContext): number | null => {
@@ -192,7 +218,11 @@ export default function handoffExtension(pi: ExtensionAPI) {
       return;
     }
     compactionRunning = true;
-    curateOnClear = !automatic;
+    // Privately, only Familiar's own /clear curates. Commissioning extends that
+    // to the ordinary automatic 90% handoff, which is the only way the seam
+    // exercises itself often enough to be observed. Either way this is the
+    // Familiar handoff path: a native /compact never sets it.
+    curateOnHandoff = !automatic || commissioning;
     continuationAfterCompaction = continuation?.trim() || undefined;
     if (ctx.hasUI) ctx.ui.setWorkingMessage("Writing handoff…");
 
@@ -200,6 +230,7 @@ export default function handoffExtension(pi: ExtensionAPI) {
       onComplete: () => {
         compactionRunning = false;
         if (ctx.hasUI) ctx.ui.setWorkingMessage();
+        flushCurationReport(ctx);
         const queued = continuationAfterCompaction;
         continuationAfterCompaction = undefined;
         if (queued) {
@@ -217,10 +248,13 @@ export default function handoffExtension(pi: ExtensionAPI) {
       },
       onError: (error) => {
         compactionRunning = false;
-        curateOnClear = false;
+        curateOnHandoff = false;
         continuationAfterCompaction = undefined;
         if (ctx.hasUI) {
           ctx.ui.setWorkingMessage();
+          // A curation that already ran is still worth reporting: the handoff
+          // can fail after the store has changed.
+          flushCurationReport(ctx);
           ctx.ui.notify(`Handoff failed: ${error.message}`, "error");
         }
       },
@@ -234,8 +268,10 @@ export default function handoffExtension(pi: ExtensionAPI) {
     continuationAfterCompaction = undefined;
     automaticHandoffPending = false;
     saturationLevel = 0;
-    curateOnClear = false;
+    curateOnHandoff = false;
     humanTurnPending = false;
+    commissioning = commissioningEnabled();
+    curationReport = null;
 
     const branch = ctx.sessionManager.getBranch();
     virginSession = branch.length === 0;
@@ -264,10 +300,11 @@ export default function handoffExtension(pi: ExtensionAPI) {
   });
 
   pi.on("session_before_compact", async (event, ctx) => {
-    // Consumed here, before anything can fail, so one /clear is one curation
-    // dispatch at most — even if this handler runs again.
-    const curateNow = curateOnClear && event.reason === "manual" && !event.willRetry;
-    curateOnClear = false;
+    // Consumed here, before anything can fail, so one handoff is one curation
+    // dispatch at most — even if this handler runs again. An overflow retry
+    // never curates, in either mode.
+    const curateNow = curateOnHandoff && event.reason === "manual" && !event.willRetry;
+    curateOnHandoff = false;
     const handoffDir = process.env.FAMILIAR_HANDOFF_PATH;
     if (!handoffDir) {
       if (ctx.hasUI) ctx.ui.notify("FAMILIAR_HANDOFF_PATH is not set; compaction cancelled", "error");
@@ -344,6 +381,7 @@ export default function handoffExtension(pi: ExtensionAPI) {
       // from it is sent or appended to the session; only the store changes.
       // Whatever happens here, the compaction below still returns.
       const reminderStore = curateNow ? openStore() : null;
+      if (curateNow && !reminderStore) reportCuration({ outcome: "skipped", reason: "store-unavailable" });
       if (reminderStore) {
         if (ctx.hasUI) ctx.ui.setWorkingMessage("Curating subconscious…");
         const outgoing = ctx.model!;
@@ -367,6 +405,7 @@ export default function handoffExtension(pi: ExtensionAPI) {
           ) as any, signal),
         });
         if (outcome.outcome === "skipped") errorLog("handoff", { subconsciousSkipped: outcome.reason });
+        reportCuration(outcome);
         if (event.signal.aborted) {
           compactionRunning = false;
           return { cancel: true };
@@ -419,8 +458,19 @@ export default function handoffExtension(pi: ExtensionAPI) {
       try {
         const reminder = openStore()?.draw();
         if (reminder) {
+          const content = renderDelivery(reminder, Date.now());
+          // Private delivery is hidden and carries no details. A commissioning
+          // delivery opts in to display and carries its own text so the
+          // renderer can show that alone, never the surrounding instructions.
           return {
-            message: { customType: SUBCONSCIOUS_MESSAGE, content: renderDelivery(reminder, Date.now()), display: false },
+            message: commissioning
+              ? {
+                customType: SUBCONSCIOUS_MESSAGE,
+                content,
+                display: true,
+                details: { commissioning: true, text: reminder.text },
+              }
+              : { customType: SUBCONSCIOUS_MESSAGE, content, display: false },
           };
         }
       } catch (err) {
@@ -535,8 +585,15 @@ export default function handoffExtension(pi: ExtensionAPI) {
   });
 
   pi.registerMessageRenderer("handoff-orientation", () => undefined);
-  // Never rendered: a reminder is for the model, not the scrollback.
-  pi.registerMessageRenderer(SUBCONSCIOUS_MESSAGE, () => undefined);
+  // Never rendered by default: a reminder is for the model, not the scrollback.
+  // Only a message the delivering turn itself marked as commissioning renders,
+  // and only as its own text — so turning the mode off later cannot retroactively
+  // expose a private delivery, and a commissioned one stays legible.
+  pi.registerMessageRenderer(SUBCONSCIOUS_MESSAGE, (message) => {
+    const details = message.details as { commissioning?: unknown; text?: unknown } | undefined;
+    if (details?.commissioning !== true) return undefined;
+    return new Text(formatDeliveryLine(typeof details.text === "string" ? details.text : ""), 0, 0);
+  });
 
   pi.registerMarkdownTransformer((markdown, { messageType }) => {
     if (messageType === "user") return markdown;

@@ -119,6 +119,18 @@ pronoun-free construction. It never substitutes the user's pronouns for
 Familiar's. Identity values are private: typed diagnostic rendering redacts the
 whole identity object, and parser failures suppress file contents.
 
+### Temporary subconscious commissioning
+
+`[familiar] subconscious_commissioning = true` (equivalently
+`FAMILIAR_SUBCONSCIOUS_COMMISSIONING=1`) is a temporary, deliberately
+non-private operator mode for commissioning the subconscious seam: it curates
+on the ordinary automatic 90% handoff as well as an explicit `/clear`, reports
+each curation outcome, and renders a delivered seed in the transcript as
+`[subconscious: …]`. It is off unless the value is exactly `1` or `true`, and it
+is read once per session. It changes no file, permission, or remote surface.
+Turn it off when commissioning is done; see
+[SUBCONSCIOUS.md](../integrations/pi/extensions/handoff/SUBCONSCIOUS.md).
+
 The `[herdr]` and `[subagent]` tables are retained for the current
 worker/session integration. See `familiar.toml.example` for their complete
 key list. `[plugins.golem]` is the sole reduced boot-time source enrollment;

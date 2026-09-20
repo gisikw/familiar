@@ -371,6 +371,54 @@ or {"ops":[{"op":"remove","id":"r-…"}]}
 The curve is the thought's authored stochastic timing. On each ordinary eligible turn, turn-age and wall-clock-age mature linearly across their ranges; their progress is averaged, then chance interpolates from near to mature. It is a probability, not a delivery promise. Turn bounds are integer [0, ${MAX_CURVE_TURNS}], hour bounds are finite [0, ${MAX_CURVE_HOURS}], each quiet value must be less than its mature value, and chances must be finite, nondecreasing values in [0,1]. Example: {"turns":[2,40],"hours":[6,168],"chance":[0.02,0.45]}. Each text is at most ${MAX_TEXT_CHARS} characters; at most ${MAX_REMINDERS} seeds may exist afterward. Leaving everything as it is — {"ops":[]} — is a normal answer. Multiple operations reject the entire reply; never use remove-plus-add.`;
 }
 
+/* --- commissioning mode ---------------------------------------------------
+ *
+ * A temporary, explicitly opt-in operator mode for commissioning this seam.
+ * It is deliberately NOT private: it curates on ordinary automatic handoffs
+ * too, reports each curation outcome to the operator, and renders delivered
+ * seeds in the transcript. Leave it off for normal residency.
+ */
+
+export const COMMISSIONING_ENV = "FAMILIAR_SUBCONSCIOUS_COMMISSIONING";
+
+/**
+ * `1` or `true` (case-insensitive, trimmed) enable it; anything else — an
+ * absent value, `0`, `false`, or junk — leaves the private default. Both
+ * spellings are accepted because familiar.toml renders a boolean as `true`
+ * while shell exports conventionally use `1`.
+ */
+export function commissioningEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env[COMMISSIONING_ENV];
+  if (typeof raw !== "string") return false;
+  const value = raw.trim().toLowerCase();
+  return value === "1" || value === "true";
+}
+
+/** The visible commissioning rendering of a delivered seed: its text, nothing else. */
+export function formatDeliveryLine(text: string): string {
+  return `[subconscious: ${typeof text === "string" ? text.trim() : ""}]`;
+}
+
+/**
+ * The operator-facing curation outcome. Stage names and counts only — never
+ * the prompt, the reply, the conversation, or a seed's body. A successful
+ * no-op is reported as loudly as a mutation, because "nothing happened" is
+ * the outcome hardest to observe and easiest to confuse with a dead seam.
+ */
+export function formatCurationReport(outcome: CurateOutcome): { text: string; level: "info" | "warning" } {
+  const prefix = "Subconscious (commissioning)";
+  if (outcome.outcome === "applied") {
+    return {
+      text: `${prefix}: curation applied ${outcome.ops} operation, ${outcome.reminders} seed${outcome.reminders === 1 ? "" : "s"} stored`,
+      level: "info",
+    };
+  }
+  if (outcome.outcome === "noop") {
+    return { text: `${prefix}: curation ran and changed nothing ({"ops":[]})`, level: "info" };
+  }
+  return { text: `${prefix}: curation skipped (${outcome.reason})`, level: "warning" };
+}
+
 export function renderDelivery(r: Reminder, nowMs: number): string {
   const age = humanizeDuration(Math.max(0, nowMs - r.createdAt));
   const origin = [

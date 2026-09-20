@@ -36,7 +36,8 @@ for the other.
 Only Familiar's own `/clear` (command or `clear` tool) curates. The automatic
 90% handoff, native `/compact`, and overflow retries produce a handoff without
 curation. One `/clear` is at most one dispatch, consumed before anything can
-fail.
+fail. [Commissioning mode](#commissioning-mode) temporarily adds the automatic
+90% handoff to that set; nothing else moves.
 
 ## Reply schema
 
@@ -85,10 +86,56 @@ one surfaces in a turn. There is deliberately no refractory period, session
 budget, handoff gate, or turn cliff; reminders can naturally arrive on adjacent
 turns. A surfaced reminder is removed from the store before it is
 injected as a hidden `subconscious-reminder` message (`display: false`, no
-renderer) carrying its text, age, originating session, and handoff archive.
+rendered output) carrying its text, age, originating session, and handoff
+archive — unless [commissioning mode](#commissioning-mode) is on.
 That message is ordinary session context for the Familiar who received it.
 Delivery is at-most-once: a crash between the write and the model seeing it
 loses that reminder rather than repeating it.
+
+## Commissioning mode
+
+Explicit clears are rare, so in ordinary residency this seam almost never runs
+and its private behavior cannot be observed at all.
+`FAMILIAR_SUBCONSCIOUS_COMMISSIONING=1` (or `true`; `[familiar]
+subconscious_commissioning = true` in `familiar.toml`) turns it into
+**temporary, deliberately non-private instrumentation**. It is off unless set to
+exactly `1` or `true`, and it is read once per session, so a session cannot
+change mode midway: set it in the environment the resident Pi starts in (an
+ambient `FAMILIAR_SUBCONSCIOUS_COMMISSIONING=1` beats the file, as usual) and
+start a session. While it is on:
+
+- The ordinary automatic 90% Familiar handoff curates as well as an explicit
+  `/clear`. The safety properties do not move: overflow retries still never
+  curate, a native stock `/compact` is still not a Familiar handoff trigger, and
+  the single dispatch is still consumed before anything can fail or retry.
+  Every automatic handoff therefore pays one extra bounded inference.
+- Each curation outcome is reported to the operator with `ctx.ui.notify` —
+  including the successful no-op `{"ops":[]}`, a skipped stage, and an unusable
+  store. The report is stage names and counts only: never the curation prompt,
+  the reply, conversation content, or a seed's body. It is held until the
+  compaction completes, because Pi rebuilds the transcript at `compaction_end`
+  and would discard anything shown from inside the hook.
+- A delivered seed is injected with `display: true` and its own text in
+  `details`, and renders in the transcript as `[subconscious: …]` — the seed
+  text alone, never the surrounding system-reminder instructions. The model
+  context of that message is identical to the private one. That rendering is
+  Pi's TUI renderer; another interface that projects `display: true` custom
+  messages without it may show the message's raw content instead, which is the
+  delivery text plus its origin note.
+
+This is commissioning instrumentation, not a feature: a seed that surfaces
+becomes visible to whoever can see the transcript, including an attached
+interface, and the attentional-surprise property the seam exists for is
+suspended for as long as the flag is set. Turn it off when commissioning is
+done.
+
+Everything else is unchanged. The ledger, its `0700`/`0600` permissions, the
+atomic replace, the at-most-once draw, and the ephemeral non-persistence of the
+curation turn are identical in both modes; no new file, entry, or remote channel
+exists. Visibility is decided per delivered message, so a seed delivered
+privately stays unrendered even if the flag is later turned on, and a seed
+delivered under commissioning keeps its `[subconscious: …]` rendering afterwards
+rather than falling back to raw content.
 
 ## Storage
 
@@ -117,9 +164,15 @@ by one dispatch, a 2048-token reply (uncapped only where the provider rejects
 
 ## Tests
 
-`nix develop -c bun test handoff/` from `integrations/pi/extensions`.
-`subconscious.test.ts` covers the schema, application, store, curve, and the
-ephemeral request in isolation; `clear-curation.test.ts` drives the real
-extension through a fake pi and proves ordering, outgoing-model ownership,
-non-persistence, gating of non-`/clear` compactions, every failure mode, and
-hidden delivery.
+`nix develop .#agents -c bun test handoff/` from `integrations/pi/extensions`
+(that shell carries both `bun` and `PI_PACKAGE_DIR`; `nix develop -c bun test
+handoff/` works too wherever `bun` is already on PATH).
+`subconscious.test.ts` covers the schema, application, store, curve, the
+ephemeral request in isolation, and the commissioning flag with its operator
+text; `clear-curation.test.ts` drives the real extension through a fake pi and
+proves ordering, outgoing-model ownership, non-persistence, gating of
+non-`/clear` compactions, every failure mode, and hidden delivery. Its
+commissioning suite proves automatic-handoff curation, no retry or native
+`/compact` curation, visible no-op/skipped/store-unavailable reporting after the
+compaction, `[subconscious: …]` delivery, and that every off spelling of the
+flag leaves the private default exactly as it was.

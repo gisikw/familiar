@@ -69,6 +69,18 @@ claude_oauth_token="placeholder"\n[theme.ansi]\nbright_blue="#abcdef"\n`);chmodS
     expect(()=>validateConfig({familiar:{ui_attachment_max_bytes:"16 MiB"}})).toThrow(ConfigError);
     expect(()=>validateConfig({familiar:{ui_attachment_root:"/srv"}})).toThrow(ConfigError);
   });
+  test("subconscious paths and the temporary commissioning flag are typed configuration",async()=>{
+    const d=mkdtempSync(join(tmpdir(),"familiar-config-"));dirs.push(d);const p=join(d,"familiar.toml");
+    writeFileSync(p,`[familiar]\nsubconscious_dir="./state/subconscious"\nsubconscious_timeout_ms=30000\nsubconscious_commissioning=true\n`);chmodSync(p,0o600);
+    const loaded=await loadConfig(p,{env:{},defaults:{}});
+    expect(loaded.config.familiar?.subconscious_commissioning).toBe(true);
+    // The generic flattener produces exactly the names the handoff extension reads,
+    // and a boolean reaches it as "true" — which that parser accepts alongside "1".
+    expect(loaded.environment.FAMILIAR_SUBCONSCIOUS_DIR).toBe("./state/subconscious");
+    expect(loaded.environment.FAMILIAR_SUBCONSCIOUS_TIMEOUT_MS).toBe("30000");
+    expect(loaded.environment.FAMILIAR_SUBCONSCIOUS_COMMISSIONING).toBe("true");
+    expect(()=>validateConfig({familiar:{subconscious_commissioning:"yes"}})).toThrow(ConfigError);
+  });
   test("Familiar Agents enrollment and state root are typed configuration",async()=>{
     const d=mkdtempSync(join(tmpdir(),"familiar-config-"));dirs.push(d);const p=join(d,"familiar.toml");
     writeFileSync(p,`[familiar]\nagents_config="/run/secrets/familiar-agents.json"\nagents_state_dir="./state/agents"\n`);chmodSync(p,0o600);

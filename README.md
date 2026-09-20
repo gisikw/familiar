@@ -77,7 +77,12 @@ compaction lands, she gets one ephemeral request to curate a small set of
 reminders for her next self — strict JSON, never persisted to the session. Each
 later surfaces on its own, once, as a hidden system reminder during ordinary
 conversation. The store is one atomically replaced file beneath
-`FAMILIAR_SUBCONSCIOUS_DIR` (default private `state/subconscious`). See
+`FAMILIAR_SUBCONSCIOUS_DIR` (default private `state/subconscious`). Because
+explicit clears are rare, a temporary opt-in commissioning mode
+(`FAMILIAR_SUBCONSCIOUS_COMMISSIONING=1`) additionally curates on the automatic
+90% handoff, reports each outcome, and renders delivered seeds as
+`[subconscious: …]`; it is deliberately non-private instrumentation and is off
+by default. See
 [SUBCONSCIOUS.md](integrations/pi/extensions/handoff/SUBCONSCIOUS.md).
 
 ## Durable wakes
