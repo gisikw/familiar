@@ -29,6 +29,7 @@ export type FleetConfig = {
   tunnelSSHPort: number;
   tunnelUser: string;
   controllerPublicKey: string;
+  tunnelHostKey: string;
   controllerIdentityFile?: string;
   presencePath?: string;
   forcedCommand: string;
@@ -62,6 +63,7 @@ export function fleetConfigFromEnv(env: NodeJS.ProcessEnv = process.env): FleetC
   const tunnelUser = required("FAMILIAR_FLEET_TUNNEL_USER");
   if (!SSH_USER.test(tunnelUser)) throw new Error("FAMILIAR_FLEET_TUNNEL_USER is invalid");
   const controllerPublicKey = normalizeEd25519Key(required("FAMILIAR_FLEET_CONTROLLER_PUBLIC_KEY"), "controller public key");
+  const tunnelHostKey = normalizeEd25519Key(required("FAMILIAR_FLEET_TUNNEL_HOST_KEY"), "tunnel host key");
   const forcedCommand = env.FAMILIAR_FLEET_FORCED_COMMAND?.trim() || "/bin/false";
   if (!/^\/[A-Za-z0-9._/-]+$/.test(forcedCommand)) throw new Error("FAMILIAR_FLEET_FORCED_COMMAND must be an absolute executable path without shell syntax");
   const controllerIdentityFile = env.FAMILIAR_FLEET_CONTROLLER_IDENTITY_FILE?.trim() || undefined;
@@ -70,7 +72,7 @@ export function fleetConfigFromEnv(env: NodeJS.ProcessEnv = process.env): FleetC
   }
   return {
     stateDir: path.resolve(env.FAMILIAR_FLEET_STATE_DIR), portMin, portMax,
-    tunnelHost, tunnelSSHPort, tunnelUser, controllerPublicKey, forcedCommand,
+    tunnelHost, tunnelSSHPort, tunnelUser, controllerPublicKey, tunnelHostKey, forcedCommand,
     controllerIdentityFile,
     presencePath: env.FAMILIAR_FLEET_PRESENCE_PATH?.trim() || undefined,
   };
@@ -214,6 +216,7 @@ export class FleetRegistry {
       tunnel_host: this.config.tunnelHost, tunnel_ssh_port: this.config.tunnelSSHPort,
       tunnel_user: this.config.tunnelUser, remote_session: REMOTE_SESSION,
       controller_public_key: this.config.controllerPublicKey,
+      tunnel_host_key: this.config.tunnelHostKey,
     };
   }
 

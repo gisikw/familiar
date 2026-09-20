@@ -19,6 +19,7 @@ async function fixture(min = 24000, max = 24002) {
   const config = {
     stateDir: root, portMin: min, portMax: max, tunnelHost: "fleet.example.test",
     tunnelSSHPort: 2222, tunnelUser: "fleet_tunnel", controllerPublicKey: normalizeEd25519Key(key(9)),
+    tunnelHostKey: normalizeEd25519Key(key(8)),
     controllerIdentityFile: "/run/keys/fleet-controller", forcedCommand: "/bin/false",
   };
   const registry = new FleetRegistry(config, () => "2026-09-21T12:00:00.000Z");

@@ -90,6 +90,7 @@ FAMILIAR_TTS_URL = "http://127.0.0.1:9933"
 # FAMILIAR_FLEET_TUNNEL_SSH_PORT = "22"
 # FAMILIAR_FLEET_TUNNEL_USER = "familiar-tunnel"
 # FAMILIAR_FLEET_CONTROLLER_PUBLIC_KEY = "ssh-ed25519 AAAA..."
+# FAMILIAR_FLEET_TUNNEL_HOST_KEY = "ssh-ed25519 AAAA..."
 # FAMILIAR_FLEET_CONTROLLER_IDENTITY_FILE = "/run/keys/familiar-fleet-controller"
 [children.probe]
 type = "http"

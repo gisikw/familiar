@@ -2,6 +2,7 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    herdr.url = "github:herdrdev/herdr/v0.9.1";
     server = { url = "path:./services/server"; inputs.nixpkgs.follows = "nixpkgs"; inputs.flake-utils.follows = "flake-utils"; };
     llm = { url = "path:./services/llm"; inputs.nixpkgs.follows = "nixpkgs"; inputs.flake-utils.follows = "flake-utils"; };
     stt = { url = "path:./services/stt"; inputs.nixpkgs.follows = "nixpkgs"; inputs.flake-utils.follows = "flake-utils"; };
@@ -11,10 +12,11 @@
     desktop = { url = "path:./apps/desktop"; inputs.nixpkgs.follows = "nixpkgs"; inputs.flake-utils.follows = "flake-utils"; };
   };
 
-  outputs = { self, nixpkgs, flake-utils, server, llm, stt, tts, gateway-module, viewer, desktop }:
+  outputs = { self, nixpkgs, flake-utils, herdr, server, llm, stt, tts, gateway-module, viewer, desktop }:
     flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ] (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+        herdrPackage = herdr.packages.${system}.default;
         patchedPi = import ./nix/patches/pi-coding-agent { inherit pkgs; };
         modelEnv = {
           FAMILIAR_MODEL_FILE = "gemma-4-E4B-it-Q4_K_M.gguf";
@@ -85,7 +87,7 @@
           FAMILIAR_IMP_BIN = "${impPackage}/bin";
           FAMILIAR_INTERACTIVE_SHELL = "${pkgs.bashInteractive}/bin/bash";
           PI_PACKAGE_DIR = "${patchedPi}/lib/node_modules/pi-monorepo";
-          packages = [ patchedPi ] ++ (with pkgs; [ age curl jq sqlite librsvg ffmpeg tmux util-linux git openssh ]);
+          packages = [ patchedPi herdrPackage ] ++ (with pkgs; [ age curl jq sqlite librsvg ffmpeg tmux util-linux git openssh ]);
         });
       in
       {
@@ -96,6 +98,7 @@
           familiar-llm = llm.packages.${system}.default;
           familiar-stt = stt.packages.${system}.default;
           familiar-gateway = gateway-module.packages.${system}.default;
+          herdr = herdrPackage;
           golem-familiar-render = pkgs.buildGoModule {
             pname = "golem-familiar-render";
             version = "1";

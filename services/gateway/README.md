@@ -175,6 +175,7 @@ Fleet enrollment is opt-in. Set all required values before starting the gateway:
 | `FAMILIAR_FLEET_TUNNEL_SSH_PORT` | `22` | Rendezvous sshd port. This is not a per-node reverse port. |
 | `FAMILIAR_FLEET_TUNNEL_USER` | required | Restricted account used only to establish tunnels. |
 | `FAMILIAR_FLEET_CONTROLLER_PUBLIC_KEY` | required | Ed25519 public key used by Familiar to reach node SSH endpoints. |
+| `FAMILIAR_FLEET_TUNNEL_HOST_KEY` | required | Ed25519 host public key for fail-closed rendezvous pinning by clients. |
 | `FAMILIAR_FLEET_CONTROLLER_IDENTITY_FILE` | — | Absolute private-key path written only into the local generated SSH route. Its contents never enter registry state or API responses. |
 | `FAMILIAR_FLEET_FORCED_COMMAND` | `/bin/false` | Forced command in generated tunnel authorization. Must terminate any attempted session while allowing `ssh -N` forwarding. |
 | `FAMILIAR_FLEET_PRESENCE_PATH` | — | Optional external, atomically replaced JSON presence projection; see below. |
@@ -202,7 +203,8 @@ to lowercase DNS labels. A successful response is:
   "tunnel_ssh_port": 22,
   "tunnel_user": "familiar-tunnel",
   "remote_session": "familiar-fleet",
-  "controller_public_key": "ssh-ed25519 ..."
+  "controller_public_key": "ssh-ed25519 ...",
+  "tunnel_host_key": "ssh-ed25519 ..."
 }
 ```
 
