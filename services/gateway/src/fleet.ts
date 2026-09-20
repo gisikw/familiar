@@ -7,6 +7,11 @@ const REMOTE_SESSION = "familiar-fleet";
 const LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const SSH_USER = /^[a-z_][a-z0-9_-]{0,31}$/;
 const NODE_ID = /^fn_[0-9a-f]{32}$/;
+// Exact, immutable Familiar worker-runtime installable. A 40-hex commit is the
+// only accepted revision form: branches, tags, and short revisions are rejected
+// so every enrolled node is told a build that cannot drift underneath it.
+const RUNTIME_INSTALLABLE = /^github:gisikw\/familiar\/[0-9a-f]{40}#familiar-worker-runtime$/;
+const RUNTIME_SCHEMA = 1;
 
 type Presence = { state: "online" | "offline" | "unknown"; observed_at: string | null };
 type NodeRecord = {
@@ -33,7 +38,20 @@ export type FleetConfig = {
   controllerIdentityFile?: string;
   presencePath?: string;
   forcedCommand: string;
+  /** Deployment-owned desired worker runtime; public metadata, never a credential. */
+  runtimeInstallable: string;
 };
+
+export type FleetRuntime = { schema: typeof RUNTIME_SCHEMA; installable: string };
+
+export function parseRuntimeInstallable(value: string | undefined): string {
+  const installable = value?.trim() ?? "";
+  if (!installable) throw new Error("FAMILIAR_FLEET_RUNTIME_INSTALLABLE is required when FAMILIAR_FLEET_STATE_DIR is set");
+  if (!RUNTIME_INSTALLABLE.test(installable)) {
+    throw new Error("FAMILIAR_FLEET_RUNTIME_INSTALLABLE must be an exact immutable installable of the form github:gisikw/familiar/<40 lowercase hex commit>#familiar-worker-runtime");
+  }
+  return installable;
+}
 
 export class FleetError extends Error {
   constructor(public status: number, message: string) { super(message); }
@@ -66,6 +84,7 @@ export function fleetConfigFromEnv(env: NodeJS.ProcessEnv = process.env): FleetC
   const tunnelHostKey = normalizeEd25519Key(required("FAMILIAR_FLEET_TUNNEL_HOST_KEY"), "tunnel host key");
   const forcedCommand = env.FAMILIAR_FLEET_FORCED_COMMAND?.trim() || "/bin/false";
   if (!/^\/[A-Za-z0-9._/-]+$/.test(forcedCommand)) throw new Error("FAMILIAR_FLEET_FORCED_COMMAND must be an absolute executable path without shell syntax");
+  const runtimeInstallable = parseRuntimeInstallable(env.FAMILIAR_FLEET_RUNTIME_INSTALLABLE);
   const controllerIdentityFile = env.FAMILIAR_FLEET_CONTROLLER_IDENTITY_FILE?.trim() || undefined;
   if (controllerIdentityFile && (!path.isAbsolute(controllerIdentityFile) || /["\r\n\0]/.test(controllerIdentityFile))) {
     throw new Error("FAMILIAR_FLEET_CONTROLLER_IDENTITY_FILE must be a safe absolute path");
@@ -73,7 +92,7 @@ export function fleetConfigFromEnv(env: NodeJS.ProcessEnv = process.env): FleetC
   return {
     stateDir: path.resolve(env.FAMILIAR_FLEET_STATE_DIR), portMin, portMax,
     tunnelHost, tunnelSSHPort, tunnelUser, controllerPublicKey, tunnelHostKey, forcedCommand,
-    controllerIdentityFile,
+    runtimeInstallable, controllerIdentityFile,
     presencePath: env.FAMILIAR_FLEET_PRESENCE_PATH?.trim() || undefined,
   };
 }
@@ -142,7 +161,15 @@ async function atomicWrite(file: string, data: string, mode = 0o600): Promise<vo
 
 export class FleetRegistry {
   private queue: Promise<unknown> = Promise.resolve();
-  constructor(readonly config: FleetConfig, private now = () => new Date().toISOString()) {}
+  constructor(readonly config: FleetConfig, private now = () => new Date().toISOString()) {
+    // Fail closed even when constructed programmatically rather than via env.
+    parseRuntimeInstallable(config.runtimeInstallable);
+  }
+
+  /** Desired runtime communicated at enrollment; later true-up happens over controller SSH, not here. */
+  runtime(): FleetRuntime {
+    return { schema: RUNTIME_SCHEMA, installable: this.config.runtimeInstallable };
+  }
 
   private serialized<T>(operation: () => Promise<T>): Promise<T> {
     const next = this.queue.then(operation, operation);
@@ -217,6 +244,7 @@ export class FleetRegistry {
       tunnel_user: this.config.tunnelUser, remote_session: REMOTE_SESSION,
       controller_public_key: this.config.controllerPublicKey,
       tunnel_host_key: this.config.tunnelHostKey,
+      runtime: this.runtime(),
     };
   }
 

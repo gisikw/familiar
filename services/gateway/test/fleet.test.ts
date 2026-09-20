@@ -4,7 +4,10 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { FleetError, FleetRegistry, fleetConfigFromEnv, handleFleet, normalizeEd25519Key } from "../src/fleet.ts";
+import { FleetError, FleetRegistry, fleetConfigFromEnv, handleFleet, normalizeEd25519Key, parseRuntimeInstallable } from "../src/fleet.ts";
+
+const COMMIT = "71514e9d0b5c4a3f2e1d0c9b8a7f6e5d4c3b2a19";
+const RUNTIME = `github:gisikw/familiar/${COMMIT}#familiar-worker-runtime`;
 
 function sshString(value: Buffer): Buffer {
   const length = Buffer.alloc(4); length.writeUInt32BE(value.length);
@@ -21,6 +24,7 @@ async function fixture(min = 24000, max = 24002) {
     tunnelSSHPort: 2222, tunnelUser: "fleet_tunnel", controllerPublicKey: normalizeEd25519Key(key(9)),
     tunnelHostKey: normalizeEd25519Key(key(8)),
     controllerIdentityFile: "/run/keys/fleet-controller", forcedCommand: "/bin/false",
+    runtimeInstallable: RUNTIME,
   };
   const registry = new FleetRegistry(config, () => "2026-09-21T12:00:00.000Z");
   await registry.initialize();
@@ -38,11 +42,44 @@ test("fleet configuration is opt-in and remains inside the gateway auth boundary
   // it with a parallel credential mechanism.
 });
 
+test("fleet configuration requires an exact immutable worker-runtime installable", () => {
+  const base = {
+    FAMILIAR_FLEET_STATE_DIR: "/tmp/fleet", FAMILIAR_FLEET_TUNNEL_HOST: "fleet.example.test",
+    FAMILIAR_FLEET_TUNNEL_USER: "fleet_tunnel", FAMILIAR_FLEET_CONTROLLER_PUBLIC_KEY: key(9), FAMILIAR_FLEET_TUNNEL_HOST_KEY: key(8),
+  };
+  assert.throws(() => fleetConfigFromEnv(base), /FAMILIAR_FLEET_RUNTIME_INSTALLABLE is required/);
+  assert.throws(() => fleetConfigFromEnv({ ...base, FAMILIAR_FLEET_RUNTIME_INSTALLABLE: "   " }), /FAMILIAR_FLEET_RUNTIME_INSTALLABLE is required/);
+  const rejected = [
+    "github:gisikw/familiar/main#familiar-worker-runtime",              // branch
+    "github:gisikw/familiar/v1.0.0#familiar-worker-runtime",            // tag
+    `github:gisikw/familiar/${COMMIT.slice(0, 7)}#familiar-worker-runtime`, // short rev
+    `github:gisikw/familiar/${COMMIT.toUpperCase()}#familiar-worker-runtime`, // uppercase hex
+    `github:gisikw/familiar/${COMMIT}`,                                  // missing attribute
+    `github:gisikw/familiar/${COMMIT}#pi-coding-agent`,                  // wrong attribute
+    `github:gisikw/familiar/${COMMIT}#packages.x86_64-linux.familiar-worker-runtime`, // system-specific path
+    `github:someone/familiar/${COMMIT}#familiar-worker-runtime`,         // wrong owner
+    `gitlab:gisikw/familiar/${COMMIT}#familiar-worker-runtime`,          // wrong forge
+    `github:gisikw/familiar/${COMMIT}?dir=x#familiar-worker-runtime`,    // query params
+    `.#familiar-worker-runtime`, `/nix/store/abc-familiar-worker-runtime`,
+    ` ${RUNTIME} x`, `${RUNTIME}\n${RUNTIME}`,
+  ];
+  for (const value of rejected) {
+    assert.throws(() => fleetConfigFromEnv({ ...base, FAMILIAR_FLEET_RUNTIME_INSTALLABLE: value }), /must be an exact immutable installable/, value);
+  }
+  const config = fleetConfigFromEnv({ ...base, FAMILIAR_FLEET_RUNTIME_INSTALLABLE: ` ${RUNTIME} ` });
+  assert.equal(config?.runtimeInstallable, RUNTIME);
+  assert.equal(parseRuntimeInstallable(RUNTIME), RUNTIME);
+  // Programmatic construction fails closed too; the registry never serves an empty runtime.
+  assert.throws(() => new FleetRegistry({ ...config!, runtimeInstallable: "" }), /is required/);
+});
+
 test("enrollment is idempotent and concurrent allocation cannot collide", async (t) => {
   const { root, registry } = await fixture(); t.after(() => fs.rm(root, { recursive: true, force: true }));
   const one = await registry.enroll(enrollment("Node-One", 1));
+  assert.deepEqual(one.runtime, { schema: 1, installable: RUNTIME });
   const same = await registry.enroll(enrollment("node-one", 1));
   assert.deepEqual(same, one);
+  assert.deepEqual(same.runtime, { schema: 1, installable: RUNTIME });
   // A second registry instance models an accidentally overlapping service
   // process and exercises the on-disk allocation lock, not only the queue.
   const otherProcess = new FleetRegistry(registry.config);
@@ -71,8 +108,18 @@ test("HTTP contract inherits the boundary without accepting a parallel credentia
   const body = await response.json() as any;
   assert.equal(body.host, "api-node"); assert.equal(body.remote_session, "familiar-fleet");
   assert.equal("private_key" in body, false);
+  assert.deepEqual(body.runtime, { schema: 1, installable: RUNTIME });
+  assert.deepEqual(Object.keys(body).sort(), [
+    "controller_public_key", "host", "node_id", "port", "remote_session", "runtime",
+    "tunnel_host", "tunnel_host_key", "tunnel_ssh_port", "tunnel_user",
+  ]);
   const listed = await fetch(`http://127.0.0.1:${address.port}/fleet`);
-  assert.equal((await listed.json() as any).nodes[0].node_id, body.node_id);
+  const nodes = (await listed.json() as any).nodes;
+  assert.equal(nodes.length, 1);
+  assert.equal(nodes[0].node_id, body.node_id);
+  assert.deepEqual(nodes[0].runtime, { schema: 1, installable: RUNTIME });
+  assert.deepEqual(nodes[0].presence, { state: "unknown", observed_at: null });
+  assert.equal(nodes[0].enrolled_at, "2026-09-21T12:00:00.000Z");
   const revoked = await fetch(`http://127.0.0.1:${address.port}/fleet/${body.node_id}`, { method: "DELETE" });
   assert.equal(revoked.status, 204);
 });
@@ -83,6 +130,8 @@ test("labels, users, keys, unknown fields, and immutable enrollment are validate
   await assert.rejects(() => registry.enroll({ ...enrollment("good", 1), ssh_user: "root;ouch" }), (e: FleetError) => e.status === 400);
   await assert.rejects(() => registry.enroll({ ...enrollment("good", 1), tunnel_public_key: "ssh-ed25519 AAAA" }), (e: FleetError) => e.status === 400);
   await assert.rejects(() => registry.enroll({ ...enrollment("good", 1), private_key: "secret" }), (e: FleetError) => e.status === 400);
+  // The runtime is deployment-owned: nodes cannot request or negotiate one.
+  await assert.rejects(() => registry.enroll({ ...enrollment("good", 1), runtime: { schema: 1, installable: RUNTIME } }), (e: FleetError) => e.status === 400);
   await registry.enroll(enrollment("good", 1));
   await assert.rejects(() => registry.enroll({ ...enrollment("changed", 1) }), (e: FleetError) => e.status === 409);
   await assert.rejects(() => registry.enroll(enrollment("good", 2)), (e: FleetError) => e.status === 409);
@@ -93,7 +142,20 @@ test("registry survives restart and emits pinned, restricted reconciliation arti
   const enrolled = await registry.enroll(enrollment("laptop", 7));
   const restarted = new FleetRegistry(config);
   await restarted.initialize();
-  assert.equal((await restarted.enroll(enrollment("laptop", 7))).node_id, enrolled.node_id);
+  const again = await restarted.enroll(enrollment("laptop", 7));
+  assert.equal(again.node_id, enrolled.node_id);
+  assert.deepEqual(again.runtime, { schema: 1, installable: RUNTIME });
+  // The runtime is config-sourced, not registry state: a restart under a newer
+  // deployment true-ups what an already-enrolled node is told without rewriting identity.
+  const next = `github:gisikw/familiar/${"a".repeat(40)}#familiar-worker-runtime`;
+  const upgraded = new FleetRegistry({ ...config, runtimeInstallable: next });
+  await upgraded.initialize();
+  const after = await upgraded.enroll(enrollment("laptop", 7));
+  assert.equal(after.node_id, enrolled.node_id); assert.equal(after.port, enrolled.port);
+  assert.deepEqual(after.runtime, { schema: 1, installable: next });
+  assert.deepEqual((await upgraded.list())[0].runtime, { schema: 1, installable: next });
+  const stored = await fs.readFile(path.join(root, "registry.json"), "utf8");
+  assert.doesNotMatch(stored, /familiar-worker-runtime/);
   const authorized = await fs.readFile(path.join(root, "authorized_keys"), "utf8");
   assert.match(authorized, /^restrict,port-forwarding,command="\/bin\/false",permitlisten="127\.0\.0\.1:24000",permitlisten="\[::1\]:24000",permitopen="127\.0\.0\.1:24000",permitopen="\[::1\]:24000" ssh-ed25519 /);
   assert.doesNotMatch(authorized, /PRIVATE/);
