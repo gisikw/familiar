@@ -176,6 +176,7 @@ Fleet enrollment is opt-in. Set all required values before starting the gateway:
 | `FAMILIAR_FLEET_TUNNEL_USER` | required | Restricted account used only to establish tunnels. |
 | `FAMILIAR_FLEET_CONTROLLER_PUBLIC_KEY` | required | Ed25519 public key used by Familiar to reach node SSH endpoints. |
 | `FAMILIAR_FLEET_TUNNEL_HOST_KEY` | required | Ed25519 host public key for fail-closed rendezvous pinning by clients. |
+| `FAMILIAR_FLEET_RUNTIME_INSTALLABLE` | required | Deployment-owned desired worker runtime, exactly `github:gisikw/familiar/<40 lowercase hex commit>#familiar-worker-runtime`. Branches, tags, short revisions, other attributes, and query strings are rejected at startup. Public metadata, not a credential. |
 | `FAMILIAR_FLEET_CONTROLLER_IDENTITY_FILE` | — | Absolute private-key path written only into the local generated SSH route. Its contents never enter registry state or API responses. |
 | `FAMILIAR_FLEET_FORCED_COMMAND` | `/bin/false` | Forced command in generated tunnel authorization. Must terminate any attempted session while allowing `ssh -N` forwarding. |
 | `FAMILIAR_FLEET_PRESENCE_PATH` | — | Optional external, atomically replaced JSON presence projection; see below. |
@@ -204,9 +205,25 @@ to lowercase DNS labels. A successful response is:
   "tunnel_user": "familiar-tunnel",
   "remote_session": "familiar-fleet",
   "controller_public_key": "ssh-ed25519 ...",
-  "tunnel_host_key": "ssh-ed25519 ..."
+  "tunnel_host_key": "ssh-ed25519 ...",
+  "runtime": {
+    "schema": 1,
+    "installable": "github:gisikw/familiar/<40-hex-commit>#familiar-worker-runtime"
+  }
 }
 ```
+
+`runtime` is the deployment's authoritative desired worker runtime (see
+`nix/worker-runtime/README.md`). It is sourced from
+`FAMILIAR_FLEET_RUNTIME_INSTALLABLE` at startup, is not stored in the registry,
+and is identical for every node: re-enrolling after a deployment upgrade
+returns the same identity and port with the new installable. `schema` is a
+small integer so the object can grow (for example a store path or hash) without
+reinterpreting the string. Enrollment only *communicates* the desired runtime so
+a node can install it once at join time; the gateway never builds it, never
+ships secrets with it, and exposes no polling or node-update endpoint. Ongoing
+true-up of already-enrolled nodes remains the controller's job over the
+generated SSH routes.
 
 No API accepts or returns private key material. Repeating the identical request
 for an active tunnel key returns the same node ID and port. Reusing that key
@@ -215,7 +232,7 @@ identities remain tombstoned and cannot silently re-enroll. Range exhaustion is
 a `503`; validation is `400`; conflicts are `409`; revoked identities are `410`.
 
 `GET /fleet` returns `{"nodes":[...]}` for active identities. Each node includes
-`enrolled_at` and a separate `presence` object. Presence defaults to
+the full assignment above (including `runtime`), `enrolled_at`, and a separate `presence` object. Presence defaults to
 `{"state":"unknown","observed_at":null}` and never controls identity, routes,
 or allocation. A tunnel monitor may atomically replace the configured presence
 file with an object keyed by node ID whose values have `state` (`online`,

@@ -91,6 +91,12 @@ FAMILIAR_TTS_URL = "http://127.0.0.1:9933"
 # FAMILIAR_FLEET_TUNNEL_USER = "familiar-tunnel"
 # FAMILIAR_FLEET_CONTROLLER_PUBLIC_KEY = "ssh-ed25519 AAAA..."
 # FAMILIAR_FLEET_TUNNEL_HOST_KEY = "ssh-ed25519 AAAA..."
+# The desired worker runtime handed to every enrolling node. Must be the exact
+# immutable installable for a full 40-hex commit of this repository, never a
+# branch or tag, so nodes cannot drift; bump it as part of each deployment.
+# Public metadata, not a secret. Node true-up after enrollment is done by the
+# controller over SSH, not by this value changing.
+# FAMILIAR_FLEET_RUNTIME_INSTALLABLE = "github:gisikw/familiar/<40-hex-commit>#familiar-worker-runtime"
 # FAMILIAR_FLEET_CONTROLLER_IDENTITY_FILE = "/run/keys/familiar-fleet-controller"
 [children.probe]
 type = "http"
