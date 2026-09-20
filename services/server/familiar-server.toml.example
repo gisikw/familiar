@@ -81,6 +81,16 @@ dependency_timeout_policy = "fail-child"
 FAMILIAR_PRESENCE_CTL = "./services/presence/presence.sh"
 FAMILIAR_STT_URL = "http://127.0.0.1:9932"
 FAMILIAR_TTS_URL = "http://127.0.0.1:9933"
+# Fleet enrollment is disabled unless FAMILIAR_FLEET_STATE_DIR and all required
+# rendezvous values are supplied. Example production values:
+# FAMILIAR_FLEET_STATE_DIR = "../../state/fleet"
+# FAMILIAR_FLEET_PORT_MIN = "22000"
+# FAMILIAR_FLEET_PORT_MAX = "22999"
+# FAMILIAR_FLEET_TUNNEL_HOST = "fleet.example.com"
+# FAMILIAR_FLEET_TUNNEL_SSH_PORT = "22"
+# FAMILIAR_FLEET_TUNNEL_USER = "familiar-tunnel"
+# FAMILIAR_FLEET_CONTROLLER_PUBLIC_KEY = "ssh-ed25519 AAAA..."
+# FAMILIAR_FLEET_CONTROLLER_IDENTITY_FILE = "/run/keys/familiar-fleet-controller"
 [children.probe]
 type = "http"
 # The gateway's real readiness/liveness endpoint is /health, not /ready.

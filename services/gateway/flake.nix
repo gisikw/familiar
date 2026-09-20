@@ -30,6 +30,12 @@
           nodejs = pkgs.nodejs_22;
           dontNpmBuild = true;
           nativeBuildInputs = with pkgs; [ makeWrapper python3 gnumake gcc ];
+          doCheck = true;
+          checkPhase = ''
+            runHook preCheck
+            npm test
+            runHook postCheck
+          '';
           installPhase = ''
             runHook preInstall
             mkdir -p $out/lib/familiar-gateway $out/bin
