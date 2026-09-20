@@ -19,6 +19,12 @@
         pkgs = nixpkgs.legacyPackages.${system};
         herdrPackage = herdr.packages.${system}.default;
         patchedPi = import ./nix/patches/pi-coding-agent { inherit pkgs; };
+        # Public immutable fleet worker runtime (see nix/worker-runtime).
+        workerRuntime = import ./nix/worker-runtime {
+          inherit pkgs patchedPi herdrPackage;
+          familiarRev = self.rev or self.dirtyRev or "unknown";
+          extensionsSrc = ./integrations/pi/extensions;
+        };
         modelEnv = {
           FAMILIAR_MODEL_FILE = "gemma-4-E4B-it-Q4_K_M.gguf";
           FAMILIAR_MODEL_URL = "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/${modelEnv.FAMILIAR_MODEL_FILE}";
@@ -100,6 +106,7 @@
           familiar-stt = stt.packages.${system}.default;
           familiar-gateway = gateway-module.packages.${system}.default;
           herdr = herdrPackage;
+          familiar-worker-runtime = workerRuntime;
           golem-familiar-render = pkgs.buildGoModule {
             pname = "golem-familiar-render";
             version = "1";
@@ -130,6 +137,14 @@
             touch $out
           '';
           pi-invoke-command = patchedPi;
+          worker-runtime = pkgs.runCommand "familiar-worker-runtime-check" {
+            nativeBuildInputs = with pkgs; [ nodejs_24 ];
+          } ''
+            export HOME="$TMPDIR/home"
+            mkdir -p "$HOME"
+            node ${self}/test/worker-runtime.mjs ${workerRuntime} ${self}/integrations/pi/extensions
+            touch $out
+          '';
           resident-tool-inventory = pkgs.runCommand "familiar-resident-tool-inventory" {
             PI_PACKAGE_DIR = "${patchedPi}/lib/node_modules/pi-monorepo";
             nativeBuildInputs = with pkgs; [ nodejs_24 ];

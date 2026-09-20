@@ -70,6 +70,21 @@ account shell authority, not a path sandbox. Configuration is explicit, there
 is no local fallback, and no remote Familiar daemon is installed. See the
 [isolated proof harness](test/agents/README.md) before deployment.
 
+### Worker runtime package
+
+`packages.<system>.familiar-worker-runtime` (x86_64/aarch64 Linux, aarch64
+Darwin) is the immutable public closure a fleet node activates so that every
+Herdr pane resolves the same `pi`: Familiar's patched Pi 0.85.1, the pinned
+Herdr 0.9.1 CLI, and the worker tools the resident/Agents shells already use
+(interactive Bash, coreutils, findutils, grep/sed/awk, Git, jq, ripgrep, fd,
+Python 3, OpenSSH; procps/util-linux on Linux). `share/familiar-worker/`
+carries the public Tiamat extension sources (derived from the same import
+graph as generated worker profiles), a default `profile/settings.json`
+template, and schema-1 `runtime.json` metadata. It contains no secrets,
+private configuration, mutable state, or checkout; node activation and
+credential provisioning stay fleet-side. See
+[nix/worker-runtime/README.md](nix/worker-runtime/README.md).
+
 ## Subconscious reminders
 
 At `/clear`, after the outgoing Familiar has written her handoff and before the
