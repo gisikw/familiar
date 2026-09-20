@@ -2,7 +2,8 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    herdr.url = "github:herdrdev/herdr/v0.9.1";
+    # Exact herdr-nix commit packaging upstream's v0.9.1 release binaries.
+    herdr.url = "github:herdrdev/herdr-nix/2bcfa02424385730d0c65cfa8cd355bb3afecef8";
     server = { url = "path:./services/server"; inputs.nixpkgs.follows = "nixpkgs"; inputs.flake-utils.follows = "flake-utils"; };
     llm = { url = "path:./services/llm"; inputs.nixpkgs.follows = "nixpkgs"; inputs.flake-utils.follows = "flake-utils"; };
     stt = { url = "path:./services/stt"; inputs.nixpkgs.follows = "nixpkgs"; inputs.flake-utils.follows = "flake-utils"; };
