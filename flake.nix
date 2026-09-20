@@ -17,11 +17,15 @@
     flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ] (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-        herdrPackage = herdr.packages.${system}.default;
+        # Keep the release package and the herdr-nix packaging revision pinned
+        # together. The input URL above is intentionally immutable; this
+        # assertion makes an accidental lock/input update fail evaluation.
+        herdrNixRev = "2bcfa02424385730d0c65cfa8cd355bb3afecef8";
+        herdrPackage = assert herdr.sourceInfo.rev == herdrNixRev; herdr.packages.${system}.default;
         patchedPi = import ./nix/patches/pi-coding-agent { inherit pkgs; };
         # Public immutable fleet worker runtime (see nix/worker-runtime).
         workerRuntime = import ./nix/worker-runtime {
-          inherit pkgs patchedPi herdrPackage;
+          inherit pkgs patchedPi herdrPackage herdrNixRev;
           familiarRev = self.rev or self.dirtyRev or "unknown";
           extensionsSrc = ./integrations/pi/extensions;
         };
@@ -87,14 +91,17 @@
             platforms = platforms.unix;
           };
         };
+        # Small CLI surface available both to resident Pi tool execution and to
+        # foreground development shells. Keep language runtimes out of this set.
+        residentCliTools = [ impPackage herdrPackage ] ++ (with pkgs; [ jq ripgrep fd ]);
         piShell = pkgs.mkShell (modelEnv // {
           FAMILIAR_SHELL = "pi";
-          # Deliberately not a package of this shell: familiar.sh adds this
-          # directory to PATH only immediately before it launches resident Pi.
+          # familiar.sh still adds this immediately before launching resident
+          # Pi so deployed/stale shells retain the existing confined path.
           FAMILIAR_IMP_BIN = "${impPackage}/bin";
           FAMILIAR_INTERACTIVE_SHELL = "${pkgs.bashInteractive}/bin/bash";
           PI_PACKAGE_DIR = "${patchedPi}/lib/node_modules/pi-monorepo";
-          packages = [ patchedPi herdrPackage ] ++ (with pkgs; [ age curl jq sqlite librsvg ffmpeg tmux util-linux git openssh ]);
+          packages = [ patchedPi ] ++ residentCliTools ++ (with pkgs; [ age curl sqlite librsvg ffmpeg tmux util-linux git openssh ]);
         });
       in
       {
@@ -152,6 +159,12 @@
             export HOME="$TMPDIR/home"
             mkdir -p "$HOME"
             node ${self}/test/resident-tool-inventory.mjs
+            touch $out
+          '';
+          resident-shell-tools = pkgs.runCommand "familiar-resident-shell-tools" {
+            nativeBuildInputs = residentCliTools;
+          } ''
+            ${pkgs.bash}/bin/bash ${self}/test/resident-shell-tools.test.sh
             touch $out
           '';
           agents-ledger = pkgs.runCommand "familiar-agents-ledger" {

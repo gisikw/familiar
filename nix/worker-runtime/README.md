@@ -14,7 +14,7 @@ nix build github:gisikw/familiar/<40-hex-commit>#familiar-worker-runtime
 
 ```text
 bin/                         one merged bin directory (buildEnv, collisions fail)
-  pi                         Familiar's patched Pi 0.85.1 (nix/patches/pi-coding-agent)
+  pi                         fail-closed launcher for patched Pi 0.85.1
   herdr                      pinned Herdr 0.9.1 release CLI (flake input `herdr`)
   bash git jq rg fd python3 ssh ssh-keygen ...   worker tools (below)
 share/familiar-worker/
@@ -27,7 +27,14 @@ share/familiar-worker/
 
 The `bin` directory is the whole execution surface. A node puts it on the
 pane shell's PATH (for example through a stable `current` pointer); Herdr's
-`agent.start --kind pi` then resolves this exact Pi.
+`agent.start --kind pi` then resolves this exact launcher. The launcher checks
+`FAMILIAR_TIAMAT_URL` and `FAMILIAR_TIAMAT_TOKEN_FILE` before it execs the
+immutable patched Pi store path with arguments unchanged. The token path must
+name a readable, regular, nonempty file; a dummy nonempty token is acceptable
+for an unauthenticated router. Missing or invalid inputs fail immediately with
+a concise `Failed to start pi: ...` error. This policy belongs only to the
+fleet runtime entrypoint: `packages.<system>.pi-coding-agent` and resident Pi
+continue to invoke the patched package directly.
 
 ### Worker tools
 
@@ -56,8 +63,9 @@ immutable store path of this output), `defaultProjectTrust: "never"`, and
 the extension entry. Providers and credentials never appear here: Tiamat is
 configured at launch through `FAMILIAR_TIAMAT_URL` and the absolute
 `FAMILIAR_TIAMAT_TOKEN_FILE` reference, and reads the token file per request
-(see `integrations/pi/extensions/tiamat/README.md`). Without those variables
-the extension logs `disabled` and Pi starts with no providers.
+(see `integrations/pi/extensions/tiamat/README.md`). The fleet `bin/pi`
+launcher refuses to start without valid values rather than allowing the
+extension to come up disabled.
 
 ### runtime.json
 
@@ -67,8 +75,8 @@ the extension logs `disabled` and Pi starts with no providers.
   "name": "familiar-worker-runtime",
   "familiar_rev": "<40-hex commit, -dirty suffixed for dirty trees, or unknown>",
   "system": "x86_64-linux",
-  "pi": { "version": "0.85.1", "upstream_commit": "d981de…", "patches": ["invoke-command.patch", "runtime-control.patch", "model-bootstrap.patch"], "store_path": "/nix/store/…" },
-  "herdr": { "name": "herdr", "version": "0.9.1", "store_path": "/nix/store/…" },
+  "pi": { "version": "0.85.1", "upstream_commit": "d981de…", "patches": ["invoke-command.patch", "runtime-control.patch", "model-bootstrap.patch"], "store_path": "/nix/store/…", "entrypoint": "bin/pi", "fail_closed_tiamat": true },
+  "herdr": { "name": "herdr", "version": "0.9.1", "store_path": "/nix/store/…", "nix_input_revision": "2bcfa02424385730d0c65cfa8cd355bb3afecef8" },
   "tools": [ { "name": "git", "version": "…", "store_path": "/nix/store/…" }, … ],
   "extensions": ["tiamat"],
   "profile_template": "share/familiar-worker/profile/settings.json"
@@ -92,7 +100,10 @@ nix build .#checks.<system>.worker-runtime
 node test/worker-runtime.mjs "$(nix build .#familiar-worker-runtime --print-out-paths)" integrations/pi/extensions
 ```
 
-The check asserts the required executables per platform, the patched Pi
-version and downstream API surface, the pinned Herdr version, schema-1
-metadata that names exactly the shipped Pi/Herdr components, the derived
-extension tree, and a template free of providers and host paths.
+The check asserts the required executables per platform; every failure path
+and the successful exec path of the Pi launcher; the patched Pi version and
+downstream API surface; Herdr 0.9.1 and its exact herdr-nix revision
+`2bcfa02424385730d0c65cfa8cd355bb3afecef8`; schema-1 metadata; the derived
+extension tree; and a template free of providers and host paths. The top-level
+flake also asserts that the resolved Herdr input has that revision, making
+input/lock drift an evaluation failure.

@@ -5,8 +5,9 @@
 //
 // Runs inside the flake check sandbox (no network, scratch HOME). It asserts:
 //   * one `bin` with the executables Agents rely on (per platform);
-//   * the packaged `pi` is Familiar's patched 0.85.1 (downstream API present);
-//   * the packaged `herdr` is the pinned 0.9.1 release;
+//   * `bin/pi` fails closed on every missing/invalid Tiamat launch input and
+//     execs Familiar's immutable patched Pi 0.85.1 on the valid path;
+//   * the packaged `herdr` is the pinned 0.9.1 release from the pinned input;
 //   * `share/familiar-worker/runtime.json` is schema 1 and describes exactly
 //     the shipped Pi/Herdr components;
 //   * the shipped extension tree equals the derived Tiamat worker-profile
@@ -14,9 +15,9 @@
 //   * the profile template points at the shipped extension and carries no
 //     provider, credential, or host-specific value.
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { accessSync, constants, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { execFileSync, spawnSync } from "node:child_process";
+import { accessSync, chmodSync, constants, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const [runtime, extensionsRoot] = process.argv.slice(2);
@@ -25,6 +26,7 @@ assert.ok(runtime && extensionsRoot, "usage: worker-runtime.mjs <runtime> <exten
 const EXPECTED_PI = "0.85.1";
 const EXPECTED_PI_PATCHES = ["invoke-command.patch", "runtime-control.patch", "model-bootstrap.patch"];
 const EXPECTED_HERDR = "0.9.1";
+const EXPECTED_HERDR_NIX_REV = "2bcfa02424385730d0c65cfa8cd355bb3afecef8";
 const REQUIRED_BINS = [
   "pi", "herdr", "bash", "git", "python3", "rg", "fd", "jq", "ssh", "ssh-keygen",
   "ls", "env", "find", "grep", "sed", "awk",
@@ -32,7 +34,21 @@ const REQUIRED_BINS = [
 ];
 
 const executable = (path) => { accessSync(path, constants.X_OK); assert.ok(statSync(path).isFile(), `${path} is not a file`); };
-const run = (bin, args) => execFileSync(join(runtime, "bin", bin), args, { encoding: "utf8", env: { HOME: process.env.HOME, PATH: join(runtime, "bin") } }).trim();
+const tokenFile = join(process.env.HOME, "tiamat-token");
+writeFileSync(tokenFile, "dummy-token\n", { mode: 0o600 });
+const launchEnv = {
+  HOME: process.env.HOME,
+  PATH: join(runtime, "bin"),
+  FAMILIAR_TIAMAT_URL: "https://router.invalid",
+  FAMILIAR_TIAMAT_TOKEN_FILE: tokenFile,
+};
+const run = (bin, args, env = launchEnv) => execFileSync(join(runtime, "bin", bin), args, { encoding: "utf8", env }).trim();
+const piFailure = (env, message) => {
+  const result = spawnSync(join(runtime, "bin", "pi"), ["--version"], { encoding: "utf8", env });
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, `Failed to start pi: ${message}\n`);
+};
 
 // 1. Single bin directory with every required tool.
 assert.deepEqual(
@@ -42,9 +58,27 @@ assert.deepEqual(
 );
 for (const bin of REQUIRED_BINS) executable(join(runtime, "bin", bin));
 
-// 2. Patched Pi: version plus the downstream API surface the Tiamat extension uses.
+// 2. Fleet entrypoint: fail closed for each bad launch input, then preserve a
+// successful invocation of the immutable patched Pi.
+const baseEnv = { HOME: process.env.HOME, PATH: join(runtime, "bin") };
+piFailure(baseEnv, "missing FAMILIAR_TIAMAT_URL");
+piFailure({ ...baseEnv, FAMILIAR_TIAMAT_URL: launchEnv.FAMILIAR_TIAMAT_URL }, "missing FAMILIAR_TIAMAT_TOKEN_FILE");
+piFailure({ ...launchEnv, FAMILIAR_TIAMAT_TOKEN_FILE: process.env.HOME }, "FAMILIAR_TIAMAT_TOKEN_FILE is not a regular file");
+const unreadableToken = join(process.env.HOME, "unreadable-token");
+writeFileSync(unreadableToken, "dummy-token\n", { mode: 0o600 });
+chmodSync(unreadableToken, 0o000);
+piFailure({ ...launchEnv, FAMILIAR_TIAMAT_TOKEN_FILE: unreadableToken }, "FAMILIAR_TIAMAT_TOKEN_FILE is not readable");
+chmodSync(unreadableToken, 0o600);
+const emptyToken = join(process.env.HOME, "empty-token");
+writeFileSync(emptyToken, "", { mode: 0o600 });
+piFailure({ ...launchEnv, FAMILIAR_TIAMAT_TOKEN_FILE: emptyToken }, "FAMILIAR_TIAMAT_TOKEN_FILE is empty");
 assert.equal(run("pi", ["--version"]), EXPECTED_PI);
-const piRoot = join(dirname(dirname(realpathSync(join(runtime, "bin", "pi")))), "lib/node_modules/pi-monorepo");
+
+// The wrapper success path reaches the patched package, whose downstream API
+// surface is the one consumed by the shipped Tiamat extension.
+const metadataPath = join(runtime, "share", "familiar-worker", "runtime.json");
+const earlyMetadata = JSON.parse(readFileSync(metadataPath, "utf8"));
+const piRoot = join(earlyMetadata.pi.store_path, "lib/node_modules/pi-monorepo");
 const types = readFileSync(join(piRoot, "dist/core/extensions/types.d.ts"), "utf8");
 for (const api of [
   "invokeExtensionCommand(name: string, args?: string): Promise<void>;",
@@ -63,8 +97,11 @@ assert.match(metadata.familiar_rev, /^(?:[0-9a-f]{40}(?:-dirty)?|unknown)$/);
 assert.equal(metadata.pi.version, EXPECTED_PI);
 assert.deepEqual(metadata.pi.patches, EXPECTED_PI_PATCHES);
 assert.match(metadata.pi.upstream_commit, /^[0-9a-f]{40}$/);
-assert.equal(realpathSync(join(runtime, "bin", "pi")), realpathSync(join(metadata.pi.store_path, "bin", "pi")));
+assert.equal(metadata.pi.entrypoint, "bin/pi");
+assert.equal(metadata.pi.fail_closed_tiamat, true);
+assert.notEqual(realpathSync(join(runtime, "bin", "pi")), realpathSync(join(metadata.pi.store_path, "bin", "pi")));
 assert.equal(metadata.herdr.version, EXPECTED_HERDR);
+assert.equal(metadata.herdr.nix_input_revision, EXPECTED_HERDR_NIX_REV);
 assert.equal(realpathSync(join(runtime, "bin", "herdr")), realpathSync(join(metadata.herdr.store_path, "bin", "herdr")));
 assert.ok(Array.isArray(metadata.tools) && metadata.tools.length > 0);
 for (const tool of metadata.tools) {

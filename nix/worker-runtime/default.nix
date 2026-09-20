@@ -1,8 +1,8 @@
 # familiar-worker-runtime: the smallest public, immutable runtime a fleet
 # worker node needs to launch Familiar's patched Pi under Herdr.
 #
-# One buildEnv-style closure with a single `bin` directory (patched Pi, pinned
-# Herdr, and the worker tools the resident/Agents shells already rely on), plus
+# One buildEnv-style closure with a single `bin` directory (a fleet-only Pi
+# launcher, pinned Herdr, and worker tools), plus
 # `share/familiar-worker/` carrying the public Tiamat extension sources, a
 # versioned default profile template, and machine-readable runtime metadata.
 #
@@ -10,7 +10,7 @@
 # session/auth state, a repository checkout, and anything host specific. Node
 # activation (stable `current` pointer, pane shell, token-file reference) is a
 # fleet-side concern and is not modelled here.
-{ pkgs, patchedPi, herdrPackage, familiarRev, extensionsSrc }:
+{ pkgs, patchedPi, herdrPackage, herdrNixRev, familiarRev, extensionsSrc }:
 let
   inherit (pkgs) lib;
   schema = 1;
@@ -49,7 +49,33 @@ let
     bashInteractive coreutils findutils gnugrep gnused gawk
     git jq ripgrep fd python3 openssh
   ] ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux (with pkgs; [ procps util-linux ]);
-  components = [ patchedPi herdrPackage ] ++ workerTools;
+  # Fleet workers must never accidentally start a provider-less Pi. Keep the
+  # patched package itself immutable and invoke it by its exact store path;
+  # tests and the resident shell continue to use patchedPi directly.
+  piEntrypoint = pkgs.writeShellScriptBin "pi" ''
+    if [ -z "''${FAMILIAR_TIAMAT_URL:-}" ]; then
+      echo "Failed to start pi: missing FAMILIAR_TIAMAT_URL" >&2
+      exit 1
+    fi
+    if [ -z "''${FAMILIAR_TIAMAT_TOKEN_FILE:-}" ]; then
+      echo "Failed to start pi: missing FAMILIAR_TIAMAT_TOKEN_FILE" >&2
+      exit 1
+    fi
+    if [ ! -f "$FAMILIAR_TIAMAT_TOKEN_FILE" ]; then
+      echo "Failed to start pi: FAMILIAR_TIAMAT_TOKEN_FILE is not a regular file" >&2
+      exit 1
+    fi
+    if [ ! -r "$FAMILIAR_TIAMAT_TOKEN_FILE" ]; then
+      echo "Failed to start pi: FAMILIAR_TIAMAT_TOKEN_FILE is not readable" >&2
+      exit 1
+    fi
+    if [ ! -s "$FAMILIAR_TIAMAT_TOKEN_FILE" ]; then
+      echo "Failed to start pi: FAMILIAR_TIAMAT_TOKEN_FILE is empty" >&2
+      exit 1
+    fi
+    exec ${patchedPi}/bin/pi "$@"
+  '';
+  components = [ piEntrypoint herdrPackage ] ++ workerTools;
   componentRecord = p: {
     name = lib.getName p;
     version = lib.getVersion p;
@@ -65,8 +91,12 @@ let
       upstream_commit = patchedPi.src.rev;
       patches = map baseNameOf patchedPi.patches;
       store_path = "${patchedPi}";
+      entrypoint = "bin/pi";
+      fail_closed_tiamat = true;
     };
-    herdr = componentRecord herdrPackage;
+    herdr = componentRecord herdrPackage // {
+      nix_input_revision = herdrNixRev;
+    };
     tools = map componentRecord workerTools;
     extensions = [ "tiamat" ];
     profile_template = "share/familiar-worker/profile/settings.json";
@@ -96,7 +126,7 @@ pkgs.buildEnv {
       > "$share/runtime.json"
   '';
   passthru = {
-    inherit metadata extensions workerTools;
+    inherit metadata extensions workerTools piEntrypoint;
     pi = patchedPi;
     herdr = herdrPackage;
   };
