@@ -7,6 +7,12 @@ export const IMP_ENV = "FAMILIAR_IMP_SOCKET";
 export const IMP_WIRE_LIMIT = 1 << 20;
 export const IMP_PLATE_HANDLER = Symbol.for("familiar.imp.plate.v1");
 export const IMP_AGENT_HANDLER = Symbol.for("familiar.imp.agent.v1");
+export const IMP_ATTN_HANDLER = Symbol.for("familiar.imp.attn.v1");
+const IMP_AREA_HANDLERS = {
+  plate: IMP_PLATE_HANDLER,
+  agent: IMP_AGENT_HANDLER,
+  attn: IMP_ATTN_HANDLER,
+};
 const IMP_INGRESS_OWNER = Symbol.for("familiar.imp.ingress.v1");
 const CONNECTION_LIMIT = 16;
 const CONNECTION_TIMEOUT_MS = 5000;
@@ -27,7 +33,7 @@ function requestRecord(line) {
       (key) => !["version", "area", "operation", "args"].includes(key),
     ) ||
     request.version !== 1 ||
-    !["plate", "agent"].includes(request.area) ||
+    !Object.hasOwn(IMP_AREA_HANDLERS, request.area) ||
     typeof request.operation !== "string" ||
     !request.operation ||
     !plainObject(request.args)
@@ -42,8 +48,9 @@ function errorMessage(error) {
   return Buffer.from(value).subarray(0, 4096).toString("utf8") || "operation failed";
 }
 
-/** The sole temporary Imp transport. This is deliberately a fixed two-area
- * switch, not a registry or externally discoverable endpoint. */
+/** The sole temporary Imp transport. This is deliberately a fixed three-area
+ * switch (plate, agent, attn), not a registry or externally discoverable
+ * endpoint. */
 export class ImpIngress {
   constructor() {
     this.connections = new Set();
@@ -71,8 +78,7 @@ export class ImpIngress {
     return this.path;
   }
   handler(area) {
-    const key = area === "plate" ? IMP_PLATE_HANDLER : IMP_AGENT_HANDLER;
-    const value = process[key];
+    const value = process[IMP_AREA_HANDLERS[area]];
     if (!value || typeof value.handle !== "function")
       throw Object.assign(
         new Error(`${area} unavailable in this owning Familiar resident`),
@@ -123,9 +129,14 @@ export class ImpIngress {
           finish({
             ok: false,
             error: {
-              code: ["invalid_request", "unavailable", "stale", "policy_denied"].includes(
-                error?.code,
-              )
+              code: [
+                "invalid_request",
+                "not_found",
+                "conflict",
+                "unavailable",
+                "stale",
+                "policy_denied",
+              ].includes(error?.code)
                 ? error.code
                 : "operation_failed",
               message: errorMessage(error),

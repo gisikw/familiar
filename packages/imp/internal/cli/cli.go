@@ -61,38 +61,45 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(
 		return 0
 	}
 	area := args[0]
-	if area != "plate" && area != "agent" {
+	if area != "plate" && area != "agent" && area != "attn" {
 		return usageError(stderr, "unknown area %q; try 'imp --help'", area)
 	}
-	if len(args) == 1 || isHelp(args[1]) {
-		if area == "plate" {
-			io.WriteString(stdout, plateHelp)
-		} else {
-			io.WriteString(stdout, agentHelp)
-		}
-		return 0
-	}
-	if len(args) > 2 && isHelp(args[2]) {
-		helpMap := commandHelp
-		if area == "agent" {
-			helpMap = agentCommandHelp
-		}
-		if help, ok := helpMap[args[1]]; ok {
-			io.WriteString(stdout, help)
-			return 0
-		}
-		return usageError(stderr, "unknown %s command %q; try 'imp %s --help'", area, args[1], area)
-	}
-
 	var inv invocation
 	var err error
-	if area == "plate" {
-		inv, err = parsePlate(args[1:], stdin)
+	if area == "attn" {
+		var done bool
+		var code int
+		if inv, done, code = attnMain(args[1:], stdin, stdout, stderr); done {
+			return code
+		}
 	} else {
-		inv, err = parseAgent(args[1:], stdin)
-	}
-	if err != nil {
-		return usageError(stderr, "%v", err)
+		if len(args) == 1 || isHelp(args[1]) {
+			if area == "plate" {
+				io.WriteString(stdout, plateHelp)
+			} else {
+				io.WriteString(stdout, agentHelp)
+			}
+			return 0
+		}
+		if len(args) > 2 && isHelp(args[2]) {
+			helpMap := commandHelp
+			if area == "agent" {
+				helpMap = agentCommandHelp
+			}
+			if help, ok := helpMap[args[1]]; ok {
+				io.WriteString(stdout, help)
+				return 0
+			}
+			return usageError(stderr, "unknown %s command %q; try 'imp %s --help'", area, args[1], area)
+		}
+		if area == "plate" {
+			inv, err = parsePlate(args[1:], stdin)
+		} else {
+			inv, err = parseAgent(args[1:], stdin)
+		}
+		if err != nil {
+			return usageError(stderr, "%v", err)
+		}
 	}
 	path := getenv("FAMILIAR_IMP_SOCKET")
 	if path == "" {
@@ -116,9 +123,12 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(
 		io.WriteString(stdout, "\n")
 		return 0
 	}
-	if area == "agent" {
+	switch area {
+	case "agent":
 		err = writeAgentHuman(stdout, inv.operation, result)
-	} else {
+	case "attn":
+		err = writeAttnHuman(stdout, inv.operation, result)
+	default:
 		err = writeHuman(stdout, inv.operation, result)
 	}
 	if err != nil {
@@ -595,6 +605,10 @@ var valueFlags = map[string]bool{
 }
 
 func parseFlags(args []string) (flagValues, []string, bool, error) {
+	return parseFlagsWith(args, valueFlags, map[string]bool{"archived": true})
+}
+
+func parseFlagsWith(args []string, values, bools map[string]bool) (flagValues, []string, bool, error) {
 	f := flagValues{}
 	var pos []string
 	jsonMode := false
@@ -607,16 +621,16 @@ func parseFlags(args []string) (flagValues, []string, bool, error) {
 			jsonMode = true
 			continue
 		}
-		if a == "--archived" {
-			if len(f["archived"]) > 0 {
-				return nil, nil, false, fmt.Errorf("--archived specified more than once")
-			}
-			f["archived"] = []string{"true"}
-			continue
-		}
 		if strings.HasPrefix(a, "--") {
 			name := strings.TrimPrefix(a, "--")
-			if !valueFlags[name] {
+			if bools[name] {
+				if len(f[name]) > 0 {
+					return nil, nil, false, fmt.Errorf("%s specified more than once", a)
+				}
+				f[name] = []string{"true"}
+				continue
+			}
+			if !values[name] {
 				return nil, nil, false, fmt.Errorf("unknown option %s", a)
 			}
 			if len(f[name]) > 0 {
@@ -978,7 +992,7 @@ var agentCommandHelp = map[string]string{
 	"answer":            "Usage: imp agent answer JOB_ID --key KEY (--text TEXT | -) [--json]\n\nRequires a fresh blocked observation.\n",
 	"cancel":            "Usage: imp agent cancel JOB_ID --key KEY [--json]\n\nCancellation is durable intent, not a cancelled verdict.\n",
 	"reconcile":         "Usage: imp agent reconcile [--json]\n\nForces observation; never blindly retries an uncertain mutation.\n",
-	"policy": "Usage: imp agent policy show [--json]\n       imp agent policy on PROVIDER/MODEL <on|off> [--revision REV] [--json]\n       imp agent policy fallback PROVIDER/MODEL <allow|deny> [--revision REV] [--json]\n       imp agent policy override PROVIDER/MODEL MACHINE <allow|deny> [--revision REV] [--json]\n       imp agent policy clear-override PROVIDER/MODEL MACHINE [--revision REV] [--json]\n\nAgent availability per exact enrolled route and machine:\n  effective(machine) = !on ? deny : (override[machine] ?? fallback)\nAbsence is deny, and policy can only further restrict enrollment; it can never\ngrant an unenrolled route, machine or harness. Dispatch always enforces the\ncurrent effective policy in the resident; no argument can claim approval.\n--revision is an optional compare-and-set guard against a concurrent edit.\n",
+	"policy":            "Usage: imp agent policy show [--json]\n       imp agent policy on PROVIDER/MODEL <on|off> [--revision REV] [--json]\n       imp agent policy fallback PROVIDER/MODEL <allow|deny> [--revision REV] [--json]\n       imp agent policy override PROVIDER/MODEL MACHINE <allow|deny> [--revision REV] [--json]\n       imp agent policy clear-override PROVIDER/MODEL MACHINE [--revision REV] [--json]\n\nAgent availability per exact enrolled route and machine:\n  effective(machine) = !on ? deny : (override[machine] ?? fallback)\nAbsence is deny, and policy can only further restrict enrollment; it can never\ngrant an unenrolled route, machine or harness. Dispatch always enforces the\ncurrent effective policy in the resident; no argument can claim approval.\n--revision is an optional compare-and-set guard against a concurrent edit.\n",
 	"abandon":           "Usage: imp agent abandon JOB_ID (--reason TEXT | -) [--json]\n",
 	"settle":            "Usage: imp agent settle JOB_ID <done|failed|cancelled> (--summary TEXT | -) [--json]\n\nExplicit controller judgment after inspection; not agent proof.\n",
 	"resolve-operation": "Usage: imp agent resolve-operation JOB_ID <workspace|launch|prompt> <retry-confirmed-absent|prompt-confirmed-delivered> (--reason TEXT | -) [--json]\n",
@@ -1014,6 +1028,7 @@ A private model tool for capabilities owned by this Familiar resident.
 Areas:
   plate    Read and update the shared Plate
   agent    Dispatch and control durable Familiar Agents
+  attn     Attention: jots, project boards, and what is running
 
 Run 'imp <area> --help' to discover commands.
 `
