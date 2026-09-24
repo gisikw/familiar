@@ -61,7 +61,7 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(
 		return 0
 	}
 	area := args[0]
-	if area != "plate" && area != "agent" && area != "attn" {
+	if area != "agent" && area != "attn" {
 		return usageError(stderr, "unknown area %q; try 'imp --help'", area)
 	}
 	var inv invocation
@@ -74,29 +74,17 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(
 		}
 	} else {
 		if len(args) == 1 || isHelp(args[1]) {
-			if area == "plate" {
-				io.WriteString(stdout, plateHelp)
-			} else {
-				io.WriteString(stdout, agentHelp)
-			}
+			io.WriteString(stdout, agentHelp)
 			return 0
 		}
 		if len(args) > 2 && isHelp(args[2]) {
-			helpMap := commandHelp
-			if area == "agent" {
-				helpMap = agentCommandHelp
-			}
-			if help, ok := helpMap[args[1]]; ok {
+			if help, ok := agentCommandHelp[args[1]]; ok {
 				io.WriteString(stdout, help)
 				return 0
 			}
-			return usageError(stderr, "unknown %s command %q; try 'imp %s --help'", area, args[1], area)
+			return usageError(stderr, "unknown agent command %q; try 'imp agent --help'", args[1])
 		}
-		if area == "plate" {
-			inv, err = parsePlate(args[1:], stdin)
-		} else {
-			inv, err = parseAgent(args[1:], stdin)
-		}
+		inv, err = parseAgent(args[1:], stdin)
 		if err != nil {
 			return usageError(stderr, "%v", err)
 		}
@@ -123,13 +111,10 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(
 		io.WriteString(stdout, "\n")
 		return 0
 	}
-	switch area {
-	case "agent":
+	if area == "agent" {
 		err = writeAgentHuman(stdout, inv.operation, result)
-	case "attn":
+	} else {
 		err = writeAttnHuman(stdout, inv.operation, result)
-	default:
-		err = writeHuman(stdout, inv.operation, result)
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "imp: invalid result: %v\n", err)
@@ -144,119 +129,6 @@ func usageError(w io.Writer, format string, args ...any) int {
 }
 
 func isHelp(s string) bool { return s == "--help" || s == "-h" || s == "help" }
-
-func parsePlate(argv []string, stdin io.Reader) (invocation, error) {
-	cmd := argv[0]
-	args := argv[1:]
-	if _, ok := commandHelp[cmd]; !ok {
-		return invocation{}, fmt.Errorf("unknown Plate command %q; try 'imp plate --help'", cmd)
-	}
-	flags, positional, jsonMode, err := parseFlags(args)
-	if err != nil {
-		return invocation{}, err
-	}
-	out := invocation{operation: cmd, args: map[string]any{}, json: jsonMode}
-
-	idCommand := cmd != "list" && cmd != "add"
-	if idCommand {
-		if len(positional) == 0 {
-			return out, fmt.Errorf("%s requires an item id", cmd)
-		}
-		if positional[0] == "-" {
-			return out, fmt.Errorf("%s requires an item id before '-'", cmd)
-		}
-		if len(positional[0]) > 256 {
-			return out, fmt.Errorf("item id is too long")
-		}
-		out.args["id"] = positional[0]
-		positional = positional[1:]
-	}
-
-	switch cmd {
-	case "list":
-		if len(positional) != 0 {
-			return out, fmt.Errorf("list takes no arguments")
-		}
-		out.args["archived"] = flags.takeBool("archived")
-	case "get", "clear-label", "clear-accent", "close", "restore":
-		if len(positional) != 0 {
-			return out, fmt.Errorf("%s takes only an item id", cmd)
-		}
-	case "add":
-		text, rest, err := prose(flags, positional, "summary", stdin)
-		if err != nil {
-			return out, fmt.Errorf("add: %w", err)
-		}
-		if len(rest) != 0 {
-			return out, fmt.Errorf("add has unexpected arguments")
-		}
-		out.args["summary"] = text
-		if v, ok := flags.take("label"); ok {
-			out.args["label"] = v
-		}
-		if v, ok := flags.take("assign"); ok {
-			b, err := assignee(v)
-			if err != nil {
-				return out, err
-			}
-			out.args["assignedToKes"] = b
-		}
-		if v, ok := flags.take("accent"); ok {
-			if err := validAccent(v); err != nil {
-				return out, err
-			}
-			out.args["accent"] = v
-		}
-	case "update-summary":
-		text, rest, err := prose(flags, positional, "summary", stdin)
-		if err != nil {
-			return out, fmt.Errorf("update-summary: %w", err)
-		}
-		if len(rest) != 0 {
-			return out, fmt.Errorf("update-summary has unexpected arguments")
-		}
-		out.args["summary"] = text
-	case "set-label":
-		text, rest, err := prose(flags, positional, "label", stdin)
-		if err != nil {
-			return out, fmt.Errorf("set-label: %w", err)
-		}
-		if len(rest) != 0 {
-			return out, fmt.Errorf("set-label has unexpected arguments")
-		}
-		out.args["label"] = text
-	case "append-note":
-		text, rest, err := prose(flags, positional, "note", stdin)
-		if err != nil {
-			return out, fmt.Errorf("append-note: %w", err)
-		}
-		if len(rest) != 0 {
-			return out, fmt.Errorf("append-note has unexpected arguments")
-		}
-		out.args["text"] = text // Authorship is intentionally omitted; the resident attributes Imp notes to Kes.
-	case "assign":
-		if len(positional) != 1 {
-			return out, fmt.Errorf("assign requires exactly one of: kes, kevin")
-		}
-		b, err := assignee(positional[0])
-		if err != nil {
-			return out, err
-		}
-		out.args["assignedToKes"] = b
-	case "set-accent":
-		if len(positional) != 1 {
-			return out, fmt.Errorf("set-accent requires exactly one of: attention, caution")
-		}
-		if err := validAccent(positional[0]); err != nil {
-			return out, err
-		}
-		out.args["accent"] = positional[0]
-	}
-	if err := flags.finish(); err != nil {
-		return out, err
-	}
-	return out, nil
-}
 
 func parseAgent(argv []string, stdin io.Reader) (invocation, error) {
 	cmd := argv[0]
@@ -689,23 +561,6 @@ func readProse(r io.Reader) (string, error) {
 	b = bytes.TrimSuffix(b, []byte("\r"))
 	return string(b), nil
 }
-func assignee(v string) (bool, error) {
-	switch v {
-	case "kes":
-		return true, nil
-	case "kevin":
-		return false, nil
-	default:
-		return false, fmt.Errorf("assignment must be kes or kevin")
-	}
-}
-func validAccent(v string) error {
-	if v != "attention" && v != "caution" {
-		return fmt.Errorf("accent must be attention or caution")
-	}
-	return nil
-}
-
 func call(path string, req Request) (json.RawMessage, *remoteError, error) {
 	if !filepath.IsAbs(path) {
 		return nil, nil, errors.New("FAMILIAR_IMP_SOCKET must be an absolute path")
@@ -821,61 +676,6 @@ func safeErrorCode(s string) string {
 	return s
 }
 
-type item struct {
-	ID      string  `json:"id"`
-	Summary string  `json:"summary"`
-	Label   *string `json:"label"`
-	Notes   []struct {
-		User bool    `json:"user"`
-		Text string  `json:"text"`
-		At   *string `json:"at"`
-	} `json:"notes"`
-	AssignedToKes bool    `json:"assignedToKes"`
-	Accent        *string `json:"accent"`
-	MaterialMtime string  `json:"materialMtime"`
-	ArchivedAt    *string `json:"archivedAt"`
-}
-
-func writeHuman(w io.Writer, operation string, raw json.RawMessage) error {
-	if operation == "list" {
-		var items []item
-		if err := json.Unmarshal(raw, &items); err != nil {
-			var wrapper struct {
-				Items []item `json:"items"`
-			}
-			if e := json.Unmarshal(raw, &wrapper); e != nil || wrapper.Items == nil {
-				return err
-			}
-			items = wrapper.Items
-		}
-		if len(items) == 0 {
-			_, err := io.WriteString(w, "No Plate items.\n")
-			return err
-		}
-		for _, it := range items {
-			fmt.Fprintf(w, "%s\t%s%s\n", it.ID, it.Summary, itemTags(it))
-		}
-		return nil
-	}
-	var it item
-	if err := json.Unmarshal(raw, &it); err == nil && it.ID != "" {
-		fmt.Fprintf(w, "%s\t%s%s\n", it.ID, it.Summary, itemTags(it))
-		for _, n := range it.Notes {
-			author := "Kes"
-			if n.User {
-				author = "You"
-			}
-			at := ""
-			if n.At != nil {
-				at = " " + *n.At
-			}
-			fmt.Fprintf(w, "  %s%s: %s\n", author, at, n.Text)
-		}
-		return nil
-	}
-	_, err := io.WriteString(w, "ok\n")
-	return err
-}
 func writeAgentHuman(w io.Writer, operation string, raw json.RawMessage) error {
 	var value map[string]any
 	if err := json.Unmarshal(raw, &value); err != nil {
@@ -999,70 +799,13 @@ var agentCommandHelp = map[string]string{
 	"resolve-intent":    "Usage: imp agent resolve-intent JOB_ID INTENT_KEY (--reason TEXT | -) [--json]\n",
 }
 
-func itemTags(it item) string {
-	var tags []string
-	if it.Label != nil {
-		tags = append(tags, "label="+*it.Label)
-	}
-	if it.AssignedToKes {
-		tags = append(tags, "assigned=kes")
-	} else {
-		tags = append(tags, "assigned=kevin")
-	}
-	if it.Accent != nil {
-		tags = append(tags, "accent="+*it.Accent)
-	}
-	if it.ArchivedAt != nil {
-		tags = append(tags, "archived")
-	}
-	if len(tags) == 0 {
-		return ""
-	}
-	return " [" + strings.Join(tags, ", ") + "]"
-}
-
 const rootHelp = `Usage: imp <area> <command> [options]
 
 A private model tool for capabilities owned by this Familiar resident.
 
 Areas:
-  plate    Read and update the shared Plate
   agent    Dispatch and control durable Familiar Agents
   attn     Attention: jots, project boards, and what is running
 
 Run 'imp <area> --help' to discover commands.
 `
-const plateHelp = `Usage: imp plate <command> [options]
-
-Commands:
-  list             List active items
-  get              Show one item and its notes
-  add              Add an item
-  update-summary   Replace an item's summary
-  set-label        Set an item's label
-  clear-label      Clear an item's label
-  append-note      Append a note authored as Kes
-  assign           Assign an item to kes or kevin
-  set-accent       Set attention or caution accent
-  clear-accent     Clear an item's accent
-  close            Archive an item
-  restore          Restore an archived item
-
-Use 'imp plate <command> --help' for command details.
-All commands accept --json. Prose commands accept '-' to read stdin.
-`
-
-var commandHelp = map[string]string{
-	"list":           "Usage: imp plate list [--archived] [--json]\n\nLists active items by reverse material recency. --archived includes archived items.\n",
-	"get":            "Usage: imp plate get <id> [--json]\n",
-	"add":            "Usage: imp plate add (--summary TEXT | -) [--label TEXT] [--assign kes|kevin] [--accent attention|caution] [--json]\n\nA lone '-' reads the summary from stdin (up to 64 KiB).\n",
-	"update-summary": "Usage: imp plate update-summary <id> (--summary TEXT | -) [--json]\n",
-	"set-label":      "Usage: imp plate set-label <id> (--label TEXT | -) [--json]\n",
-	"clear-label":    "Usage: imp plate clear-label <id> [--json]\n",
-	"append-note":    "Usage: imp plate append-note <id> (--note TEXT | -) [--json]\n\nThe resident records this model invocation as authored by Kes.\n",
-	"assign":         "Usage: imp plate assign <id> <kes|kevin> [--json]\n",
-	"set-accent":     "Usage: imp plate set-accent <id> <attention|caution> [--json]\n",
-	"clear-accent":   "Usage: imp plate clear-accent <id> [--json]\n",
-	"close":          "Usage: imp plate close <id> [--json]\n",
-	"restore":        "Usage: imp plate restore <id> [--json]\n",
-}

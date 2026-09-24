@@ -455,10 +455,10 @@ catalogue. The fixed operations are `capabilities`, `dispatch`, `status`,
 
 The ordinary resident loads a tiny independent Imp ingress and this Agents
 owner extension. The ingress owns the one private `FAMILIAR_IMP_SOCKET` and
-routes only the fixed `plate` and `agent` areas through same-process Symbols.
+routes only the fixed `agent` and `attn` areas through same-process Symbols.
 Agents publishes its handler only while the explicit foreground
 `--familiar-agents-owner` authority has a live Owner; missing config/ownership
-returns unavailable without affecting Plate. The CLI cannot provide attribution,
+returns unavailable without affecting Attention. The CLI cannot provide attribution,
 access SQLite, invoke SSH, or select another session.
 
 All recovery actions are callable by foreground Exo without impersonating a

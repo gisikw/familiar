@@ -99,7 +99,7 @@ There are none. Not a curated subset — none.
 The request carries no `tools`, `tool_choice`, `functions`, or `function_call`,
 and `assertNoToolSurface` throws if anything ever tries to add one. A private
 turn cannot read a file, run a command, search the web, dispatch a Golem job,
-touch the worklist or Plate, or reach the network. Mediating a tool surface
+touch the worklist or Attention, or reach the network. Mediating a tool surface
 would mean arguing about which capabilities can be trusted with sealed content;
 refusing all of them removes the argument and the exfiltration path together.
 

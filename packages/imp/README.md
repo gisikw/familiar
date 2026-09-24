@@ -5,12 +5,11 @@ administration CLI. Familiar adds it to `PATH` only in the process environment
 used to launch its resident Pi, so Pi's model-callable Bash children inherit it.
 A normal shell and the other Familiar service shells do not.
 
-Run `imp --help`, then `imp plate --help`, `imp agent --help` or `imp attn --help`,
-for progressive command discovery. Human-readable output is concise and bounded;
-every command accepts `--json`. Commands which take prose accept a lone `-` in
-place of their prose option and read stdin. Agent tasks are limited to 24 KiB,
-Agent text and summaries to their existing 4–8 KiB bounds, and Plate and
-Attention prose to 64 KiB.
+Run `imp --help`, then `imp agent --help` or `imp attn --help`, for progressive
+command discovery. Human-readable output is concise and bounded; every command
+accepts `--json`. Commands which take prose accept a lone `-` in place of their
+prose option and read stdin. Agent tasks are limited to 24 KiB, Agent text and
+summaries to their existing 4–8 KiB bounds, and Attention prose to 64 KiB.
 
 ## Examples
 
@@ -64,8 +63,8 @@ See `docs/familiar-agents-v1.md`.
 
 ## `imp attn`
 
-Attention is what is on Kevin's plate: jots for today, cards on per-project
-boards, and a glance at what is running. It is specified in familiar-ui's
+Attention tracks Kevin's jots for today, cards on per-project boards, and a
+glance at what is running. It is specified in familiar-ui's
 `ATTENTION.md`; `imp attn` only shapes the request and prints the result.
 Commands are Herdr-style noun/verb pairs and the wire operation is `noun.verb`:
 `project list|get|add|set`, `card list|get|add|set|move|block|unblock|done`,
@@ -105,21 +104,21 @@ Kes. Enumerations (`lane`, `owner`, `policy`, `edge`, evidence `kind`, agent
 
 ## Private resident contract
 
-`imp` never reads or writes Plate or Agents state, and never runs SSH. It connects
+`imp` never reads or writes Agents state, and never runs SSH. It connects
 only to the absolute Unix socket named by `FAMILIAR_IMP_SOCKET`; there is no
 endpoint discovery and no network transport. The socket and its immediate
 directory must be owned by the current user and inaccessible to group/other
 users.
 
 One small foreground resident extension owns this socket. It has a fixed
-allowlist of exactly `plate`, `agent` and `attn`, routing dynamically to the
-same-process handlers at `Symbol.for("familiar.imp.plate.v1")`,
-`Symbol.for("familiar.imp.agent.v1")` and `Symbol.for("familiar.imp.attn.v1")`.
+allowlist of exactly `agent` and `attn`, routing dynamically to the same-process
+handlers at `Symbol.for("familiar.imp.agent.v1")` and
+`Symbol.for("familiar.imp.attn.v1")`.
 This is a replaceable process-topology detail, not a public API or generic
 registry. The socket remains available when an area is absent; that area returns
 `unavailable`. The Agents handler exists only while the explicitly authorized
-foreground Owner is alive. The concurrent familiar-ui Plate and Attention
-implementations own their handlers, not another socket.
+foreground Owner is alive. The concurrent familiar-ui Attention implementation
+owns its handler, not another socket.
 
 The client writes one LF-terminated JSON record (at most 1 MiB), reads one
 LF-terminated JSON record (at most 1 MiB), requires the server to close, and
@@ -157,24 +156,6 @@ The resident enforces enrollment, exact model admission, absolute remote repo,
 private-span exclusion, idempotency, uncertainty fences, bounded status and
 typed native attach hints. Missing ownership/configuration is explicit and has
 no local fallback.
-
-Plate operations retain their existing wire contract:
-
-| operation | args |
-| --- | --- |
-| `list` | `archived: boolean` |
-| `get` | `id` |
-| `add` | `summary`, optional `label`, `assignedToKes`, `accent` |
-| `update-summary` | `id`, `summary` |
-| `set-label` | `id`, `label` |
-| `clear-label` | `id` |
-| `append-note` | `id`, `text` |
-| `assign` | `id`, `assignedToKes` |
-| `set-accent` | `id`, `accent` |
-| `clear-accent`, `close`, `restore` | `id` |
-
-`append-note` carries no authorship field. The owning resident attributes it to
-Kes.
 
 Attention wire operations and arguments (the CLI sends exactly these keys, and
 only when given):

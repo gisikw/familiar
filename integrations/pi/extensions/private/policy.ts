@@ -104,7 +104,7 @@ export function canEnterPrivate(conditions: EntryConditions): true | Refusal {
  *
  * This is the whole policy: there are none. A private turn is a conversation
  * with a local model and nothing else. Mediating a tool surface would mean
- * arguing about which of read/bash/web/golem/worklist/plate can be trusted with
+ * arguing about which of read/bash/web/golem/worklist/attention can be trusted with
  * sealed content; refusing to offer any of them removes the argument and the
  * exfiltration path together. The request carries no tool declarations, so
  * there is nothing for the model to call even if it tries.

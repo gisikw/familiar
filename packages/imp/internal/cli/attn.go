@@ -724,7 +724,7 @@ func writeAttnHuman(w io.Writer, operation string, raw json.RawMessage) error {
 
 const attnHelp = `Usage: imp attn <noun> <command> [options]
 
-What is on Kevin's plate: jots for today, cards on per-project boards, and a
+Kevin's attention: jots for today, cards on per-project boards, and a
 glance at what is running.
 
 Nouns:

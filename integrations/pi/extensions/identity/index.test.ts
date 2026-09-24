@@ -132,7 +132,6 @@ describe("guidance helpers", () => {
     expect(impGuidance("/nix/store/imp/bin", "")).toBe("");
 
     const guidance = impGuidance("/nix/store/imp/bin", "/tmp/imp.sock");
-    expect(guidance).toContain("`imp plate`");
     expect(guidance).toContain("`imp agent`");
     expect(guidance).toContain("prefer the advertised Golem tools");
     expect(guidance).toContain("Never silently fall back between agent systems");
