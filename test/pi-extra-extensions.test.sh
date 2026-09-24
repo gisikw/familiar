@@ -110,7 +110,7 @@ set -e
 # counts to prove unique merging across plugin and deployment sources.
 jq -e --arg root "$REPO/integrations/pi/extensions" '
   ([
-    "agents", "background", "footer", "handoff", "identity", "imp", "private", "stuff", "subscriber",
+    "agents", "footer", "handoff", "identity", "imp", "private", "stuff", "subscriber",
     "tiamat", "web", "worklist", "zip", "wake"
   ] | map($root + "/" + .)) as $builtins
   | ($builtins - .extensions | length) == 0

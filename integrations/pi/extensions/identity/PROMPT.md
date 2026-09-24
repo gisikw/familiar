@@ -18,7 +18,7 @@ never enters the prompt. Everything affordance-sensitive is rebuilt from
 | `selectedTools` / `toolSnippets` | only snippet-bearing selected tools listed; default set `read,bash,edit,write` | same (heading `Available Tools:`) | parity: adopt (default set added) |
 | "In addition to the tools above…" | present | omitted | generic prose: reject |
 | Cross-tool file-exploration rule | bash/PowerShell variants, only when grep/find/ls absent | bash variant only | adopt (PowerShell is Windows-only, unavailable in the resident) |
-| Tool-owned `promptGuidelines` | appended in tool order, exact-string dedupe | same; previously **dropped** (Familiar's wake/background/worklist guidelines never reached the model) | affordance: adopt |
+| Tool-owned `promptGuidelines` | appended in tool order, exact-string dedupe | same; previously **dropped** (Familiar's wake/worklist guidelines never reached the model) | affordance: adopt |
 | Hand-copied edit/read/write/bash bullets | n/a (tool-owned) | removed in favour of the dynamic tool-owned text | affordance: adopt (also makes the `PI_*` bullet follow `exposeSessionEnvironment`) |
 | "Be concise" / "Show file paths clearly" | always appended | omitted | identity dilution: reject (register belongs to the authored identity; pinned) |
 | Familiar guidelines (🗣 transcription, mark, handoff) | n/a | kept; the `mark` bullet now only while `mark` is an active tool | Familiar-specific: preserve |
@@ -34,7 +34,7 @@ never enters the prompt. Everything affordance-sensitive is rebuilt from
 `before_agent_start` handlers chain; identity returns a fresh prompt and does
 not carry `event.systemPrompt` forward. No resident extension modifies the
 prompt before identity: `familiar.sh` writes the settings extension list
-sorted (`jq unique`), so agents, background, footer, handoff, and any plugin /
+sorted (`jq unique`), so agents, footer, handoff, and any plugin /
 host-extra paths that sort before the repository path (e.g. `/opt/...`,
 `/etc/...`) load first — none of them return a `systemPrompt`. A future
 extension that must reach the model before identity should ride

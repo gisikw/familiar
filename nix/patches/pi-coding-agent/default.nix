@@ -64,9 +64,9 @@ assert pkgs.lib.assertMsg ((old.patches or []) == [] && (old.prePatch or "") == 
     echo 'Verifying Familiar Pi 0.85.1 patch inputs (fail closed)'
     sha256sum --check --strict ${./upstream.sha256}
   '';
-  # Order is contractual: command fencing, owner runtime control, then the
-  # provider-only pre-resolution bootstrap (which relies on loader queuing).
-  patches = [ ./invoke-command.patch ./runtime-control.patch ./model-bootstrap.patch ];
+  # Order is contractual: command fencing, then the provider-only
+  # pre-resolution bootstrap (which relies on loader queuing).
+  patches = [ ./invoke-command.patch ./model-bootstrap.patch ];
 
   postPatch = ''
     node ${./invoke-command-shape.test.mjs}
@@ -113,13 +113,10 @@ assert pkgs.lib.assertMsg ((old.patches or []) == [] && (old.prePatch or "") == 
 
     piRoot="$out/lib/node_modules/pi-monorepo"
     node ${./invoke-command.test.mjs} "$piRoot"
-    node ${./runtime-control.test.mjs} "$piRoot"
     node ${./model-bootstrap.test.mjs} "$piRoot"
     node ${./model-bootstrap-cli.test.mjs} "$piRoot"
     node ${./mid-turn-compaction.test.mjs} "$piRoot"
     grep -F 'invokeExtensionCommand(name: string, args?: string): Promise<void>;' \
-      "$piRoot/dist/core/extensions/types.d.ts"
-    grep -F 'commitRuntimeControl(sessionId: string, leafId: string | null' \
       "$piRoot/dist/core/extensions/types.d.ts"
     grep -F 'registerModelBootstrap(handler: ModelBootstrapHandler): void;' \
       "$piRoot/dist/core/extensions/types.d.ts"

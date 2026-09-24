@@ -75,7 +75,7 @@ extension to come up disabled.
   "name": "familiar-worker-runtime",
   "familiar_rev": "<40-hex commit, -dirty suffixed for dirty trees, or unknown>",
   "system": "x86_64-linux",
-  "pi": { "version": "0.85.1", "upstream_commit": "d981de…", "patches": ["invoke-command.patch", "runtime-control.patch", "model-bootstrap.patch"], "store_path": "/nix/store/…", "entrypoint": "bin/pi", "fail_closed_tiamat": true },
+  "pi": { "version": "0.85.1", "upstream_commit": "d981de…", "patches": ["invoke-command.patch", "model-bootstrap.patch"], "store_path": "/nix/store/…", "entrypoint": "bin/pi", "fail_closed_tiamat": true },
   "herdr": { "name": "herdr", "version": "0.9.1", "store_path": "/nix/store/…", "nix_input_revision": "2bcfa02424385730d0c65cfa8cd355bb3afecef8" },
   "tools": [ { "name": "git", "version": "…", "store_path": "/nix/store/…" }, … ],
   "extensions": ["tiamat"],

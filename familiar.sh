@@ -86,8 +86,6 @@ export FAMILIAR_LOG_PATH="${FAMILIAR_LOG_PATH:-$STATE_DIR/log.jsonl}"
 export FAMILIAR_LOG_PATH="$(resolve_config_path "$FAMILIAR_LOG_PATH")"
 export FAMILIAR_SUBSCRIBER_PORT="${FAMILIAR_SUBSCRIBER_PORT:-1692}"
 export FAMILIAR_PRESENCE_STATE_DIR="${FAMILIAR_PRESENCE_STATE_DIR:-$STATE_DIR/presence}"
-export FAMILIAR_BACKGROUND_STATE_DIR="${FAMILIAR_BACKGROUND_STATE_DIR:-$STATE_DIR/background}"
-export FAMILIAR_BACKGROUND_STATE_DIR="$(resolve_config_path "$FAMILIAR_BACKGROUND_STATE_DIR")"
 export FAMILIAR_PRESENCE_STATE_DIR="$(resolve_config_path "$FAMILIAR_PRESENCE_STATE_DIR")"
 export FAMILIAR_PRESENCE_SOCKET="${FAMILIAR_PRESENCE_SOCKET:-$FAMILIAR_PRESENCE_STATE_DIR/tmux.sock}"
 export FAMILIAR_PRESENCE_SOCKET="$(resolve_config_path "$FAMILIAR_PRESENCE_SOCKET")"
@@ -397,7 +395,7 @@ run_pi() {
         # resident socket; Agents publishes its fixed Imp area handler only
         # while the explicitly-authorized foreground Owner is alive.
         extensions: (([
-          "agents", "background", "footer", "handoff", "identity", "imp", "private", "stuff", "subscriber",
+          "agents", "footer", "handoff", "identity", "imp", "private", "stuff", "subscriber",
           "tiamat", "web", "worklist", "zip", "wake"
         ] | map($ext + "/" + .)) + $pluginExts + $extraExts | unique)
       }

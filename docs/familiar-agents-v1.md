@@ -205,11 +205,10 @@ Startup schedules full reconciliation immediately; shutdown aborts and is
 idempotent. Polling uses a self-scheduling setTimeout after the previous pass,
 never overlapping setInterval work.
 
-Background Exo/other SDK sessions must not inherit the foreground CLI flag.
-They do not start a poller. Future background dispatch integration should use a
-fenced foreground capability, not construct another Owner. This work does not
-merge or alter the unpushed Background Exo branches. Its only shared worklist
-addition is a neutral durable withdrawal primitive for expired notifications.
+Other SDK sessions must not inherit the foreground CLI flag. They do not start
+a poller. Any future dispatch integration should use a fenced foreground
+capability, not construct another Owner. Its only shared worklist addition is a
+neutral durable withdrawal primitive for expired notifications.
 
 No Familiar/UI foreground dispatch gate is acquired for network work. Tools
 persist/admit intent and return; the owner performs network reconciliation
@@ -555,5 +554,5 @@ Legacy contrib `agents_*`/Golem tools are separate and are not used as fallback.
 See `test/agents/README.md` for isolated proofs. Local Darwin-remediation tests
 are not a release pass: blocked/answer, interrupt/resume, reconnect and
 owner-crash rows still require a resumed isolated O'Brien matrix after review.
-Reconciliation with later main/Background Exo movement also remains required;
-local proof must never be relabeled as cross-host evidence.
+Reconciliation with later main movement also remains required; local proof must
+never be relabeled as cross-host evidence.

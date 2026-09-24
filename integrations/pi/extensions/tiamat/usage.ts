@@ -268,8 +268,7 @@ export function formatBudgetUsage(
  * upstream vendor identity is inferred from a model id, no prose is authored
  * here, and nothing with a credential or a base URL leaves this module.
  *
- * Discovery mirrors `familiar:background:discover`: a bridge emits
- * `familiar:tiamat:discover` with an `accept(port)` callback and reads the
+ * A bridge emits `familiar:tiamat:discover` with an `accept(port)` callback and reads the
  * port synchronously while building a snapshot. The bridge is told to rebuild
  * through `familiar:tiamat:changed` after every catalog reconcile or usage
  * poll. Both events are process-local; the browser cannot reach them.

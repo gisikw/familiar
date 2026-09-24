@@ -178,15 +178,6 @@
             node ${self}/test/agents/tools.mjs
             touch $out
           '';
-          background-core = pkgs.runCommand "background-core" {
-            nativeBuildInputs = [ pkgs.nodejs_22 ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.util-linux ];
-            PI_PACKAGE_DIR = "${patchedPi}/lib/node_modules/pi-monorepo";
-          } ''
-            export HOME="$TMPDIR/home"
-            mkdir -p "$HOME"
-            node --test --test-timeout=60000 ${self}/packages/background/*.test.mjs
-            touch $out
-          '';
         } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           drop-serve-lifecycle = pkgs.runCommand "drop-serve-lifecycle" {
             nativeBuildInputs = with pkgs; [ bash coreutils gnugrep gawk netcat-openbsd ];
@@ -207,16 +198,6 @@
           familiar-desktop = flake-utils.lib.mkApp { drv = desktop.packages.${system}.default; };
         };
         devShells = {
-          # Cross-repository Background release gate: same installed Pi/owner
-          # path as production, plus pinned test runtimes and browser closure.
-          background = pkgs.mkShell {
-            inputsFrom = [ piShell ];
-            FAMILIAR_SHELL = "pi";
-            PI_PACKAGE_DIR = "${patchedPi}/lib/node_modules/pi-monorepo";
-            FAMILIAR_INTERACTIVE_SHELL = "${pkgs.bashInteractive}/bin/bash";
-            PLAYWRIGHT_BROWSERS_PATH = pkgs.playwright-driver.browsers;
-            packages = with pkgs; [ nodejs_22 bun netcat-openbsd ];
-          };
           default = piShell;
           pi = piShell;
           # Isolated Agents proofs/checks, never an alternate resident service.

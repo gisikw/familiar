@@ -40,10 +40,6 @@ async function fixture() {
   const session = Object.assign(Object.create(AgentSession.prototype), {
     _isAgentRunActive: false,
     _agentSettledDispatchDepth: 0,
-    // Background's prompt wrapper reads only these additional owner fields;
-    // command dispatch assertions below still exercise the installed methods.
-    controlPromptDepth: 0,
-    sessionManager: { isRuntimeControlQuarantined: () => false },
     _eventListeners: [],
     _extensionRunner: runner,
     _resourceLoader: {

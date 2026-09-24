@@ -146,10 +146,7 @@ Upstream tag `v0.85.1` is the lightweight tag at
 
 1. `invoke-command.patch` — awaited exact-name direct extension-command
    invocation and complete event/settled admission fences.
-2. `runtime-control.patch` — atomic no-run owner commits, incrementally accounted
-   persistence budget and writer quarantine, admitted-user continuation, and
-   owner/session/leaf/idle, command/event and runtime-replacement fences.
-3. `model-bootstrap.patch` — awaited provider-only materialization from the exact
+2. `model-bootstrap.patch` — awaited provider-only materialization from the exact
    effective CLI/restored/default request before any initial model resolution.
 
 Neither facility exists upstream in 0.85.1, so no downstream portion was
@@ -157,14 +154,7 @@ superseded. The rebase preserves the changed upstream loader factory/runtime
 ownership, session-runtime replacement bodies, SDK construction, prompt body,
 SessionManager loading/appending and compaction flow. The command patch only
 wraps the 11 awaited runner emitter bodies and hash-checks each body after
-removing that one indentation level. Runtime control uses narrow admission
-bindings at session/runtime ownership boundaries; replacement methods are
-wrapped from public entry through completion so cancelled and failed
-replacements are fenced too. Runtime-control entry IDs use upstream `generateId`
-with a batch-local collision set. Synchronous `entry_appended` notifications stay
-inside a commit-depth fence and cannot recursively commit.
-
-Upstream commit `56700d42ed65a94a80af7376adb19a9298065164` (PR #8782,
+removing that one indentation level. Upstream commit `56700d42ed65a94a80af7376adb19a9298065164` (PR #8782,
 issue #6879), included in 0.85.1, moved next-turn preparation into the continuing
 agent loop. This allows threshold compaction after a large tool result and before
 the next provider request in the same run. Familiar does not patch this path.

@@ -24,7 +24,7 @@ const [runtime, extensionsRoot] = process.argv.slice(2);
 assert.ok(runtime && extensionsRoot, "usage: worker-runtime.mjs <runtime> <extensions-src>");
 
 const EXPECTED_PI = "0.85.1";
-const EXPECTED_PI_PATCHES = ["invoke-command.patch", "runtime-control.patch", "model-bootstrap.patch"];
+const EXPECTED_PI_PATCHES = ["invoke-command.patch", "model-bootstrap.patch"];
 const EXPECTED_HERDR = "0.9.1";
 const EXPECTED_HERDR_NIX_REV = "2bcfa02424385730d0c65cfa8cd355bb3afecef8";
 const REQUIRED_BINS = [

@@ -20,7 +20,6 @@ mkdirSync(agentDir, { recursive: true });
 
 const residentNames = [
   "agents",
-  "background",
   "footer",
   "handoff",
   "identity",

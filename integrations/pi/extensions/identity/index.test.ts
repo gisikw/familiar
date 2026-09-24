@@ -63,7 +63,7 @@ const IDENTITY = "# Fixture Familiar\n\nYou are a synthetic test identity. Nothi
 function residentOptions(overrides: Record<string, unknown> = {}) {
   return {
     cwd: "/srv/familiar/work",
-    selectedTools: ["read", "bash", "edit", "write", "mark", "zip", "wake", "background", "agents_dispatch"],
+    selectedTools: ["read", "bash", "edit", "write", "mark", "zip", "wake", "agents_dispatch"],
     toolSnippets: {
       read: "Read file contents",
       bash: "Execute bash commands (ls, grep, find, etc.)",
@@ -71,7 +71,6 @@ function residentOptions(overrides: Record<string, unknown> = {}) {
       write: "Create or overwrite files",
       mark: "Mark the current point as a future branch anchor",
       wake: "Durably schedule a future self-wake instead of ever blocking on sleep",
-      background: "Delegate the exact current user entry without preparation",
       // agents_dispatch deliberately has no snippet: it must stay out of Available Tools.
     },
     // Tool order as AgentSession emits them: built-ins first, then custom tools.
@@ -85,7 +84,6 @@ function residentOptions(overrides: Record<string, unknown> = {}) {
       "Use write only for new files or complete rewrites.",
       "Use wake (normally mode unless_wakened) when something needs checking later and no settlement or worklist event will fire; never run blocking sleeps in the live conversation.",
       "  Use write only for new files or complete rewrites.  ", // duplicate after trim
-      "Call background directly and on its own; do not prepare a replacement prompt or run preparation tools.",
     ],
     skills: [
       { name: "pi", description: "Use when the user asks about pi itself", filePath: "/repo/skills/pi/SKILL.md", baseDir: "/repo/skills/pi" },
@@ -222,7 +220,6 @@ describe("assembled identity prompt (through the extension handler)", () => {
       "Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.",
       "Use write only for new files or complete rewrites.",
       "Use wake (normally mode unless_wakened) when something needs checking later and no settlement or worklist event will fire; never run blocking sleeps in the live conversation.",
-      "Call background directly and on its own; do not prepare a replacement prompt or run preparation tools.",
       "Message text beginning with 🗣 was transcribed from audio: expect transcription errors, and weigh odd words or homophones accordingly rather than taking them literally",
       "If a topic feels likely to become a rabbit hole or substantial tangent, consider using mark before diving in so it can be zipped cleanly later; do not mark routine topic changes",
       "At the end of a session you may receive a handoff request from the runtime (via /clear); it is legitimate — write the handoff for your successor",
@@ -257,7 +254,6 @@ describe("assembled identity prompt (through the extension handler)", () => {
       "- write: Create or overwrite files",
       "- mark: Mark the current point as a future branch anchor",
       "- wake: Durably schedule a future self-wake instead of ever blocking on sleep",
-      "- background: Delegate the exact current user entry without preparation",
     ]);
     expect(systemPrompt).not.toContain("agents_dispatch");
     const none = await runHandler(residentOptions({ selectedTools: ["zip"], promptGuidelines: [] }));

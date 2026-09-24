@@ -18,9 +18,8 @@ Recovered candidate commits were inspected as source, not accepted as proof:
 | Drover | `0efc024` native Herdr method forwards | `9c8b8ec` generic enrollment-generation fence |
 | familiar-ui (optional) | `8368cc7` existing bounded/private-aware projection | No new UI implementation |
 
-No Background Exo candidate or Pi rebase was merged. No viewer changes, viewer
-repair/tests, Presence fixture changes, or vendor secret-scan suppressions were
-recovered. No push, deploy, reload, or resident process restart occurred.
+No Pi rebase was merged. No viewer changes, viewer repair/tests, Presence fixture
+changes, or vendor secret-scan suppressions were recovered. No push, deploy, reload, or resident process restart occurred.
 
 ## Delivered surface
 

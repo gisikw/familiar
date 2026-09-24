@@ -31,7 +31,6 @@ try {
     .sort();
   const expected = [
     "agents",
-    "background",
     "footer",
     "handoff",
     "identity",
