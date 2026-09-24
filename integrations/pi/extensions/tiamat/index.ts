@@ -22,6 +22,7 @@ import {
   type TiamatProviders,
 } from "./usage.ts";
 import { restoredSelection, TiamatMaterializer } from "./materializer.ts";
+import { registerSystemPromptRecorder } from "./system-prompt.ts";
 
 const LOG = "tiamat";
 const logError = (value: unknown) =>
@@ -54,6 +55,11 @@ function pollSeconds(value: string | undefined): number {
 }
 
 export default async function tiamat(pi: ExtensionAPI) {
+  // agent_start runs after the complete, ordered before_agent_start chain, so
+  // getSystemPrompt() is the exact Pi prompt that the agent will send. Provider
+  // payload hooks are later but expose serialized, provider-specific payloads.
+  registerSystemPromptRecorder(pi);
+
   const configuredUrl = process.env.FAMILIAR_TIAMAT_URL;
   const tokenFile = process.env.FAMILIAR_TIAMAT_TOKEN_FILE;
   if (!configuredUrl || !tokenFile) {
