@@ -75,7 +75,7 @@ optional projection subscriber. It also proves the Agent availability policy end
 to end: an empty policy denies dispatch before any ledger admission, an
 unenrolled route/machine cannot be granted, the `familiar.agent-policy.v1`
 service reads and compare-and-set mutates the same state as the `policy-show` /
-`policy-set` operations behind `imp agent policy`, private mode refuses both, and
+`policy-set` operations behind `imp agent policy`, non-public spans refuse both, and
 the service is removed on shutdown. `policy.node-test.mjs` covers
 persistence/restart, deterministic bytes, malformed/unknown-version fail-closed
 refusal, revision conflicts, exact route collisions, on/off non-destructiveness,

@@ -439,9 +439,7 @@ the default. Native attach remains available.
 Blocked and idle attention items deduplicate by durable episode; obsolete items
 are withdrawn using archive tombstones, including a late producer after process
 death. Accepted settlement notification uses one permanent job-scoped ID.
-`/private` cannot dispatch/steer Agents work: declassify it first. Private mode's
-own model has no tools, and the foreground commands/tools additionally check its
-public/private span marker. The browser omits the Agents projection while private.
+Agent commands reject non-public transcript spans.
 
 ## Surface
 

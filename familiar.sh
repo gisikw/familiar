@@ -98,11 +98,6 @@ export FAMILIAR_WAKE_DIR="$(resolve_config_path "$FAMILIAR_WAKE_DIR")"
 export FAMILIAR_SUBCONSCIOUS_DIR="${FAMILIAR_SUBCONSCIOUS_DIR:-$STATE_DIR/subconscious}"
 export FAMILIAR_SUBCONSCIOUS_DIR="$(resolve_config_path "$FAMILIAR_SUBCONSCIOUS_DIR")"
 install -d -m 700 "$FAMILIAR_SUBCONSCIOUS_DIR" 2>/dev/null || true
-# Private-mode keyring. Holds a public age recipient and the matching identity
-# wrapped under Kevin's passphrase; never conversation content. Mode 0700.
-export FAMILIAR_PRIVATE_DIR="${FAMILIAR_PRIVATE_DIR:-$STATE_DIR/private}"
-export FAMILIAR_PRIVATE_DIR="$(resolve_config_path "$FAMILIAR_PRIVATE_DIR")"
-install -d -m 700 "$FAMILIAR_PRIVATE_DIR" 2>/dev/null || true
 # Session storage. Overriding this is the deliberate escape hatch for a wedged
 # session: point it at a clean-room dir to bail out without touching the main
 # continuity line. Not a first-class verb on purpose — forking continuity
@@ -395,7 +390,7 @@ run_pi() {
         # resident socket; Agents publishes its fixed Imp area handler only
         # while the explicitly-authorized foreground Owner is alive.
         extensions: (([
-          "agents", "footer", "handoff", "identity", "imp", "private", "stuff", "subscriber",
+          "agents", "footer", "handoff", "identity", "imp", "stuff", "subscriber",
           "tiamat", "web", "worklist", "zip", "wake"
         ] | map($ext + "/" + .)) + $pluginExts + $extraExts | unique)
       }

@@ -141,11 +141,6 @@ processes, active/replaced/moved agents and incomplete observations still fail
 closed. The earlier omitted/empty foreground-list plus shell-PGID behavior is
 unchanged.
 
-The loader-smoke addition of `private` is an intentional correction, not scope
-drift. Base main already contains the private extension and its extension-layout
-test already lists it, so the real pinned Pi-loader smoke must include that actual
-entrypoint as well as the new Agents entrypoint.
-
 `Ledger.active() LIMIT 64` is intentionally unchanged. It bounds work in each
 reconciliation pass; any cleanup backlog beyond that window remains eligible and
 naturally drains over later passes. It is not an active-job capacity limit.

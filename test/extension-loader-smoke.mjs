@@ -35,7 +35,6 @@ try {
     "handoff",
     "identity",
     "imp",
-    "private",
     "stuff",
     "subscriber",
     "tiamat",

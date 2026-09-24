@@ -24,7 +24,6 @@ const residentNames = [
   "handoff",
   "identity",
   "imp",
-  "private",
   "stuff",
   "subscriber",
   "tiamat",
