@@ -2,8 +2,6 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    # Exact herdr-nix commit packaging upstream's v0.9.1 release binaries.
-    herdr.url = "github:herdrdev/herdr-nix/2bcfa02424385730d0c65cfa8cd355bb3afecef8";
     server = { url = "path:./services/server"; inputs.nixpkgs.follows = "nixpkgs"; inputs.flake-utils.follows = "flake-utils"; };
     llm = { url = "path:./services/llm"; inputs.nixpkgs.follows = "nixpkgs"; inputs.flake-utils.follows = "flake-utils"; };
     stt = { url = "path:./services/stt"; inputs.nixpkgs.follows = "nixpkgs"; inputs.flake-utils.follows = "flake-utils"; };
@@ -13,22 +11,11 @@
     desktop = { url = "path:./apps/desktop"; inputs.nixpkgs.follows = "nixpkgs"; inputs.flake-utils.follows = "flake-utils"; };
   };
 
-  outputs = { self, nixpkgs, flake-utils, herdr, server, llm, stt, tts, gateway-module, viewer, desktop }:
+  outputs = { self, nixpkgs, flake-utils, server, llm, stt, tts, gateway-module, viewer, desktop }:
     flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ] (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-        # Keep the release package and the herdr-nix packaging revision pinned
-        # together. The input URL above is intentionally immutable; this
-        # assertion makes an accidental lock/input update fail evaluation.
-        herdrNixRev = "2bcfa02424385730d0c65cfa8cd355bb3afecef8";
-        herdrPackage = assert herdr.sourceInfo.rev == herdrNixRev; herdr.packages.${system}.default;
         patchedPi = import ./nix/patches/pi-coding-agent { inherit pkgs; };
-        # Public immutable fleet worker runtime (see nix/worker-runtime).
-        workerRuntime = import ./nix/worker-runtime {
-          inherit pkgs patchedPi herdrPackage herdrNixRev;
-          familiarRev = self.rev or self.dirtyRev or "unknown";
-          extensionsSrc = ./integrations/pi/extensions;
-        };
         modelEnv = {
           FAMILIAR_MODEL_FILE = "gemma-4-E4B-it-Q4_K_M.gguf";
           FAMILIAR_MODEL_URL = "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/${modelEnv.FAMILIAR_MODEL_FILE}";
@@ -93,7 +80,7 @@
         };
         # Small CLI surface available both to resident Pi tool execution and to
         # foreground development shells. Keep language runtimes out of this set.
-        residentCliTools = [ impPackage herdrPackage ] ++ (with pkgs; [ jq ripgrep fd ]);
+        residentCliTools = [ impPackage ] ++ (with pkgs; [ jq ripgrep fd ]);
         piShell = pkgs.mkShell (modelEnv // {
           FAMILIAR_SHELL = "pi";
           # familiar.sh still adds this immediately before launching resident
@@ -112,8 +99,6 @@
           familiar-llm = llm.packages.${system}.default;
           familiar-stt = stt.packages.${system}.default;
           familiar-gateway = gateway-module.packages.${system}.default;
-          herdr = herdrPackage;
-          familiar-worker-runtime = workerRuntime;
           golem-familiar-render = pkgs.buildGoModule {
             pname = "golem-familiar-render";
             version = "1";
@@ -144,14 +129,6 @@
             touch $out
           '';
           pi-invoke-command = patchedPi;
-          worker-runtime = pkgs.runCommand "familiar-worker-runtime-check" {
-            nativeBuildInputs = with pkgs; [ nodejs_24 ];
-          } ''
-            export HOME="$TMPDIR/home"
-            mkdir -p "$HOME"
-            node ${self}/test/worker-runtime.mjs ${workerRuntime} ${self}/integrations/pi/extensions
-            touch $out
-          '';
           resident-tool-inventory = pkgs.runCommand "familiar-resident-tool-inventory" {
             PI_PACKAGE_DIR = "${patchedPi}/lib/node_modules/pi-monorepo";
             nativeBuildInputs = with pkgs; [ nodejs_24 ];
@@ -165,17 +142,6 @@
             nativeBuildInputs = residentCliTools;
           } ''
             ${pkgs.bash}/bin/bash ${self}/test/resident-shell-tools.test.sh
-            touch $out
-          '';
-          agents-ledger = pkgs.runCommand "familiar-agents-ledger" {
-            PI_PACKAGE_DIR = "${patchedPi}/lib/node_modules/pi-monorepo";
-            nativeBuildInputs = with pkgs; [ nodejs_24 python3 git openssh ];
-          } ''
-            export HOME="$TMPDIR/home"
-            mkdir -p "$HOME"
-            node --test ${self}/integrations/pi/extensions/agents/*.node-test.mjs ${self}/integrations/pi/extensions/imp/*.node-test.mjs
-            python ${self}/integrations/pi/extensions/agents/test_remote.py
-            node ${self}/test/agents/tools.mjs
             touch $out
           '';
         } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
@@ -200,12 +166,6 @@
         devShells = {
           default = piShell;
           pi = piShell;
-          # Isolated Agents proofs/checks, never an alternate resident service.
-          agents = pkgs.mkShell {
-            PI_PACKAGE_DIR = "${patchedPi}/lib/node_modules/pi-monorepo";
-            packages = [ patchedPi (pkgs.python3.withPackages (ps: [ ps.aiohttp ])) ]
-              ++ (with pkgs; [ nodejs_24 bun openssh git ripgrep fd coreutils util-linux bashInteractive age ]);
-          };
           llama = pkgs.mkShell (modelEnv // {
             FAMILIAR_SHELL = "llama";
             packages = with pkgs; [ llama-cpp ];

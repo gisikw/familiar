@@ -16,7 +16,7 @@ import { impGuidance, stuffGuidance } from "./guidance.ts";
  * Upgrade checklist (on a Pi bump):
  *   1. Diff dist/core/system-prompt.js and formatSkillsForPrompt in
  *      dist/core/skills.js against the previous pin.
- *   2. Run this file in the agents dev shell; the "parity with pinned Pi"
+ *   2. Run this file with PI_PACKAGE_DIR pointing at pinned Pi; the "parity with pinned Pi"
  *      block runs Pi's real buildSystemPrompt and compares structural
  *      affordances, so guideline/skills/context-file drift fails here.
  *   3. Classify each new delta (identity divergence / affordance / irrelevant
@@ -26,7 +26,7 @@ import { impGuidance, stuffGuidance } from "./guidance.ts";
  */
 
 const piPackageDir = process.env.PI_PACKAGE_DIR;
-if (!piPackageDir) throw new Error("PI_PACKAGE_DIR is required (run in Familiar's pi or agents dev shell)");
+if (!piPackageDir) throw new Error("PI_PACKAGE_DIR is required (point it at Familiar's pinned Pi package)");
 const realCodingAgent = await import(join(piPackageDir, "dist/index.js"));
 // Bun mocks are process-global; keep every real export so the canonical suite
 // still exercises Pi's real modules after this file runs.
@@ -132,9 +132,7 @@ describe("guidance helpers", () => {
     expect(impGuidance("/nix/store/imp/bin", "")).toBe("");
 
     const guidance = impGuidance("/nix/store/imp/bin", "/tmp/imp.sock");
-    expect(guidance).toContain("`imp agent`");
-    expect(guidance).toContain("prefer the advertised Golem tools");
-    expect(guidance).toContain("Never silently fall back between agent systems");
+    expect(guidance).toContain("`imp attn`");
   });
 });
 

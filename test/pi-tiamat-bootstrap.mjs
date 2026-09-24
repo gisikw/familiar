@@ -149,7 +149,7 @@ try {
   assert.doesNotMatch(result.stderr, /Could not restore model|not found/i, result.stderr);
   cases.push("exact --provider/--model");
 
-  // 2. Canonical single-flag form, as `imp agent dispatch --model PROVIDER/MODEL` sends it.
+  // 2. Canonical single-flag PROVIDER/MODEL form.
   result = run("--model", "tiamat-responses-shared/duplicate-id", "-p", "hi");
   assert.deepEqual(result.bound.at(-1), {
     provider: "tiamat-responses-shared",

@@ -70,7 +70,7 @@ func runWithSocket(t *testing.T, args []string, stdin string, response string, i
 }
 
 func TestProgressiveHelpNeedsNoResident(t *testing.T) {
-	cases := [][]string{{"--help"}, {"agent", "--help"}, {"agent", "dispatch", "--help"}, {"agent", "policy", "--help"}, {"attn"}, {"attn", "--help"}, {"attn", "card"}, {"attn", "card", "--help"}, {"attn", "card", "list", "--help"}, {"attn", "status", "--help"}}
+	cases := [][]string{{"--help"}, {"attn"}, {"attn", "--help"}, {"attn", "card"}, {"attn", "card", "--help"}, {"attn", "card", "list", "--help"}, {"attn", "status", "--help"}}
 	for _, args := range cases {
 		var out, err bytes.Buffer
 		if code := Main(args, strings.NewReader(""), &out, &err, func(string) string { return "" }); code != 0 {
@@ -85,76 +85,6 @@ func TestProgressiveHelpNeedsNoResident(t *testing.T) {
 	}
 }
 
-func TestAgentRequestSpelling(t *testing.T) {
-	cases := []struct {
-		name             string
-		argv             []string
-		stdin, operation string
-		args             map[string]any
-	}{
-		{"capabilities", []string{"agent", "capabilities", "--machine", "worker", "--json"}, "", "capabilities", map[string]any{"machine": "worker"}},
-		{"dispatch", []string{"agent", "dispatch", "--key", "admit-1", "--machine", "worker", "--harness", "pi", "--model", "provider/model", "--thinking", "high", "--repo", "/remote/repo", "--requested-ref", "main", "-", "--label", "review", "--json"}, "do work\n", "dispatch", map[string]any{"key": "admit-1", "machine": "worker", "harness": "pi", "model": "provider/model", "thinking": "high", "repo": "/remote/repo", "requested_ref": "main", "task": "do work", "label": "review"}},
-		{"status-page", []string{"agent", "status", "--offset", "5", "--json"}, "", "status", map[string]any{"offset": float64(5)}},
-		{"status-id", []string{"agent", "status", "agent-1", "--json"}, "", "status", map[string]any{"id": "agent-1"}},
-		{"steer", []string{"agent", "steer", "agent-1", "--key", "s1", "--text", "review", "--json"}, "", "steer", map[string]any{"id": "agent-1", "key": "s1", "text": "review"}},
-		{"answer", []string{"agent", "answer", "agent-1", "--key", "a1", "-", "--json"}, "yes\n", "answer", map[string]any{"id": "agent-1", "key": "a1", "text": "yes"}},
-		{"cancel", []string{"agent", "cancel", "agent-1", "--key", "c1", "--json"}, "", "cancel", map[string]any{"id": "agent-1", "key": "c1"}},
-		{"reconcile", []string{"agent", "reconcile", "--json"}, "", "reconcile", map[string]any{}},
-		{"abandon", []string{"agent", "abandon", "agent-1", "--reason", "superseded", "--json"}, "", "abandon", map[string]any{"id": "agent-1", "reason": "superseded"}},
-		{"settle", []string{"agent", "settle", "agent-1", "done", "--summary", "inspected", "--json"}, "", "settle", map[string]any{"id": "agent-1", "verdict": "done", "summary": "inspected"}},
-		{"resolve-operation", []string{"agent", "resolve-operation", "agent-1", "prompt", "prompt-confirmed-delivered", "--reason", "native proof", "--json"}, "", "resolve-operation", map[string]any{"id": "agent-1", "operation": "prompt", "resolution": "prompt-confirmed-delivered", "reason": "native proof"}},
-		{"resolve-intent", []string{"agent", "resolve-intent", "agent-1", "s1", "-", "--json"}, "inspected natively\n", "resolve-intent", map[string]any{"id": "agent-1", "key": "s1", "reason": "inspected natively"}},
-		{"policy-show", []string{"agent", "policy", "show", "--json"}, "", "policy-show", map[string]any{}},
-		{"policy-on", []string{"agent", "policy", "on", "provider/model", "on", "--json"}, "", "policy-set", map[string]any{"action": "set-on", "route": "provider/model", "on": true}},
-		{"policy-off", []string{"agent", "policy", "on", "provider/model", "off", "--json"}, "", "policy-set", map[string]any{"action": "set-on", "route": "provider/model", "on": false}},
-		{"policy-fallback", []string{"agent", "policy", "fallback", "provider/model", "deny", "--json"}, "", "policy-set", map[string]any{"action": "set-fallback", "route": "provider/model", "fallback": "deny"}},
-		{"policy-override", []string{"agent", "policy", "override", "provider/model", "worker", "allow", "--revision", "abc123", "--json"}, "", "policy-set", map[string]any{"action": "set-override", "route": "provider/model", "node": "worker", "decision": "allow", "expected_revision": "abc123"}},
-		{"policy-clear", []string{"agent", "policy", "clear-override", "provider/model", "worker", "--json"}, "", "policy-set", map[string]any{"action": "clear-override", "route": "provider/model", "node": "worker"}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			code, out, stderr := runWithSocket(t, tc.argv, tc.stdin, "{\"ok\":true,\"result\":{\"accepted\":true}}\n", func(got Request) {
-				if got.Area != "agent" || got.Operation != tc.operation {
-					t.Errorf("envelope: %#v", got)
-				}
-				want, _ := json.Marshal(tc.args)
-				have, _ := json.Marshal(got.Args)
-				if !bytes.Equal(have, want) {
-					t.Errorf("args=%s want=%s", have, want)
-				}
-			})
-			if code != 0 || stderr != "" || out != "{\"accepted\":true}\n" {
-				t.Fatalf("code=%d out=%q err=%q", code, out, stderr)
-			}
-		})
-	}
-}
-
-func TestAgentValidation(t *testing.T) {
-	bad := [][]string{
-		{"agent", "dispatch", "--key", "k"},
-		{"agent", "dispatch", "--key", "k", "--machine", "m", "--harness", "pi", "--model", "p/m", "--repo", "/r", "--requested-ref", "HEAD", "--task", strings.Repeat("x", 24577), "--label", "x"},
-		{"agent", "status", "--offset", "-1"},
-		{"agent", "settle", "id", "maybe", "--summary", "x"},
-		{"agent", "cancel", "id", "--key", "k", "--text", "not allowed"},
-		// There is no bypass verb and no approval argument on dispatch.
-		{"agent", "dispatch", "--key", "k", "--machine", "m", "--harness", "pi", "--model", "p/m", "--repo", "/r", "--requested-ref", "HEAD", "--task", "t", "--label", "x", "--policy", "allow"},
-		{"agent", "policy"},
-		{"agent", "policy", "allow-everything"},
-		{"agent", "policy", "on", "not-a-route", "on"},
-		{"agent", "policy", "on", "provider/model", "maybe"},
-		{"agent", "policy", "fallback", "provider/model", "sometimes"},
-		{"agent", "policy", "override", "provider/model", "worker"},
-		{"agent", "policy", "override", "provider/model", "worker", "allow", "extra"},
-		{"agent", "policy", "show", "--revision", "abc"},
-	}
-	for _, argv := range bad {
-		var out, stderr bytes.Buffer
-		if code := Main(argv, strings.NewReader(""), &out, &stderr, func(string) string { return "" }); code != ExitUsage {
-			t.Errorf("%v code=%d err=%s", argv, code, stderr.String())
-		}
-	}
-}
 func TestUsageAndUnavailableFailures(t *testing.T) {
 	var out, err bytes.Buffer
 	if code := Main([]string{"removed", "status"}, strings.NewReader(""), &out, &err, func(string) string { return "" }); code != ExitUsage {
@@ -162,7 +92,7 @@ func TestUsageAndUnavailableFailures(t *testing.T) {
 	}
 	out.Reset()
 	err.Reset()
-	if code := Main([]string{"agent", "status"}, strings.NewReader(""), &out, &err, func(string) string { return "" }); code != ExitUnavailable {
+	if code := Main([]string{"attn", "status"}, strings.NewReader(""), &out, &err, func(string) string { return "" }); code != ExitUnavailable {
 		t.Fatalf("unavailable code=%d", code)
 	}
 	if !strings.Contains(err.String(), "FAMILIAR_IMP_SOCKET") {
@@ -171,7 +101,7 @@ func TestUsageAndUnavailableFailures(t *testing.T) {
 }
 
 func TestRemoteFailure(t *testing.T) {
-	code, out, stderr := runWithSocket(t, []string{"agent", "status", "missing"}, "", "{\"ok\":false,\"error\":{\"code\":\"not_found\",\"message\":\"no such item\"}}\n", nil)
+	code, out, stderr := runWithSocket(t, []string{"attn", "status"}, "", "{\"ok\":false,\"error\":{\"code\":\"not_found\",\"message\":\"no such item\"}}\n", nil)
 	if code != ExitRemote || out != "" || !strings.Contains(stderr, "not_found: no such item") {
 		t.Fatalf("code=%d out=%q err=%q", code, out, stderr)
 	}
@@ -181,12 +111,12 @@ func TestBoundedAndStrictResponse(t *testing.T) {
 	oversized := append(bytes.Repeat([]byte("x"), MaxWireBytes+1), '\n')
 	path := serveOnce(t, oversized, nil)
 	var out, stderr bytes.Buffer
-	code := Main([]string{"agent", "status"}, strings.NewReader(""), &out, &stderr, func(string) string { return path })
+	code := Main([]string{"attn", "status"}, strings.NewReader(""), &out, &stderr, func(string) string { return path })
 	if code != ExitProtocol || !strings.Contains(stderr.String(), "exceeds") {
 		t.Fatalf("code=%d err=%q", code, stderr.String())
 	}
 
-	code, _, msg := runWithSocket(t, []string{"agent", "status"}, "", "{\"ok\":true,\"result\":[]}\n{\"ok\":true,\"result\":[]}\n", nil)
+	code, _, msg := runWithSocket(t, []string{"attn", "status"}, "", "{\"ok\":true,\"result\":[]}\n{\"ok\":true,\"result\":[]}\n", nil)
 	if code != ExitProtocol || !strings.Contains(msg, "more or fewer") {
 		t.Fatalf("code=%d err=%q", code, msg)
 	}
@@ -199,7 +129,7 @@ func TestTimeoutIsBounded(t *testing.T) {
 	path := serveOnce(t, nil, func(Request) { time.Sleep(100 * time.Millisecond) })
 	var out, stderr bytes.Buffer
 	start := time.Now()
-	code := Main([]string{"agent", "status"}, strings.NewReader(""), &out, &stderr, func(string) string { return path })
+	code := Main([]string{"attn", "status"}, strings.NewReader(""), &out, &stderr, func(string) string { return path })
 	if code != ExitProtocol || time.Since(start) > time.Second {
 		t.Fatalf("code=%d elapsed=%s err=%s", code, time.Since(start), stderr.String())
 	}
@@ -219,40 +149,6 @@ func TestSocketPermissionsFailClosed(t *testing.T) {
 	_, _, err = call(path, Request{Version: 1, Area: "attn", Operation: "status", Args: map[string]any{}})
 	if err == nil || !strings.Contains(err.Error(), "not private") {
 		t.Fatalf("err=%v", err)
-	}
-}
-
-func TestAgentHumanOutputAndUnavailableArea(t *testing.T) {
-	result := `{"ok":true,"result":{"total":1,"offset":0,"limit":5,"jobs":[{"job_id":"agent-1","semantic_state":"blocked","reachability":"fresh","label":"review"}]}}` + "\n"
-	code, out, stderr := runWithSocket(t, []string{"agent", "status"}, "", result, nil)
-	if code != 0 || stderr != "" || out != "agent-1\tblocked\tfresh\treview\nShowing 1 of 1 (offset 0).\n" {
-		t.Fatalf("code=%d out=%q err=%q", code, out, stderr)
-	}
-	code, out, stderr = runWithSocket(t, []string{"agent", "status", "--json"}, "", "{\"ok\":false,\"error\":{\"code\":\"unavailable\",\"message\":\"agent owner absent\"}}\n", nil)
-	if code != ExitUnavailable || out != "" || !strings.Contains(stderr, "unavailable") {
-		t.Fatalf("code=%d out=%q err=%q", code, out, stderr)
-	}
-}
-
-func TestAgentPolicyHumanOutput(t *testing.T) {
-	result := `{"ok":true,"result":{"version":1,"revision":"rev1","nodes":[{"id":"worker","routes":["provider/model"]}],"routes":[{"route":"provider/model","on":true,"fallback":"deny","overrides":{"worker":"allow"}}]}}` + "\n"
-	code, out, stderr := runWithSocket(t, []string{"agent", "policy", "show"}, "", result, nil)
-	if code != 0 || stderr != "" {
-		t.Fatalf("code=%d err=%q", code, stderr)
-	}
-	want := "revision rev1\nmachine worker\troutes=1\nprovider/model\ton\tfallback=deny\tworker=allow\n"
-	if out != want {
-		t.Fatalf("out=%q want %q", out, want)
-	}
-	empty := `{"ok":true,"result":{"version":1,"revision":"rev0","nodes":[],"routes":[]}}` + "\n"
-	if _, out, _ = runWithSocket(t, []string{"agent", "policy", "show"}, "", empty, nil); !strings.Contains(out, "every route is denied") {
-		t.Fatalf("out=%q", out)
-	}
-	// A resident policy refusal is surfaced verbatim, never softened to success.
-	denied := "{\"ok\":false,\"error\":{\"code\":\"policy_denied\",\"message\":\"Agent policy denies model p/m on machine worker\"}}\n"
-	code, out, stderr = runWithSocket(t, []string{"agent", "dispatch", "--key", "k", "--machine", "worker", "--harness", "pi", "--model", "p/m", "--repo", "/r", "--requested-ref", "HEAD", "--task", "t", "--label", "x", "--json"}, "", denied, nil)
-	if code != ExitRemote || out != "" || !strings.Contains(stderr, "policy_denied: Agent policy denies model p/m on machine worker") {
-		t.Fatalf("code=%d out=%q err=%q", code, out, stderr)
 	}
 }
 

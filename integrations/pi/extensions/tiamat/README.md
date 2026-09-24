@@ -29,7 +29,7 @@ The extension instead registers IDs such as `tiamat-anthropic-claude-code-person
 ## Tests
 
 ```sh
-nix develop .#agents -c bun test integrations/pi/extensions/tiamat
+nix shell nixpkgs#bun -c bun test integrations/pi/extensions/tiamat
 # real installed patched pi + real extension + stub router on loopback
 nix develop .#pi -c "$(ls -d /nix/store/*nodejs*/bin/node | head -1)" test/pi-tiamat-bootstrap.mjs
 ```

@@ -19,7 +19,6 @@ const agentDir = join(scratch, "agent");
 mkdirSync(agentDir, { recursive: true });
 
 const residentNames = [
-  "agents",
   "footer",
   "handoff",
   "identity",
@@ -84,36 +83,16 @@ try {
     "Golem agents extension remains loaded",
   );
   assert.ok(
-    residentPaths.includes(join(extensionRoot, "agents", "index.ts")),
-    "durable Familiar Agents owner implementation is loaded",
-  );
-  assert.ok(
     residentPaths.includes(join(extensionRoot, "imp", "index.ts")),
     "sole resident Imp ingress implementation is loaded",
   );
   const residentTools = toolNames(resident.extensions);
-  assert.deepEqual(
-    residentTools.filter((name) => name.startsWith("familiar_agents_")),
-    [],
-    "durable Familiar Agent tools must not be registered in resident Pi",
-  );
   for (const name of [...expectedGolemTools, ...expectedUnrelatedTools]) {
     assert.ok(residentTools.includes(name), `resident tool remains registered: ${name}`);
   }
 
-  // The loaded owner implementation itself must remain schema-free; there is
-  // no dormant first-class family to accidentally activate in another loader.
-  const agentsExtension = resident.extensions.find(
-    (extension) => extension.resolvedPath === join(extensionRoot, "agents", "index.ts"),
-  );
-  assert.ok(agentsExtension);
-  assert.deepEqual(
-    [...agentsExtension.tools.keys()].filter((name) => name.startsWith("familiar_agents_")),
-    [],
-  );
-
   console.log(
-    `resident tool inventory: ${residentTools.length} tools; Familiar Agents owner + Imp loaded without familiar_agents_ tools; Golem unchanged`,
+    `resident tool inventory: ${residentTools.length} tools; Imp and Golem loaded; Golem tools unchanged`,
   );
 } finally {
   rmSync(scratch, { recursive: true, force: true });

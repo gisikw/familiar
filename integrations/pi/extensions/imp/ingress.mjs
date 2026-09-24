@@ -5,10 +5,8 @@ import { createServer } from "node:net";
 
 export const IMP_ENV = "FAMILIAR_IMP_SOCKET";
 export const IMP_WIRE_LIMIT = 1 << 20;
-export const IMP_AGENT_HANDLER = Symbol.for("familiar.imp.agent.v1");
 export const IMP_ATTN_HANDLER = Symbol.for("familiar.imp.attn.v1");
 const IMP_AREA_HANDLERS = {
-  agent: IMP_AGENT_HANDLER,
   attn: IMP_ATTN_HANDLER,
 };
 const IMP_INGRESS_OWNER = Symbol.for("familiar.imp.ingress.v1");
@@ -46,8 +44,8 @@ function errorMessage(error) {
   return Buffer.from(value).subarray(0, 4096).toString("utf8") || "operation failed";
 }
 
-/** The sole temporary Imp transport. This is deliberately a fixed two-area
- * switch (agent, attn), not a registry or externally discoverable endpoint. */
+/** The sole temporary Imp transport. This is deliberately fixed to Attention,
+ * not a registry or externally discoverable endpoint. */
 export class ImpIngress {
   constructor() {
     this.connections = new Set();

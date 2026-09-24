@@ -260,7 +260,7 @@ nix eval --raw .#checks.aarch64-darwin.pi-invoke-command.drvPath
 nix develop .#pi -c /nix/store/glcp73hgagq2b24i80jlgbvj28vdb6kk-nodejs-24.19.0/bin/node test/extension-loader-smoke.mjs
 nix develop .#pi -c /nix/store/glcp73hgagq2b24i80jlgbvj28vdb6kk-nodejs-24.19.0/bin/node test/pi-tiamat-bootstrap.mjs
 nix develop .#pi -c bash -c 'bash test/pi-extra-extensions.test.sh && bash test/pi-model-store.test.sh'
-nix develop .#agents -c bun test integrations/pi/extensions/tiamat
+nix shell nixpkgs#bun -c bun test integrations/pi/extensions/tiamat
 ```
 
 The existing pi shell does not put Node on PATH; the smoke command explicitly uses

@@ -81,23 +81,6 @@ dependency_timeout_policy = "fail-child"
 FAMILIAR_PRESENCE_CTL = "./services/presence/presence.sh"
 FAMILIAR_STT_URL = "http://127.0.0.1:9932"
 FAMILIAR_TTS_URL = "http://127.0.0.1:9933"
-# Fleet enrollment is disabled unless FAMILIAR_FLEET_STATE_DIR and all required
-# rendezvous values are supplied. Example production values:
-# FAMILIAR_FLEET_STATE_DIR = "../../state/fleet"
-# FAMILIAR_FLEET_PORT_MIN = "22000"
-# FAMILIAR_FLEET_PORT_MAX = "22999"
-# FAMILIAR_FLEET_TUNNEL_HOST = "fleet.example.com"
-# FAMILIAR_FLEET_TUNNEL_SSH_PORT = "22"
-# FAMILIAR_FLEET_TUNNEL_USER = "familiar-tunnel"
-# FAMILIAR_FLEET_CONTROLLER_PUBLIC_KEY = "ssh-ed25519 AAAA..."
-# FAMILIAR_FLEET_TUNNEL_HOST_KEY = "ssh-ed25519 AAAA..."
-# The desired worker runtime handed to every enrolling node. Must be the exact
-# immutable installable for a full 40-hex commit of this repository, never a
-# branch or tag, so nodes cannot drift; bump it as part of each deployment.
-# Public metadata, not a secret. Node true-up after enrollment is done by the
-# controller over SSH, not by this value changing.
-# FAMILIAR_FLEET_RUNTIME_INSTALLABLE = "github:gisikw/familiar/<40-hex-commit>#familiar-worker-runtime"
-# FAMILIAR_FLEET_CONTROLLER_IDENTITY_FILE = "/run/keys/familiar-fleet-controller"
 [children.probe]
 type = "http"
 # The gateway's real readiness/liveness endpoint is /health, not /ready.

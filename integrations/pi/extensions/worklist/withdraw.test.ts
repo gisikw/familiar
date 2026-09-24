@@ -8,7 +8,7 @@ test('durable withdrawal fences enqueue before and after process death', () => {
   const root=mkdtempSync(join(tmpdir(),'worklist-withdraw-'));
   try {
     const p=worklistPaths(root);ensureDirs(p);
-    const env={id:'agent-proof-blocked-1',summary:'question',body:'raw context',source:'familiar-agents'};
+    const env={id:'agent-proof-blocked-1',summary:'question',body:'raw context',source:'agent-proof'};
     withdrawEnvelopeIdempotent(p,env);
     expect(getArchivedItem(p,env.id)?.withdrawn).toBe(true);
     expect(enqueueEnvelopeIdempotent(p,env).created).toBe(false);

@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "node --experimental-transform-types src/main.ts",
-    "test": "node --experimental-transform-types --test src/theme/resolve.test.ts test/fleet.test.ts",
+    "test": "node --experimental-transform-types --test src/theme/resolve.test.ts",
     "postinstall": "node scripts/vendor-assets.cjs"
   },
   "dependencies": {

@@ -7,7 +7,7 @@ import * as path from "node:path";
 // mocked at the module boundary; retain their real exports because Bun mocks
 // are process-global and the canonical suite later exercises Pi's real loader.
 const piPackageDir = process.env.PI_PACKAGE_DIR;
-if (!piPackageDir) throw new Error("PI_PACKAGE_DIR is required (run in Familiar's pi or agents dev shell)");
+if (!piPackageDir) throw new Error("PI_PACKAGE_DIR is required (point it at Familiar's pinned Pi package)");
 const realCodingAgent = await import(path.join(piPackageDir, "dist/index.js"));
 const realPiAi = await import(path.join(piPackageDir, "node_modules/@earendil-works/pi-ai/dist/index.js"));
 const realTypebox = await import(path.join(piPackageDir, "node_modules/typebox/build/index.mjs"));

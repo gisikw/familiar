@@ -5,7 +5,6 @@ import { lstatSync, statSync, existsSync } from "node:fs";
 import { dirname } from "node:path";
 import {
   ImpIngress,
-  IMP_AGENT_HANDLER,
   IMP_ATTN_HANDLER,
 } from "./ingress.mjs";
 
@@ -20,12 +19,11 @@ function call(path, request, suffix = "\n") {
   });
 }
 
-test("one private socket dynamically routes only fixed Agent and Attention symbols", async (t) => {
+test("one private socket routes only the fixed Attention symbol", async (t) => {
   const old = process.env.FAMILIAR_IMP_SOCKET;
   const ingress = new ImpIngress();
   const path = await ingress.start();
   t.after(async () => {
-    delete process[IMP_AGENT_HANDLER];
     delete process[IMP_ATTN_HANDLER];
     await ingress.stop();
     if (old === undefined) delete process.env.FAMILIAR_IMP_SOCKET;
@@ -34,19 +32,14 @@ test("one private socket dynamically routes only fixed Agent and Attention symbo
   assert.equal(process.env.FAMILIAR_IMP_SOCKET, path);
   assert.equal(lstatSync(path).mode & 0o077, 0);
   assert.equal(statSync(dirname(path)).mode & 0o077, 0);
-  let envelope;
-  process[IMP_AGENT_HANDLER] = { handle: (request) => ({ from: request.area, operation: request.operation }) };
   process[IMP_ATTN_HANDLER] = { handle: (request) => ({ from: request.area, operation: request.operation }) };
-  for (const area of ["agent", "attn"]) {
-    envelope = JSON.parse(await call(path, { version: 1, area, operation: "status", args: {} }));
-    assert.deepEqual(envelope, { ok: true, result: { from: area, operation: "status" } });
-  }
-  delete process[IMP_AGENT_HANDLER];
+  let envelope = JSON.parse(await call(path, { version: 1, area: "attn", operation: "status", args: {} }));
+  assert.deepEqual(envelope, { ok: true, result: { from: "attn", operation: "status" } });
   envelope = JSON.parse(await call(path, { version: 1, area: "agent", operation: "status", args: {} }));
-  assert.equal(envelope.error.code, "unavailable");
+  assert.equal(envelope.error.code, "invalid_request");
   assert.equal(JSON.parse(await call(path, { version: 1, area: "other", operation: "x", args: {} })).error.code, "invalid_request");
   assert.equal(JSON.parse(await call(path, { version: 1, area: "attn", operation: "x", args: {}, extra: true })).error.code, "invalid_request");
-  // Only the two own-property areas route; inherited object keys are not areas.
+  // Only the own-property Attention area routes; inherited object keys are not areas.
   assert.equal(JSON.parse(await call(path, { version: 1, area: "constructor", operation: "x", args: {} })).error.code, "invalid_request");
   assert.equal(JSON.parse(await call(path, { version: 1, area: "attention", operation: "status", args: {} })).error.code, "invalid_request");
   process.env.FAMILIAR_IMP_SOCKET = "/new-owner/value";

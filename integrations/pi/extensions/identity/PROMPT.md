@@ -34,7 +34,7 @@ never enters the prompt. Everything affordance-sensitive is rebuilt from
 `before_agent_start` handlers chain; identity returns a fresh prompt and does
 not carry `event.systemPrompt` forward. No resident extension modifies the
 prompt before identity: `familiar.sh` writes the settings extension list
-sorted (`jq unique`), so agents, footer, handoff, and any plugin /
+sorted (`jq unique`), so footer, handoff, and any plugin /
 host-extra paths that sort before the repository path (e.g. `/opt/...`,
 `/etc/...`) load first — none of them return a `systemPrompt`. A future
 extension that must reach the model before identity should ride
@@ -48,7 +48,7 @@ identity-bearing prompt is reused; before any success, Pi's default applies.
 
 1. Diff `dist/core/system-prompt.js` and `formatSkillsForPrompt` in
    `dist/core/skills.js` between the old and new pin.
-2. `nix develop .#agents -c bash -c 'cd integrations/pi/extensions && bun test identity'`
+2. `nix shell nixpkgs#bun -c bun test integrations/pi/extensions/identity`
    — the parity block runs Pi's real `buildSystemPrompt` on shared fixtures.
 3. Classify each new delta in the matrix above before adopting it. Never
    import Pi's generic framing or documentation prose.

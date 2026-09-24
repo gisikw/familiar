@@ -30,7 +30,6 @@ try {
     .map((extension) => extension.resolvedPath)
     .sort();
   const expected = [
-    "agents",
     "footer",
     "handoff",
     "identity",

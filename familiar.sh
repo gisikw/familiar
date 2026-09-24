@@ -104,7 +104,7 @@ install -d -m 700 "$FAMILIAR_SUBCONSCIOUS_DIR" 2>/dev/null || true
 # should have friction.
 export PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR:-$STATE_DIR/pi}"
 export PI_CODING_AGENT_DIR="$(resolve_config_path "$PI_CODING_AGENT_DIR")"
-for _familiar_path_var in FAMILIAR_TTS_VOICES_SOURCE FAMILIAR_ARTIFACT_DIR FAMILIAR_SUBAGENT_DIR FAMILIAR_SUBAGENT_SESSION_DIR FAMILIAR_AGENTS_CONFIG FAMILIAR_AGENTS_STATE_DIR; do
+for _familiar_path_var in FAMILIAR_TTS_VOICES_SOURCE FAMILIAR_ARTIFACT_DIR FAMILIAR_SUBAGENT_DIR FAMILIAR_SUBAGENT_SESSION_DIR; do
   if [ -n "${!_familiar_path_var:-}" ]; then
     printf -v "$_familiar_path_var" '%s' "$(resolve_config_path "${!_familiar_path_var}")"
     export "$_familiar_path_var"
@@ -387,10 +387,9 @@ run_pi() {
         themes: [ ($dir + "/themes") ],
         compaction: { enabled: true, reserveTokens: 4096 },
         # Keep the live extension set explicit. Imp owns the sole private
-        # resident socket; Agents publishes its fixed Imp area handler only
-        # while the explicitly-authorized foreground Owner is alive.
+        # resident socket used by Attention.
         extensions: (([
-          "agents", "footer", "handoff", "identity", "imp", "stuff", "subscriber",
+          "footer", "handoff", "identity", "imp", "stuff", "subscriber",
           "tiamat", "web", "worklist", "zip", "wake"
         ] | map($ext + "/" + .)) + $pluginExts + $extraExts | unique)
       }
@@ -441,7 +440,6 @@ run_pi() {
     # aborts the whole function on any non-zero exit, leaving a dead pane with
     # no supervisor instead of respawning pi.
     command pi \
-      --familiar-agents-owner \
       --continue \
       --no-context-files \
       --no-skills \

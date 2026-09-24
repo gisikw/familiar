@@ -12,7 +12,6 @@ import { handleUpload } from "./upload.ts";
 import type { IngestEnvelope } from "./protocol.ts";
 import { resolveTheme, toCss, toResttyTheme, ThemeError } from "./theme/resolve.ts";
 import { isLoopbackHost, requireSafeGatewayHost } from "./network.ts";
-import { FleetError, FleetRegistry, fleetConfigFromEnv, handleFleet } from "./fleet.ts";
 
 /* --- theme: resolved once at boot from FAMILIAR_THEME_* env (defaults live in
  * theme/defaults.json). A bad color fails the server loudly rather than
@@ -53,9 +52,6 @@ const audio = new AudioCache(hub);
 const relay = new RelayBus();
 const ingress = new Ingress(relay);
 const pty = new PtyBridge();
-const fleetConfig = fleetConfigFromEnv();
-const fleet = fleetConfig ? new FleetRegistry(fleetConfig) : undefined;
-if (fleet) await fleet.initialize();
 
 /* --- /ingest: apply an egress envelope from the extension ------------------ */
 function applyIngest(env: IngestEnvelope) {
@@ -135,17 +131,6 @@ function handle(req: http.IncomingMessage, res: http.ServerResponse) {
     if (pathname === "/theme.css") { res.writeHead(200, { "Content-Type": "text/css; charset=utf-8", "Cache-Control": "no-cache" }); return res.end(THEME_CSS); }
     if (pathname === "/theme.json") { res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-cache" }); return res.end(THEME_JSON); }
     if (pathname === "/health") { res.writeHead(200, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ ok: true, session: hub.session })); }
-    // Fleet enrollment deliberately inherits this gateway's existing boundary:
-    // loopback by default, or the operator's authenticated reverse proxy when
-    // non-loopback exposure is explicitly enabled. Do not add a second token.
-    if (fleet && (pathname === "/fleet" || pathname.startsWith("/fleet/"))) {
-      return void handleFleet(fleet, req, res, pathname).catch((err) => {
-        const status = err instanceof FleetError ? err.status : 500;
-        errorLog("fleet", { requestError: err instanceof FleetError ? err.message : String(err) });
-        if (!res.headersSent) res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
-        res.end(JSON.stringify({ error: status === 500 ? "internal server error" : String(err.message) }) + "\n");
-      });
-    }
     // Sanity-check snapshot for clients that may have missed an SSE lifecycle
     // edge while suspended/reconnecting. Session identity prevents applying a
     // stale response after a Pi restart.

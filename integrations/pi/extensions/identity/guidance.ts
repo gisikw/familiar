@@ -10,7 +10,5 @@ export function impGuidance(
 ): string {
   if (!bin || !socket) return "";
   return `Shell-native capabilities:
-- \`imp agent\` dispatches and controls durable Familiar Agents. Run \`imp agent --help\` for progressive command discovery.
-- While both orchestration systems are available, prefer the advertised Golem tools for routine delegation. Use \`imp agent\` when Kevin explicitly asks for Familiar Agents or when validating that system.
-- Never silently fall back between agent systems, blindly retry an uncertain mutation, or mint a new dispatch key after a lost reply; inspect status and reconcile first.`;
+- \`imp attn\` reads and updates Attention. Run \`imp attn --help\` for progressive command discovery.`;
 }
