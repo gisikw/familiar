@@ -21,7 +21,11 @@ import {
   type TiamatPort,
   type TiamatProviders,
 } from "./usage.ts";
-import { restoredSelection, TiamatMaterializer } from "./materializer.ts";
+import {
+  restoredSelection,
+  TiamatMaterializer,
+  type SemanticModel,
+} from "./materializer.ts";
 import { registerSystemPromptRecorder } from "./system-prompt.ts";
 
 const LOG = "tiamat";
@@ -85,6 +89,8 @@ export default async function tiamat(pi: ExtensionAPI) {
   let usageRefreshedAt = 0;
   let lastUsageStatus = "";
   let appliedCatalog: TiamatCatalogRecord[] = [];
+  let pendingRestore: SemanticModel | undefined;
+  let startupFallback: { provider: string; id: string } | undefined;
   const materializer = new TiamatMaterializer(
     pi,
     baseUrl,
@@ -245,13 +251,47 @@ export default async function tiamat(pi: ExtensionAPI) {
     authStopped = false;
   };
 
+  const restorePendingModel = async () => {
+    const restored = pendingRestore;
+    const ctx = context;
+    if (!restored || !ctx) return;
+    if (
+      ctx.model?.provider === restored.provider &&
+      ctx.model.id === restored.modelId
+    ) {
+      pendingRestore = undefined;
+      return;
+    }
+    // Do not undo an explicit selection made after startup. Only replace the
+    // model Pi chose while the restored provider was unavailable.
+    if (
+      startupFallback &&
+      (ctx.model?.provider !== startupFallback.provider ||
+        ctx.model.id !== startupFallback.id)
+    ) {
+      pendingRestore = undefined;
+      return;
+    }
+    const result = await materializer.activate(restored, false);
+    if (result.ok) pendingRestore = undefined;
+    else
+      logError({
+        restoreModelFailed: result.error,
+        provider: restored.provider,
+        model: restored.modelId,
+      });
+  };
+
   const reconcile = (result: CatalogResult) => {
     const next = catalogToProviderGroups(result.catalog, baseUrl);
     appliedEtag = result.etag;
     appliedCatalog = result.catalog;
     // Polling updates picker truth and only the definitions already in the
-    // two-model execution set; it never pours the catalogue into Pi.
+    // two-model execution set; it never pours the catalogue into Pi. A startup
+    // outage may have made Pi bind a fallback before this catalogue arrived;
+    // retry that exact session selection after registration becomes possible.
     materializer.updateCatalog(result.catalog);
+    void restorePendingModel();
     notifyChanged();
     logDebug({
       catalogApplied: true,
@@ -326,6 +366,8 @@ export default async function tiamat(pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     context = ctx;
+    pendingRestore = undefined;
+    startupFallback = undefined;
     // Migration defense for old semantic entries or catalogues that were
     // transiently unavailable during bootstrap. Normal exact routes are already
     // materialized and selected before this lifecycle event.
@@ -335,13 +377,11 @@ export default async function tiamat(pi: ExtensionAPI) {
       (ctx.model?.provider !== restored.provider ||
         ctx.model.id !== restored.modelId)
     ) {
-      const result = await materializer.activate(restored, false);
-      if ("error" in result)
-        logError({
-          restoreModelFailed: result.error,
-          provider: restored.provider,
-          model: restored.modelId,
-        });
+      pendingRestore = restored;
+      startupFallback = ctx.model
+        ? { provider: ctx.model.provider, id: ctx.model.id }
+        : undefined;
+      await restorePendingModel();
     }
     schedule();
     if (ctx.hasUI) {
@@ -356,7 +396,21 @@ export default async function tiamat(pi: ExtensionAPI) {
   });
   pi.on("model_select", async (_event, ctx) => {
     context = ctx;
-    materializer.adopt(ctx.model);
+    // Keep a failed startup repair pending while Pi remains on its fallback,
+    // but cancel it if the operator deliberately chooses a third model.
+    const selected = ctx.model;
+    if (
+      pendingRestore &&
+      (!selected ||
+        selected.provider !== pendingRestore.provider ||
+        selected.id !== pendingRestore.modelId) &&
+      (!startupFallback ||
+        !selected ||
+        selected.provider !== startupFallback.provider ||
+        selected.id !== startupFallback.id)
+    )
+      pendingRestore = undefined;
+    materializer.adopt(selected);
     renderUsage();
   });
   pi.on("turn_end", async (_event, ctx) => {
@@ -369,5 +423,7 @@ export default async function tiamat(pi: ExtensionAPI) {
     timer = undefined;
     usageTimer = undefined;
     context = undefined;
+    pendingRestore = undefined;
+    startupFallback = undefined;
   });
 }

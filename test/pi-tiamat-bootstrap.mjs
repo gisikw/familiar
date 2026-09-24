@@ -95,13 +95,13 @@ writeFileSync(
   probe,
   `import { appendFileSync } from "node:fs";
 export default function (pi) {
-  pi.on("session_start", async (_event, ctx) => {
-    appendFileSync(process.env.TIAMAT_PROBE_OUT, JSON.stringify({
-      provider: ctx.model?.provider ?? null,
-      id: ctx.model?.id ?? null,
-      contextWindow: ctx.model?.contextWindow ?? null,
-    }) + "\\n");
-  });
+  const record = (ctx) => appendFileSync(process.env.TIAMAT_PROBE_OUT, JSON.stringify({
+    provider: ctx.model?.provider ?? null,
+    id: ctx.model?.id ?? null,
+    contextWindow: ctx.model?.contextWindow ?? null,
+  }) + "\\n");
+  pi.on("session_start", async (_event, ctx) => record(ctx));
+  pi.on("model_select", async (_event, ctx) => record(ctx));
 }
 `,
 );
@@ -208,7 +208,85 @@ try {
   assert.doesNotMatch(result.stderr, /Could not restore model/, result.stderr);
   cases.push("resumed session");
 
-  // 5. Bounded list seed: exactly one deterministic Tiamat row, never the catalogue.
+  // 5. If startup catalogue discovery fails, Pi initially binds an available
+  //    local fallback. Once polling discovers the route, the extension must
+  //    restore the session model rather than leave (and persist) the fallback.
+  writeFileSync(
+    join(agentDir, "models.json"),
+    JSON.stringify({
+      providers: {
+        "llama.cpp": {
+          baseUrl: "http://127.0.0.1:1/v1",
+          api: "openai-completions",
+          apiKey: "local",
+          models: [{ id: "local-fallback", contextWindow: 8192 }],
+        },
+      },
+    }),
+  );
+  settings({
+    defaultProvider: "tiamat-responses-shared",
+    defaultModel: "duplicate-id",
+  });
+  writeFileSync(outageFlag, "");
+  writeFileSync(probeOut, "");
+  const recovering = spawn(
+    process.execPath,
+    [cli, "-e", tiamatExtension, "-e", probe, "--session-dir", sessionDir,
+      "--session", sessionFile, "--mode", "rpc"],
+    {
+      cwd,
+      env: {
+        ...process.env,
+        PI_CODING_AGENT_DIR: agentDir,
+        TIAMAT_PROBE_OUT: probeOut,
+        FAMILIAR_TIAMAT_URL: baseUrl,
+        FAMILIAR_TIAMAT_TOKEN_FILE: tokenFile,
+        FAMILIAR_TIAMAT_POLL_SECONDS: "0.05",
+        NO_COLOR: "1",
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    },
+  );
+  let recoveryStderr = "";
+  recovering.stderr.on("data", (chunk) => { recoveryStderr += chunk; });
+  const waitForBound = async (provider, timeoutMs = 5000) => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const rows = readFileSync(probeOut, "utf8").trim().split("\n").filter(Boolean)
+        .map((line) => JSON.parse(line));
+      if (rows.some((row) => row.provider === provider)) return rows;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error(`timed out waiting for ${provider}; stderr: ${recoveryStderr}`);
+  };
+  try {
+    await waitForBound("llama.cpp");
+    rmSync(outageFlag, { force: true });
+    const rebound = await waitForBound("tiamat-openai-shared");
+    assert.deepEqual(rebound.at(-1), {
+      provider: "tiamat-openai-shared",
+      id: "duplicate-id",
+      contextWindow: 123_457,
+    });
+    const modelChanges = readFileSync(sessionFile, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .filter((entry) => entry.type === "model_change");
+    const persisted = modelChanges.at(-1);
+    assert.deepEqual(
+      persisted && { provider: persisted.provider, modelId: persisted.modelId },
+      { provider: "tiamat-openai-shared", modelId: "duplicate-id" },
+    );
+  } finally {
+    recovering.kill();
+    rmSync(outageFlag, { force: true });
+    rmSync(join(agentDir, "models.json"), { force: true });
+  }
+  cases.push("late catalogue restores resumed model");
+
+  // 6. Bounded list seed: exactly one deterministic Tiamat row, never the catalogue.
   result = run("--list-models");
   assert.equal(result.status, 0, result.stderr);
   const listed = result.stdout.split("\n").filter((line) => line.includes("tiamat-"));
@@ -216,7 +294,7 @@ try {
   assert.match(listed[0], /tiamat-anthropic-aa-first\s+seed-row/);
   cases.push("bounded --list-models seed");
 
-  // 6. A bare/fuzzy CLI pattern never expands the catalogue into pi.
+  // 7. A bare/fuzzy CLI pattern never expands the catalogue into pi.
   settings({});
   result = run("--model", "row", "-p", "hi");
   assert.notEqual(result.status, 0);
@@ -224,7 +302,7 @@ try {
   assert.deepEqual(result.bound, []);
   cases.push("bare pattern stays bounded");
 
-  // 7. No configured default at all: one bounded seed, so a Tiamat-only box is
+  // 8. No configured default at all: one bounded seed, so a Tiamat-only box is
   //    never left without a model, and never with a catalogue.
   result = run("-p", "hi");
   assert.deepEqual(result.bound.at(-1), {
@@ -234,7 +312,7 @@ try {
   });
   cases.push("bounded seed without a default");
 
-  // 8. Router outage: startup degrades to pi's own resolution instead of failing closed.
+  // 9. Router outage: startup degrades to pi's own resolution instead of failing closed.
   writeFileSync(outageFlag, "");
   settings({ defaultProvider: "tiamat-anthropic-work", defaultModel: "other-row" });
   result = run("-p", "hi");
