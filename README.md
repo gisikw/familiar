@@ -70,36 +70,14 @@ conversation. The store is one atomically replaced file beneath
 `FAMILIAR_SUBCONSCIOUS_DIR` (default private `state/subconscious`). See
 [SUBCONSCIOUS.md](integrations/pi/extensions/handoff/SUBCONSCIOUS.md).
 
-## Durable wakes
+## Scheduled events
 
-The resident `wake` extension stores alarms beneath `FAMILIAR_WAKE_DIR`
-(default private `state/wakes`) using 0700 directories and atomically replaced
-0600 records. If that export is absent in an old resident Presence environment,
-the fallback is the `wakes` sibling of `PI_CODING_AGENT_DIR` or
-`FAMILIAR_PRESENCE_STATE_DIR`, never a nested Pi/Presence directory.
-
-For one release, startup also ingests the initial durable-wake release's mistaken
-`presence/wakes` and `pi/wakes` fallbacks when they differ from the canonical
-root. Valid fired claims are durably copied before pending alarms; canonical
-records win deterministic ID collisions, no destination is overwritten, and a
-source is removed only after a durable equal copy. Divergent, corrupt, symlinked,
-or otherwise unsafe sources remain untouched. The retained fired journal makes
-an interrupted migration idempotent and prevents stale pending copies from
-replaying.
-
-Future alarms are restored and elapsed alarms are fired promptly
-on `session_start`; fresh user/worklist/settlement activity durably cancels
-`unless_wakened` alarms, while `always` alarms remain. Worklist reports persisted
-post-schedule ingress before wake arms overdue records at startup, so queued work
-accumulated during downtime wins that race. Corrupt records are quarantined and
-ignored. `session_shutdown` clears timers only, never records.
-
-Delivery durably moves a wake into the `fired/` claim journal before calling
-`pi.sendMessage`, providing at-most-once **send attempts** across crashes. Pi
-provides no delivery acknowledgement for `sendMessage`, so a process crash after
-the claim and before (or ambiguously during) the call can lose that wake. Claiming
-first chooses possible loss over an avoidable duplicate; an already claimed wake
-is never replayed after restart. This is not an exactly-once delivery claim.
+The resident scheduler extension identifies the current Pi session, holds one
+outbound connection to `familiar-services`, injects pushed events, and
+acknowledges them. `imp schedule` creates future events; `imp notify` creates
+due-now events. The service owns timing, routing, deduplication, pacing, and DND.
+Unacknowledged events are replayed after reconnect, while the extension dedupes
+already-injected IDs from the session history.
 
 ## Quota footer
 

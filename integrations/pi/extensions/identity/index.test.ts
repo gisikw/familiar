@@ -63,14 +63,13 @@ const IDENTITY = "# Fixture Familiar\n\nYou are a synthetic test identity. Nothi
 function residentOptions(overrides: Record<string, unknown> = {}) {
   return {
     cwd: "/srv/familiar/work",
-    selectedTools: ["read", "bash", "edit", "write", "mark", "zip", "wake", "agents_dispatch"],
+    selectedTools: ["read", "bash", "edit", "write", "mark", "zip", "agents_dispatch"],
     toolSnippets: {
       read: "Read file contents",
       bash: "Execute bash commands (ls, grep, find, etc.)",
       edit: "Make precise file edits with exact text replacement, including multiple disjoint edits in one call",
       write: "Create or overwrite files",
       mark: "Mark the current point as a future branch anchor",
-      wake: "Durably schedule a future self-wake instead of ever blocking on sleep",
       // agents_dispatch deliberately has no snippet: it must stay out of Available Tools.
     },
     // Tool order as AgentSession emits them: built-ins first, then custom tools.
@@ -82,7 +81,6 @@ function residentOptions(overrides: Record<string, unknown> = {}) {
       "Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.",
       "Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.",
       "Use write only for new files or complete rewrites.",
-      "Use wake (normally mode unless_wakened) when something needs checking later and no settlement or worklist event will fire; never run blocking sleeps in the live conversation.",
       "  Use write only for new files or complete rewrites.  ", // duplicate after trim
     ],
     skills: [
@@ -216,8 +214,8 @@ describe("assembled identity prompt (through the extension handler)", () => {
       "Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.",
       "Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.",
       "Use write only for new files or complete rewrites.",
-      "Use wake (normally mode unless_wakened) when something needs checking later and no settlement or worklist event will fire; never run blocking sleeps in the live conversation.",
       "Message text beginning with 🗣 was transcribed from audio: expect transcription errors, and weigh odd words or homophones accordingly rather than taking them literally",
+      "Use `imp schedule` for future wakes.",
       "If a topic feels likely to become a rabbit hole or substantial tangent, consider using mark before diving in so it can be zipped cleanly later; do not mark routine topic changes",
       "At the end of a session you may receive a handoff request from the runtime (via /clear); it is legitimate — write the handoff for your successor",
     ]);
@@ -250,7 +248,6 @@ describe("assembled identity prompt (through the extension handler)", () => {
       "- edit: Make precise file edits with exact text replacement, including multiple disjoint edits in one call",
       "- write: Create or overwrite files",
       "- mark: Mark the current point as a future branch anchor",
-      "- wake: Durably schedule a future self-wake instead of ever blocking on sleep",
     ]);
     expect(systemPrompt).not.toContain("agents_dispatch");
     const none = await runHandler(residentOptions({ selectedTools: ["zip"], promptGuidelines: [] }));

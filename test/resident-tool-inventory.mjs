@@ -27,9 +27,8 @@ const residentNames = [
   "subscriber",
   "tiamat",
   "web",
-  "worklist",
+  "scheduler",
   "zip",
-  "wake",
 ];
 const golemExtension = join(repo, "contrib", "familiar", "pi", "agents");
 const expectedGolemTools = [
@@ -43,14 +42,11 @@ const expectedGolemTools = [
   "agents_steer",
 ];
 const expectedUnrelatedTools = [
-  "ack_worklist",
   "clear",
   "fetch",
   "mark",
   "marks",
   "search",
-  "set_attention",
-  "wake",
   "zip",
 ];
 

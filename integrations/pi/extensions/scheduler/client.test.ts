@@ -1,0 +1,8 @@
+import { afterEach, expect, test } from "bun:test";
+import { createServer } from "node:net";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { SchedulerClient } from "./client.ts";
+const cleanup:Array<()=>void>=[];afterEach(()=>{while(cleanup.length)cleanup.pop()!();});
+test("long-lived client says hello, receives, and acks",async()=>{const dir=mkdtempSync(join(tmpdir(),"scheduler-client-"));const path=join(dir,"service.sock");const records:any[]=[];let resolveAck!:()=>void;const acked=new Promise<void>(resolve=>resolveAck=resolve);const server=createServer(socket=>{let input="";socket.setEncoding("utf8");socket.on("data",chunk=>{input+=chunk;for(;;){const end=input.indexOf("\n");if(end<0)break;const request=JSON.parse(input.slice(0,end));input=input.slice(end+1);records.push(request);if(request.op==="hello"){socket.write('{"ok":true,"result":{}}\n');socket.write('{"event":{"id":"one","due_at":1,"target":"instance:test","origin":"test","source":"test","priority":1,"type":"notify","summary":"hello","body":"detail","state":"delivered","created_at":1}}\n');}else if(request.op==="schedule.ack")resolveAck();}});});await new Promise<void>((resolve,reject)=>server.listen(path,resolve).once("error",reject));cleanup.push(()=>{server.close();rmSync(dir,{recursive:true,force:true});});const delivered:string[]=[];const client=new SchedulerClient("test",{async event(event){delivered.push(event.id)},error(error){throw error}},path);client.start();await acked;client.stop();expect(delivered).toEqual(["one"]);expect(records.map(x=>x.op)).toEqual(["hello","schedule.ack"]);expect(records[1].args).toEqual({id:"one"});});

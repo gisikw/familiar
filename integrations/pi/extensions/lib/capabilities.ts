@@ -149,6 +149,8 @@ export interface DurableEnqueueEnvelope {
   body?: string;
   source?: string;
   suggested_deadline?: number;
+  origin?: string;
+  target?: string;
 }
 
 export interface DurableAcceptance {

@@ -56,6 +56,7 @@ export function fileExplorationGuideline(tools: readonly string[]): string | und
 export function familiarGuidelines(tools: readonly string[]): string[] {
   const lines = [
     "Message text beginning with 🗣 was transcribed from audio: expect transcription errors, and weigh odd words or homophones accordingly rather than taking them literally",
+    "Use `imp schedule` for future wakes.",
   ];
   if (tools.includes("mark")) {
     lines.push(

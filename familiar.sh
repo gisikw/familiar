@@ -74,7 +74,7 @@ fi
 # Defaults (lowest precedence)
 if [ -n "${FAMILIAR_IDENTITY_PATH:-}" ]; then export FAMILIAR_IDENTITY_PATH="$(resolve_config_path "$FAMILIAR_IDENTITY_PATH")"; fi
 if [ -n "${FAMILIAR_HANDOFF_PROMPT_PATH:-}" ]; then export FAMILIAR_HANDOFF_PROMPT_PATH="$(resolve_config_path "$FAMILIAR_HANDOFF_PROMPT_PATH")"; fi
-# familiar-services is the sole owner of worklist, DND, and wake state.
+# familiar-services is the sole owner of scheduled delivery and DND state.
 export FAMILIAR_SERVICES_SOCKET="${FAMILIAR_SERVICES_SOCKET:-/run/familiar-services/familiar.sock}"
 export FAMILIAR_SERVICES_SOCKET="$(resolve_config_path "$FAMILIAR_SERVICES_SOCKET")"
 export FAMILIAR_LOG_PATH="${FAMILIAR_LOG_PATH:-$STATE_DIR/log.jsonl}"
@@ -86,8 +86,6 @@ export FAMILIAR_PRESENCE_SOCKET="${FAMILIAR_PRESENCE_SOCKET:-$FAMILIAR_PRESENCE_
 export FAMILIAR_PRESENCE_SOCKET="$(resolve_config_path "$FAMILIAR_PRESENCE_SOCKET")"
 export FAMILIAR_PRESENCE_CTL="${FAMILIAR_PRESENCE_CTL:-$REPO/services/presence/presence.sh}"
 # Durable extension state belongs to the private runtime, never the source tree.
-export FAMILIAR_WAKE_DIR="${FAMILIAR_WAKE_DIR:-$STATE_DIR/wakes}"
-export FAMILIAR_WAKE_DIR="$(resolve_config_path "$FAMILIAR_WAKE_DIR")"
 # Subconscious reminders: the small set the outgoing Familiar curates for the
 # next one at /clear. Self-addressed and unread by the running agent; 0700.
 export FAMILIAR_SUBCONSCIOUS_DIR="${FAMILIAR_SUBCONSCIOUS_DIR:-$STATE_DIR/subconscious}"
@@ -385,7 +383,7 @@ run_pi() {
         # resident socket used by Attention.
         extensions: (([
           "footer", "handoff", "identity", "imp", "stuff", "subscriber",
-          "tiamat", "web", "worklist", "zip", "wake"
+          "tiamat", "web", "scheduler", "zip"
         ] | map($ext + "/" + .)) + $pluginExts + $extraExts | unique)
       }
       | .defaultProvider //= $provider
@@ -971,7 +969,7 @@ inbox_enqueue() {
   request="$(jq -cn \
     --argjson priority "$priority" --arg type "$type" --arg summary "$summary" \
     --arg body "$body" --arg source "$source" --arg deadline "$deadline" \
-    '{op:"worklist.enqueue",args:{priority:$priority,type:$type,summary:$summary,body:$body,source:$source}
+    '{op:"schedule.enqueue",args:{priority:$priority,type:$type,summary:$summary,body:$body,source:$source}
      + (if $deadline == "" then {} else {suggested_deadline:($deadline|tonumber)} end)}')" || return 1
   if ! response="$(printf '%s\n' "$request" | nc -N -U "$FAMILIAR_SERVICES_SOCKET")"; then
     echo "worklist-add: familiar-services unavailable at $FAMILIAR_SERVICES_SOCKET" >&2

@@ -133,6 +133,20 @@ describe("settlement relay", () => {
     await relay.stop();
   });
 
+  test("settlement keeps the dispatching session as its scheduler target", async () => {
+    const prior = process.env.FAMILIAR_INSTANCE_ID;
+    process.env.FAMILIAR_INSTANCE_ID = "dispatch-session";
+    const { client, jobs } = fakeClient();
+    const { sink, seen } = fakeSink();
+    jobs.set("addressed", settled("addressed"));
+    const relay = new SettlementRelay({ client, stateDir: newDir(), resolveSink: () => sink });
+    await relay.recordDispatch("addressed");
+    expect(seen.get("golem-settle-addressed")?.origin).toBe("dispatch-session");
+    expect(seen.get("golem-settle-addressed")?.target).toBe("instance:dispatch-session");
+    await relay.stop();
+    if (prior === undefined) delete process.env.FAMILIAR_INSTANCE_ID; else process.env.FAMILIAR_INSTANCE_ID = prior;
+  });
+
   test("no historical unrelated-job flood: only owned jobs surface", async () => {
     const { client, jobs, push } = fakeClient();
     const { sink, seen } = fakeSink();

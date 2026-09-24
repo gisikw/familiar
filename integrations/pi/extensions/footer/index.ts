@@ -8,7 +8,7 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
  * familiar (the working directory is always the familiar tract). This footer
  * replaces it entirely:
  *
- *   line 1:  (provider) model • thinking              right: DND status
+ *   line 1:  (provider) model • thinking
  *   line 2:  ↑↓ R W CH $ · ttft/tok/s · context%      right: provider usage
  *
  * Semantics that differ from the built-in totals:
@@ -26,8 +26,6 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
  *     restart starts every model cold.
  *
  * Data sources:
- *   - "familiar:dnd" events from the worklist extension (the single source
- *     of truth for Do Not Disturb state).
  *   - "familiar:provider-usage" events from the tiamat extension (rate-limit
  *     windows; empty for routes that don't expose them).
  *   - /footer toggles back to pi's built-in footer.
@@ -58,7 +56,6 @@ function fmtTokens(count: number): string {
 export default function (pi: ExtensionAPI) {
   let ctxRef: ExtensionContext | undefined;
   let activeTui: { requestRender: (all?: boolean) => void } | undefined;
-  let attentionText: string | undefined;
   let providerUsage: { text: string; tone: string } | undefined;
   // Speed samples keyed by provider/model id — per-model forecasts, not a
   // convo-wide average (a glm switch after gemini turns shouldn't look fast).
@@ -122,12 +119,6 @@ export default function (pi: ExtensionAPI) {
     turnStart = 0;
     firstDelta = 0;
     lastDelta = 0;
-    refresh();
-  });
-
-  pi.events.on("familiar:dnd", (data: unknown) => {
-    const ev = data as { text?: unknown };
-    attentionText = typeof ev?.text === "string" && ev.text ? ev.text : undefined;
     refresh();
   });
 
@@ -229,7 +220,7 @@ export default function (pi: ExtensionAPI) {
             return truncateToWidth(left + padding + truncatedRight, width);
           };
 
-          const modelLine = join(theme.fg("dim", modelLeft), attentionText ? theme.fg("accent", attentionText) : undefined);
+          const modelLine = theme.fg("dim", modelLeft);
           const usageLine = join(usageLeft, providerUsage ? theme.fg(providerUsage.tone, providerUsage.text) : undefined);
           return [modelLine, usageLine];
         },

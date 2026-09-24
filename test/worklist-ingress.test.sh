@@ -17,8 +17,8 @@ id=$(FAMILIAR_SHELL=pi FAMILIAR_SERVICES_SOCKET="$SOCKET" \
 wait "$server"
 
 [ "$id" = cli-test ] || { echo "bad returned id" >&2; exit 1; }
-[ "$(jq -r .op "$REQUEST")" = worklist.enqueue ] || { echo "bad operation" >&2; exit 1; }
+[ "$(jq -r .op "$REQUEST")" = schedule.enqueue ] || { echo "bad operation" >&2; exit 1; }
 [ "$(jq -r .args.body "$REQUEST")" = "secret body" ] || { echo "bad envelope" >&2; exit 1; }
 # M2 has no file fallback or dual-write.
 [ "$(find "$TMP" -type f | wc -l)" -eq 1 ] || { echo "unexpected state file" >&2; exit 1; }
-echo "worklist shell socket ingress: ok"
+echo "scheduler shell socket ingress: ok"

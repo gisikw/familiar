@@ -8,7 +8,6 @@ The entries below predate `rewrite` (confirmed with rename-aware diffs and `git 
 |---|---|---|---|
 | `README.md:29` | Public GitHub account/repository URL (`gisikw`) | This is the functional clone URL for the already-public repository, not private infrastructure. | Replace with the final organization URL if ownership changes. |
 | `apps/desktop/package.json:14` | Reverse-domain app identifier containing `gisi` | Changing `appId` can change signing/update identity and installed application data behavior. | Plan an explicit desktop application-ID migration. |
-| `integrations/pi/extensions/worklist/index.ts:639,651`; `integrations/pi/extensions/worklist/policy.ts:135` | Personal first name in user-facing/policy language | Functional conversational policy/config explicitly excluded from this scrub. | Make the operator display name configurable and use a neutral fallback. |
 | `integrations/pi/extensions/web/index.ts:96,106` | Generic tailnet terminology and CGNAT classification | This is functional private-network request filtering, not a specific tailnet/topology. | Rename comments to generic overlay-network terminology without changing address classification. |
 
 ## Scrub summary

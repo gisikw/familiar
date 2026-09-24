@@ -34,13 +34,12 @@ try {
     "handoff",
     "identity",
     "imp",
+    "scheduler",
     "stuff",
     "subscriber",
     "tiamat",
     "timegap",
-    "wake",
     "web",
-    "worklist",
     "zip",
   ]
     .map((name) =>

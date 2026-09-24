@@ -5,7 +5,7 @@ administration CLI. Familiar adds it to `PATH` only in the process environment
 used to launch its resident Pi, so Pi's model-callable Bash children inherit it.
 A normal shell and the other Familiar service shells do not.
 
-Run `imp --help`, then `imp attn --help`, for progressive command discovery.
+Run `imp --help`, then `imp attn --help` or `imp schedule --help`, for command discovery.
 Human-readable output is concise and bounded; every command accepts `--json`.
 Commands which take prose accept a lone `-` in place of their prose option and
 read stdin. Attention prose is limited to 64 KiB.
@@ -51,7 +51,25 @@ read stdin (≤ 64 KiB). `note add` carries no author; the resident records it a
 Kes. Enumerations (`lane`, `owner`, `policy`, `edge`, evidence `kind`, agent
 `state`) are checked locally before any request, and the resident re-validates.
 
-## Private resident contract
+## Scheduler
+
+The scheduler commands connect directly to `FAMILIAR_SERVICES_SOCKET` (default
+`/run/familiar-services/familiar.sock`). `imp` copies its inherited
+`FAMILIAR_INSTANCE_ID` into every request as `origin`; callers never provide an
+origin themselves. Future and due-now events share the same model:
+
+```sh
+imp schedule --in 30m 'check deployment'
+imp schedule --at 2026-10-01T09:00:00Z --target instance:SESSION 'follow up'
+imp schedule list
+imp schedule cancel EVENT_ID
+imp notify --id stable-settlement-id 'job finished'
+imp dnd on 30m
+imp dnd status
+imp dnd off
+```
+
+## Private Attention resident contract
 
 `imp` connects only to the absolute Unix socket named by `FAMILIAR_IMP_SOCKET`; there is no
 endpoint discovery and no network transport. The socket and its immediate

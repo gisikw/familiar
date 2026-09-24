@@ -341,7 +341,8 @@ export class SettlementRelay {
 
   private async serviceEnqueue(env: DurableEnqueueEnvelope): Promise<boolean> {
     try {
-      await serviceCall("worklist.enqueue", env as unknown as Record<string, unknown>, this.d.serviceSocket);
+      const origin = env.origin || process.env.FAMILIAR_INSTANCE_ID;
+      await serviceCall("schedule.enqueue", { ...env, ...(origin && !env.target ? { origin, target: `instance:${origin}` } : {}) } as unknown as Record<string, unknown>, this.d.serviceSocket);
       return true;
     } catch (err) {
       this.log({ relay: "service.enqueue", err: String(err) });
@@ -349,11 +350,11 @@ export class SettlementRelay {
     }
   }
 
-  private async serviceItem(op: "worklist.ack" | "worklist.withdraw", id: string): Promise<boolean> {
-    try { await serviceCall(op, { id }, this.d.serviceSocket); return true; }
+  private async serviceItem(id: string): Promise<boolean> {
+    try { await serviceCall("schedule.cancel", { id }, this.d.serviceSocket); return true; }
     catch (err) {
       if ((err as { code?: string }).code === "not_found") return true;
-      this.log({ relay: `service.${op}`, id, err: String(err) });
+      this.log({ relay: "service.schedule.cancel", id, err: String(err) });
       return false;
     }
   }
@@ -365,7 +366,7 @@ export class SettlementRelay {
     if (!jobId) return;
     this.ensureDirs();
     if (!this.isOwned(jobId)) {
-      writeAtomic(this.ownedFile(jobId), { id: jobId, ts: this.d.now!() });
+      writeAtomic(this.ownedFile(jobId), { id: jobId, ts: this.d.now!(), origin: process.env.FAMILIAR_INSTANCE_ID });
     }
     // Best-effort immediate reconcile; a normal (still-running) job is a no-op.
     // Serialized on the shared chain (force: runs even before start()) so it
@@ -405,7 +406,7 @@ export class SettlementRelay {
     // surface. Idempotent; a no-op when no live marker exists.
     await this.withdrawBlockedIfLive(jobId);
     if (!isTerminal(state)) return; // still running — nothing to settle yet
-    writeAtomic(this.pendingFile(jobId), buildEnvelope(jobId, job));
+    writeAtomic(this.pendingFile(jobId), this.address(jobId, buildEnvelope(jobId, job)));
     await this.flushOne(jobId);
   }
 
@@ -471,13 +472,18 @@ export class SettlementRelay {
     if (existing?.itemId && existing.itemId !== itemId) {
       await this.withdrawItem(existing.itemId);
     }
-    const env = buildBlockedEnvelope(jobId, job);
+    const env = this.address(jobId, buildBlockedEnvelope(jobId, job));
     if (await this.flushBlocked(itemId, env)) {
       writeAtomic(markerFile, { jobId, itemId, ts: this.d.now!() });
     }
   }
 
-  /** Hand one blocked-question envelope to the worklist. Same two-channel
+  private address(jobId: string, env: DurableEnqueueEnvelope): DurableEnqueueEnvelope {
+    const origin = readJSON<{ origin?: string }>(this.ownedFile(jobId))?.origin;
+    return origin ? { ...env, origin, target: `instance:${origin}` } : env;
+  }
+
+  /** Hand one blocked-question envelope to the scheduler. Same two-channel
    * policy as settlements: in-process sink first, else the service socket. */
   private async flushBlocked(itemId: string, env: DurableEnqueueEnvelope): Promise<boolean> {
     const sink = this.d.resolveSink();
@@ -523,7 +529,7 @@ export class SettlementRelay {
       try { await sink.withdraw(itemId); handled = true; }
       catch (err) { this.log({ relay: "withdrawItem.sinkError", itemId, err: String(err) }); }
     }
-    if (!handled) await this.serviceItem("worklist.withdraw", itemId);
+    if (!handled) await this.serviceItem(itemId);
   }
 
   /** Acknowledge a terminal response explicitly opened by the foreground.
@@ -547,7 +553,7 @@ export class SettlementRelay {
           this.log({ relay: "acknowledgeSettlement.sinkError", jobId, err: String(err) });
         }
       }
-      if (!handled) await this.serviceItem("worklist.ack", itemId);
+      if (!handled) await this.serviceItem(itemId);
     }, true);
   }
 
