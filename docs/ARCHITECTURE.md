@@ -246,7 +246,7 @@ pi-owned session state
 └── tool calls and results
 
 Familiar-owned continuity state
-├── identity and canon
+├── identity
 ├── handoffs and continuity metadata
 ├── subconscious reminders (curated at /clear, unread by the running agent)
 ├── Familiar configuration
@@ -303,7 +303,6 @@ services/
 packages/
   client-protocol/         # client ↔ Interface Gateway schema
   config/                  # shared configuration model
-  continuity/              # Familiar-owned canon/handoff persistence
   ui/                      # shared web/UI assets, when useful
 
 integrations/

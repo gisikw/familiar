@@ -2,7 +2,7 @@
 
 ## Scope decision
 
-Built only `client-protocol`, `config`, and `continuity`. `packages/ui` was intentionally not created: `docs/ARCHITECTURE.md` says boundaries should appear only when they receive owned code, and the current gateway/desktop assets do not yet constitute a shared UI library.
+Built only `client-protocol` and `config`. `packages/ui` was intentionally not created: `docs/ARCHITECTURE.md` says boundaries should appear only when they receive owned code, and the current gateway/desktop assets do not yet constitute a shared UI library.
 
 ## `@familiar/client-protocol`
 
@@ -22,16 +22,6 @@ This package formalizes `docs/CONFIG.md`, `familiar.toml.example`, and the curre
 
 Later migration: make `familiar.sh`/the supervisor consume the package (or a small Bun config command) and compare its flattened snapshot against the Nix loader in tests before retiring that loader. Preserve existing explicit-ambient provenance and upstream aliases (`PI_*`, `ANTHROPIC_*`, etc.) in the integration layer; they are process-launch policy, not canonical config fields.
 
-## `@familiar/continuity`
-
-This separates Familiar-owned state from pi session files. It formalizes:
-
-- encrypted Markdown canon currently read by `integrations/pi/extensions/identity/index.ts` from root `identity/`;
-- Markdown handoff archives currently written/read by `integrations/pi/extensions/handoff/index.ts` under `FAMILIAR_HANDOFF_PATH`;
-- the atomic per-record pattern in `integrations/pi/extensions/worklist/store.ts` (strengthened to file fsync + rename + directory fsync).
-
-Records are JSON with Markdown bodies under `canon/`, `handoffs/`, and per-device/client `preferences/`. Filename-safe IDs prevent traversal. Direct reads report malformed state; list operations isolate it. The `ContinuityStore` interface is storage-neutral for a future DB implementation. Presence should later adapt decrypted identity Markdown and existing handoff `.md` archives into these models; encryption/key handling remains outside this package. Pi transcripts remain untouched.
-
 ## Verification
 
-Each package has an independent Bun package, lockfile, strict no-emit TypeScript config, Bun/Nix development flake, README, and tests. Tests cover malformed protocol/config/state, config mode/redaction/env precedence, all continuity record round trips, traversal rejection, corruption isolation, and a deterministic crash before atomic rename proving the prior record remains complete.
+Each package has an independent Bun package, lockfile, strict no-emit TypeScript config, Bun/Nix development flake, README, and tests. Tests cover malformed protocol/config/state and config mode/redaction/env precedence.
