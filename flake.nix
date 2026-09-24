@@ -80,7 +80,7 @@
         };
         # Small CLI surface available both to resident Pi tool execution and to
         # foreground development shells. Keep language runtimes out of this set.
-        residentCliTools = [ impPackage ] ++ (with pkgs; [ jq ripgrep fd ]);
+        residentCliTools = [ impPackage ] ++ (with pkgs; [ jq ripgrep fd netcat-openbsd ]);
         piShell = pkgs.mkShell (modelEnv // {
           FAMILIAR_SHELL = "pi";
           # familiar.sh still adds this immediately before launching resident

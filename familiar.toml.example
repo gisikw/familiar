@@ -27,9 +27,7 @@ skip_version_check = 1
 [familiar]
 # identity_path = "./identity"
 # handoff_prompt_path = "./state/handoff-prompt.md"
-# worklist_dir = "./state/worklist" # canonical queue path
-# wake_dir = "./state/wakes"         # durable scheduled wakes
-# inbox_dir = "./state/worklist"    # bounded compatibility alias (one release)
+# services_socket = "/run/familiar-services/familiar.sock"
 # log_path = "./state/log.jsonl"
 # tts_voices_source = "./voices/kokoro"
 # model_dir = "./models" # relative paths are anchored at this file

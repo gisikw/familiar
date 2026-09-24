@@ -82,23 +82,14 @@ ATTENTION policy — it NEVER calls `pi.sendMessage`. If no worklist channel is
 available the built envelope is retained and retried; delivery is never forced
 past attention.
 
-**Two delivery channels (fast path + durable fallback).** First choice is the
+**Two delivery channels (fast path + socket fallback).** First choice is the
 neutral in-process `worklist.durable-sink@1` capability (`WORKLIST_SINK`),
-resolved lazily so worklist/agents loader order is irrelevant. But pi's
-extension loader can hand this *external contrib plugin* and the *built-in
-worklist extension* SEPARATE module instances, so the process-local capability
-registry singleton does not always cross that boundary and `resolveSink()` can
-stay `undefined` even though worklist is loaded and its dirs exist. When the
-sink is unresolvable (or throws), the relay falls back to worklist's OFFICIAL
-out-of-process durable drop-box (`PROTOCOL.md` §Enqueue paths (b)): it
-atomically writes the same stable-id envelope to
-`$FAMILIAR_WORKLIST_DIR/incoming/<safe-id>.json`, which worklist drains on its
-timer and dedupes on the stable id. A successful atomic rename IS durable
-acceptance — only then does the relay write its tombstone and clear
-pending/owned. The drop-box filename is derived from our sanitized job id
-(independent of any untrusted id); the envelope's stable `id` field remains
-authoritative for worklist's dedup. An explicit `{accepted:false}` from a *real*
-sink is honoured (retain) rather than shadow-written behind the sink's back.
+resolved lazily so worklist/agents loader order is irrelevant. Pi can isolate
+module instances, so the relay falls back to the authoritative
+`familiar-services` Unix socket when that capability is unavailable. Both paths
+use the same stable ID and service-owned deduplication. There is no worklist file
+fallback or dual-writing. An explicit `{accepted:false}` from a real sink is
+honoured rather than shadow-submitted behind its back.
 
 The item's stable id is `golem-settle-<sanitized job id>` so replay is
 idempotent. Priority is P1 for a non-success settlement and P2 for `done`. The
@@ -118,10 +109,9 @@ in source: a cursor, per-job `owned/`, `pending/` (retriable envelope), and
 `done/` (tombstone) — all atomic temp+rename. Exactly-once is best-effort across
 replay/restart via three layers: the sink dedupes on the stable id, a local
 tombstone skips already-relayed jobs, and a durable pending envelope survives
-restart and sink outages. The drop-box fallback shares the same guarantee: the
-atomic incoming write happens BEFORE the tombstone, so a crash in between simply
-replays the same stable id — harmless whether the file is still queued or already
-drained, because worklist dedups against its live+archive history. The cursor is only an optimization; on start, on every
+restart and service outages. Socket enqueue completes before the tombstone, so
+a crash in between simply replays the same stable ID and service deduplication
+makes it harmless. The cursor is only an optimization; on start, on every
 periodic maintenance tick (20s), and after repeated SSE failures the relay
 reconciles every owned-unsettled job so an event missed below the cursor (or a
 very fast job that settles around dispatch registration) still settles. The
@@ -133,9 +123,9 @@ chain, so the same pending envelope is never concurrently submitted to the sink.
 
 **Not covered (by design).** This client exposes no `await`/claim tool, so there
 is no await-race to dedup against — the relay does not call `sink.withdraw()` or
-simulate a partial claim protocol. If neither the in-process sink nor a valid
-worklist drop-box dir (`FAMILIAR_WORKLIST_DIR`) is available, the settlement is
-retained as pending and retried. If the durable state directory is wiped, the
+simulate a partial claim protocol. If neither the in-process sink nor the
+service socket is available, the settlement is retained as pending and retried.
+If the durable state directory is wiped, the
 ownership marker for an in-flight job is lost and that settlement will not be
 relayed (ownership is the anti-flood contract). The relay is disabled if no
 state directory can be derived; the tools remain fully functional.

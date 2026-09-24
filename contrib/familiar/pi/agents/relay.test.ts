@@ -504,27 +504,4 @@ describe("blocked-question relay", () => {
     await relay.stop();
   });
 
-  test("drop-box fallback: blocked drop written when sink absent, removed on unblock", async () => {
-    const dropboxDir = newDir(); // stands in for $FAMILIAR_WORKLIST_DIR/incoming
-    const stateDir = newDir();
-    const { client, jobs } = fakeClient();
-    jobs.set("b", blocked("b"));
-    const relay = new SettlementRelay({ client, stateDir, resolveSink: () => undefined, dropboxDir, backoffMs: 1, tickMs: 15 });
-    await relay.recordDispatch("b");
-    await relay.start();
-    const itemId = blockedItemId("b", jobs.get("b")!.question!);
-    const dropFile = path.join(dropboxDir, `golem-blocked-${safeJobId(itemId)}.json`);
-    expect(existsSync(dropFile)).toBe(true);
-    const env = JSON.parse(readFileSync(dropFile, "utf8")) as DurableEnqueueEnvelope;
-    expect(env.id).toBe(itemId);
-    expect(env.type).toBe("question");
-    expect(env.priority).toBe(0);
-    // Live marker written even on the drop-box path.
-    expect(existsSync(path.join(stateDir, "blocked", "b.json"))).toBe(true);
-    // Job leaves blocked → the undrained drop is removed.
-    jobs.set("b", { id: "b", state: "running" });
-    await tick(70);
-    await relay.stop();
-    expect(existsSync(dropFile)).toBe(false);
-  });
 });

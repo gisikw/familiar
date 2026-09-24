@@ -231,14 +231,15 @@ set -e
 [ "$status" -ne 0 ] || fail "ordinary launch accepted malformed TOML"
 [[ $err == *'startup refused'* && $err != *DO_NOT_PRINT_RECOVERY_SECRET* ]] || fail "ordinary launch failure policy"
 mkdir -p "$TMP/bin"
-cat >"$TMP/bin/jq" <<'SH'
+cat >"$TMP/bin/nc" <<'SH'
 #!/usr/bin/env bash
-printf '%s\n' '{"placeholder":true}'
+cat >/dev/null
+printf '%s\n' '{"ok":true,"result":{"item":{"id":"cli-recovery"},"created":true}}'
 SH
-chmod +x "$TMP/bin/jq"
+chmod +x "$TMP/bin/nc"
 out=$(env -i PATH="$TMP/bin:$PATH" HOME="${HOME:-/tmp}" FAMILIAR_CONFIG_PATH="$CONFIG" \
-  FAMILIAR_WORKLIST_DIR="$TMP/recovery-worklist" "$REPO/familiar.sh" worklist-add --summary placeholder 2>"$TMP/recovery.err")
-[[ $out == cli-* ]] || fail "worklist recovery verb unavailable"
+  FAMILIAR_SERVICES_SOCKET="$TMP/recovery.sock" "$REPO/familiar.sh" worklist-add --summary placeholder 2>"$TMP/recovery.err")
+[[ $out == cli-recovery ]] || fail "worklist recovery verb unavailable"
 [[ $(<"$TMP/recovery.err") == *"continuing 'worklist-add'"* ]] || fail "recovery warning missing"
 
  echo "familiar config tests: ok"

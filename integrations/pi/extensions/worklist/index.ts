@@ -1,70 +1,24 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import * as path from "node:path";
-import { fileURLToPath } from "node:url";
 import { errorLog } from "../lib/debug.ts";
 import {
-  DEFAULT_CONFIG,
-  decideAction,
-  dndActive,
-  makeDnd,
-  parseWhen,
-  parseDurationMs,
-  isPending,
-  isLive,
-  resolveTier,
-  shouldEscalate,
-  type DndActor,
-  type DndState,
-  type Priority,
-  type QueueItem,
+  DEFAULT_CONFIG, decideAction, dndActive, parseWhen, parseDurationMs, isPending, isLive,
+  resolveTier, shouldEscalate, type DndActor, type DndState, type Priority, type QueueItem,
 } from "./policy.ts";
+import { WorklistClient, type EnqueueEnvelope } from "./store.ts";
 import {
-  acknowledgeItem,
-  archiveItem,
-  drainAcknowledgements,
-  drainIncoming,
-  ensureDirs,
-  enqueueEnvelopeIdempotent,
-  getArchivedItem,
-  getItem,
-  worklistPaths,
-  listItems,
-  putItem,
-  readDnd,
-  writeDnd,
-  type EnqueueEnvelope,
-} from "./store.ts";
-import {
-  registry,
-  WORKLIST_SINK,
-  WORKLIST_SINK_VERSION,
-  type DurableSink,
-  type DurableEnqueueEnvelope,
-  type DurableAcceptance,
+  registry, WORKLIST_SINK, WORKLIST_SINK_VERSION,
+  type DurableSink, type DurableEnqueueEnvelope, type DurableAcceptance,
 } from "../lib/capabilities.ts";
 
-/* Durable synthetic-turn queue. Real user input never passes through this
- * extension and is therefore always delivered immediately, including in DND. */
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const REPO = path.dirname(path.dirname(HERE));
-const WORKLIST_ROOT = process.env.FAMILIAR_WORKLIST_DIR || process.env.FAMILIAR_INBOX_DIR || path.join(REPO, "state", "worklist");
-const LEGACY_ROOT = path.join(REPO, "state", "inbox");
 const TICK_MS = 15_000;
 const CFG = DEFAULT_CONFIG;
 const PRI_LABEL = (p: Priority) => `P${p}`;
-
-/**
- * Fixed process-global seam for same-process UIs. Pi's extension loader may
- * isolate module instances, so this cannot use the module-local capability
- * registry. The worklist remains the only state owner: callers can read the
- * bounded projection and ask for the user toggle (30m on, immediate off).
- */
 export const DND_SERVICE_SYMBOL = Symbol.for("familiar.worklist.dnd.v1");
 export const DND_CHANGED_EVENT = "familiar:worklist-dnd-changed";
 export interface DndService {
-  read(): { enabled: false } | { enabled: true; expiresAt: number };
-  set(enabled: boolean): { enabled: false } | { enabled: true; expiresAt: number };
+  read(): Promise<{ enabled: false } | { enabled: true; expiresAt: number }>;
+  set(enabled: boolean): Promise<{ enabled: false } | { enabled: true; expiresAt: number }>;
 }
 type ProcessGlobals = Record<PropertyKey, unknown>;
 const processGlobals = process as unknown as ProcessGlobals;
@@ -85,8 +39,9 @@ function remainStr(ms: number): string {
 export { parseWhen, parseDurationMs } from "./policy.ts";
 
 export default function (pi: ExtensionAPI) {
-  const P = worklistPaths(WORKLIST_ROOT);
+  const client = new WorklistClient();
   let dnd: DndState | null = null;
+  let items: QueueItem[] = [];
   let agentBusy = false;
   let idleSince = Date.now();
   let ctxRef: ExtensionContext | undefined;
@@ -94,39 +49,26 @@ export default function (pi: ExtensionAPI) {
   let sinkDisposer: (() => void) | undefined;
   let dndServiceDisposer: (() => void) | undefined;
   let lastDigestReminderAt = 0;
-  const tombstones = new Set<string>();
+  let ticking = false;
+  let unavailableNotified = false;
+  const local = new Map<string, Partial<QueueItem>>();
 
-  const guard = (fn: () => void) => { try { fn(); } catch (err) { errorLog("worklist", { handlerError: String(err) }); } };
+  const merged = (item: QueueItem): QueueItem => ({ ...item, ...local.get(item.id) });
+  const pending = () => items.map(merged).filter(isPending);
   const idleForMs = () => agentBusy ? 0 : Date.now() - idleSince;
   const active = (now = Date.now()) => dndActive(dnd, now);
-
-  const announceFreshWork = (items: QueueItem[]) => {
-    if (!items.length) return;
-    pi.events.emit("familiar:fresh-input", { source: "worklist", at: Math.max(...items.map((item) => item.ts)) });
-  };
-
-  /** Expiry is checked at every policy boundary, not delegated to the timer.
-   * Whichever boundary observes it (tick, seam read, restart, before_agent_start)
-   * must project the same invalidation, or a racing UI read would silently
-   * consume the only expiry edge and leave every other listener stale. */
-  const expireIfElapsed = (now = Date.now()) => {
-    if (dnd && !dndActive(dnd, now)) {
-      dnd = null;
-      writeDnd(P, null);
-      render();
-      announceDndChanged();
-      return true;
+  const report = (error: unknown) => {
+    errorLog("worklist", { serviceError: String(error) });
+    if (ctxRef?.hasUI && !unavailableNotified) {
+      unavailableNotified = true;
+      ctxRef.ui.notify(String(error), "error");
     }
-    return false;
   };
-  const dndView = (now = Date.now()): ReturnType<DndService["read"]> => {
-    expireIfElapsed(now);
-    return dnd && dndActive(dnd, now)
-      ? { enabled: true, expiresAt: dnd.expiresAt }
-      : { enabled: false };
+  const patch = (item: QueueItem, changes: Partial<QueueItem>) => {
+    Object.assign(item, changes);
+    local.set(item.id, { ...local.get(item.id), ...changes });
   };
-  const announceDndChanged = () => pi.events.emit(DND_CHANGED_EVENT, dndView());
-
+  const announceDndChanged = () => pi.events.emit(DND_CHANGED_EVENT, active() && dnd ? { enabled: true, expiresAt: dnd.expiresAt } : { enabled: false });
   const render = () => {
     if (!ctxRef?.hasUI) return;
     const now = Date.now();
@@ -134,312 +76,164 @@ export default function (pi: ExtensionAPI) {
     const text = enabled && dnd ? `● DND ${remainStr(dnd.expiresAt - now)}` : "○ DND off";
     ctxRef.ui.setStatus("dnd", text);
     pi.events.emit("familiar:dnd", { text, enabled, expiresAt: enabled ? dnd?.expiresAt : undefined });
-    const pending = listItems(P).filter(isPending);
-    if (!pending.length) return ctxRef.ui.setWidget("worklist", undefined);
-    const top = pending.reduce<Priority>((p, item) => item.priority < p ? item.priority : p, 3);
-    ctxRef.ui.setWidget("worklist", [enabled ? `📋 ${pending.length} queued (${PRI_LABEL(top)}) · DND` : `📋 ${pending.length} (${PRI_LABEL(top)})`]);
+    const live = pending();
+    if (!live.length) return ctxRef.ui.setWidget("worklist", undefined);
+    const top = live.reduce<Priority>((p, item) => item.priority < p ? item.priority : p, 3);
+    ctxRef.ui.setWidget("worklist", [enabled ? `📋 ${live.length} queued (${PRI_LABEL(top)}) · DND` : `📋 ${live.length} (${PRI_LABEL(top)})`]);
   };
-
-  const resolveAck = (item: QueueItem) => {
-    item.delivered = true;
-    item.acked = true;
-    putItem(P, item);
-    archiveItem(P, item.id);
+  const refresh = async () => {
+    const [nextItems, nextDnd] = await Promise.all([client.list(), client.getDnd()]);
+    items = nextItems;
+    dnd = nextDnd;
+    unavailableNotified = false;
   };
-  const deliverBody = (item: QueueItem, steer: boolean) => {
+  const resolveAck = async (item: QueueItem) => {
+    await client.ack(item.id);
+    items = items.filter((value) => value.id !== item.id);
+    local.delete(item.id);
+  };
+  const deliverBody = async (item: QueueItem, steer: boolean) => {
     pi.sendMessage({
       customType: "worklist-item",
       content: `<worklist-item id="${item.id}" type="${item.type}" priority="${PRI_LABEL(item.priority)}" source="${item.source}">\n${item.body || item.summary}\n</worklist-item>`,
       display: true,
     }, steer ? { deliverAs: "steer", triggerTurn: true } : { deliverAs: "followUp" });
-    resolveAck(item);
+    await resolveAck(item);
   };
-  const deliverDigest = (items: QueueItem[]) => {
-    const lines = items.map((item) => `  • ${PRI_LABEL(item.priority)} ${item.summary} — agent: ack_worklist id="${item.id}"; user: /ack ${item.id}`);
-    pi.sendMessage({ customType: "worklist-digest", content: `<worklist-digest count="${items.length}">\n${lines.join("\n")}\n</worklist-digest>`, display: true }, { deliverAs: "followUp" });
+  const deliverDigest = (digest: QueueItem[]) => {
+    const lines = digest.map((item) => `  • ${PRI_LABEL(item.priority)} ${item.summary} — agent: ack_worklist id="${item.id}"; user: /ack ${item.id}`);
+    pi.sendMessage({ customType: "worklist-digest", content: `<worklist-digest count="${digest.length}">\n${lines.join("\n")}\n</worklist-digest>`, display: true }, { deliverAs: "followUp" });
     const now = Date.now();
-    for (const item of items) {
-      item.digested = true;
-      item.digestedAt ??= now;
-      putItem(P, item);
-    }
+    for (const item of digest) patch(item, { digested: true, digestedAt: item.digestedAt ?? now });
   };
 
-  /** At most one turn-triggering delivery per tick prevents an expiry herd. */
-  const tick = () => {
-    ensureDirs(P, LEGACY_ROOT);
-    const created = drainIncoming(P);
-    announceFreshWork(created);
-    const acknowledged = drainAcknowledgements(P);
-    const now = Date.now();
-    const elapsed = expireIfElapsed(now);
-    const isDnd = active(now);
-    let bodyDeliveries = 0;
-    const digest: QueueItem[] = [];
-    const items = listItems(P).filter(isPending).sort((a, b) => a.priority - b.priority || a.ts - b.ts);
-    let dirty = !!(created.length || acknowledged.length || elapsed);
-
-    for (const item of items) {
-      if (shouldEscalate(item, now)) { item.escalated = true; putItem(P, item); dirty = true; }
-      if (item.digested && typeof item.digestedAt !== "number") { item.digestedAt = now; putItem(P, item); dirty = true; }
-      const action = decideAction(item, { dnd: isDnd, now, idleForMs: idleForMs() }, CFG);
-      if ((action === "deliver-steer" || action === "deliver-wait") && bodyDeliveries < CFG.maxDeliveriesPerTick) {
-        deliverBody(item, true);
-        bodyDeliveries++;
-        dirty = true;
-      } else if (action === "digest" && bodyDeliveries === 0) {
-        digest.push(item);
+  /** Polling replaces the old file watcher/drain. At most one body delivery per pass. */
+  const tick = async () => {
+    if (ticking) return;
+    ticking = true;
+    try {
+      await refresh();
+      const now = Date.now();
+      let bodyDeliveries = 0;
+      const digest: QueueItem[] = [];
+      for (const item of pending().sort((a, b) => a.priority - b.priority || a.ts - b.ts)) {
+        if (shouldEscalate(item, now)) patch(item, { escalated: true });
+        if (item.digested && typeof item.digestedAt !== "number") patch(item, { digestedAt: now });
+        const action = decideAction(item, { dnd: active(now), now, idleForMs: idleForMs() }, CFG);
+        if ((action === "deliver-steer" || action === "deliver-wait") && bodyDeliveries < CFG.maxDeliveriesPerTick) {
+          await deliverBody(item, true);
+          bodyDeliveries++;
+        } else if (action === "digest" && bodyDeliveries === 0) digest.push(item);
       }
-    }
-    if (digest.length) { deliverDigest(digest); dirty = true; }
-    if (dirty || ctxRef?.hasUI) render();
+      if (digest.length) deliverDigest(digest);
+      render();
+    } catch (error) { report(error); }
+    finally { ticking = false; }
   };
-  const tickGuarded = () => guard(tick);
 
-  const enqueue = (env: EnqueueEnvelope): QueueItem => {
-    ensureDirs(P, LEGACY_ROOT);
-    const result = enqueueEnvelopeIdempotent(P, env);
-    if (result.created) { announceFreshWork([result.item]); render(); }
+  const enqueue = async (env: EnqueueEnvelope): Promise<QueueItem> => {
+    const result = await client.enqueue(env);
+    if (result.created) pi.events.emit("familiar:fresh-input", { source: "worklist", at: result.item.ts });
+    await refresh();
+    render();
     return result.item;
   };
-
   const sink: DurableSink = {
     async enqueue(env: DurableEnqueueEnvelope): Promise<DurableAcceptance> {
-      ensureDirs(P, LEGACY_ROOT);
-      if (env.id && tombstones.has(env.id)) return { accepted: false, superseded: true, id: env.id, reason: "withdrawn before enqueue" };
-      const result = enqueueEnvelopeIdempotent(P, {
-        id: env.id, priority: env.priority, type: (env.type as QueueItem["type"]) ?? "notify",
-        summary: env.summary, body: env.body, source: env.source ?? "subagent",
-        ...(typeof env.suggested_deadline === "number" ? { suggested_deadline: env.suggested_deadline } : {}),
-      });
-      if (result.created) { announceFreshWork([result.item]); render(); }
+      const result = await client.enqueue({ ...env, type: (env.type as QueueItem["type"]) ?? "notify", source: env.source ?? "subagent" });
+      if (result.created) pi.events.emit("familiar:fresh-input", { source: "worklist", at: result.item.ts });
+      await refresh(); render();
       return { accepted: true, id: result.item.id };
     },
-    async acknowledge(id: string) { tombstones.add(id); const ok = acknowledgeItem(P, id); render(); return ok; },
+    async acknowledge(id: string) {
+      try { await client.ack(id); await refresh(); render(); return true; }
+      catch (error) { if ((error as { code?: string }).code === "not_found") return true; throw error; }
+    },
     async withdraw(id: string) {
-      tombstones.add(id);
-      const item = getItem(P, id);
-      if (!item) {
-        const archived = getArchivedItem(P, id);
-        return !archived || archived.withdrawn === true || !(archived.delivered || archived.acked);
-      }
-      if (item.delivered || item.acked) return false;
-      item.withdrawn = true; putItem(P, item); archiveItem(P, id); render(); return true;
+      try { await client.withdraw(id); await refresh(); render(); return true; }
+      catch (error) { if ((error as { code?: string }).code === "not_found") return true; if ((error as { code?: string }).code === "conflict") return false; throw error; }
     },
   };
+  sinkDisposer = registry.register<DurableSink>(WORKLIST_SINK, WORKLIST_SINK_VERSION, sink);
+  pi.events.on("worklist:add", (env: unknown) => { void enqueue(env as EnqueueEnvelope).catch(report); });
+  pi.events.on("inbox:add", (env: unknown) => { void enqueue(env as EnqueueEnvelope).catch(report); });
 
-  try { ensureDirs(P, LEGACY_ROOT); sinkDisposer = registry.register<DurableSink>(WORKLIST_SINK, WORKLIST_SINK_VERSION, sink); }
-  catch (err) { errorLog("worklist", { storageDisabled: String(err) }); }
-  pi.events.on("worklist:add", (env: unknown) => guard(() => enqueue(env as EnqueueEnvelope)));
-  pi.events.on("inbox:add", (env: unknown) => guard(() => enqueue(env as EnqueueEnvelope)));
-
-  /** Shared authoritative state operation for user command and Familiar tool. */
-  const setDnd = (actor: DndActor, durationMs?: number, now = Date.now()) => {
-    const next = makeDnd(actor, durationMs, now, CFG);
-    if (!next) return null;
-    dnd = next;
-    writeDnd(P, dnd);
-    render();
-    announceDndChanged();
-    return next;
+  const setDnd = async (actor: DndActor, durationMs?: number) => {
+    dnd = await client.setDnd(true, actor, durationMs);
+    render(); announceDndChanged();
+    return dnd;
   };
-  const clearDnd = () => {
-    dnd = null;
-    writeDnd(P, null);
-    render();
-    announceDndChanged();
+  const clearDnd = async () => {
+    await client.setDnd(false, "familiar");
+    dnd = null; render(); announceDndChanged();
   };
-
   const dndService: DndService = {
-    read: () => dndView(),
-    set(enabled) {
+    async read() { dnd = await client.getDnd(); render(); return active() && dnd ? { enabled: true, expiresAt: dnd.expiresAt } : { enabled: false }; },
+    async set(enabled) {
       if (typeof enabled !== "boolean") throw Object.assign(new Error("enabled must be boolean"), { code: "invalid_request" });
-      if (!enabled) {
-        clearDnd();
-        return { enabled: false };
-      }
-      const next = setDnd("user");
+      if (!enabled) { await clearDnd(); return { enabled: false }; }
+      const next = await setDnd("user");
       if (!next) throw Object.assign(new Error("DND unavailable"), { code: "unavailable" });
       return { enabled: true, expiresAt: next.expiresAt };
     },
   };
   const publishDndService = () => {
     processGlobals[DND_SERVICE_SYMBOL] = dndService;
-    dndServiceDisposer = () => {
-      if (processGlobals[DND_SERVICE_SYMBOL] === dndService) delete processGlobals[DND_SERVICE_SYMBOL];
-    };
+    dndServiceDisposer = () => { if (processGlobals[DND_SERVICE_SYMBOL] === dndService) delete processGlobals[DND_SERVICE_SYMBOL]; };
   };
 
-  pi.registerCommand("peek", {
-    description: "Show queued synthetic work without delivering or acknowledging it",
-    handler: async (_args, ctx) => {
-      const items = listItems(P).filter(isPending).sort((a, b) => a.priority - b.priority || a.ts - b.ts);
-      if (!items.length) return ctx.ui.notify("📋 worklist empty", "info");
-      const rows = items.map((item) => `${PRI_LABEL(item.priority)} [${item.type}] ${item.id}  ${ageStr(item.ts)}  ${resolveTier(item, CFG)}\n    ${item.summary}`);
-      ctx.ui.notify(`📋 worklist (${items.length}${active() ? ", DND" : ""})\n${rows.join("\n")}`, "info");
-    },
-  });
-  pi.registerCommand("ack", {
-    description: "Acknowledge queued work and show its full body. /ack [id|all]",
-    handler: async (args, ctx) => {
-      const arg = args.trim();
-      const pending = listItems(P).filter(isPending);
-      const targets = !arg || arg === "all" ? pending : pending.filter((item) => item.id === arg);
-      if (!targets.length) return ctx.ui.notify(arg ? `no pending item "${arg}"` : "📋 nothing to ack", "warning");
-      for (const item of targets) deliverBody(item, false);
-      render();
-      ctx.ui.notify(`📋 acked ${targets.length} item(s)`, "info");
-    },
-  });
-  pi.registerCommand("remind", {
-    description: "Queue a reminder. /remind <text> [--at <time>|--in <duration>]",
-    handler: async (args, ctx) => {
-      const raw = args.trim();
-      if (!raw) return ctx.ui.notify("usage: /remind <text> [--in 30m | --at 15:00]", "warning");
-      let text = raw; let deadline: number | undefined;
-      const match = raw.match(/\s--(in|at)\s+(.+)$/);
-      if (match) { text = raw.slice(0, match.index).trim(); deadline = parseWhen(match[2]); }
-      const item = enqueue({ priority: 2, type: "notify", summary: text, body: text, source: "remind", ...(deadline ? { suggested_deadline: deadline } : {}) });
-      ctx.ui.notify(`📋 reminder queued (${item.id})`, "info");
-    },
-  });
-
-  pi.registerCommand("snooze", {
-    description: "Keep one queued item quiet for a duration. /snooze <id> <duration>",
-    handler: async (args, ctx) => {
-      const [id, spec] = args.trim().split(/\s+/);
-      if (!id || !spec) return ctx.ui.notify("usage: /snooze <id> <duration e.g. 30m>", "warning");
-      const queued = getItem(P, id);
-      if (!queued) return ctx.ui.notify(`no item "${id}"`, "warning");
-      const until = parseWhen(spec);
-      if (!until || until <= Date.now()) return ctx.ui.notify(`bad duration "${spec}"`, "warning");
-      queued.snoozedUntil = until;
-      putItem(P, queued);
-      render();
-      ctx.ui.notify(`📋 snoozed ${id} until ${new Date(until).toLocaleTimeString()}`, "info");
-    },
-  });
-
+  pi.registerCommand("peek", { description: "Show queued synthetic work without delivering or acknowledging it", handler: async (_args, ctx) => {
+    try { await refresh(); const live = pending().sort((a, b) => a.priority - b.priority || a.ts - b.ts); if (!live.length) return ctx.ui.notify("📋 worklist empty", "info");
+      ctx.ui.notify(`📋 worklist (${live.length}${active() ? ", DND" : ""})\n${live.map((item) => `${PRI_LABEL(item.priority)} [${item.type}] ${item.id}  ${ageStr(item.ts)}  ${resolveTier(item, CFG)}\n    ${item.summary}`).join("\n")}`, "info");
+    } catch (error) { ctx.ui.notify(String(error), "error"); }
+  }});
+  pi.registerCommand("ack", { description: "Acknowledge queued work and show its full body. /ack [id|all]", handler: async (args, ctx) => {
+    try { await refresh(); const arg = args.trim(); const targets = !arg || arg === "all" ? pending() : pending().filter((item) => item.id === arg); if (!targets.length) return ctx.ui.notify(arg ? `no pending item "${arg}"` : "📋 nothing to ack", "warning");
+      for (const item of targets) await deliverBody(item, false); render(); ctx.ui.notify(`📋 acked ${targets.length} item(s)`, "info");
+    } catch (error) { ctx.ui.notify(String(error), "error"); }
+  }});
+  pi.registerCommand("remind", { description: "Queue a reminder. /remind <text> [--at <time>|--in <duration>]", handler: async (args, ctx) => {
+    const raw = args.trim(); if (!raw) return ctx.ui.notify("usage: /remind <text> [--in 30m | --at 15:00]", "warning");
+    let text = raw; let deadline: number | undefined; const match = raw.match(/\s--(in|at)\s+(.+)$/); if (match) { text = raw.slice(0, match.index).trim(); deadline = parseWhen(match[2]); }
+    try { const item = await enqueue({ priority: 2, type: "notify", summary: text, body: text, source: "remind", ...(deadline ? { suggested_deadline: deadline } : {}) }); ctx.ui.notify(`📋 reminder queued (${item.id})`, "info"); }
+    catch (error) { ctx.ui.notify(String(error), "error"); }
+  }});
+  pi.registerCommand("snooze", { description: "Keep one queued item quiet for a duration. /snooze <id> <duration>", handler: async (args, ctx) => {
+    const [id, spec] = args.trim().split(/\s+/); if (!id || !spec) return ctx.ui.notify("usage: /snooze <id> <duration e.g. 30m>", "warning");
+    try { await refresh(); const queued = pending().find((item) => item.id === id); if (!queued) return ctx.ui.notify(`no item "${id}"`, "warning"); const until = parseWhen(spec); if (!until || until <= Date.now()) return ctx.ui.notify(`bad duration "${spec}"`, "warning"); patch(queued, { snoozedUntil: until }); render(); ctx.ui.notify(`📋 snoozed ${id} until ${new Date(until).toLocaleTimeString()}`, "info"); }
+    catch (error) { ctx.ui.notify(String(error), "error"); }
+  }});
   const DURATION_HINTS = ["15m", "30m", "1h", "2h"];
-  pi.registerCommand("dnd", {
-    description: "Toggle Do Not Disturb. /dnd [off|duration] (default: 30m)",
-    getArgumentCompletions: (prefix) => {
-      const options = ["off", ...DURATION_HINTS].filter((value) => value.startsWith(prefix)).map((value) => ({ value, label: value }));
-      return options.length ? options : null;
-    },
-    handler: async (args, ctx) => {
-      const spec = args.trim().toLowerCase();
-      if (spec === "off" || spec === "clear" || (!spec && active())) {
-        clearDnd(); ctx.ui.notify("Do Not Disturb off", "info"); return;
-      }
-      const duration = spec ? parseDurationMs(spec) : undefined;
-      if (spec && duration === undefined) return ctx.ui.notify(`bad duration "${spec}"`, "warning");
-      const state = setDnd("user", duration);
-      if (!state) return ctx.ui.notify("duration must be greater than zero", "warning");
-      ctx.ui.notify(`Do Not Disturb on until ${new Date(state.expiresAt).toLocaleTimeString()}`, "info");
-    },
-  });
+  pi.registerCommand("dnd", { description: "Toggle Do Not Disturb. /dnd [off|duration] (default: 30m)", getArgumentCompletions: (prefix) => { const options = ["off", ...DURATION_HINTS].filter((v) => v.startsWith(prefix)).map((value) => ({ value, label: value })); return options.length ? options : null; }, handler: async (args, ctx) => {
+    try { const spec = args.trim().toLowerCase(); if (spec === "off" || spec === "clear" || (!spec && active())) { await clearDnd(); ctx.ui.notify("Do Not Disturb off", "info"); return; }
+      const duration = spec ? parseDurationMs(spec) : undefined; if (spec && duration === undefined) return ctx.ui.notify(`bad duration "${spec}"`, "warning"); const state = await setDnd("user", duration); if (!state) return ctx.ui.notify("duration must be greater than zero", "warning"); ctx.ui.notify(`Do Not Disturb on until ${new Date(state.expiresAt).toLocaleTimeString()}`, "info");
+    } catch (error) { ctx.ui.notify(String(error), "error"); }
+  }});
 
-  // Keep the established tool name so existing calls do not break; its public
-  // schema and copy expose only the single DND toggle. Legacy level arguments
-  // are accepted inside execute for a bounded compatibility migration.
-  pi.registerTool({
-    name: "set_attention",
-    label: "Set Do Not Disturb",
-    description: "Turn Do Not Disturb on or off. While on, user messages still arrive normally; synthetic turns, settlements, and reminders remain durably queued until clear or expiry. It defaults to 30 minutes. You may request a duration up to two hours and may clear it immediately.",
-    promptSnippet: "Toggle Do Not Disturb for synthetic turns; user messages are never delayed",
-    promptGuidelines: ["Use Do Not Disturb only when an uninterrupted conversation is explicitly useful. Clearing it resumes paced delivery of durable queued work."],
-    parameters: Type.Object({
-      enabled: Type.Boolean({ description: "true to enable Do Not Disturb; false to clear it immediately" }),
-      duration_minutes: Type.Optional(Type.Number({ description: "Optional duration when enabling; defaults to 30 minutes and is capped at 120 minutes", minimum: 0 })),
-    }),
-    async execute(_id, params: { enabled?: boolean; duration_minutes?: number; level?: string }) {
-      const result = (details: Record<string, unknown>, isError = false) => ({ content: [{ type: "text" as const, text: JSON.stringify(details) }], details, ...(isError ? { isError: true } : {}) });
-      // Old auto/available permitted ordinary delivery, so both map to off;
-      // old focused/protected suppression maps to the one DND mode.
-      const enabled = typeof params.enabled === "boolean"
-        ? params.enabled
-        : params.level === "auto" || params.level === "available"
-          ? false
-          : params.level === "focused" || params.level === "protected"
-            ? true
-            : undefined;
-      if (enabled === false) { clearDnd(); return result({ ok: true, enabled: false }); }
-      if (enabled !== true) return result({ ok: false, error: "enabled must be true or false" }, true);
-      const requested = params.duration_minutes === undefined ? undefined : params.duration_minutes * 60_000;
-      const state = setDnd("familiar", requested);
-      if (!state) return result({ ok: false, error: "duration_minutes must be greater than zero" }, true);
-      return result({ ok: true, enabled: true, expires_at: new Date(state.expiresAt).toISOString(), minutes: Math.round((state.expiresAt - Date.now()) / 60_000) });
-    },
-  });
+  pi.registerTool({ name: "set_attention", label: "Set Do Not Disturb", description: "Turn Do Not Disturb on or off. While on, user messages still arrive normally; synthetic turns, settlements, and reminders remain durably queued until clear or expiry. It defaults to 30 minutes. You may request a duration up to two hours and may clear it immediately.", promptSnippet: "Toggle Do Not Disturb for synthetic turns; user messages are never delayed", promptGuidelines: ["Use Do Not Disturb only when an uninterrupted conversation is explicitly useful. Clearing it resumes paced delivery of durable queued work."], parameters: Type.Object({ enabled: Type.Boolean(), duration_minutes: Type.Optional(Type.Number({ minimum: 0 })) }), async execute(_id, params: { enabled?: boolean; duration_minutes?: number; level?: string }) {
+    const result = (details: Record<string, unknown>, isError = false) => ({ content: [{ type: "text" as const, text: JSON.stringify(details) }], details, ...(isError ? { isError: true } : {}) });
+    const enabled = typeof params.enabled === "boolean" ? params.enabled : params.level === "auto" || params.level === "available" ? false : params.level === "focused" || params.level === "protected" ? true : undefined;
+    try { if (enabled === false) { await clearDnd(); return result({ ok: true, enabled: false }); } if (enabled !== true) return result({ ok: false, error: "enabled must be true or false" }, true); const state = await setDnd("familiar", params.duration_minutes === undefined ? undefined : params.duration_minutes * 60_000); if (!state) return result({ ok: false, error: "duration_minutes must be greater than zero" }, true); return result({ ok: true, enabled: true, expires_at: new Date(state.expiresAt).toISOString(), minutes: Math.round((state.expiresAt - Date.now()) / 60_000) }); }
+    catch (error) { return result({ ok: false, error: String(error) }, true); }
+  }});
+  pi.registerTool({ name: "ack_worklist", label: "Acknowledge Worklist Item", description: "Read and acknowledge queued synthetic work. Returns each full body inline and archives it without duplicate injection.", promptSnippet: "Read and resolve queued worklist items", parameters: Type.Object({ id: Type.Optional(Type.String()) }), async execute(_id, params: { id?: string }) {
+    try { await refresh(); const arg = (params.id ?? "").trim(); const targets = !arg || arg === "all" ? pending() : pending().filter((item) => item.id === arg); const acked = []; for (const item of targets) { await resolveAck(item); acked.push({ id: item.id, priority: PRI_LABEL(item.priority), type: item.type, source: item.source, summary: item.summary, body: item.body || item.summary }); } if (acked.length) render(); const details = arg && arg !== "all" && !acked.length ? { ok: false, error: `no pending worklist item "${arg}"`, acked: [] } : { ok: true, count: acked.length, acked }; return { content: [{ type: "text" as const, text: JSON.stringify(details) }], details, ...(details.ok ? {} : { isError: true }) }; }
+    catch (error) { const details = { ok: false, error: String(error), acked: [] }; return { content: [{ type: "text" as const, text: JSON.stringify(details) }], details, isError: true }; }
+  }});
 
-  pi.registerTool({
-    name: "ack_worklist", label: "Acknowledge Worklist Item",
-    description: "Read and acknowledge queued synthetic work. Returns each full body inline and archives it without duplicate injection.",
-    promptSnippet: "Read and resolve queued worklist items",
-    parameters: Type.Object({ id: Type.Optional(Type.String({ description: "Item id, or all/omitted for every pending item" })) }),
-    async execute(_id, params: { id?: string }) {
-      const arg = (params.id ?? "").trim();
-      const pending = listItems(P).filter(isPending);
-      const targets = !arg || arg === "all" ? pending : pending.filter((item) => item.id === arg);
-      const acked = targets.map((item) => { resolveAck(item); return { id: item.id, priority: PRI_LABEL(item.priority), type: item.type, source: item.source, summary: item.summary, body: item.body || item.summary }; });
-      if (acked.length) render();
-      const details = arg && arg !== "all" && !acked.length ? { ok: false, error: `no pending worklist item "${arg}"`, acked: [] } : { ok: true, count: acked.length, acked };
-      return { content: [{ type: "text" as const, text: JSON.stringify(details) }], details, ...(details.ok ? {} : { isError: true }) };
-    },
-  });
-
-  // User activity is deliberately not a DND lease: observing a real turn must
-  // neither delay that turn nor extend/clear the explicit wall-clock state.
-  pi.on("input", async () => { guard(render); });
-  pi.on("agent_start", async () => { agentBusy = true; guard(render); });
-  pi.on("agent_settled", async () => {
-    agentBusy = false;
-    idleSince = Date.now();
-    guard(render);
-    tickGuarded();
-  });
-
+  pi.on("input", async () => render());
+  pi.on("agent_start", async () => { agentBusy = true; render(); });
+  pi.on("agent_settled", async () => { agentBusy = false; idleSince = Date.now(); render(); await tick(); });
   pi.on("before_agent_start", async () => {
-    const now = Date.now();
-    expireIfElapsed(now);
-    if (active(now)) return; // no synthetic prefix may hitchhike on a fresh user turn
-    const live = listItems(P).filter(isPending);
-    const nudges = live.filter((item) => decideAction(item, { dnd: false, now, idleForMs: idleForMs() }, CFG) === "nudge");
-    const owed = now - lastDigestReminderAt >= CFG.digestReminderMs ? live.filter((item) => isLive(item, now) && item.digested && !item.acked) : [];
-    if (!nudges.length && !owed.length) return;
-    for (const item of nudges) { item.surfacedCount = (item.surfacedCount ?? 0) + 1; putItem(P, item); }
-    const lines = nudges.map((item) => `📋 worklist: ${item.summary} — call ack_worklist id="${item.id}" for details`);
-    if (owed.length) { lastDigestReminderAt = now; lines.push(`📋 ${owed.length} queued item(s) still need acknowledgement: ${owed.map((item) => item.id).join(", ")}`); }
-    return { message: { customType: "worklist-nudge", content: `<system-reminder>\n${lines.join("\n")}\n</system-reminder>`, display: false } };
+    try { await refresh(); const now = Date.now(); if (active(now)) return; const live = pending(); const nudges = live.filter((item) => decideAction(item, { dnd: false, now, idleForMs: idleForMs() }, CFG) === "nudge"); const owed = now - lastDigestReminderAt >= CFG.digestReminderMs ? live.filter((item) => isLive(item, now) && item.digested && !item.acked) : []; if (!nudges.length && !owed.length) return; for (const item of nudges) patch(item, { surfacedCount: (item.surfacedCount ?? 0) + 1 }); const lines = nudges.map((item) => `📋 worklist: ${item.summary} — call ack_worklist id="${item.id}" for details`); if (owed.length) { lastDigestReminderAt = now; lines.push(`📋 ${owed.length} queued item(s) still need acknowledgement: ${owed.map((item) => item.id).join(", ")}`); } return { message: { customType: "worklist-nudge", content: `<system-reminder>\n${lines.join("\n")}\n</system-reminder>`, display: false } }; }
+    catch (error) { report(error); return; }
   });
-
   pi.on("session_start", async (_event, ctx) => {
-    ctxRef = ctx;
-    guard(() => {
-      ensureDirs(P, LEGACY_ROOT);
-      dnd = readDnd(P);
-      expireIfElapsed();
-      if (!dndServiceDisposer) publishDndService();
-      agentBusy = false; idleSince = Date.now();
-      announceFreshWork(listItems(P).filter(isPending));
-      render();
-      announceDndChanged();
-      if (!sinkDisposer) sinkDisposer = registry.register<DurableSink>(WORKLIST_SINK, WORKLIST_SINK_VERSION, sink);
-    });
-    if (timer) clearInterval(timer);
-    timer = setInterval(tickGuarded, TICK_MS);
-    tickGuarded();
+    ctxRef = ctx; if (!dndServiceDisposer) publishDndService(); agentBusy = false; idleSince = Date.now(); if (!sinkDisposer) sinkDisposer = registry.register(WORKLIST_SINK, WORKLIST_SINK_VERSION, sink);
+    try { await refresh(); render(); announceDndChanged(); } catch (error) { report(error); }
+    if (timer) clearInterval(timer); timer = setInterval(() => { void tick(); }, TICK_MS); void tick();
   });
-  pi.on("session_shutdown", async () => {
-    if (timer) clearInterval(timer);
-    timer = undefined;
-    sinkDisposer?.();
-    sinkDisposer = undefined;
-    dndServiceDisposer?.();
-    dndServiceDisposer = undefined;
-  });
-
+  pi.on("session_shutdown", async () => { if (timer) clearInterval(timer); timer = undefined; sinkDisposer?.(); sinkDisposer = undefined; dndServiceDisposer?.(); dndServiceDisposer = undefined; });
   return { enqueue, sink, tick, setDnd, clearDnd, isDnd: active };
 }
 

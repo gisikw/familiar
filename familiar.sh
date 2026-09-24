@@ -74,12 +74,9 @@ fi
 # Defaults (lowest precedence)
 if [ -n "${FAMILIAR_IDENTITY_PATH:-}" ]; then export FAMILIAR_IDENTITY_PATH="$(resolve_config_path "$FAMILIAR_IDENTITY_PATH")"; fi
 if [ -n "${FAMILIAR_HANDOFF_PROMPT_PATH:-}" ]; then export FAMILIAR_HANDOFF_PROMPT_PATH="$(resolve_config_path "$FAMILIAR_HANDOFF_PROMPT_PATH")"; fi
-# Worklist durable queue. FAMILIAR_WORKLIST_DIR is canonical; FAMILIAR_INBOX_DIR
-# is a bounded compatibility alias (one release) so a mid-flight external writer
-# does not silently drop items.
-export FAMILIAR_WORKLIST_DIR="${FAMILIAR_WORKLIST_DIR:-${FAMILIAR_INBOX_DIR:-$STATE_DIR/worklist}}"
-export FAMILIAR_WORKLIST_DIR="$(resolve_config_path "$FAMILIAR_WORKLIST_DIR")"
-if [ -n "${FAMILIAR_INBOX_DIR:-}" ]; then export FAMILIAR_INBOX_DIR="$(resolve_config_path "$FAMILIAR_INBOX_DIR")"; fi
+# familiar-services is the sole owner of worklist, DND, and wake state.
+export FAMILIAR_SERVICES_SOCKET="${FAMILIAR_SERVICES_SOCKET:-/run/familiar-services/familiar.sock}"
+export FAMILIAR_SERVICES_SOCKET="$(resolve_config_path "$FAMILIAR_SERVICES_SOCKET")"
 export FAMILIAR_LOG_PATH="${FAMILIAR_LOG_PATH:-$STATE_DIR/log.jsonl}"
 export FAMILIAR_LOG_PATH="$(resolve_config_path "$FAMILIAR_LOG_PATH")"
 export FAMILIAR_SUBSCRIBER_PORT="${FAMILIAR_SUBSCRIBER_PORT:-1692}"
@@ -948,11 +945,7 @@ stop() {
   "$FAMILIAR_PRESENCE_CTL" stop || true
 }
 
-# Out-of-process enqueue (protocol path b): write an atomic envelope into the
-# worklist drop-box. The worklist extension drains state/worklist/incoming/ on
-# its timer and promotes each envelope into a queue item. This is a marker-file
-# pattern: no daemon or socket, just a file the resident process picks up.
-# Envelope schema is documented in integrations/pi/extensions/worklist/PROTOCOL.md.
+# Out-of-process enqueue through the authoritative familiar-services socket.
 #   familiar.sh worklist-add --summary "..." [--priority N] [--type notify|question|review]
 #                            [--body TEXT | --body-file F] [--source S] [--deadline EPOCH_MS]
 inbox_enqueue() {
@@ -974,33 +967,21 @@ inbox_enqueue() {
     echo "worklist-add: --summary is required" >&2; return 2
   fi
   [ -z "$body" ] && body="$summary"
-  local incoming="$FAMILIAR_WORKLIST_DIR/incoming"
-  # Settlement/reminder bodies may be sensitive. Tighten existing owned paths
-  # as well as creating new ones; do not rely on the caller's umask.
-  install -d -m 700 "$FAMILIAR_WORKLIST_DIR" "$incoming"
-  chmod 700 "$FAMILIAR_WORKLIST_DIR" "$incoming"
-  local id file tmp
-  id="cli-$(date +%Y%m%d-%H%M%S)-$RANDOM"
-  file="$incoming/$id.json"
-  # mktemp requires trailing Xs on BSD/macOS as well as GNU implementations.
-  tmp="$(umask 077; mktemp "$incoming/.${id}.tmp.XXXXXX")" || return 1
-  if ! (umask 077; jq -n \
-    --argjson priority "$priority" \
-    --arg type "$type" \
-    --arg summary "$summary" \
-    --arg body "$body" \
-    --arg source "$source" \
-    --arg deadline "$deadline" \
-    '{priority: $priority, type: $type, summary: $summary, body: $body, source: $source}
-     + (if $deadline == "" then {} else {suggested_deadline: ($deadline|tonumber)} end)' \
-    > "$tmp"); then
-    rm -f "$tmp"
+  local request response
+  request="$(jq -cn \
+    --argjson priority "$priority" --arg type "$type" --arg summary "$summary" \
+    --arg body "$body" --arg source "$source" --arg deadline "$deadline" \
+    '{op:"worklist.enqueue",args:{priority:$priority,type:$type,summary:$summary,body:$body,source:$source}
+     + (if $deadline == "" then {} else {suggested_deadline:($deadline|tonumber)} end)}')" || return 1
+  if ! response="$(printf '%s\n' "$request" | nc -N -U "$FAMILIAR_SERVICES_SOCKET")"; then
+    echo "worklist-add: familiar-services unavailable at $FAMILIAR_SERVICES_SOCKET" >&2
     return 1
   fi
-  chmod 600 "$tmp"
-  mv -f "$tmp" "$file"   # atomic: the extension only ever sees a whole file
-  chmod 600 "$file"
-  echo "$id"
+  if ! printf '%s' "$response" | jq -e '.ok == true' >/dev/null 2>&1; then
+    echo "worklist-add: $(printf '%s' "$response" | jq -r '.error.message // "invalid familiar-services response"')" >&2
+    return 1
+  fi
+  printf '%s' "$response" | jq -r '.result.item.id'
 }
 
 run_tests() {
@@ -1135,7 +1116,7 @@ config_check() {
   fi
   if [ "${2:-}" = --paths ]; then
     [ "$CONFIG_LOAD_FAILED" -eq 0 ] || { echo 'familiar: familiar.toml validation failed (contents suppressed)' >&2; return 1; }
-    printf '%s\n' "config_dir=$CONFIG_DIR" "identity=$FAMILIAR_IDENTITY_PATH" "handoff_prompt=${FAMILIAR_HANDOFF_PROMPT_PATH:-}" "worklist=$FAMILIAR_WORKLIST_DIR" "inbox=${FAMILIAR_INBOX_DIR:-}" "log=$FAMILIAR_LOG_PATH" "voices=${FAMILIAR_TTS_VOICES_SOURCE:-}" "model=$FAMILIAR_MODEL_DIR" "artifact=${FAMILIAR_ARTIFACT_DIR:-}" "subagent=${FAMILIAR_SUBAGENT_DIR:-}" "sessions=${FAMILIAR_SUBAGENT_SESSION_DIR:-}" "pi=$PI_CODING_AGENT_DIR" "presence=$FAMILIAR_PRESENCE_STATE_DIR"
+    printf '%s\n' "config_dir=$CONFIG_DIR" "identity=$FAMILIAR_IDENTITY_PATH" "handoff_prompt=${FAMILIAR_HANDOFF_PROMPT_PATH:-}" "services_socket=$FAMILIAR_SERVICES_SOCKET" "log=$FAMILIAR_LOG_PATH" "voices=${FAMILIAR_TTS_VOICES_SOURCE:-}" "model=$FAMILIAR_MODEL_DIR" "artifact=${FAMILIAR_ARTIFACT_DIR:-}" "subagent=${FAMILIAR_SUBAGENT_DIR:-}" "sessions=${FAMILIAR_SUBAGENT_SESSION_DIR:-}" "pi=$PI_CODING_AGENT_DIR" "presence=$FAMILIAR_PRESENCE_STATE_DIR"
     return 0
   fi
   if [ "$CONFIG_LOAD_FAILED" -ne 0 ]; then

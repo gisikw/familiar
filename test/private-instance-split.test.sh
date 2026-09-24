@@ -13,8 +13,7 @@ cat >"$CFG" <<'TOML'
 [familiar]
 identity_path = "identity"
 handoff_prompt_path = "memory/prompt.md"
-worklist_dir = "memory/worklist"
-inbox_dir = "memory/inbox"
+services_socket = "runtime/familiar.sock"
 log_path = "memory/log.jsonl"
 tts_voices_source = "voices"
 model_dir = "models"
@@ -30,7 +29,7 @@ chmod 600 "$CFG"
 # about TOML path anchoring, not the intentional environment-override path.
 out=$(cd / && env -u PI_CODING_AGENT_DIR "$REPO/familiar.sh" --config "$CFG" config-check --paths)
 base=$(dirname "$CFG")
-for key in config_dir identity handoff_prompt worklist inbox log voices model artifact subagent sessions pi presence; do
+for key in config_dir identity handoff_prompt services_socket log voices model artifact subagent sessions pi presence; do
   line=$(printf '%s\n' "$out" | grep "^$key=") || fail "missing $key"
   case "$line" in *"$base"*) ;; *) fail "$key was not anchored at config directory";; esac
 done

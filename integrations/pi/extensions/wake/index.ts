@@ -2,42 +2,23 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { formatLocalTime } from "../lib/time.ts";
-import { WakeRuntime } from "./runtime.ts";
-import { wakeStateRoots } from "./store.ts";
+import { WakeClient } from "./store.ts";
 
-// wake: the resident agent's durable alarm clock. Records live outside Pi's
-// session transcript so /reload, /new, Presence respawn, and host reboot do not
-// erase them. Delivery remains in the one interactive Pi process: this
-// extension only arms timers and calls sendMessage from that process.
+// familiar-services owns wake persistence and timers. Due wakes arrive through
+// the ordinary worklist, preserving its DND and pacing policy.
 export default function (pi: ExtensionAPI) {
-  const roots = wakeStateRoots();
-  const runtime = new WakeRuntime(pi, roots.canonical, undefined, roots.legacy);
-
-  // input catches direct browser/TUI/worklist user ingress; agent_start catches
-  // custom worklist settlements that trigger a turn. The scheduling turn's
-  // agent_start precedes the wake tool call and therefore cannot cancel itself.
-  const noteFreshInput = (at?: number) => {
-    try { runtime.freshInput(at); } catch { /* durability retries on next event/start */ }
+  const client = new WakeClient();
+  const noteFreshActivity = async (at = Date.now()) => {
+    try { await client.freshActivity(at); }
+    catch { /* Worklist/service calls surface availability; retry on next activity. */ }
   };
-  pi.on("input", async () => noteFreshInput());
-  pi.on("agent_start", async () => noteFreshInput());
-  // Worklist emits this after durable enqueue/promotion during session_start.
-  // Pi awaits lifecycle handlers sequentially before timers run: whether this
-  // handler runs before or after wake's handler, it cancels the delay-0 overdue
-  // nap before the event loop can deliver it.
+  // The service cancels interruptible wakes when work is enqueued. Direct user
+  // and Pi activity is bridged here because M2 has no wake.fresh-input op.
+  pi.on("input", async () => noteFreshActivity());
+  pi.on("agent_start", async () => noteFreshActivity());
   pi.events.on("familiar:fresh-input", (event: unknown) => {
     const at = (event as { at?: unknown })?.at;
-    if (typeof at === "number") noteFreshInput(at);
-  });
-
-  pi.on("session_start", async (_event, ctx) => {
-    try { runtime.start(); }
-    catch { ctx.ui.notify("wake: durable state unavailable; alarms not restored", "error"); }
-  });
-  pi.on("session_shutdown", async () => {
-    // Timers are session-scoped resources, records are not. The replacement
-    // extension restores them during its next session_start.
-    runtime.stop();
+    void noteFreshActivity(typeof at === "number" ? at : Date.now());
   });
 
   pi.registerTool({
@@ -50,39 +31,17 @@ export default function (pi: ExtensionAPI) {
       "fresh user, settlement, or worklist activity arrives after scheduling; mode 'always' fires " +
       "regardless. Never use blocking sleeps in the live channel; use this instead.",
     promptSnippet: "Durably schedule a future self-wake instead of ever blocking on sleep",
-    promptGuidelines: [
-      "Use wake (normally mode unless_wakened) when something needs checking later and no settlement or worklist event will fire; never run blocking sleeps in the live conversation.",
-    ],
+    promptGuidelines: ["Use wake (normally mode unless_wakened) when something needs checking later and no settlement or worklist event will fire; never run blocking sleeps in the live conversation."],
     parameters: Type.Object({
-      duration_minutes: Type.Number({
-        description: "How long from now the wake should fire, in minutes",
-        minimum: 0.1,
-      }),
-      mode: StringEnum(["unless_wakened", "always"] as const, {
-        description:
-          "'unless_wakened': cancel if fresh user/worklist/settlement activity arrives first. " +
-          "'always': fire regardless of intervening activity.",
-      }),
-      reason: Type.String({
-        description: "Why you scheduled this wake; echoed back so future-you can orient",
-        maxLength: 16_384,
-      }),
+      duration_minutes: Type.Number({ description: "How long from now the wake should fire, in minutes", minimum: 0.1 }),
+      mode: StringEnum(["unless_wakened", "always"] as const, { description: "'unless_wakened': cancel if fresh user/worklist/settlement activity arrives first. 'always': fire regardless of intervening activity." }),
+      reason: Type.String({ description: "Why you scheduled this wake; echoed back so future-you can orient", maxLength: 16_384 }),
     }),
     async execute(_toolCallId, params) {
-      const milliseconds = Math.max(6_000, Math.round(params.duration_minutes * 60_000));
-      const wake = runtime.schedule(params.mode, params.reason, milliseconds);
-      const note = params.mode === "unless_wakened"
-        ? "will be cancelled if fresh activity arrives first"
-        : "will fire regardless of intervening activity";
-      return {
-        content: [{
-          type: "text",
-          text:
-            `Wake ${wake.id} durably scheduled for ${formatLocalTime(new Date(wake.fireAt))} ` +
-            `(${params.mode}: ${note}). End the turn normally; do not wait or poll.`,
-        }],
-        details: wake,
-      };
+      const durationMinutes = Math.max(0.1, params.duration_minutes);
+      const wake = await client.schedule(params.mode, params.reason, durationMinutes);
+      const note = params.mode === "unless_wakened" ? "will be cancelled if fresh activity arrives first" : "will fire regardless of intervening activity";
+      return { content: [{ type: "text", text: `Wake ${wake.id} durably scheduled for ${formatLocalTime(new Date(wake.fireAt))} (${params.mode}: ${note}). End the turn normally; do not wait or poll.` }], details: wake };
     },
   });
 }

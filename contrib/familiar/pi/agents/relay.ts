@@ -15,7 +15,7 @@
  * A fresh instance owns nothing, so replaying since=0 history enqueues nothing;
  * jobs from unrelated clients are never claimed. See README for the semantics.
  *
- * TWO ITEM KINDS (both flow through the same neutral sink + drop-box fallback):
+ * TWO ITEM KINDS (both flow through the same neutral sink + socket fallback):
  *   • TERMINAL SETTLEMENTS — a `golem-settle-<jid>` notify, relayed once the
  *     job reaches a terminal state. Exactly-once (best-effort, three layers):
  *       1. stable worklist item id → the sink dedupes on it.
@@ -36,17 +36,10 @@
  *     re-deliver nor strand it.
  *
  * LOADER ISOLATION FALLBACK: pi's extension loader can hand this external
- * contrib plugin and the built-in worklist extension SEPARATE module instances,
- * so the process-local capability registry singleton does not always cross that
- * boundary and `resolveSink()` can stay undefined indefinitely even when
- * worklist is loaded. When the in-process sink is unresolvable we therefore use
- * worklist's OFFICIAL out-of-process durable drop-box (PROTOCOL.md §Enqueue
- * paths (b)): atomically write the same stable-id envelope to
- * `$FAMILIAR_WORKLIST_DIR/incoming/<safe-id>.json`. Worklist drains it on its
- * timer and dedupes on the stable id against live+archive. A successful atomic
- * rename IS durable acceptance — only then do we write the tombstone and clear
- * pending/owned. This is still never a direct pi.sendMessage; attention is
- * preserved because worklist owns delivery.
+ * contrib plugin and the built-in worklist extension separate module instances.
+ * If the process-local capability does not cross that boundary, the relay sends
+ * the same stable-id envelope directly to familiar-services over its Unix
+ * socket. There is no state-file fallback or dual-writing.
  *
  * Settlements have NO await/claim tool, so there is no await-race to dedup;
  * the sink.withdraw() above is used ONLY for blocked questions (to pull a
@@ -66,6 +59,7 @@ import type {
   DurableEnqueueEnvelope,
   SinkPriority,
 } from "../../../../integrations/pi/extensions/lib/capabilities.ts";
+import { serviceCall } from "../../../../integrations/pi/extensions/lib/familiar-services.ts";
 
 const TERMINAL = new Set(["done", "failed", "cancelled", "timeout"]);
 const isTerminal = (s: unknown): boolean => typeof s === "string" && TERMINAL.has(s);
@@ -114,11 +108,8 @@ export interface RelayDeps {
   stateDir: string;
   /** Lazily resolve the worklist sink from the registry at flush time. */
   resolveSink: () => DurableSink | undefined;
-  /** Worklist's out-of-process drop-box directory ($FAMILIAR_WORKLIST_DIR/
-   *  incoming). Used as the durable cross-loader fallback when resolveSink()
-   *  returns undefined. Must already exist (worklist owns creating its tree);
-   *  an absent/unwritable dir makes the relay retain pending instead. */
-  dropboxDir?: string;
+  /** Socket fallback when the in-process capability is loader-isolated. */
+  serviceSocket?: string;
   now?: () => number;
   log?: (o: unknown) => void;
   /** Periodic tick (cursor persist + pending flush) in ms. */
@@ -348,30 +339,23 @@ export class SettlementRelay {
   private isOwned = (jid: string) => fs.existsSync(this.ownedFile(jid));
   private isDone = (jid: string) => fs.existsSync(this.doneFile(jid));
 
-  /** The worklist drop-box target for a job, or undefined if no valid dropbox
-   *  dir is configured. The filename is derived from OUR sanitized job id
-   *  (independent of any untrusted external id); the envelope's stable `id`
-   *  field remains authoritative for worklist's dedup. */
-  private dropboxFile(jid: string): string | undefined {
-    const dir = this.d.dropboxDir;
-    if (!dir) return undefined;
-    return path.join(dir, `golem-settle-${safeJobId(jid)}.json`);
+  private async serviceEnqueue(env: DurableEnqueueEnvelope): Promise<boolean> {
+    try {
+      await serviceCall("worklist.enqueue", env as unknown as Record<string, unknown>, this.d.serviceSocket);
+      return true;
+    } catch (err) {
+      this.log({ relay: "service.enqueue", err: String(err) });
+      return false;
+    }
   }
 
-  private acknowledgementFile(jid: string): string | undefined {
-    const incoming = this.d.dropboxDir;
-    if (!incoming) return undefined;
-    return path.join(path.dirname(incoming), "acknowledgements", `golem-settle-${safeJobId(jid)}.json`);
-  }
-
-  /** Worklist drop-box target for a BLOCKED question, keyed on the stable item
-   *  id (per block-episode) so a re-block with a new question does not clobber
-   *  a not-yet-drained drop for the prior episode. The envelope's stable `id`
-   *  field remains authoritative for worklist's dedup. */
-  private dropboxFileBlocked(itemId: string): string | undefined {
-    const dir = this.d.dropboxDir;
-    if (!dir) return undefined;
-    return path.join(dir, `golem-blocked-${safeJobId(itemId)}.json`);
+  private async serviceItem(op: "worklist.ack" | "worklist.withdraw", id: string): Promise<boolean> {
+    try { await serviceCall(op, { id }, this.d.serviceSocket); return true; }
+    catch (err) {
+      if ((err as { code?: string }).code === "not_found") return true;
+      this.log({ relay: `service.${op}`, id, err: String(err) });
+      return false;
+    }
   }
 
   /** Record that THIS extension dispatched a job. Idempotent. Immediately
@@ -425,14 +409,8 @@ export class SettlementRelay {
     await this.flushOne(jobId);
   }
 
-  /** Attempt to hand one pending envelope to the worklist. FIRST choice is the
-   *  in-process durable sink (fast path). If it is unresolvable across the
-   *  extension-loader module boundary (or throws), FALL BACK to worklist's
-   *  official out-of-process drop-box: an atomic write of the same stable-id
-   *  envelope to $FAMILIAR_WORKLIST_DIR/incoming. A successful atomic rename is
-   *  durable acceptance. On acceptance (sink or dropbox) write the done
-   *  tombstone and clear pending+owned. If neither is available, RETAIN pending
-   *  for a later retry — NEVER a direct pi.sendMessage relay. */
+  /** Hand one pending envelope to the in-process sink, falling back to the
+   * authoritative service socket across isolated extension loaders. */
   private async flushOne(jobId: string): Promise<void> {
     const env = readJSON<DurableEnqueueEnvelope>(this.pendingFile(jobId));
     if (!env) return;
@@ -449,7 +427,7 @@ export class SettlementRelay {
         acc = await sink.enqueue(env);
       } catch (err) {
         this.log({ relay: "flushOne.enqueueThrew", jobId, err: String(err) });
-        acc = undefined; // fall through to the dropbox fallback below
+        acc = undefined; // fall through to the socket fallback below
       }
       if (acc && (acc.accepted || acc.superseded)) {
         this.commitDone(jobId, { via: "sink", acceptedId: acc.id, superseded: !!acc.superseded });
@@ -457,64 +435,19 @@ export class SettlementRelay {
       }
       if (acc && !acc.accepted && !acc.superseded) {
         // An explicit, durable refusal from a REAL sink (e.g. tombstoned). Do
-        // not shadow-write a dropbox copy behind the sink's back; retain.
+        // not shadow-submit behind the sink's back; retain.
         this.log({ relay: "flushOne.rejected", jobId, reason: acc.reason });
         return;
       }
-      // acc === undefined: sink threw. Try the durable dropbox fallback.
+      // acc === undefined: sink threw. Try the service socket.
     }
-    // Fallback path: worklist's official cross-process/cross-loader drop-box.
-    if (this.writeDropbox(jobId, env)) {
-      this.commitDone(jobId, { via: "dropbox" });
+    // Cross-loader fallback is the same authoritative socket, never state files.
+    if (await this.serviceEnqueue(env)) {
+      this.commitDone(jobId, { via: "service" });
       return;
     }
-    // Neither channel available → retain pending; retried on tick/reconnect.
-    this.log({ relay: "flushOne.retained", jobId, hadSink: !!sink, dropbox: !!this.d.dropboxDir });
-  }
-
-  /** Atomically drop the stable-id envelope into worklist's incoming dir at
-   *  `dest`. Returns true iff a durable file now exists for this envelope (fresh
-   *  write OR an already-present drop for the same stable id — worklist dedups
-   *  either way, so both are "accepted"). Never overwrites a conflicting
-   *  envelope silently: a temp+link lands the file, and an existing same-id drop
-   *  is left intact. Returns false on any I/O failure (absent/unwritable dir) so
-   *  the caller retains the item. */
-  private writeDropboxTo(dest: string, env: DurableEnqueueEnvelope): boolean {
-    try {
-      // If a drop for this exact stable id is already queued (e.g. a prior crash
-      // between the atomic write and the tombstone), it is durable acceptance —
-      // worklist will drain+dedup it. Never accept an unrelated conflicting file.
-      const existing = readJSON<DurableEnqueueEnvelope>(dest);
-      if (existing) return existing.id === env.id;
-
-      const tmp = `${dest}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(env), { mode: 0o600 });
-      try {
-        // Publish without replacement: hard-linking the fully-written temp file
-        // is atomic and fails with EEXIST if another writer won the destination.
-        // Plain rename(2) would silently replace on POSIX, violating the durable
-        // drop-box's no-clobber promise.
-        fs.linkSync(tmp, dest);
-        rm(tmp);
-        return true;
-      } catch (err) {
-        rm(tmp);
-        if ((err as NodeJS.ErrnoException).code === "EEXIST") {
-          return readJSON<DurableEnqueueEnvelope>(dest)?.id === env.id;
-        }
-        throw err;
-      }
-    } catch (err) {
-      this.log({ relay: "writeDropbox.failed", dest, err: String(err) });
-      return false;
-    }
-  }
-
-  /** Drop-box fallback for a terminal settlement (see writeDropboxTo). */
-  private writeDropbox(jobId: string, env: DurableEnqueueEnvelope): boolean {
-    const dest = this.dropboxFile(jobId);
-    if (!dest) return false;
-    return this.writeDropboxTo(dest, env);
+    // Service unavailable → retain pending; retried on tick/reconnect.
+    this.log({ relay: "flushOne.retained", jobId, hadSink: !!sink });
   }
 
   /* --- blocked-question lifecycle -----------------------------------------
@@ -525,7 +458,7 @@ export class SettlementRelay {
    * restarts neither re-deliver nor strand it. */
 
   /** Ensure the current block-episode's question is durably enqueued (sink,
-   *  else drop-box). No-op when the marker already records this same episode.
+   *  else service socket). No-op when the marker already records this episode.
    *  Writes the marker only after a durable acceptance, so a failed flush is
    *  retried on the next reconcile. */
   private async ensureBlocked(jobId: string, job: JobDetail): Promise<void> {
@@ -545,9 +478,7 @@ export class SettlementRelay {
   }
 
   /** Hand one blocked-question envelope to the worklist. Same two-channel
-   *  policy as settlements: in-process sink first, else the official drop-box.
-   *  Returns true iff durably accepted (sink accepted/superseded, or a durable
-   *  drop-box file) so the caller may record the live marker. */
+   * policy as settlements: in-process sink first, else the service socket. */
   private async flushBlocked(itemId: string, env: DurableEnqueueEnvelope): Promise<boolean> {
     const sink = this.d.resolveSink();
     if (sink) {
@@ -556,21 +487,20 @@ export class SettlementRelay {
         acc = await sink.enqueue(env);
       } catch (err) {
         this.log({ relay: "flushBlocked.enqueueThrew", itemId, err: String(err) });
-        acc = undefined; // fall through to the drop-box fallback below
+        acc = undefined; // fall through to the socket fallback below
       }
       if (acc && (acc.accepted || acc.superseded)) return true;
       if (acc && !acc.accepted && !acc.superseded) {
         // An explicit, durable refusal from a REAL sink. Do not shadow-write a
-        // drop-box copy behind the sink's back; retain (no marker) so the next
+        // socket submission behind the sink's back; retain so the next
         // reconcile retries.
         this.log({ relay: "flushBlocked.rejected", itemId, reason: acc.reason });
         return false;
       }
-      // acc === undefined: sink threw. Try the durable drop-box fallback.
+      // acc === undefined: sink threw. Try the service socket.
     }
-    const dest = this.dropboxFileBlocked(itemId);
-    if (dest && this.writeDropboxTo(dest, env)) return true;
-    this.log({ relay: "flushBlocked.retained", itemId, hadSink: !!sink, dropbox: !!this.d.dropboxDir });
+    if (await this.serviceEnqueue(env)) return true;
+    this.log({ relay: "flushBlocked.retained", itemId, hadSink: !!sink });
     return false;
   }
 
@@ -585,21 +515,15 @@ export class SettlementRelay {
     rm(markerFile);
   }
 
-  /** Withdraw one blocked-question item by its stable id. The in-process sink
-   *  is the load-bearing path (it also catches a drop-box drop that worklist has
-   *  since drained into its store). Best-effort: also remove an undrained
-   *  drop-box file so a stale question cannot surface. Never throws. */
+  /** Withdraw one blocked-question item by stable id through the sink or socket. */
   private async withdrawItem(itemId: string): Promise<void> {
     const sink = this.d.resolveSink();
+    let handled = false;
     if (sink) {
-      try {
-        await sink.withdraw(itemId);
-      } catch (err) {
-        this.log({ relay: "withdrawItem.sinkError", itemId, err: String(err) });
-      }
+      try { await sink.withdraw(itemId); handled = true; }
+      catch (err) { this.log({ relay: "withdrawItem.sinkError", itemId, err: String(err) }); }
     }
-    const dest = this.dropboxFileBlocked(itemId);
-    if (dest) rm(dest);
+    if (!handled) await this.serviceItem("worklist.withdraw", itemId);
   }
 
   /** Acknowledge a terminal response explicitly opened by the foreground.
@@ -613,20 +537,17 @@ export class SettlementRelay {
       // Claim locally first, closing races with reconciliation/restart.
       this.commitDone(jobId, { via: "foreground", acknowledged: true });
       const sink = this.d.resolveSink();
+      let handled = false;
       if (sink) {
         try {
           if (sink.acknowledge) await sink.acknowledge(itemId);
           else await sink.withdraw(itemId);
+          handled = true;
         } catch (err) {
           this.log({ relay: "acknowledgeSettlement.sinkError", jobId, err: String(err) });
         }
       }
-      // The durable cross-loader path resolves both an undrained incoming drop
-      // and an item already promoted by worklist. Stable id joins both flows.
-      const incoming = this.dropboxFile(jobId);
-      if (incoming) rm(incoming);
-      const request = this.acknowledgementFile(jobId);
-      if (request) writeAtomic(request, { id: itemId, ts: this.d.now!(), source: "golem-foreground" });
+      if (!handled) await this.serviceItem("worklist.ack", itemId);
     }, true);
   }
 
