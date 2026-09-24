@@ -91,6 +91,7 @@ export default async function tiamat(pi: ExtensionAPI) {
   let appliedCatalog: TiamatCatalogRecord[] = [];
   let pendingRestore: SemanticModel | undefined;
   let startupFallback: { provider: string; id: string } | undefined;
+  let restoreTimer: ReturnType<typeof setTimeout> | undefined;
   const materializer = new TiamatMaterializer(
     pi,
     baseUrl,
@@ -251,7 +252,12 @@ export default async function tiamat(pi: ExtensionAPI) {
     authStopped = false;
   };
 
+  const clearRestoreTimer = () => {
+    if (restoreTimer) clearTimeout(restoreTimer);
+    restoreTimer = undefined;
+  };
   const restorePendingModel = async () => {
+    clearRestoreTimer();
     const restored = pendingRestore;
     const ctx = context;
     if (!restored || !ctx) return;
@@ -273,13 +279,27 @@ export default async function tiamat(pi: ExtensionAPI) {
       return;
     }
     const result = await materializer.activate(restored, false);
-    if (result.ok) pendingRestore = undefined;
-    else
-      logError({
-        restoreModelFailed: result.error,
-        provider: restored.provider,
-        model: restored.modelId,
-      });
+    if (result.ok) {
+      pendingRestore = undefined;
+      return;
+    }
+    // session_start can run while Pi still reports the session busy. That is
+    // independent of catalogue recovery, so waiting only for reconcile() (as
+    // the original repair did) loses forever when the healthy ETag stays the
+    // same. Retry once Pi reaches its idle startup state.
+    if (result.error === "busy") {
+      restoreTimer = setTimeout(() => {
+        restoreTimer = undefined;
+        void restorePendingModel();
+      }, 50);
+      restoreTimer.unref?.();
+      return;
+    }
+    logError({
+      restoreModelFailed: result.error,
+      provider: restored.provider,
+      model: restored.modelId,
+    });
   };
 
   const reconcile = (result: CatalogResult) => {
@@ -366,6 +386,7 @@ export default async function tiamat(pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     context = ctx;
+    clearRestoreTimer();
     pendingRestore = undefined;
     startupFallback = undefined;
     // Migration defense for old semantic entries or catalogues that were
@@ -408,8 +429,10 @@ export default async function tiamat(pi: ExtensionAPI) {
         !selected ||
         selected.provider !== startupFallback.provider ||
         selected.id !== startupFallback.id)
-    )
+    ) {
       pendingRestore = undefined;
+      clearRestoreTimer();
+    }
     materializer.adopt(selected);
     renderUsage();
   });
@@ -425,5 +448,6 @@ export default async function tiamat(pi: ExtensionAPI) {
     context = undefined;
     pendingRestore = undefined;
     startupFallback = undefined;
+    clearRestoreTimer();
   });
 }
