@@ -41,6 +41,7 @@ let
   );
   config = if pluginConfigValid && userConfigValid && familiarConfigValid then rawConfig
     else throw "invalid private configuration schema";
+  deprecatedHandoffPath = config ? familiar && config.familiar ? handoff_path;
   chars = s: builtins.genList (i: builtins.substring i 1 s) (builtins.stringLength s);
   upper = s: builtins.replaceStrings
     (chars "abcdefghijklmnopqrstuvwxyz") (chars "ABCDEFGHIJKLMNOPQRSTUVWXYZ") s;
@@ -61,13 +62,17 @@ let
        else if kind == "list" then builtins.toJSON value
        else throw "unsupported value at ${builtins.concatStringsSep "." path}: ${kind}";
   flatten = path: value:
-    if builtins.isAttrs value then
+    if path == [ "familiar" "handoff_path" ] then []
+    else if builtins.isAttrs value then
       builtins.concatLists (map (key: flatten (path ++ [ key ]) value.${key})
         (builtins.attrNames value))
     else if builtins.length path < 2 then
       throw "top-level key must live under a canonical table; see familiar.toml.example"
     else [ { name = envName path; value = scalar path value; } ];
-  entries = flatten [ ] config;
+  entries = flatten [ ] config ++ (if deprecatedHandoffPath then [{
+    name = "FAMILIAR_CONFIG_DEPRECATED_HANDOFF";
+    value = "1";
+  }] else []);
   names = map (entry: entry.name) entries;
   uniqueNames = builtins.attrNames (builtins.listToAttrs
     (map (name: { inherit name; value = true; }) names));

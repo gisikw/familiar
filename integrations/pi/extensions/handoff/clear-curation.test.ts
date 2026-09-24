@@ -3,9 +3,6 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-// Drive the real handoff extension through a fake pi/ctx. Pi's packages are
-// mocked at the module boundary; retain their real exports because Bun mocks
-// are process-global and the canonical suite later exercises Pi's real loader.
 const piPackageDir = process.env.PI_PACKAGE_DIR;
 if (!piPackageDir) throw new Error("PI_PACKAGE_DIR is required (point it at Familiar's pinned Pi package)");
 const realCodingAgent = await import(path.join(piPackageDir, "dist/index.js"));
@@ -25,14 +22,11 @@ mock.module("typebox", () => ({
 type Handler = (event: any, ctx: any) => Promise<any>;
 
 const roots: string[] = [];
-let handoffDir = "";
 let storeDir = "";
 
 beforeEach(() => {
-  handoffDir = fs.mkdtempSync(path.join(os.tmpdir(), "familiar-handoff-"));
   storeDir = fs.mkdtempSync(path.join(os.tmpdir(), "familiar-subconscious-"));
-  roots.push(handoffDir, storeDir);
-  process.env.FAMILIAR_HANDOFF_PATH = handoffDir;
+  roots.push(storeDir);
   process.env.FAMILIAR_SUBCONSCIOUS_DIR = storeDir;
   process.env.FAMILIAR_DEBUG_LEVEL = "off";
   process.env.FAMILIAR_SUBCONSCIOUS_TIMEOUT_MS = "200";
@@ -50,6 +44,7 @@ const authoredCurve = { turns: [1, 20], hours: [2, 48], chance: [0.05, 0.4] };
 async function harness(options: {
   curation?: (request: any) => Promise<any> | any;
   entries?: any[];
+  sessionReadError?: boolean;
 } = {}) {
   const handlers = new Map<string, Handler[]>();
   const commands = new Map<string, { handler: (args: string, ctx: any) => Promise<void> }>();
@@ -93,7 +88,10 @@ async function harness(options: {
     getSystemPrompt: () => "SYSTEM PROMPT",
     sessionManager: {
       getEntries: () => entries,
-      getBranch: () => entries,
+      getBranch: () => {
+        if (options.sessionReadError) throw new Error("fixture session read failure");
+        return entries;
+      },
       getLeafId: () => "leaf-1",
       getSessionId: () => "session-abcdef12",
     },
@@ -122,13 +120,15 @@ async function harness(options: {
   return {
     pi, ctx, emit, commands, tools, persisted, trace, completions, beforeCompact, model,
     compactRequest: () => compactRequest,
+    finishCompaction: (compaction: any, id = "compaction-deadbeef") => emit("session_compact", {
+      compactionEntry: { type: "compaction", id, ...compaction },
+      willRetry: false,
+    }),
   };
 }
 
-const archiveFiles = () => fs.readdirSync(handoffDir).filter((f) => f.endsWith(".md"));
-
 describe("/clear curates the subconscious from the outgoing context", () => {
-  test("handoff first, then exactly one ephemeral curation, then the compaction — nothing persisted", async () => {
+  test("handoff first, then exactly one ephemeral curation, then the compaction", async () => {
     fs.mkdirSync(storeDir, { recursive: true });
     fs.writeFileSync(path.join(storeDir, "reminders.json"), JSON.stringify({
       version: 2,
@@ -146,8 +146,7 @@ describe("/clear curates the subconscious from the outgoing context", () => {
           "user:Your handoff is written.",
         ]);
         expect(request.messages.at(-1).content[0].text).toContain("r-0000aaaa");
-        expect(archiveFiles()).toHaveLength(1); // the handoff already exists on disk
-        return JSON.stringify({ ops: [{ op: "set", id: "r-0000aaaa", text: "updated fixture", curve: authoredCurve }] });
+        return JSON.stringify({ ops: [{ op: "add", text: "new fixture", curve: authoredCurve }] });
       },
     });
 
@@ -161,20 +160,20 @@ describe("/clear curates the subconscious from the outgoing context", () => {
     expect(h.completions[1].request.systemPrompt).toBe("SYSTEM PROMPT");
     expect(h.completions[1].options.maxTokens).toBe(2048);
 
-    // The compaction Pi will append is the handoff alone; the curation turn
-    // exists nowhere in the session.
     expect(result.compaction.summary).toBe("# Handoff\n\nwhat shipped");
-    expect(result.compaction.details.archive).toBe(path.join(handoffDir, archiveFiles()[0]));
-    expect(JSON.stringify(result)).not.toContain("updated fixture");
+    expect(result.compaction.details).toEqual({ kind: "familiar-handoff", transcriptVisibility: "private" });
+    expect(JSON.stringify(result)).not.toContain("new fixture");
     expect(JSON.stringify(result)).not.toContain("ops");
     expect(h.persisted).toEqual([]);
-    expect(fs.readFileSync(result.compaction.details.archive, "utf8")).toBe("# Handoff\n\nwhat shipped\n");
 
-    // Only the store changed.
     const stored = reminders();
-    expect(stored).toHaveLength(1);
-    expect(stored[0].text).toBe("updated fixture");
-    expect(stored[0].curve).toEqual(authoredCurve);
+    expect(stored).toHaveLength(2);
+    const added = stored.find((reminder: any) => reminder.text === "new fixture");
+    expect(added.curve).toEqual(authoredCurve);
+    expect(added.origin).toEqual({ sessionId: "session-abcdef12", compactionEntryId: null });
+    await h.finishCompaction(result.compaction, "compaction-cafefeed");
+    expect(reminders().find((reminder: any) => reminder.text === "new fixture").origin)
+      .toEqual({ sessionId: "session-abcdef12", compactionEntryId: "compaction-cafefeed" });
 
     // One /clear, one dispatch: a second before_compact for the same trigger does not curate again.
     await h.beforeCompact();
@@ -247,6 +246,36 @@ describe("/clear curates the subconscious from the outgoing context", () => {
     expect(result.compaction.summary).toBe("# Handoff\n\nwhat shipped");
     fs.rmSync(storeDir, { force: true });
     fs.mkdirSync(storeDir);
+  });
+});
+
+describe("orientation reads continuity from the current session branch", () => {
+  test("injects the most recent handoff compaction summary with no handoff directory", async () => {
+    const summary = "# Exact handoff\n\nSession-owned continuity.";
+    const h = await harness({ entries: [{
+      type: "compaction", id: "handoff-1", parentId: null, summary,
+      firstKeptEntryId: "__familiar_zero_tail__",
+      details: { kind: "familiar-handoff", transcriptVisibility: "private" },
+    }] });
+
+    expect(await h.emit("input", { text: "continue" })).toEqual({ action: "handled" });
+    const orientation = h.persisted.find((entry) => entry.kind === "sendMessage") as any;
+    expect(orientation.payload.message.content).toContain(summary);
+    expect(orientation.payload.message.content.split(summary)).toHaveLength(2);
+  });
+
+  test("a session with no handoff orients with no memory", async () => {
+    const h = await harness({ entries: [] });
+    expect(await h.emit("input", { text: "hello" })).toEqual({ action: "handled" });
+    const orientation = h.persisted.find((entry) => entry.kind === "sendMessage") as any;
+    expect(orientation.payload.message.content).not.toContain("Handoff from the previous context");
+  });
+
+  test("a failing session read does not strand orientation", async () => {
+    const h = await harness({ entries: [], sessionReadError: true });
+    expect(await h.emit("input", { text: "hello" })).toEqual({ action: "handled" });
+    await h.emit("agent_settled");
+    expect(h.persisted.some((entry) => entry.kind === "sendUserMessage")).toBe(true);
   });
 });
 

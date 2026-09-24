@@ -55,6 +55,17 @@ claude_oauth_token="placeholder"\n[theme.ansi]\nbright_blue="#abcdef"\n`);chmodS
     expect(()=>validateConfig({familiar:{identity:{name:"x".repeat(129)}}})).toThrow(ConfigError);
     expect(()=>applyEnvironment({}, {FAMILIAR_USER_NAME:""})).toThrow(ConfigError);
   });
+  test("accepts deprecated handoff_path but does not project it",async()=>{
+    const d=mkdtempSync(join(tmpdir(),"familiar-config-"));dirs.push(d);const p=join(d,"familiar.toml");
+    writeFileSync(p,`[familiar]\nhandoff_path="legacy/handoffs"\n`);chmodSync(p,0o600);
+    const warnings:string[]=[];const original=console.error;console.error=(message?:unknown)=>warnings.push(String(message));
+    try {
+      const loaded=await loadConfig(p,{env:{},defaults:{}});
+      expect(loaded.config.familiar?.handoff_path).toBe("legacy/handoffs");
+      expect(Object.keys(loaded.environment).some((name)=>name.includes("HANDOFF_PATH"))).toBe(false);
+    } finally { console.error=original; }
+    expect(warnings).toEqual(["familiar: [familiar] handoff_path is deprecated and ignored"]);
+  });
   test("familiar-ui attachment storage is configurable and typed",async()=>{
     const d=mkdtempSync(join(tmpdir(),"familiar-config-"));dirs.push(d);const p=join(d,"familiar.toml");
     writeFileSync(p,`[familiar]\nui_attachment_dir="/srv/familiar/state/familiar-ui/attachments"\nui_attachment_max_bytes=8388608\n`);chmodSync(p,0o600);

@@ -3,83 +3,51 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { registerSystemPromptRecorder, SYSTEM_PROMPT_ENTRY } from "./system-prompt.ts";
 
-const piPackageDir = process.env.PI_PACKAGE_DIR;
-if (!piPackageDir) throw new Error("PI_PACKAGE_DIR is required (point it at Familiar's pinned Pi package)");
-const { buildSessionContext } = await import(join(piPackageDir, "dist/index.js"));
-
+const root = process.env.PI_PACKAGE_DIR;
+if (!root) throw new Error("PI_PACKAGE_DIR is required");
+const { buildSessionContext } = await import(join(root, "dist/index.js"));
 type Entry = Record<string, any>;
+const digest = (text: string) => createHash("sha256").update(text).digest("hex");
+const records = (entries: Entry[]) => entries.filter((e) => e.type === "custom" && e.customType === SYSTEM_PROMPT_ENTRY);
 
-function harness(initial: Entry[] = []) {
-  const branch = [...initial];
-  let handler: (event: unknown, ctx: any) => void = () => {};
+function harness(branch: Entry[] = []) {
   let prompt = "first prompt";
-  let serial = branch.length;
+  let run: (event: unknown, ctx: any) => void = () => {};
   const pi = {
-    on(name: string, candidate: typeof handler) {
-      if (name === "agent_start") handler = candidate;
-    },
-    appendEntry(customType: string, data: unknown) {
-      const parentId = branch.at(-1)?.id ?? null;
-      branch.push({ type: "custom", id: `e${++serial}`, parentId, timestamp: new Date().toISOString(), customType, data });
-    },
+    on: (name: string, handler: typeof run) => { if (name === "agent_start") run = handler; },
+    appendEntry: (customType: string, data: unknown) => branch.push({
+      type: "custom", id: `e${branch.length}`, parentId: branch.at(-1)?.id ?? null,
+      timestamp: new Date().toISOString(), customType, data,
+    }),
   };
   registerSystemPromptRecorder(pi as any);
-  const ctx = {
-    getSystemPrompt: () => prompt,
-    sessionManager: { getBranch: () => branch },
-  };
-  return {
-    branch,
-    run: () => handler({ type: "agent_start" }, ctx),
-    setPrompt: (value: string) => { prompt = value; },
-  };
+  const ctx = { getSystemPrompt: () => prompt, sessionManager: { getBranch: () => branch } };
+  return { branch, run: () => run({}, ctx), setPrompt: (text: string) => { prompt = text; } };
 }
 
-const records = (entries: Entry[]) => entries.filter(
-  (entry) => entry.type === "custom" && entry.customType === SYSTEM_PROMPT_ENTRY,
-);
-
 describe("system prompt session record", () => {
-  test("writes once, stays quiet for an unchanged turn, and records a change", () => {
+  test("records first and changed prompts, but not an unchanged second turn", () => {
     const h = harness();
-    h.run();
-    expect(records(h.branch)).toEqual([expect.objectContaining({
-      data: {
-        sha256: createHash("sha256").update("first prompt").digest("hex"),
-        text: "first prompt",
-      },
-    })]);
-
-    h.run();
-    expect(records(h.branch)).toHaveLength(1);
-
-    h.setPrompt("changed prompt\nexactly");
-    h.run();
-    expect(records(h.branch)).toHaveLength(2);
-    expect(records(h.branch).at(-1)?.data.text).toBe("changed prompt\nexactly");
+    h.run(); h.run();
+    expect(records(h.branch).map((e) => e.data)).toEqual([{ sha256: digest("first prompt"), text: "first prompt" }]);
+    h.setPrompt("changed prompt\nexactly"); h.run();
+    expect(records(h.branch).at(-1)?.data).toEqual({ sha256: digest("changed prompt\nexactly"), text: "changed prompt\nexactly" });
   });
 
   test("compares with the most recent record on the current branch", () => {
-    const stale = createHash("sha256").update("stale").digest("hex");
-    const current = createHash("sha256").update("first prompt").digest("hex");
     const h = harness([
-      { type: "custom", id: "old", parentId: null, customType: SYSTEM_PROMPT_ENTRY, data: { sha256: stale, text: "stale" } },
-      { type: "custom", id: "new", parentId: "old", customType: SYSTEM_PROMPT_ENTRY, data: { sha256: current, text: "first prompt" } },
+      { type: "custom", id: "old", customType: SYSTEM_PROMPT_ENTRY, data: { sha256: digest("stale") } },
+      { type: "custom", id: "new", customType: SYSTEM_PROMPT_ENTRY, data: { sha256: digest("first prompt") } },
     ]);
     h.run();
     expect(records(h.branch)).toHaveLength(2);
   });
 
   test("custom prompt records never enter model context", () => {
-    const entries = [{
-      type: "custom", id: "prompt", parentId: null, timestamp: new Date().toISOString(),
-      customType: SYSTEM_PROMPT_ENTRY, data: { sha256: "fixture", text: "SECRET SYSTEM PROMPT" },
-    }, {
-      type: "message", id: "user", parentId: "prompt", timestamp: new Date().toISOString(),
-      message: { role: "user", content: "hello", timestamp: Date.now() },
-    }];
-    const context = buildSessionContext(entries as any, "user");
-    expect(context.messages).toEqual([entries[1].message]);
-    expect(JSON.stringify(context.messages)).not.toContain("SECRET SYSTEM PROMPT");
+    const secret = { type: "custom", id: "p", parentId: null, customType: SYSTEM_PROMPT_ENTRY, data: { text: "SECRET" } };
+    const message = { type: "message", id: "m", parentId: "p", message: { role: "user", content: "hello" } };
+    const context = buildSessionContext([secret, message] as any, "m").messages;
+    expect(context).toEqual([message.message]);
+    expect(JSON.stringify(context)).not.toContain("SECRET");
   });
 });

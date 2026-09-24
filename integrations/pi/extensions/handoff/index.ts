@@ -1,8 +1,7 @@
 import { uuidv7 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { buildSessionContext, convertToLlm } from "@earendil-works/pi-coding-agent";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import { errorLog } from "../lib/debug.ts";
 import { completeHandoff, handoffMaxTokens } from "./request.ts";
 import {
@@ -15,14 +14,9 @@ import {
 } from "./subconscious.ts";
 import { Type } from "typebox";
 
-// Context compaction becomes an active-model-authored handoff, followed by
-// private orientation before the next user turn. /clear invokes it explicitly;
-// real-window saturation invokes it softly at 90%. Its argument is queued as
-// that user turn and is never passed as summarization guidance.
-
 const DEFAULT_HANDOFF_PROMPT = `This context is about to be compacted. Write a handoff for yourself on the other side: what shipped, decisions made and why, open threads, next concrete steps, and any tone or context worth carrying forward. Address it to yourself, in markdown.
 
-This handoff is private continuity infrastructure: it becomes your memory after compaction and is also archived privately. By deliberate convention it goes unread by anyone else — write for yourself, not for an audience. Keep emotional loops open where they are open; do not flatten tone into a status report. Discard mechanical exploration, stale hypotheses, and tool-output noise.
+This handoff is private continuity infrastructure: it becomes your memory after compaction and persists in the private session record. By deliberate convention it goes unread by anyone else — write for yourself, not for an audience. Keep emotional loops open where they are open; do not flatten tone into a status report. Discard mechanical exploration, stale hypotheses, and tool-output noise.
 
 Tools are unavailable in this completion. Output only the handoff document itself.`;
 
@@ -36,8 +30,6 @@ const MASK = "*⟨continuity — private⟩*";
 const KIND = "familiar-handoff";
 const SUBCONSCIOUS_MESSAGE = "subconscious-reminder";
 const ORIENTATION_ENTRY = "handoff-orientation-output";
-// Durable, projection-only controls understood by the familiar-ui bridge.
-// appendEntry() state never participates in model context.
 const TRANSCRIPT_VISIBILITY_ENTRY = "familiar-ui/transcript-visibility";
 const SATURATION_WARN = 70;
 const SATURATION_NEAR = 85;
@@ -54,7 +46,6 @@ type ScheduledHandoff = { continuation?: string; automatic?: boolean };
 
 type HandoffDetails = {
   kind: typeof KIND;
-  archive: string;
   transcriptVisibility: "private";
 };
 
@@ -65,20 +56,13 @@ const handoffPrompt = async (): Promise<string> => {
   return body.trim() || DEFAULT_HANDOFF_PROMPT;
 };
 
-const latestHandoff = async (): Promise<string | null> => {
-  const dir = process.env.FAMILIAR_HANDOFF_PATH;
-  if (!dir) return null;
-  const files = (await readdir(dir).catch(() => [] as string[]))
-    .filter((file) => file.endsWith(".md"))
-    .sort();
-  const latest = files.at(-1);
-  if (!latest) return null;
-  // Orientation must survive an unreadable archive. The caller has already
-  // entered the orienting phase, where input is stashed rather than answered,
-  // and only the turn this triggers can leave it — so a throw here strands the
-  // session silently. Waking with no memory beats not waking.
-  const body = (await readFile(join(dir, latest), "utf-8").catch(() => "")).trim();
-  return body || null;
+const latestHandoff = (ctx: ExtensionContext): string | null => {
+  const entry = ctx.sessionManager.getBranch().findLast(isOurCompaction) as
+    | { summary?: unknown }
+    | undefined;
+  return typeof entry?.summary === "string" && entry.summary.trim()
+    ? entry.summary
+    : null;
 };
 
 const responseText = (response: { content: readonly any[] }): string =>
@@ -93,7 +77,6 @@ const isOurCompaction = (entry: any): boolean =>
 
 export default function handoffExtension(pi: ExtensionAPI) {
   let phase: Phase = "done";
-  let virginSession = false;
   let stash: DeferredInput[] = [];
   let liveText = "";
   let liveThinking: string[] = [];
@@ -103,10 +86,8 @@ export default function handoffExtension(pi: ExtensionAPI) {
   let automaticHandoffPending = false;
   let saturationLevel = 0;
   const knownPrivateOutputs = new Set<string>();
+  let pendingReminderIds = new Set<string>();
 
-  // Subconscious reminders. Curated once per explicit /clear by the outgoing
-  // context inside session_before_compact; delivered one at a time on ordinary
-  // human turns. The store is opened lazily; a broken store disables both.
   let curateOnClear = false;
   let humanTurnPending = false;
   let store: SubconsciousStore | null = null;
@@ -135,24 +116,20 @@ export default function handoffExtension(pi: ExtensionAPI) {
     liveThinking = [];
     if (ctx.hasUI) ctx.ui.setWorkingMessage("Waking up…");
 
-    // A handoff compaction is already in model context. A genuinely empty
-    // session instead orients from the most recent external archive, if any.
-    let archived: string | null = null;
+    // Session reads are best-effort: orientation must always be able to finish.
+    // Waking with no memory beats getting stranded in the orienting phase.
+    let handoff: string | null = null;
     try {
-      archived = virginSession ? await latestHandoff() : null;
+      handoff = latestHandoff(ctx);
     } catch (err) {
       errorLog("handoff", { orientationReadError: String(err) });
     }
-    virginSession = false;
-    // The prompt and response remain canonical, context-bearing messages. These
-    // markers affect presentation projections only and make that intent durable
-    // across hydration, history paging, and reconnects.
     pi.appendEntry(TRANSCRIPT_VISIBILITY_ENTRY, { visibility: "private" });
     pi.sendMessage(
       {
         customType: "handoff-orientation",
-        content: archived
-          ? `Handoff from the previous context (weigh staleness accordingly):\n\n${archived}\n\n---\n\n${ORIENTATION_PROMPT}`
+        content: handoff
+          ? `Handoff from the previous context (weigh staleness accordingly):\n\n${handoff}\n\n---\n\n${ORIENTATION_PROMPT}`
           : ORIENTATION_PROMPT,
         display: false,
         details: {
@@ -203,8 +180,6 @@ export default function handoffExtension(pi: ExtensionAPI) {
         const queued = continuationAfterCompaction;
         continuationAfterCompaction = undefined;
         if (queued) {
-          // This enters the ordinary input hook: it is stashed, orientation
-          // runs, and only then does it become the next user turn.
           queueMicrotask(() => pi.sendUserMessage(queued));
         } else if (ctx.hasUI) {
           ctx.ui.notify(
@@ -236,9 +211,15 @@ export default function handoffExtension(pi: ExtensionAPI) {
     saturationLevel = 0;
     curateOnClear = false;
     humanTurnPending = false;
+    pendingReminderIds = new Set();
 
-    const branch = ctx.sessionManager.getBranch();
-    virginSession = branch.length === 0;
+    let branch: ReturnType<typeof ctx.sessionManager.getBranch> = [];
+    try {
+      branch = ctx.sessionManager.getBranch();
+    } catch (err) {
+      errorLog("handoff", { sessionReadError: String(err) });
+    }
+    const virginSession = branch.length === 0;
     let latestCompaction = -1;
     let latestOrientation = -1;
 
@@ -268,12 +249,6 @@ export default function handoffExtension(pi: ExtensionAPI) {
     // dispatch at most — even if this handler runs again.
     const curateNow = curateOnClear && event.reason === "manual" && !event.willRetry;
     curateOnClear = false;
-    const handoffDir = process.env.FAMILIAR_HANDOFF_PATH;
-    if (!handoffDir) {
-      if (ctx.hasUI) ctx.ui.notify("FAMILIAR_HANDOFF_PATH is not set; compaction cancelled", "error");
-      compactionRunning = false;
-      return { cancel: true };
-    }
     if (!ctx.model) {
       if (ctx.hasUI) ctx.ui.notify("No active model; compaction cancelled", "error");
       compactionRunning = false;
@@ -281,17 +256,10 @@ export default function handoffExtension(pi: ExtensionAPI) {
     }
 
     try {
-      // Preserve native roles and the existing compaction/custom-message context.
-      // This is Pi's canonical live session context, not serializeConversation().
-      // Dynamic `context` handlers loaded after this extension cannot be replayed
-      // here; if one becomes continuity-significant, it should persist its state.
       let contextMessages = buildSessionContext(
         ctx.sessionManager.getEntries(),
         ctx.sessionManager.getLeafId(),
       ).messages;
-      // Pi removes a failed overflow response from live agent state before
-      // retrying, but leaves it in session history. Do not teach the handoff
-      // to preserve the response that is about to be retried.
       if (event.willRetry) {
         const last = contextMessages.at(-1) as any;
         if (last?.role === "assistant" && (last.stopReason === "error" || last.stopReason === "length")) {
@@ -333,25 +301,18 @@ export default function handoffExtension(pi: ExtensionAPI) {
       const summary = responseText(response);
       if (!summary) throw new Error("active model produced an empty handoff");
 
-      await mkdir(handoffDir, { recursive: true });
-      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const archive = join(handoffDir, `${stamp}.md`);
-      await writeFile(archive, `${summary}\n`, "utf-8");
       knownPrivateOutputs.add(summary);
 
-      // The handoff exists and the outgoing context is still whole: exactly
-      // one ephemeral curation request, same model, same context. Nothing
-      // from it is sent or appended to the session; only the store changes.
-      // Whatever happens here, the compaction below still returns.
       const reminderStore = curateNow ? openStore() : null;
       if (reminderStore) {
         if (ctx.hasUI) ctx.ui.setWorkingMessage("Curating subconscious…");
         const outgoing = ctx.model!;
+        const beforeIds = new Set(reminderStore.list().map((reminder) => reminder.id));
         const outcome = await curate({
           messages: messages as LlmMessage[],
           handoff: summary,
           store: reminderStore,
-          origin: { sessionId: ctx.sessionManager.getSessionId() || null, handoffArchive: archive },
+          origin: { sessionId: ctx.sessionManager.getSessionId() || null, compactionEntryId: null },
           signal: event.signal,
           timeoutMs: Number(process.env.FAMILIAR_SUBCONSCIOUS_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
           complete: (curationMessages, signal) => completeHandoff((reasoning) => ctx.modelRegistry.complete(
@@ -367,6 +328,11 @@ export default function handoffExtension(pi: ExtensionAPI) {
           ) as any, signal),
         });
         if (outcome.outcome === "skipped") errorLog("handoff", { subconsciousSkipped: outcome.reason });
+        if (outcome.outcome === "applied") {
+          pendingReminderIds = new Set(
+            reminderStore.list().filter((reminder) => !beforeIds.has(reminder.id)).map((reminder) => reminder.id),
+          );
+        }
         if (event.signal.aborted) {
           compactionRunning = false;
           return { cancel: true };
@@ -381,7 +347,6 @@ export default function handoffExtension(pi: ExtensionAPI) {
           usage: response.usage,
           details: {
             kind: KIND,
-            archive,
             transcriptVisibility: "private",
           } satisfies HandoffDetails,
         },
@@ -398,14 +363,28 @@ export default function handoffExtension(pi: ExtensionAPI) {
     if (!isOurCompaction(event.compactionEntry)) return;
     automaticHandoffPending = false;
     saturationLevel = 0;
+    if (pendingReminderIds.size) {
+      try {
+        const reminderStore = openStore();
+        if (reminderStore) {
+          const reminders = reminderStore.list();
+          reminderStore.save(reminders.map((reminder) => pendingReminderIds.has(reminder.id)
+            ? { ...reminder, origin: {
+              sessionId: ctx.sessionManager.getSessionId() || null,
+              compactionEntryId: event.compactionEntry.id,
+            } }
+            : reminder));
+        }
+      } catch (err) {
+        errorLog("handoff", { subconsciousOriginError: String(err) });
+      }
+      pendingReminderIds = new Set();
+    }
     // Overflow recovery and queued follow-ups can continue without passing
     // through the input hook. The handoff itself carries that retry; do not
     // run a stale orientation afterward. Ordinary boundaries still orient.
     phase = event.willRetry ? "done" : "pending";
-    if (ctx.hasUI) {
-      const archive = (event.compactionEntry.details as HandoffDetails).archive;
-      ctx.ui.notify(`Handoff saved to ${archive}`, "info");
-    }
+    if (ctx.hasUI) ctx.ui.notify("Handoff saved in the session record", "info");
   });
 
   pi.on("before_agent_start", async (_event, ctx) => {
@@ -413,8 +392,6 @@ export default function handoffExtension(pi: ExtensionAPI) {
     humanTurnPending = false;
     if (phase !== "done") return;
 
-    // One hidden reminder at most per ordinary human turn. It takes the
-    // injected-message slot; saturation advice simply fires on a later turn.
     if (human && !compactionRunning) {
       try {
         const reminder = openStore()?.draw();
@@ -457,9 +434,6 @@ export default function handoffExtension(pi: ExtensionAPI) {
   });
 
   pi.on("agent_start", async () => {
-    // A queued follow-up may start directly after automatic compaction rather
-    // than entering through input. It is already continuing from the handoff;
-    // suppress a belated orientation on the following human turn.
     if (phase === "pending") phase = "done";
   });
 
@@ -535,7 +509,6 @@ export default function handoffExtension(pi: ExtensionAPI) {
   });
 
   pi.registerMessageRenderer("handoff-orientation", () => undefined);
-  // Never rendered: a reminder is for the model, not the scrollback.
   pi.registerMessageRenderer(SUBCONSCIOUS_MESSAGE, () => undefined);
 
   pi.registerMarkdownTransformer((markdown, { messageType }) => {

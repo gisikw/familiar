@@ -266,6 +266,9 @@ describe("curate atomicity and presentation", () => {
     expect(delivered).toContain("<system-reminder>");
     expect(delivered).toContain("fixture delivery");
     expect(delivered).toContain("The user did not send it");
+    expect(delivered).toContain("handoff /fixture/handoff.md");
+    expect(renderDelivery({ ...reminder("r-00000002"), origin: { sessionId: "fixture-session", compactionEntryId: "deadbeef" } }, 2_000_000))
+      .toContain("handoff compaction deadbeef");
     expect(subconsciousRoot({ PI_CODING_AGENT_DIR: "/state/pi" })).toBe("/state/subconscious");
   });
 

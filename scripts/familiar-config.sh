@@ -115,6 +115,10 @@ familiar_config_load() {
     fi
   done 3<"$stream"
   rm -f "$stream"
+  if [ "${FAMILIAR_CONFIG_DEPRECATED_HANDOFF:-}" = 1 ]; then
+    echo 'familiar: [familiar] handoff_path is deprecated and ignored' >&2
+    unset FAMILIAR_CONFIG_DEPRECATED_HANDOFF
+  fi
 
   # Third-party processes retain their established variable names. Local TOML
   # remains generic: e.g. anthropic_api_key -> FAMILIAR_ANTHROPIC_API_KEY.

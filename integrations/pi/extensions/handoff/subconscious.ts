@@ -3,18 +3,6 @@ import * as path from "node:path";
 import { randomBytes } from "node:crypto";
 import { formatLocalTime, humanizeDuration } from "../lib/time.ts";
 
-/* --- Subconscious seeds ----------------------------------------------------
- *
- * A small set of attentional seeds the outgoing Familiar curates for the next
- * one in an ephemeral inference at `/clear` time: after the handoff exists,
- * before compaction lands, with the full context still in hand. The request and
- * strict-JSON reply never enter session history. The next Familiar never sees
- * that turn and receives at most one seed on an ordinary human turn.
- *
- * This module is pure Node with injectable clock, randomness, and ids. The
- * pi wiring lives in ./index.ts.
- */
-
 export const SUBCONSCIOUS_VERSION = 2 as const;
 export const LEGACY_SUBCONSCIOUS_VERSION = 1 as const;
 export const MAX_REMINDERS = 8;
@@ -25,30 +13,19 @@ export const MAX_RESPONSE_CHARS = 16_384;
 export const MAX_FILE_BYTES = 65_536;
 export const MAX_CURVE_TURNS = 10_000;
 export const MAX_CURVE_HOURS = 8_760;
-/**
- * The curation request is awaited inside `session_before_compact`, so it is
- * added latency on an interactive `/clear`, and Pi cancels a manual compaction
- * outright when its signal aborts during the hook — interrupting a stuck
- * curation therefore throws away a handoff that is already written. The timeout
- * is the only graceful exit, so it is bounded well under a minute; the reply is
- * a few hundred tokens of JSON capped at 2048. Override with
- * FAMILIAR_SUBCONSCIOUS_TIMEOUT_MS for slow local models.
- */
 export const DEFAULT_TIMEOUT_MS = 30_000;
 
 export type LegacyPriority = "high" | "normal" | "low";
 
-/**
- * Compact authored delivery curve. Each pair is [quietUntil, fullyMatureAt].
- * `chance` is [near, mature] per eligible turn. Turn and wall-clock maturity
- * are averaged, so each temporal component contributes and probability never
- * decreases with age.
- */
 export interface DeliveryCurve {
   turns: [number, number];
   hours: [number, number];
   chance: [number, number];
 }
+
+export type ReminderOrigin =
+  | { sessionId: string | null; compactionEntryId: string | null }
+  | { sessionId: string | null; handoffArchive: string | null };
 
 export interface Reminder {
   id: string;
@@ -57,7 +34,7 @@ export interface Reminder {
   /** Eligible turns evaluated since creation. */
   turns: number;
   createdAt: number;
-  origin: { sessionId: string | null; handoffArchive: string | null };
+  origin: ReminderOrigin;
 }
 
 export type Op =
@@ -82,8 +59,6 @@ export function deliveryProbability(curve: DeliveryCurve, turns: number, elapsed
   return curve.chance[0] + (curve.chance[1] - curve.chance[0]) * maturity;
 }
 
-/* --- validation --- */
-
 const isText = (v: unknown): v is string => typeof v === "string" && v.trim().length > 0 && v.trim().length <= MAX_TEXT_CHARS;
 const isId = (v: unknown): v is string => typeof v === "string" && ID_RE.test(v);
 const onlyKeys = (o: object, allowed: string[]) => Object.keys(o).every((k) => allowed.includes(k));
@@ -105,11 +80,17 @@ export function validCurve(v: unknown): v is DeliveryCurve {
     && c.chance[0] <= c.chance[1];
 }
 
-const validOrigin = (v: unknown): v is Reminder["origin"] =>
-  !!v && typeof v === "object" && !Array.isArray(v)
-  && onlyKeys(v, ["sessionId", "handoffArchive"])
-  && (((v as Reminder["origin"]).sessionId === null) || typeof (v as Reminder["origin"]).sessionId === "string")
-  && (((v as Reminder["origin"]).handoffArchive === null) || typeof (v as Reminder["origin"]).handoffArchive === "string");
+const validOrigin = (v: unknown): v is Reminder["origin"] => {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+  const origin = v as Record<string, unknown>;
+  if (origin.sessionId !== null && typeof origin.sessionId !== "string") return false;
+  if (Object.hasOwn(origin, "compactionEntryId")) {
+    return onlyKeys(origin, ["sessionId", "compactionEntryId"])
+      && (origin.compactionEntryId === null || typeof origin.compactionEntryId === "string");
+  }
+  return onlyKeys(origin, ["sessionId", "handoffArchive"])
+    && (origin.handoffArchive === null || typeof origin.handoffArchive === "string");
+};
 
 export function validReminder(v: unknown): v is Reminder {
   if (!v || typeof v !== "object" || Array.isArray(v)
@@ -156,11 +137,6 @@ function validOp(v: unknown): v is Op {
   }
 }
 
-/**
- * Strict parse of the curation reply. Exactly one bare JSON object `{"ops":[...]}`;
- * no fenced blocks, prose, or multiple objects. Whitespace around the JSON is allowed
- * because JSON.parse permits it. Anything else is null: no mutation.
- */
 export function parseCuration(text: string): Op[] | null {
   if (typeof text !== "string" || text.length > MAX_RESPONSE_CHARS) return null;
   let parsed: unknown;
@@ -176,10 +152,6 @@ export function parseCuration(text: string): Op[] | null {
   return ops as Op[];
 }
 
-/**
- * Apply ops in order to a copy of the set. All-or-nothing: an unknown id or a
- * result over MAX_REMINDERS throws and the caller keeps the original set.
- */
 export function applyOps(
   existing: readonly Reminder[],
   ops: readonly Op[],
@@ -209,8 +181,6 @@ export function applyOps(
   if (next.length > MAX_REMINDERS) throw new Error(`more than ${MAX_REMINDERS} reminders`);
   return next;
 }
-
-/* --- store --- */
 
 export function subconsciousRoot(env: NodeJS.ProcessEnv = process.env): string {
   if (env.FAMILIAR_SUBCONSCIOUS_DIR) return path.resolve(env.FAMILIAR_SUBCONSCIOUS_DIR);
@@ -288,17 +258,9 @@ export class SubconsciousStore {
     }
   }
 
-  /**
-   * One eligible turn: every reminder ages; at most one is selected, removed
-   * durably, and returned. At-most-once by design — a crash after the write
-   * and before the model sees it loses that reminder rather than repeating it.
-   */
   draw(): Reminder | null {
     const reminders = this.list();
     if (!reminders.length) return null;
-    // Age all records because they all experienced this eligible turn, but
-    // evaluate in persisted order and stop consuming randomness immediately
-    // on success. Thus a turn can never select a second reminder.
     const aged = reminders.map((r) => ({ ...r, turns: r.turns + 1 }));
     const now = this.now();
     let selectedIndex = -1;
@@ -315,8 +277,6 @@ export class SubconsciousStore {
     return selected;
   }
 }
-
-/* --- prompts --- */
 
 const IDENTITY_MAX_BYTES = 128;
 const identityField = (value: string | undefined): string | undefined => {
@@ -376,12 +336,14 @@ export function renderDelivery(r: Reminder, nowMs: number): string {
   const origin = [
     `left ${age} ago (${formatLocalTime(new Date(r.createdAt))})`,
     r.origin.sessionId ? `session ${r.origin.sessionId.slice(0, 8)}` : null,
-    r.origin.handoffArchive ? `handoff ${r.origin.handoffArchive}` : null,
+    "compactionEntryId" in r.origin && r.origin.compactionEntryId
+      ? `handoff compaction ${r.origin.compactionEntryId}`
+      : "handoffArchive" in r.origin && r.origin.handoffArchive
+        ? `handoff ${r.origin.handoffArchive}`
+        : null,
   ].filter(Boolean).join(", ");
   return `<system-reminder>A private seed surfaced. A previous you left this at a /clear boundary and has had no access to it since; it surfaced now on its own. The user did not send it and cannot see it.\n\n${r.text}\n\nOrigin: ${origin}. Raise it, sit with it, or let it go — nothing is required.</system-reminder>`;
 }
-
-/* --- the one ephemeral request --- */
 
 export type LlmMessage = { role: "user" | "assistant"; content: unknown; timestamp?: number } & Record<string, unknown>;
 export type CurationResponse = { stopReason: string; errorMessage?: string; content: readonly any[] };
@@ -410,12 +372,6 @@ const responseText = (response: CurationResponse): string =>
     .map((block) => block.text)
     .join("\n");
 
-/**
- * Exactly one dispatch. Every failure mode — abort, timeout, provider error,
- * empty or malformed reply, an op that does not validate, a store fault —
- * resolves to `skipped` with the set untouched. This never throws, so the
- * caller's compaction cannot be wedged by it.
- */
 export async function curate(input: CurateInput): Promise<CurateOutcome> {
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const controller = new AbortController();

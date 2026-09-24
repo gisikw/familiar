@@ -242,12 +242,12 @@ decision.
 ```text
 pi-owned session state
 ├── transcript and session events
+├── effective system prompts and handoff compactions
 ├── model and thinking state
 └── tool calls and results
 
 Familiar-owned continuity state
 ├── identity
-├── handoffs and continuity metadata
 ├── subconscious reminders (curated at /clear, unread by the running agent)
 ├── Familiar configuration
 └── client/device preferences

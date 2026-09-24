@@ -12,7 +12,6 @@ CFG="$TMP/private/familiar.toml"; mkdir -p "$(dirname "$CFG")"
 cat >"$CFG" <<'TOML'
 [familiar]
 identity_path = "identity"
-handoff_path = "memory/handoffs"
 handoff_prompt_path = "memory/prompt.md"
 worklist_dir = "memory/worklist"
 inbox_dir = "memory/inbox"
@@ -31,7 +30,7 @@ chmod 600 "$CFG"
 # about TOML path anchoring, not the intentional environment-override path.
 out=$(cd / && env -u PI_CODING_AGENT_DIR "$REPO/familiar.sh" --config "$CFG" config-check --paths)
 base=$(dirname "$CFG")
-for key in config_dir identity handoff handoff_prompt worklist inbox log voices model artifact subagent sessions pi presence; do
+for key in config_dir identity handoff_prompt worklist inbox log voices model artifact subagent sessions pi presence; do
   line=$(printf '%s\n' "$out" | grep "^$key=") || fail "missing $key"
   case "$line" in *"$base"*) ;; *) fail "$key was not anchored at config directory";; esac
 done
@@ -47,7 +46,6 @@ trackable() { ! git -C "$INSTANCE" check-ignore -q -- "$1" || fail "expected tra
 trackable familiar.toml
 trackable identity/profile.md
 trackable voices/operator.wav
-trackable state/handoffs/next.md
 trackable state/worklist/queue.md
 trackable state/reviews/review.md
 trackable state/artifacts/evidence.md

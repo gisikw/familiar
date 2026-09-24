@@ -73,8 +73,6 @@ fi
 
 # Defaults (lowest precedence)
 if [ -n "${FAMILIAR_IDENTITY_PATH:-}" ]; then export FAMILIAR_IDENTITY_PATH="$(resolve_config_path "$FAMILIAR_IDENTITY_PATH")"; fi
-export FAMILIAR_HANDOFF_PATH="${FAMILIAR_HANDOFF_PATH:-$STATE_DIR/handoffs}"
-export FAMILIAR_HANDOFF_PATH="$(resolve_config_path "$FAMILIAR_HANDOFF_PATH")"
 if [ -n "${FAMILIAR_HANDOFF_PROMPT_PATH:-}" ]; then export FAMILIAR_HANDOFF_PROMPT_PATH="$(resolve_config_path "$FAMILIAR_HANDOFF_PROMPT_PATH")"; fi
 # Worklist durable queue. FAMILIAR_WORKLIST_DIR is canonical; FAMILIAR_INBOX_DIR
 # is a bounded compatibility alias (one release) so a mid-flight external writer
@@ -1137,7 +1135,7 @@ config_check() {
   fi
   if [ "${2:-}" = --paths ]; then
     [ "$CONFIG_LOAD_FAILED" -eq 0 ] || { echo 'familiar: familiar.toml validation failed (contents suppressed)' >&2; return 1; }
-    printf '%s\n' "config_dir=$CONFIG_DIR" "identity=$FAMILIAR_IDENTITY_PATH" "handoff=$FAMILIAR_HANDOFF_PATH" "handoff_prompt=${FAMILIAR_HANDOFF_PROMPT_PATH:-}" "worklist=$FAMILIAR_WORKLIST_DIR" "inbox=${FAMILIAR_INBOX_DIR:-}" "log=$FAMILIAR_LOG_PATH" "voices=${FAMILIAR_TTS_VOICES_SOURCE:-}" "model=$FAMILIAR_MODEL_DIR" "artifact=${FAMILIAR_ARTIFACT_DIR:-}" "subagent=${FAMILIAR_SUBAGENT_DIR:-}" "sessions=${FAMILIAR_SUBAGENT_SESSION_DIR:-}" "pi=$PI_CODING_AGENT_DIR" "presence=$FAMILIAR_PRESENCE_STATE_DIR"
+    printf '%s\n' "config_dir=$CONFIG_DIR" "identity=$FAMILIAR_IDENTITY_PATH" "handoff_prompt=${FAMILIAR_HANDOFF_PROMPT_PATH:-}" "worklist=$FAMILIAR_WORKLIST_DIR" "inbox=${FAMILIAR_INBOX_DIR:-}" "log=$FAMILIAR_LOG_PATH" "voices=${FAMILIAR_TTS_VOICES_SOURCE:-}" "model=$FAMILIAR_MODEL_DIR" "artifact=${FAMILIAR_ARTIFACT_DIR:-}" "subagent=${FAMILIAR_SUBAGENT_DIR:-}" "sessions=${FAMILIAR_SUBAGENT_SESSION_DIR:-}" "pi=$PI_CODING_AGENT_DIR" "presence=$FAMILIAR_PRESENCE_STATE_DIR"
     return 0
   fi
   if [ "$CONFIG_LOAD_FAILED" -ne 0 ]; then

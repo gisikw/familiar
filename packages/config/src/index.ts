@@ -10,7 +10,7 @@ export interface UserConfig extends IdentityConfig {}
 export interface FamiliarConfig {
   user?: UserConfig;
   pi?: { telemetry?: number; offline?: number; skip_version_check?: number; coding_agent_dir?: string };
-  familiar?: { identity?: IdentityConfig; identity_path?: string; age_key?: string; handoff_path?: string; handoff_prompt_path?: string; worklist_dir?: string; inbox_dir?: string; log_path?: string; model_dir?: string; default_provider?: string; default_model?: string; artifact_dir?: string; ui_attachment_dir?: string; ui_attachment_max_bytes?: number; subscriber_port?: number; tz?: string; debug_level?: string; use_stuff?: boolean };
+  familiar?: { identity?: IdentityConfig; identity_path?: string; age_key?: string; /** @deprecated Accepted but ignored. */ handoff_path?: string; handoff_prompt_path?: string; worklist_dir?: string; inbox_dir?: string; log_path?: string; model_dir?: string; default_provider?: string; default_model?: string; artifact_dir?: string; ui_attachment_dir?: string; ui_attachment_max_bytes?: number; subscriber_port?: number; tz?: string; debug_level?: string; use_stuff?: boolean };
   herdr?: { session?: string; config_path?: string };
   server?: { config?: string; listen?: string };
   plugins?: { golem?: { path?: string; git?: string; rev?: string; env?: Record<string,string> } };
@@ -86,11 +86,12 @@ export function validateConfig(value: unknown): FamiliarConfig {
 
 function merge<T extends Record<string,any>>(base:T, overlay:T):T { const out:Record<string,any>={...base}; for(const [k,v] of Object.entries(overlay)) out[k]=isObj(v)&&isObj(out[k])?merge(out[k],v):v; return out as T; }
 export function envName(pathParts: readonly string[]): string { const effective=pathParts[0]==="familiar"?pathParts.slice(1):pathParts; const flat=effective.join("_").toUpperCase().replace(/[^A-Z0-9_]/g,"_"); return flat.startsWith("FAMILIAR_")?flat:`FAMILIAR_${flat}`; }
-export function flattenEnvironment(config:FamiliarConfig):Record<string,string>{ const out:Record<string,string>={}; const walk=(v:unknown,p:string[])=>{if(isObj(v)){for(const [k,x] of Object.entries(v))walk(x,[...p,k]);return;} out[envName(p)]=typeof v==="string"?v:JSON.stringify(v);}; walk(config,[]); return out; }
+export function flattenEnvironment(config:FamiliarConfig):Record<string,string>{ const out:Record<string,string>={}; const walk=(v:unknown,p:string[])=>{if(p[0]==="familiar"&&p[1]==="handoff_path")return;if(isObj(v)){for(const [k,x] of Object.entries(v))walk(x,[...p,k]);return;} out[envName(p)]=typeof v==="string"?v:JSON.stringify(v);}; walk(config,[]); return out; }
 function parseEnv(raw:string, expected:string, setting:string):unknown { if(expected==="string")return raw; if(expected==="boolean"){if(raw==="true")return true;if(raw==="false")return false;throw new ConfigError(`${setting}: environment override must be true or false`);} const n=Number(raw);if(!Number.isFinite(n))throw new ConfigError(`${setting}: environment override must be a number`);return n; }
 export function applyEnvironment(config:FamiliarConfig, env:Record<string,string|undefined>):FamiliarConfig {
   const copy=merge({} as FamiliarConfig,config);
   for(const [table,keys] of Object.entries(schema)) for(const [key,expected] of Object.entries(keys)) {
+    if(table==="familiar"&&key==="handoff_path")continue;
     if(expected==="table") {
       const nestedKeys=table==="theme"&&key==="ansi"?ansiKeys:table==="familiar"&&key==="identity"?Object.keys(identitySchema):[];
       for(const nestedKey of nestedKeys){const name=envName([table,key,nestedKey]);if(env[name]!==undefined){const t=((copy as any)[table]??={});const nested=(t[key]??={});nested[nestedKey]=env[name];}}
@@ -104,7 +105,7 @@ export interface LoadOptions { env?:Record<string,string|undefined>; defaults?:F
 export interface LoadedConfig { path:string; config:FamiliarConfig; environment:Record<string,string>; source:"file"|"defaults" }
 export async function loadConfig(filePath="familiar.toml", options:LoadOptions={}):Promise<LoadedConfig>{
   const absolute=path.resolve(filePath); let parsed:FamiliarConfig={}; let source:"file"|"defaults"="file";
-  try { const info=await stat(absolute); if(options.requirePrivateMode!==false && (info.mode&0o777)!==0o600) throw new ConfigError(`${absolute} must have mode 0600`); const text=await readFile(absolute,"utf8"); try{parsed=validateConfig(TOML.parse(text));}catch(e){if(e instanceof ConfigError)throw e;throw new ConfigError(`${absolute}: malformed TOML (contents suppressed)`);} }
+  try { const info=await stat(absolute); if(options.requirePrivateMode!==false && (info.mode&0o777)!==0o600) throw new ConfigError(`${absolute} must have mode 0600`); const text=await readFile(absolute,"utf8"); try{parsed=validateConfig(TOML.parse(text));if(parsed.familiar?.handoff_path!==undefined)console.error("familiar: [familiar] handoff_path is deprecated and ignored");}catch(e){if(e instanceof ConfigError)throw e;throw new ConfigError(`${absolute}: malformed TOML (contents suppressed)`);} }
   catch(e:any){if(e?.code==="ENOENT"&&options.optional!==false){source="defaults";}else throw e;}
   const withDefaults=merge((options.defaults??DEFAULT_CONFIG) as any,parsed as any) as FamiliarConfig;
   const config=applyEnvironment(withDefaults,options.env??process.env);

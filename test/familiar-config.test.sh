@@ -205,6 +205,16 @@ out=$(env -i PATH="$PATH" HOME="${HOME:-/tmp}" FAMILIAR_CONFIG_PATH="$OLD" bash 
 ' bash "$REPO" "$NEXT")
 assert_eq "$out" cutover "exec re-entry configuration cutover"
 
+# Deployed instances may retain this removed setting for one compatibility
+# window. It is accepted, ignored, and diagnosed without exporting a path.
+printf '[familiar]\nhandoff_path = "legacy/handoffs"\n' >"$CONFIG"; chmod 600 "$CONFIG"
+set +e
+err=$(env -i PATH="$PATH" HOME="${HOME:-/tmp}" FAMILIAR_CONFIG_PATH="$CONFIG" \
+  "$REPO/familiar.sh" config-check 2>&1); status=$?
+set -e
+[ "$status" -eq 0 ] || fail "config-check rejected deprecated handoff_path"
+[[ $err == *'handoff_path is deprecated and ignored'* ]] || fail "handoff_path deprecation warning missing"
+
 # Malformed optional config fails ordinary launch and validation, while the
 # bounded operational ingress remains available using ambient/default values.
 printf 'broken = "DO_NOT_PRINT_RECOVERY_SECRET\n' >"$CONFIG"; chmod 600 "$CONFIG"
