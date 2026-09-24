@@ -72,8 +72,8 @@ start() {
     -s "$SESSION" -n presence "exec $(printf %q "$BASH_EXE") $(printf %q "$SELF") run-worker"
   tmux_owned source-file "$RUNTIME_CONFIG"
   local pid
-  pid=$(tmux_owned display-message -p -t "$TARGET" '#{pane_pid}')
-  case "$pid" in ''|*[!0-9]*) fail "tmux did not report a pane pid" ;; esac
+  pid=$(tmux_owned display-message -p -t "$TARGET" '#{pid}')
+  case "$pid" in ''|*[!0-9]*) fail "tmux did not report a server pid" ;; esac
   printf '%s\n' "$pid" > "$PID_FILE.tmp"
   chmod 600 "$PID_FILE.tmp"
   mv -f "$PID_FILE.tmp" "$PID_FILE"
