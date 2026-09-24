@@ -19,7 +19,7 @@ func TestConfigValidation(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		mutate func(*Config)
-	}{{"non-loopback", func(c *Config) { c.Listen = "0.0.0.0:1" }}, {"duplicate", func(c *Config) { c.Children = append(c.Children, c.Children[0]) }}, {"unknown dependency", func(c *Config) { c.Children[0].DependsOn = []string{"missing"} }}, {"presence attached", func(c *Config) { c.Children[0].Presence = true }}} {
+	}{{"non-loopback", func(c *Config) { c.Listen = "0.0.0.0:1" }}, {"duplicate", func(c *Config) { c.Children = append(c.Children, c.Children[0]) }}, {"unknown dependency", func(c *Config) { c.Children[0].DependsOn = []string{"missing"} }}, {"bad restart policy", func(c *Config) { c.Children[0].Restart.Policy = "sometimes" }}} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := base
 			c.Children = append([]ChildConfig(nil), base.Children...)
@@ -58,11 +58,14 @@ func TestCanonicalConfigLoads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.Children) < 5 {
-		t.Fatalf("canonical children=%d, want at least 5", len(c.Children))
+	if len(c.Children) < 4 {
+		t.Fatalf("canonical children=%d, want at least 4", len(c.Children))
 	}
 	for _, child := range c.Children {
-		// LoadConfig may project environment-configured plugins beside the five
+		if child.Name == "presence" {
+			t.Fatal("canonical supervisor must not parent Presence")
+		}
+		// LoadConfig may project environment-configured plugins beside the four
 		// canonical children. Plugin probe policy belongs to its manifest, not
 		// this example-config assertion.
 		if strings.HasPrefix(child.Name, "plugin.") {

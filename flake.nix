@@ -205,10 +205,6 @@
           # resolver, but not the much larger pi/agent development environment.
           connect = pkgs.mkShell {
             FAMILIAR_SHELL = "connect";
-            # presence.sh ensure regenerates tmux.conf (default-shell included) on
-            # EVERY ensure, so every shell that can trigger an ensure must carry
-            # the interactive bash or a connect clobbers the server-set value.
-            FAMILIAR_INTERACTIVE_SHELL = "${pkgs.bashInteractive}/bin/bash";
             packages = with pkgs; [ jq tmux util-linux ];
           };
           # Browser-level terminal regression harness (test/e2e).  The

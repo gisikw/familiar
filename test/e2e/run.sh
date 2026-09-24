@@ -29,8 +29,8 @@ FAMILIAR_VIEWER_BIN=${FAMILIAR_VIEWER_BIN:-$(command -v familiar-viewer || true)
 [ -n "$FAMILIAR_VIEWER_BIN" ] && command -v "$FAMILIAR_VIEWER_BIN" >/dev/null \
   || { echo "e2e: set FAMILIAR_VIEWER_BIN or use nix develop .#e2e" >&2; exit 2; }
 
-# A shell, not Familiar/pi, is the fixture payload. presence.sh still owns the
-# exact isolated session/config lifecycle used in production.
+# A shell, not Familiar/pi, is the fixture payload. Start models the systemd
+# unit's one-shot tmux setup; the gateway remains attach-only.
 export FAMILIAR_PRESENCE_STATE_DIR="$STATE"
 export FAMILIAR_PRESENCE_SOCKET="$SOCKET"
 export FAMILIAR_PRESENCE_SESSION=presence
@@ -43,7 +43,7 @@ export FAMILIAR_VIEWER_BIN
 export FAMILIAR_MARK_PNG="$ROOT/assets/familiar-mark.png"
 export FAMILIAR_GRAPHICS_MODE=kitty
 unset FAMILIAR_ATTACH_CMD
-bash "$FAMILIAR_PRESENCE_CTL" ensure >/dev/null
+bash "$FAMILIAR_PRESENCE_CTL" start >/dev/null
 
 # Pure-magenta fixture: unlike terminal text/theme colors it has an unambiguous
 # screenshot signature. ImageMagick comes from the e2e shell.

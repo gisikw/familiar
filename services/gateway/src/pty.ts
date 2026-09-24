@@ -1,7 +1,6 @@
 import type http from "http";
 import { WebSocketServer, type WebSocket } from "ws";
 import { spawn as ptySpawn, type IPty } from "node-pty";
-import { spawnSync } from "child_process";
 import path from "path";
 import { fileURLToPath } from "url";
 import { debugLog, errorLog } from "./debug.ts";
@@ -45,8 +44,7 @@ const HEARTBEAT_MS = Number(process.env.FAMILIAR_PTY_HEARTBEAT_MS ?? 30_000);
 
 const REPOSITORY_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
 
-// Normalize the Presence socket before invoking either the ensure controller
-// or viewer. Plugin terminal targets arrive through Familiar's render host.
+// Normalize the Presence socket for the viewer. Lifecycle belongs to systemd.
 function familiarEnvironment(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
@@ -56,23 +54,6 @@ function familiarEnvironment(): Record<string, string> {
     || path.join(REPOSITORY_ROOT, "state/presence");
   env.FAMILIAR_PRESENCE_SOCKET ||= path.join(presenceState, "tmux.sock");
   return env;
-}
-
-function ensurePresence(): void {
-  // Overrides are deliberately self-contained test/smoke commands and must not
-  // acquire a production Presence dependency.
-  if (process.env.FAMILIAR_ATTACH_CMD?.trim()) return;
-  const controller = process.env.FAMILIAR_PRESENCE_CTL
-    || fileURLToPath(new URL("../../presence/presence.sh", import.meta.url));
-  const result = spawnSync(controller, ["ensure"], {
-    env: familiarEnvironment(),
-    stdio: ["ignore", "ignore", "pipe"],
-    encoding: "utf8",
-  });
-  if (result.error || result.status !== 0) {
-    const detail = result.error?.message || result.stderr?.trim() || `exit ${result.status}`;
-    throw new Error(`could not ensure Presence runtime: ${detail}`);
-  }
 }
 
 function startPty(cols: number, rows: number): IPty {
@@ -100,15 +81,7 @@ function startPty(cols: number, rows: number): IPty {
     cwd: process.env.FAMILIAR_ATTACH_CWD || process.cwd(),
     env,
   };
-  try {
-    return ptySpawn(file, args, options);
-  } catch (firstError) {
-    // Recover a runtime lost after gateway boot, then retry the PTY spawn once.
-    // The override keeps its historical behavior and skips ensurePresence().
-    if (process.env.FAMILIAR_ATTACH_CMD?.trim()) throw firstError;
-    ensurePresence();
-    return ptySpawn(file, args, options);
-  }
+  return ptySpawn(file, args, options);
 }
 
 export class PtyBridge {
@@ -116,10 +89,6 @@ export class PtyBridge {
   private heartbeat: NodeJS.Timeout | null = null;
 
   constructor() {
-    // The native viewer intentionally does not own Presence lifecycle. Ensure
-    // once at gateway boot; startPty performs one recovery ensure on spawn
-    // failure if the runtime disappears later.
-    ensurePresence();
     // noServer: we route the upgrade ourselves from the shared http.Server so
     // /pty coexists with the HTTP surface on the same port.
     this.wss = new WebSocketServer({ noServer: true });

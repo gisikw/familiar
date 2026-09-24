@@ -8,14 +8,13 @@ Usage: ./familiar.sh <command> [arguments]
 Commands:
   --config PATH   Use an external private-instance familiar.toml.
   init PATH       Scaffold a private familiar instance.
-  server          Run the complete Familiar service stack.
-  connect         Ensure Presence and open the native viewer (first run builds it).
+  server          Run the non-Pi Familiar service stack.
+  connect         Open the native viewer on the running Familiar Pi.
   client          Run the Electron desktop client.
   pi              Run the resident pi agent with continuity.
   llama           Run the local LLM backend.
   stt             Run the local speech-to-text backend.
   tts             Run the local text-to-speech backend.
-  kill            Stop the private Presence runtime.
   ssh HOST [...]  Open SSH with Familiar image-drop transport.
   drop-serve PATH Run the image-drop socket server (transport helper).
   drop-fetch PATH Fetch a file from a connected client.
@@ -107,14 +106,6 @@ done
 export FAMILIAR_MODEL_DIR="${FAMILIAR_MODEL_DIR:-$REPO/models}"
 export FAMILIAR_MODEL_DIR="$(resolve_config_path "$FAMILIAR_MODEL_DIR")"
 MODEL_DIR="$FAMILIAR_MODEL_DIR"
-
-prepare_tmux_theme() {
-  local theme_dir="$STATE_DIR/theme"
-  install -d -m 700 "$theme_dir"
-  export FAMILIAR_TMUX_THEME_CONFIG="$theme_dir/tmux.conf"
-  bash "$REPO/scripts/familiar-theme.sh" tmux > "$FAMILIAR_TMUX_THEME_CONFIG"
-  chmod 600 "$FAMILIAR_TMUX_THEME_CONFIG"
-}
 
 ensure_devshell() {
   local shell=$1; shift
@@ -298,6 +289,23 @@ prepare_plugin() {
   export FAMILIAR_RENDER_URL="http://127.0.0.1:${server_listen##*:}/v1/render"
 }
 
+project_plugin_manifest_pi_environment() {
+  [ -n "${FAMILIAR_PLUGIN_ROOT:-}" ] || return 0
+  # Pi is no longer a supervisor child, so apply manifest defaults at its own
+  # launch boundary. Instance [plugins.golem.env] was projected first and wins.
+  local encoded key value lines manifest="$FAMILIAR_PLUGIN_ROOT/contrib/familiar/plugin.toml"
+  lines=$(FAMILIAR_PLUGIN_MANIFEST="$manifest" nix eval --impure --json --expr '
+    let m=builtins.fromTOML (builtins.readFile (builtins.getEnv "FAMILIAR_PLUGIN_MANIFEST")); in m.pi.env or {}' \
+    | jq -r 'if type == "object" and all(to_entries[]; (.key | test("^[A-Za-z_][A-Za-z0-9_]*$")) and (.value | type == "string" and length <= 4096)) then to_entries[] | "\(.key)=\(.value | @base64)" else error("invalid pi.env") end') || return 1
+  while IFS='=' read -r key encoded; do
+    [ -n "$key" ] || continue
+    value=$(printf '%s' "$encoded" | base64 -d) || return 1
+    value=${value//\$\{plugin_root\}/$FAMILIAR_PLUGIN_ROOT}
+    [[ $value != *'${'* ]] || { echo "familiar: unsupported plugin Pi environment expansion" >&2; return 1; }
+    [ -n "${!key+x}" ] || export "$key=$value"
+  done <<< "$lines"
+}
+
 plugin_extensions_json() {
   if [ -z "${FAMILIAR_PLUGIN_ROOT:-}" ]; then printf '[]'; return; fi
   FAMILIAR_PLUGIN_MANIFEST="$FAMILIAR_PLUGIN_ROOT/contrib/familiar/plugin.toml" FAMILIAR_PLUGIN_ROOT="$FAMILIAR_PLUGIN_ROOT" nix eval --impure --json --expr '
@@ -324,6 +332,7 @@ extra_extensions_json() {
 
 run_pi() {
   prepare_plugin
+  project_plugin_manifest_pi_environment
   ensure_devshell pi "$@"
   # Private plaintext necessarily exists in Pi memory while a modal is open.
   # A core dump would turn that into plaintext at rest, so the process must not
@@ -355,9 +364,8 @@ run_pi() {
       sleep 0.1
     done
   fi
-  while true; do
-    # Merge, don't clobber: pi persists /model + thinking-level choices into
-    # settings.json; keep them across crash respawns. FAMILIAR_DEFAULT_MODEL
+  # Merge, don't clobber: pi persists /model + thinking-level choices into
+    # settings.json; keep them across systemd restarts. FAMILIAR_DEFAULT_MODEL
     # (+ FAMILIAR_DEFAULT_PROVIDER, default llama.cpp) only seeds when no
     # persisted choice exists. Pi itself falls back to the first available
     # model if the saved default can't be resolved (findInitialModel).
@@ -424,21 +432,13 @@ run_pi() {
         }
       } end
     ' > "$PI_CODING_AGENT_DIR/models-store.json"
-    # --continue resumes the most recent session (falls through to a fresh one
-    # when none exists — verified in SessionManager.continueRecent). Bounces
-    # and crash respawns keep continuity; /clear stays the only way to end a
-    # session, and it writes a handoff first.
-    #
-    # `|| true` is load-bearing under `set -e`: a bare command as the loop body
-    # aborts the whole function on any non-zero exit, leaving a dead pane with
-    # no supervisor instead of respawning pi.
-    command pi \
-      --continue \
-      --no-context-files \
-      --no-skills \
-      --skill "$REPO/skills/" || true
-    sleep 1
-  done
+  # --continue resumes the most recent session (or starts one when none
+  # exists). The process intentionally runs once: systemd owns every restart.
+  exec pi \
+    --continue \
+    --no-context-files \
+    --no-skills \
+    --skill "$REPO/skills/"
 }
 
 # --- image drop transport ----------------------------------------------------
@@ -901,14 +901,13 @@ server() {
   local canonical="$REPO/services/server/familiar-server.toml.example"
   local config="${FAMILIAR_SERVER_CONFIG:-$canonical}"
   if [ "$config" = "$canonical" ] && [ "$(uname -s)" != Linux ]; then
-    echo "familiar: the canonical five-child server deployment is Linux-only (set FAMILIAR_SERVER_CONFIG for a platform-specific deployment)" >&2
+    echo "familiar: the canonical four-child server deployment is Linux-only (set FAMILIAR_SERVER_CONFIG for a platform-specific deployment)" >&2
     return 2
   fi
 
   # The pi shell supplies pinned model defaults and download tooling. Re-entry
   # retains familiar.toml/ambient overrides loaded above.
   ensure_devshell pi server "$@"
-  prepare_tmux_theme
   export FAMILIAR_MODEL_DIR="$MODEL_DIR"
 
   # User-facing endpoint settings describe backends. Children always consume
@@ -936,11 +935,6 @@ server() {
   export FAMILIAR_STT_URL="http://127.0.0.1:9932"
   export FAMILIAR_TTS_URL="http://127.0.0.1:9933"
   exec nix run "$REPO#familiar-server" -- --config "$config" "$@"
-}
-
-stop() {
-  ensure_devshell pi "$@"
-  "$FAMILIAR_PRESENCE_CTL" stop || true
 }
 
 # Out-of-process enqueue through the authoritative familiar-services socket.
@@ -1132,7 +1126,6 @@ case ${1:-} in
   llama)      run_llama "$@" ;;
   stt)        run_stt "$@" ;;
   tts)        run_tts "$@" ;;
-  kill)          stop "$@" ;;
   worklist-add)  inbox_enqueue "$@" ;;
   inbox-enqueue) inbox_enqueue "$@" ;;  # bounded compat alias (one release)
   server)     server "$@" ;;

@@ -119,11 +119,10 @@ properties; no separate build step.
 
 ### Browser attach lifecycle and geometry
 
-At boot the gateway runs `presence.sh ensure` once (unless the test override is
-active), because `familiar-viewer` deliberately does not create the resident
-Presence session. A synchronous PTY spawn failure triggers one more ensure and
-one retry. `familiar.sh` exports `FAMILIAR_PRESENCE_SOCKET`; plugin navigation
-and exact terminal targets are passed through Familiar's render host environment.
+The gateway never starts Presence. It spawns one attach-only viewer per browser
+PTY and reports spawn/attach failures to the client; `familiar-pi@<instance>` is
+the sole lifecycle owner. `familiar.sh` exports `FAMILIAR_PRESENCE_SOCKET`;
+plugin navigation and exact terminal targets pass through the render host.
 
 The first restty resize supplies node-pty's initial `cols`/`rows`. Later
 WebSocket resize messages call `node-pty.resize`; the resulting SIGWINCH is read
@@ -150,7 +149,6 @@ outside that shell deliberately falls back to the vendored base font.
 | `FAMILIAR_DROPS_DIR` | `${dirname(FAMILIAR_LOG_PATH)}/uploads`, otherwise a per-user temporary directory | Private upload storage. The gateway requires user ownership, refuses a symlink, and enforces directory/file modes `0700`/`0600`. |
 | `FAMILIAR_VIEWER_BIN` | `familiar-viewer` from `PATH` (Nix wrapper: packaged viewer store path) | Native browser PTY child executable. |
 | `FAMILIAR_ATTACH_CMD` | — | Highest-priority test override for the browser PTY child. Set to `bash -l` to smoke-test without tmux. |
-| `FAMILIAR_PRESENCE_CTL` | repository `services/presence/presence.sh` | Presence lifecycle controller used for `ensure`, not browser attachment. |
 | `FAMILIAR_ATTACH_CWD` | gateway cwd | working dir for the attach child |
 | `FAMILIAR_PRESENCE_SOCKET` | `${FAMILIAR_PRESENCE_STATE_DIR:-<repo>/state/presence}/tmux.sock` | Inner Presence tmux socket passed through to the viewer. |
 | `FAMILIAR_RENDER_URL` | — | Optional Familiar-owned semantic `left-nav` endpoint passed to each viewer. |

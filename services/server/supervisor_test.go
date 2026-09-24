@@ -230,30 +230,3 @@ func TestGracefulShutdownReverseDependencyOrder(t *testing.T) {
 		t.Fatalf("order=%v", order)
 	}
 }
-func TestPresenceNotKilledByDefault(t *testing.T) {
-	for _, teardown := range []bool{false, true} {
-		t.Run(map[bool]string{false: "preserved", true: "teardown"}[teardown], func(t *testing.T) {
-			dir := t.TempDir()
-			alive := filepath.Join(dir, "alive")
-			stopped := filepath.Join(dir, "stopped")
-			p := fakeChild("presence", "touch '"+alive+"'")
-			p.Presence = true
-			p.Detached = true
-			p.StopArgv = []string{"/bin/sh", "-c", "touch '" + stopped + "'"}
-			p.Probe = ProbeConfig{Type: "exec", Argv: []string{"/bin/sh", "-c", "test -f '" + alive + "'"}, Interval: Duration(10 * time.Millisecond), Timeout: Duration(50 * time.Millisecond)}
-			c := testConfig(t, p)
-			c.TeardownPresence = teardown
-			s := startSupervisor(t, c)
-			waitFor(t, time.Second, s.Ready)
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-			defer cancel()
-			if e := s.Close(ctx); e != nil {
-				t.Fatal(e)
-			}
-			_, e := os.Stat(stopped)
-			if teardown != (e == nil) {
-				t.Fatalf("teardown=%v stop marker err=%v", teardown, e)
-			}
-		})
-	}
-}

@@ -15,8 +15,7 @@ run_pi_once() {
   local state=$1
   shift
   mkdir -p "$state"
-  # run_pi is intentionally resident. Let its first iteration write the cache,
-  # then stop it while the fake pi command is in the loop's one-second sleep.
+  # The fake Pi exits after the one systemd-owned invocation writes the cache.
   set +e
   env -u LLAMA_BASE_URL -u FAMILIAR_MODEL_FILE -u NEED_LLAMA \
     PATH="$TMP/bin:$PATH" \
@@ -24,10 +23,10 @@ run_pi_once() {
     PI_CODING_AGENT_DIR="$state" \
     FAMILIAR_DEFAULT_PROVIDER=tiamat \
     FAMILIAR_DEFAULT_MODEL=remote-model \
-    "$@" timeout 0.5 "$REPO/familiar.sh" pi >/dev/null 2>"$state/stderr"
+    "$@" "$REPO/familiar.sh" pi >/dev/null 2>"$state/stderr"
   local status=$?
   set -e
-  [ "$status" -eq 124 ] || { cat "$state/stderr" >&2; return 1; }
+  [ "$status" -eq 0 ] || { cat "$state/stderr" >&2; return 1; }
   ! grep -q 'unbound variable' "$state/stderr"
 }
 

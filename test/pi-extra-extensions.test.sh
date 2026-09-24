@@ -10,6 +10,7 @@ chmod 600 "$TMP/familiar.toml"
 
 cat > "$TMP/bin/pi" <<'EOF'
 #!/usr/bin/env bash
+printf '%s\n' "${PLUGIN_PI_DEFAULT:-}" > "$PI_CODING_AGENT_DIR/plugin-env"
 printf '%s\n' "$@" > "$PI_CODING_AGENT_DIR/cli-args.tmp"
 mv "$PI_CODING_AGENT_DIR/cli-args.tmp" "$PI_CODING_AGENT_DIR/cli-args"
 touch "$PI_CODING_AGENT_DIR/ready"
@@ -17,8 +18,10 @@ exit 0
 EOF
 cat > "$TMP/bin/nix" <<'EOF'
 #!/usr/bin/env bash
-# plugin_extensions_json is the only Nix operation: return two host plugin paths.
-printf '%s\n' '["/opt/plugin/index.js","/etc/shared/index.js"]'
+case "$*" in
+  *m.pi.env*) printf '%s\n' '{"PLUGIN_PI_DEFAULT":"from-manifest"}' ;;
+  *) printf '%s\n' '["/opt/plugin/index.js","/etc/shared/index.js"]' ;;
+esac
 EOF
 chmod 700 "$TMP/bin/pi" "$TMP/bin/nix"
 
@@ -120,6 +123,7 @@ jq -e --arg root "$REPO/integrations/pi/extensions" '
     and ([.extensions[] | select(. == "/etc/familiar-ui-extension/index.js")] | length) == 1
 ' "$state/settings.json" >/dev/null
 grep -qx -- '--continue' "$state/cli-args"
+grep -qx 'from-manifest' "$state/plugin-env"
 
 # Unset (as opposed to explicitly empty) defaults to no deployment extensions.
 unset_state="$TMP/unset"

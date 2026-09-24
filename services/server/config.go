@@ -30,7 +30,6 @@ type Config struct {
 	StateDir          string         `toml:"state_dir"`
 	ShutdownGrace     Duration       `toml:"shutdown_grace"`
 	ReadHeaderTimeout Duration       `toml:"read_header_timeout"`
-	TeardownPresence  bool           `toml:"teardown_presence"`
 	LogMaxBytes       int64          `toml:"log_max_bytes"`
 	Children          []ChildConfig  `toml:"children"`
 	Renders           []RenderConfig `toml:"-"`
@@ -42,9 +41,6 @@ type ChildConfig struct {
 	WorkingDir              string            `toml:"working_dir"`
 	Env                     map[string]string `toml:"env"`
 	Required                bool              `toml:"required"`
-	Presence                bool              `toml:"presence"`
-	Detached                bool              `toml:"detached"`
-	StopArgv                []string          `toml:"stop_argv"`
 	DependsOn               []string          `toml:"depends_on"`
 	DependencyTimeout       Duration          `toml:"dependency_timeout"`
 	DependencyTimeoutPolicy string            `toml:"dependency_timeout_policy"`
@@ -176,9 +172,6 @@ func ValidateConfig(c Config) error {
 			if key == "" || strings.ContainsAny(key, "=\x00") {
 				return fmt.Errorf("child %s has invalid environment key", x.Name)
 			}
-		}
-		if x.Presence && !x.Detached {
-			return fmt.Errorf("presence child %s must use detached=true so its session can outlive the supervisor", x.Name)
 		}
 		if x.DependencyTimeoutPolicy != "fail-child" && x.DependencyTimeoutPolicy != "start-degraded" {
 			return fmt.Errorf("child %s: invalid dependency timeout policy", x.Name)

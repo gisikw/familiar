@@ -1,4 +1,4 @@
-# Canonical Linux source-tree deployment for all five Familiar Server children.
+# Canonical Linux source-tree deployment for Familiar Server children.
 # ./familiar.sh server resolves familiar.toml/environment endpoints and provisions
 # missing local LLM/STT models before launching this file. Relative working/state
 # directories resolve from this file's directory.
@@ -7,10 +7,6 @@ state_dir = "../../state/server"
 shutdown_grace = "10s"
 read_header_timeout = "5s"
 log_max_bytes = 8388608
-# Preserve the Presence Runtime when the supervisor stops. Use presence.sh stop
-# (or set this true deliberately) only for a full continuity teardown.
-teardown_presence = false
-
 [[children]]
 name = "llm"
 argv = ["nix", "run", ".#familiar-llm"]
@@ -50,35 +46,14 @@ url = "http://127.0.0.1:9933/readyz"
 failure_threshold = 3
 
 [[children]]
-name = "presence"
-argv = ["./services/presence/presence.sh", "ensure"]
-stop_argv = ["./services/presence/presence.sh", "stop"]
-working_dir = "../.."
-presence = true
-detached = true
-required = true
-depends_on = ["llm"]
-dependency_timeout = "45s"
-dependency_timeout_policy = "fail-child"
-[children.probe]
-type = "exec"
-argv = ["./services/presence/presence.sh", "status", "--quiet"]
-interval = "1s"
-timeout = "3s"
-# Do not report a transient tmux pane between pi crash/respawn cycles as ready.
-success_threshold = 3
-failure_threshold = 3
-
-[[children]]
 name = "gateway"
 argv = ["nix", "run", ".#familiar-gateway"]
 working_dir = "../.."
 required = true
-depends_on = ["presence", "stt", "tts"]
+depends_on = ["stt", "tts"]
 dependency_timeout = "30s"
 dependency_timeout_policy = "fail-child"
 [children.env]
-FAMILIAR_PRESENCE_CTL = "./services/presence/presence.sh"
 FAMILIAR_STT_URL = "http://127.0.0.1:9932"
 FAMILIAR_TTS_URL = "http://127.0.0.1:9933"
 [children.probe]

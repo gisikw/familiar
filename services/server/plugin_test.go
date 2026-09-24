@@ -37,24 +37,20 @@ render_url="http://127.0.0.1:7340/v1/render"
 GOLEM_CLI_ARGV_JSON="[\"golem\",\"--root\",\"${plugin_root}\"]"
 `)
 	c := DefaultConfig()
-	c.Children = append(c.Children, ChildConfig{Name: "presence", Presence: true})
 	exts, err := LoadPlugin(&c, "golem", root, map[string]string{"GOLEM_DB": "/state/db", "GOLEM_CLI_ARGV_JSON": "instance"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.Children) != 3 || c.Children[1].Name != "plugin.golem.service" || c.Children[1].Required {
+	if len(c.Children) != 2 || c.Children[0].Name != "plugin.golem.service" || c.Children[0].Required {
 		t.Fatalf("children=%+v", c.Children)
 	}
-	if got := c.Children[2].DependsOn; len(got) != 1 || got[0] != "plugin.golem.service" {
+	if got := c.Children[1].DependsOn; len(got) != 1 || got[0] != "plugin.golem.service" {
 		t.Fatal(got)
-	}
-	if c.Children[0].Env["GOLEM_CLI_ARGV_JSON"] != "instance" {
-		t.Fatalf("instance env did not win: %+v", c.Children[0].Env)
 	}
 	if len(exts) != 1 || exts[0] != filepath.Join(root, "contrib/familiar/pi") {
 		t.Fatal(exts)
 	}
-	if !strings.Contains(c.Children[1].Argv[1], root) || c.Children[1].Env["GOLEM_DB"] != "/state/db" || c.Children[1].Env["FAMILIAR_RENDER_INVALIDATE_URL"] == "" {
+	if !strings.Contains(c.Children[0].Argv[1], root) || c.Children[0].Env["GOLEM_DB"] != "/state/db" || c.Children[0].Env["FAMILIAR_RENDER_INVALIDATE_URL"] == "" {
 		t.Fatal(c.Children[0])
 	}
 	if len(c.Renders) != 1 || c.Renders[0].URL != "http://127.0.0.1:7340/v1/render" {
@@ -108,16 +104,15 @@ func TestBundledGolemClientManifestLoads(t *testing.T) {
 		t.Skip("bundled manifest not present (building outside the repo root)")
 	}
 	c := DefaultConfig()
-	c.Children = append(c.Children, ChildConfig{Name: "presence", Presence: true})
 	exts, err := LoadPlugin(&c, "golem", root, map[string]string{"GOLEM_ENDPOINT": "unix:///tmp/golemd.sock"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(exts) != 1 || !strings.HasSuffix(exts[0], "contrib/familiar/pi/agents") || len(c.Renders) != 1 || len(c.Children) != 3 {
+	if len(exts) != 1 || !strings.HasSuffix(exts[0], "contrib/familiar/pi/agents") || len(c.Renders) != 1 || len(c.Children) != 2 {
 		t.Fatalf("extensions=%v renders=%v children=%v", exts, c.Renders, c.Children)
 	}
-	if c.Children[0].Env["GOLEM_ENDPOINT"] != "unix:///tmp/golemd.sock" || c.Children[2].Env["GOLEM_ENDPOINT"] != "unix:///tmp/golemd.sock" {
-		t.Fatalf("operator endpoint did not reach presence and render: %+v %+v", c.Children[0].Env, c.Children[2].Env)
+	if c.Children[0].Env["GOLEM_ENDPOINT"] != "unix:///tmp/golemd.sock" || c.Children[1].Env["GOLEM_ENDPOINT"] != "unix:///tmp/golemd.sock" {
+		t.Fatalf("operator endpoint did not reach plugin services: %+v %+v", c.Children[0].Env, c.Children[1].Env)
 	}
 }
 

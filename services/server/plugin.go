@@ -130,34 +130,6 @@ func LoadPlugin(c *Config, id, root string, environment map[string]string) ([]st
 	if manifest.Chrome.URL != "" {
 		c.Renders = append(c.Renders, RenderConfig{Plugin: id, URL: manifest.Chrome.URL, Token: token})
 	}
-	piEnv := make(map[string]string, len(manifest.Pi.Env))
-	for key, value := range manifest.Pi.Env {
-		if key == renderInvalidateEnv {
-			continue
-		}
-		if !validEnvKey(key) || len(value) > 4096 {
-			return nil, fmt.Errorf("plugin %s has invalid [pi.env] entry %q", id, key)
-		}
-		if piEnv[key], err = expandRoot(value, root); err != nil {
-			return nil, err
-		}
-	}
-	// Instance configuration is the deliberate override for trusted plugin defaults.
-	for key, value := range environment {
-		if key != renderInvalidateEnv {
-			piEnv[key] = value
-		}
-	}
-	for i := range c.Children {
-		if c.Children[i].Presence {
-			if c.Children[i].Env == nil {
-				c.Children[i].Env = map[string]string{}
-			}
-			for key, value := range piEnv {
-				c.Children[i].Env[key] = value
-			}
-		}
-	}
 	exts := make([]string, len(manifest.Pi.Extensions))
 	for i, extension := range manifest.Pi.Extensions {
 		if exts[i], err = expandRoot(extension, root); err != nil {
@@ -168,18 +140,6 @@ func LoadPlugin(c *Config, id, root string, environment map[string]string) ([]st
 		}
 	}
 	return exts, nil
-}
-
-func validEnvKey(key string) bool {
-	if key == "" || len(key) > 256 {
-		return false
-	}
-	for i, r := range key {
-		if !((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9' && i > 0) || (r == '_' && i > 0)) {
-			return false
-		}
-	}
-	return true
 }
 
 func pluginEnvironment() map[string]string {

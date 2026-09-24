@@ -267,25 +267,6 @@ func (c *child) run() {
 		if manual {
 			continue
 		}
-		if c.cfg.Detached && !failed && !force {
-			c.mu.Lock()
-			c.state = "running"
-			c.ready = c.cfg.Probe.Type == "none"
-			c.mu.Unlock()
-			select {
-			case <-c.sup.ctx.Done():
-				return
-			case <-c.wake:
-				c.mu.Lock()
-				lost := c.readinessLost
-				c.readinessLost = false
-				c.mu.Unlock()
-				if lost && !c.afterExit("readiness lost", true, &attempt) && !c.waitForRestart() {
-					return
-				}
-				continue
-			}
-		}
 		if force {
 			attempt = 0
 			continue
@@ -435,12 +416,7 @@ func (c *child) probeLoop() {
 			c.mu.Unlock()
 			if lost {
 				c.sup.log.Warn("readiness failure threshold reached", "child", c.cfg.Name, "failures", c.cfg.Probe.FailureThreshold)
-				if c.cfg.Detached || proc == nil {
-					select {
-					case c.wake <- struct{}{}:
-					default:
-					}
-				} else {
+				if proc != nil {
 					c.terminateAfterProbeFailure(proc)
 				}
 			}
@@ -524,9 +500,9 @@ func (s *Supervisor) StopChild(name string) error {
 	if !ok {
 		return errors.New("unknown child")
 	}
-	return s.stopOne(c, false, false)
+	return s.stopOne(c, false)
 }
-func (s *Supervisor) stopOne(c *child, shutdown, preserve bool) error {
+func (s *Supervisor) stopOne(c *child, shutdown bool) error {
 	if s.stopHook != nil {
 		s.stopHook(c.cfg.Name)
 	}
@@ -535,16 +511,10 @@ func (s *Supervisor) stopOne(c *child, shutdown, preserve bool) error {
 	c.shuttingDown = shutdown
 	p := c.proc
 	c.ready = false
-	if preserve {
-		c.state = "preserved"
-	}
 	c.mu.Unlock()
 	select {
 	case c.wake <- struct{}{}:
 	default:
-	}
-	if preserve {
-		return nil
 	}
 	if p != nil {
 		signalProcessGroup(p, false)
@@ -566,17 +536,6 @@ func (s *Supervisor) stopOne(c *child, shutdown, preserve bool) error {
 		}
 	}
 stopped:
-	if c.cfg.Detached && len(c.cfg.StopArgv) > 0 {
-		ctx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownGrace.Value())
-		defer cancel()
-		cmd := exec.CommandContext(ctx, c.cfg.StopArgv[0], c.cfg.StopArgv[1:]...)
-		cmd.Dir = c.cfg.WorkingDir
-		cmd.Env = mergedEnv(c.cfg.Env)
-		configureChildProcess(cmd)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			s.log.Warn("detached child stop failed", "child", c.cfg.Name, "error", err, "output", string(out))
-		}
-	}
 	return nil
 }
 func (s *Supervisor) shutdownOrder() []*child {
@@ -611,8 +570,7 @@ func (s *Supervisor) Close(ctx context.Context) error {
 	var result error
 	s.closeOnce.Do(func() {
 		for _, c := range s.shutdownOrder() {
-			preserve := c.cfg.Presence && !s.cfg.TeardownPresence
-			if err := s.stopOne(c, true, preserve); err != nil && result == nil {
+			if err := s.stopOne(c, true); err != nil && result == nil {
 				result = err
 			}
 		}
