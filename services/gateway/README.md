@@ -16,10 +16,14 @@ Binds `127.0.0.1:1692`. See `DESIGN.md` for the full protocol rationale.
   one session-tagged `IngestEnvelope` per event (publish / revise / lock /
   session). Localhost only; low-rate, so POST-per-event over a persistent
   socket (see DESIGN.md).
-- **Ingress** (`POST /submit`, `POST /cancel`) — text/voice in. The gateway owns
-  STT/TTS (`FAMILIAR_STT_URL` / `FAMILIAR_TTS_URL`); it transcribes takes and
-  pushes ready-to-dispatch commands down `GET /relay` (SSE), which the pi
-  extension subscribes to and enacts against the pi API.
+- **Ingress** (`POST /submit`, `POST /cancel`, `POST /merge?session=<id>`) —
+  text/voice in plus operator-requested fork return. The gateway owns STT/TTS
+  (`FAMILIAR_STT_URL` / `FAMILIAR_TTS_URL`); it transcribes takes and pushes
+  ready-to-dispatch commands down `GET /relay` (SSE), which the pi extension
+  subscribes to and enacts against the pi API. `/merge` accepts an optional
+  `{"quiet":true}` body, rejects a primary session (which has no parent), and
+  only asks the fork to begin its normal prompted return flow; it supplies no
+  return content.
 - **Session discovery** (`GET /sessions`) — primary and fork metadata with
   `live`, `stopped`, `merging`, or `merged` state. Fork metadata and merge
   markers are read from `FAMILIAR_STATE_DIR/forks`.
@@ -38,7 +42,7 @@ Binds `127.0.0.1:1692`. See `DESIGN.md` for the full protocol rationale.
 The gateway keeps independent history, epoch, agent state, relay, voice ingress,
 and audio state for every Pi session. These client routes accept an optional
 `?session=<Pi session id>`: `/stream`, `/relay`, `/agent`, `/submit`, `/cancel`,
-`/voice-status`, `/upload`, `/segments/:mid/:idx/audio`, and `/pty`. If omitted,
+`/merge`, `/voice-status`, `/upload`, `/segments/:mid/:idx/audio`, and `/pty`. If omitted,
 they select the most recently registered `primary`, preserving existing client
 behavior. The subscriber always supplies `session`, `role=primary|fork`, and a
 fork's `parentSessionId`; commands therefore go only to the selected Pi.

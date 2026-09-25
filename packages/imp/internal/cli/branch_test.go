@@ -53,17 +53,24 @@ func TestQuietMergeQueuesResidentIntent(t *testing.T) {
 	writeForkSession(t, session)
 	imp := jsonServer(t, func(r map[string]any) {
 		args := r["args"].(map[string]any)
-		if r["area"] != "branch" || r["operation"] != "merge" || args["text"] != "PR deployed" || args["quiet"] != true {
+		if r["area"] != "branch" || r["operation"] != "merge" || args["text"] != nil || args["quiet"] != true {
 			t.Errorf("request=%#v", r)
 		}
 	})
 	env := map[string]string{"FAMILIAR_SESSION_FILE": session, "FAMILIAR_IMP_SOCKET": imp}
 	var out, er bytes.Buffer
-	if code := branchMain([]string{"merge", "--quiet", "PR deployed"}, &out, &er, branchEnv(env)); code != 0 {
+	if code := branchMain([]string{"merge", "--quiet"}, &out, &er, branchEnv(env)); code != 0 {
 		t.Fatalf("code=%d out=%s err=%s", code, out.String(), er.String())
 	}
-	if strings.TrimSpace(out.String()) != "merge queued; it will be sent when this turn settles" {
+	if strings.TrimSpace(out.String()) != "merge queued; when this turn settles you'll be asked for your return" {
 		t.Fatalf("out=%q", out.String())
+	}
+}
+func TestMergeRejectsPositionalSummary(t *testing.T) {
+	var out, er bytes.Buffer
+	code := branchMain([]string{"merge", "old-style summary"}, &out, &er, branchEnv(nil))
+	if code != ExitUsage || !strings.Contains(er.String(), "no longer takes a summary") || !strings.Contains(er.String(), "write your return when prompted") {
+		t.Fatalf("code=%d err=%q", code, er.String())
 	}
 }
 func TestCloseCommandIsGone(t *testing.T) {
@@ -76,7 +83,7 @@ func TestPrimaryCannotMerge(t *testing.T) {
 	session := filepath.Join(t.TempDir(), "primary.jsonl")
 	_ = os.WriteFile(session, []byte("{\"type\":\"session\",\"id\":\"primary\"}\n{\"type\":\"message\",\"id\":\"leaf\"}\n"), 0600)
 	var out, er bytes.Buffer
-	code := branchMain([]string{"merge", "done"}, &out, &er, branchEnv(map[string]string{"FAMILIAR_SESSION_FILE": session, "FAMILIAR_INSTANCE_ID": "primary", "FAMILIAR_IMP_SOCKET": "/unused"}))
+	code := branchMain([]string{"merge"}, &out, &er, branchEnv(map[string]string{"FAMILIAR_SESSION_FILE": session, "FAMILIAR_INSTANCE_ID": "primary", "FAMILIAR_IMP_SOCKET": "/unused"}))
 	if code != ExitUsage || !strings.Contains(er.String(), "you're the top level; there's nothing to merge into") {
 		t.Fatalf("code=%d err=%q", code, er.String())
 	}

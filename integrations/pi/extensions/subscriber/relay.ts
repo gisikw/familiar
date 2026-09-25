@@ -11,6 +11,7 @@ import {
   type VoiceStatusCommand,
 } from "./protocol.ts";
 import type { PendingEchoes } from "./echo.ts";
+import { IMP_BRANCH_HANDLER } from "../imp/ingress.mjs";
 
 /* --- Thin relay: extension ⇄ familiar server ------------------------------
  *
@@ -24,7 +25,7 @@ import type { PendingEchoes } from "./echo.ts";
  *                 bounded queue when the server is down; never throws.
  *   NoopAudio   — the server owns TTS now, so the firehose's audio.register
  *                 calls are no-ops here. `synthesizing` is decided server-side.
- *   RelayClient — ingress. Subscribes to /relay (SSE) and enacts submit/cancel
+ *   RelayClient — ingress. Subscribes to /relay (SSE) and enacts submit/cancel/merge
  *                 commands against the pi API (sendUserMessage / abort), which
  *                 only the extension can reach.
  */
@@ -227,7 +228,7 @@ export class RelayClient {
     }
   }
 
-  private enact(cmd: RelayCommand) {
+  enact(cmd: RelayCommand) {
     if (cmd.type === "voice-status") {
       this.voice.ctx = this.ctx;
       this.voice.enact(cmd);
@@ -235,6 +236,14 @@ export class RelayClient {
     }
     if (cmd.type === "cancel") {
       try { this.ctx?.abort?.(); } catch (err) { errorLog("relay", { cancelError: String(err) }); }
+      return;
+    }
+    if (cmd.type === "merge") {
+      try {
+        const handler = (process as any)[IMP_BRANCH_HANDLER];
+        if (!handler || typeof handler.operatorMerge !== "function") throw new Error("branch merge unavailable");
+        handler.operatorMerge(cmd.quiet ?? false);
+      } catch (err) { errorLog("relay", { mergeError: String(err) }); }
       return;
     }
     if (cmd.type === "submit") this.sendParts(cmd.correlationId, ...cmd.parts);

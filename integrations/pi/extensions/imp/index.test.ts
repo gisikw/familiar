@@ -40,6 +40,8 @@ async function serviceServer() {
 function harness(initial: any[], idle = false) {
   const entries = initial;
   const handlers = new Map<string, Handler[]>();
+  const activeToolSets: string[][] = [];
+  const sentMessages: any[] = [];
   let sequence = 0;
   let shutdowns = 0;
   const pi = {
@@ -48,6 +50,11 @@ function harness(initial: any[], idle = false) {
       const entry = { type: "custom", id: `new-${++sequence}`, customType, data };
       entries.push(entry);
       return entry.id;
+    },
+    setActiveTools(names: string[]) { activeToolSets.push([...names]); },
+    sendMessage(message: any, options: any) {
+      sentMessages.push({ message, options });
+      entries.push({ type: "custom_message", id: `new-${++sequence}`, ...message });
     },
   };
   impExtension(pi as any);
@@ -64,7 +71,7 @@ function harness(initial: any[], idle = false) {
   const emit = async (name: string) => {
     for (const handler of handlers.get(name) ?? []) await handler({ type: name, reason: "startup" }, ctx);
   };
-  return { entries, emit, shutdowns: () => shutdowns };
+  return { entries, emit, activeToolSets, sentMessages, shutdowns: () => shutdowns };
 }
 
 const forkPrefix = () => [
@@ -73,72 +80,79 @@ const forkPrefix = () => [
   { type: "message", id: "task", message: { role: "user", content: "do it" } },
 ];
 
-test("settled merge uses the true leaf, carries last words, then becomes terminal", async () => {
+test("the harness prompts a tool-free return turn and sends that turn as the merge", async () => {
   const service = await serviceServer();
   process.env.FAMILIAR_SERVICES_SOCKET = service.path;
   process.env.FAMILIAR_INSTANCE_ID = "fork-1";
   const h = harness(forkPrefix());
   await h.emit("session_start");
 
-  (process as any)[IMP_BRANCH_HANDLER].handle({ operation: "merge", args: { text: "I fixed it", quiet: true } });
+  (process as any)[IMP_BRANCH_HANDLER].handle({ operation: "merge", args: { quiet: true } });
   h.entries.push(
     { type: "message", id: "tool-result", message: { role: "toolResult", content: [{ type: "text", text: "merge queued" }] } },
-    { type: "message", id: "true-leaf", message: { role: "assistant", content: [{ type: "text", text: "One caveat remains." }] } },
+    { type: "message", id: "work-leaf", message: { role: "assistant", content: [{ type: "text", text: "Finishing the work first." }] } },
   );
+  await h.emit("agent_settled");
 
+  expect(h.activeToolSets).toEqual([[]]);
+  expect(h.sentMessages).toHaveLength(1);
+  expect(h.sentMessages[0]).toMatchObject({
+    message: { customType: "familiar.merge-return-request.v1" },
+    options: { triggerTurn: true, deliverAs: "followUp" },
+  });
+  expect(h.sentMessages[0].message.content).toBe("Write your return to parent: what you're bringing home, in your own voice. This message is the merge; nothing follows it.");
+
+  h.entries.push({ type: "message", id: "return-leaf", message: { role: "assistant", content: [{ type: "text", text: "I fixed the race and kept the tests green." }] } });
   await h.emit("agent_settled");
   const wire = await service.request;
   await service.close();
   const body = JSON.parse(wire.args.body);
   expect(wire.op).toBe("schedule.enqueue");
   expect(wire.args.urgency).toBe("soft");
-  expect(body.lastEntryId).toBe("true-leaf");
-  expect(body.turnCount).toBe(3);
-  expect(body.summary).toBe("I fixed it\n\nlast words:\nOne caveat remains.");
-  expect(h.entries.at(-1)).toMatchObject({ customType: "familiar.merge-sent.v1", data: { lastEntryId: "true-leaf" } });
-  expect(h.entries.slice(h.entries.findIndex((entry) => entry.customType === "familiar.merge-sent.v1") + 1)
-    .some((entry) => entry.message?.role === "assistant")).toBe(false);
+  expect(wire.args.summary).toBe("I fixed the race and kept the tests green.");
+  expect(body.lastEntryId).toBe("return-leaf");
+  expect(body.summary).toBe("I fixed the race and kept the tests green.");
+  expect(h.entries.at(-1)).toMatchObject({ customType: "familiar.merge-sent.v1", data: { lastEntryId: "return-leaf" } });
+  expect(h.entries.slice(h.entries.findIndex((entry) => entry.customType === "familiar.merge-sent.v1") + 1)).toEqual([]);
   expect(h.shutdowns()).toBe(1);
 });
 
-test("the latest persisted pending merge is sent after a restart settle", async () => {
-  const service = await serviceServer();
-  process.env.FAMILIAR_SERVICES_SOCKET = service.path;
-  process.env.FAMILIAR_INSTANCE_ID = "fork-2";
-  const entries = forkPrefix();
-  entries.push(
-    { type: "custom", id: "pending-old", customType: "familiar.merge-pending.v1", data: { summary: "old", quiet: false } },
-    { type: "custom", id: "pending-new", customType: "familiar.merge-pending.v1", data: { summary: "replacement", quiet: false } },
-    { type: "message", id: "restart-leaf", message: { role: "assistant", content: [] } },
-  );
-  const h = harness(entries);
+test("operator merge while idle enters the same prompted path", async () => {
+  process.env.FAMILIAR_INSTANCE_ID = "fork-operator";
+  const h = harness(forkPrefix(), true);
   await h.emit("session_start");
-  await h.emit("agent_settled");
+  (process as any)[IMP_BRANCH_HANDLER].operatorMerge(false);
+  await new Promise((resolve) => setTimeout(resolve, 10));
 
-  const wire = await service.request;
-  await service.close();
-  expect(wire.args.summary).toBe("replacement");
-  expect(JSON.parse(wire.args.body).lastEntryId).toBe("restart-leaf");
-  expect(h.shutdowns()).toBe(1);
+  expect(h.entries.find((entry) => entry.customType === "familiar.merge-pending.v1")?.data)
+    .toEqual({ quiet: false, requestedBy: "operator" });
+  expect(h.entries.some((entry) => entry.customType === "familiar.merge-return-requested.v1")).toBe(true);
+  expect(h.sentMessages).toHaveLength(1);
+  expect(h.activeToolSets).toEqual([[]]);
 });
 
-test("a pending merge flushes on an idle restart without waiting for a turn", async () => {
+test("restart after return request re-requests instead of sending the old work answer", async () => {
   const service = await serviceServer();
   process.env.FAMILIAR_SERVICES_SOCKET = service.path;
-  process.env.FAMILIAR_INSTANCE_ID = "fork-3";
+  process.env.FAMILIAR_INSTANCE_ID = "fork-restart";
   const entries = forkPrefix();
   entries.push(
-    { type: "custom", id: "pending", customType: "familiar.merge-pending.v1", data: { summary: "crashed before settle", quiet: true } },
-    { type: "message", id: "crash-leaf", message: { role: "assistant", content: [{ type: "text", text: "bye" }] } },
+    { type: "message", id: "old-work", message: { role: "assistant", content: [{ type: "text", text: "not the return" }] } },
+    { type: "custom", id: "pending", customType: "familiar.merge-pending.v1", data: { quiet: false, requestedBy: "self" } },
+    { type: "custom", id: "requested", customType: "familiar.merge-return-requested.v1", data: { pendingEntryId: "pending" } },
+    { type: "custom_message", id: "lost-prompt", customType: "familiar.merge-return-request.v1", content: "lost during crash" },
   );
   const h = harness(entries, true);
   await h.emit("session_start");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(h.sentMessages).toHaveLength(1);
+  expect(h.activeToolSets).toEqual([[]]);
 
+  h.entries.push({ type: "message", id: "return-after-restart", message: { role: "assistant", content: [] } });
+  await h.emit("agent_settled");
   const wire = await service.request;
   await service.close();
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  expect(JSON.parse(wire.args.body).lastEntryId).toBe("crash-leaf");
-  expect(wire.args.summary).toBe("crashed before settle\n\nlast words:\nbye");
-  expect(h.entries.at(-1)).toMatchObject({ customType: "familiar.merge-sent.v1" });
+  expect(wire.args.summary).toBe("(no return written)");
+  expect(JSON.parse(wire.args.body).lastEntryId).toBe("return-after-restart");
   expect(h.shutdowns()).toBe(1);
 });

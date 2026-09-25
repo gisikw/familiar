@@ -158,9 +158,8 @@ func finishBranch(args []string, out, errw io.Writer, getenv func(string) string
 	if quiet {
 		args = args[1:]
 	}
-	text, e := oneText(args, "merge")
-	if e != nil {
-		return usageError(errw, "%v", e)
+	if len(args) != 0 {
+		return usageError(errw, "imp merge no longer takes a summary; run `imp merge [--quiet]`, then write your return when prompted")
 	}
 	env, e := envNeed(getenv, "FAMILIAR_SESSION_FILE", "FAMILIAR_IMP_SOCKET")
 	if e != nil {
@@ -171,14 +170,14 @@ func finishBranch(args []string, out, errw io.Writer, getenv func(string) string
 		fmt.Fprintln(errw, "imp: you're the top level; there's nothing to merge into")
 		return ExitUsage
 	}
-	_, remote, e := call(env["FAMILIAR_IMP_SOCKET"], Request{Version: 1, Area: "branch", Operation: "merge", Args: map[string]any{"text": text, "quiet": quiet}})
+	_, remote, e := call(env["FAMILIAR_IMP_SOCKET"], Request{Version: 1, Area: "branch", Operation: "merge", Args: map[string]any{"quiet": quiet}})
 	if e != nil {
 		return branchError(errw, e)
 	}
 	if remote != nil {
 		return branchError(errw, errors.New(remote.Message))
 	}
-	fmt.Fprintln(out, "merge queued; it will be sent when this turn settles")
+	fmt.Fprintln(out, "merge queued; when this turn settles you'll be asked for your return")
 	return 0
 }
 func sessionFacts(path string) (leaf, first string, turns int, err error) {
@@ -288,7 +287,7 @@ func systemctlCommand(g func(string) string, args ...string) (string, []string) 
 
 const branchHelp = `Usage:
   imp fork "task text"
-  imp merge [--quiet] "summary"
+  imp merge [--quiet]
   imp forks
 `
 

@@ -7,6 +7,7 @@ import { ChannelRegistry, type Channel } from "./channels.ts";
 import { SessionCatalog } from "./sessions.ts";
 import { PtyBridge, PtySessionError, resolvePresenceSocket } from "./pty.ts";
 import { handleUpload } from "./upload.ts";
+import { handleMerge } from "./merge.ts";
 import type { IngestEnvelope, SessionIdentity } from "./protocol.ts";
 import { resolveTheme, toCss, toResttyTheme, ThemeError } from "./theme/resolve.ts";
 import { isLoopbackHost, requireSafeGatewayHost } from "./network.ts";
@@ -155,6 +156,10 @@ function handle(req: http.IncomingMessage, res: http.ServerResponse) {
       res.statusCode = 500; res.end();
     });
     if (pathname === "/cancel") return channel.ingress.handleCancel(req, res);
+    if (pathname === "/merge") return void handleMerge(req, res, channel).catch((err) => {
+      errorLog("subscriber", { mergeError: String(err) });
+      if (!res.headersSent) { res.statusCode = 500; res.end(); }
+    });
     if (pathname === "/upload") return void handleUpload(req, res, searchParams,
       (message) => channel.relay.send({ type: "submit", parts: [message] })).catch((err) => {
       errorLog("subscriber", { uploadError: String(err) });

@@ -5,14 +5,14 @@ set -euo pipefail
 repo=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)
 
 # The Go lifecycle test uses a PATH-local fake sudo/systemctl, fake scheduler
-# and resident Unix sockets: fork -> merge/close -> clean shutdown request.
+# and resident Unix sockets: fork -> prompted merge return -> clean shutdown request.
 nix shell nixpkgs#go -c bash -c \
-  'cd "$1/packages/imp" && CGO_ENABLED=0 go test ./internal/cli -run "Test(ForkCreatesStateAndStartsUnit|QuietMergeQueuesResidentIntent|ForksListsSystemctlState)$"' _ "$repo"
+  'cd "$1/packages/imp" && CGO_ENABLED=0 go test ./internal/cli -run "Test(ForkCreatesStateAndStartsUnit|QuietMergeQueuesResidentIntent|MergeRejectsPositionalSummary|ForksListsSystemctlState)$"' _ "$repo"
 
 # The Pi-package helper test clones a synthetic session in a temp tree and
 # proves its prompt/tool digest and inherited entries are identical. The merge
 # renderer test is the fake parent endpoint receiving the scheduler note.
 (cd "$repo/integrations/pi/extensions" && nix develop --no-write-lock-file .. -c \
-  bun test imp/index.test.ts tiamat/fork-prefix.test.ts scheduler/merge.test.ts)
+  bun test imp/index.test.ts subscriber/relay-merge.test.ts tiamat/fork-prefix.test.ts scheduler/merge.test.ts)
 
 echo 'M4a sandbox: fork -> merge -> parent note: PASS'

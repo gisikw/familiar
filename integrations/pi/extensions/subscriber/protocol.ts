@@ -25,6 +25,7 @@ export type {
   IngestEnvelope,
   SubmitCommand,
   CancelCommand,
+  MergeCommand,
   VoicePhase,
   VoiceStatusCommand,
   RelayCommand,

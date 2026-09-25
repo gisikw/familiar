@@ -21,8 +21,9 @@
  *   POST /voice-status              Browser capture lifecycle before audio exists.
  *   POST /cancel                    Abort the in-flight turn. Idempotent,
  *                                   fire-and-forget, 204 always.
+ *   POST /merge?session=ID          Ask a fork to enter its prompted return flow.
  *   GET  /relay?session=ID          SSE command bus, server → extension
- *                                   (RelayCommand: submit / cancel / voice-status). The
+ *                                   (RelayCommand: submit / cancel / merge / voice-status). The
  *                                   extension is the only subscriber; it owns
  *                                   the pi API (sendUserMessage / abort).
  *   GET  /segments/:mid/:idx/audio  Synthesized wav for a segment.
@@ -32,6 +33,7 @@
  *
  * Public client routes accept optional session=ID; omission selects the most
  * recently registered primary. /sessions lists primary and fork sessions.
+ * /merge also uses session=ID, but a selected primary is rejected.
  *
  * Stream events (one JSON object per SSE `data:` line on /stream):
  *
@@ -179,6 +181,7 @@ export interface SubmitCommand {
   parts: string[];
 }
 export interface CancelCommand { type: "cancel"; }
+export interface MergeCommand { type: "merge"; quiet?: boolean; }
 export type VoicePhase = "capturing" | "transcribing" | "idle";
 export interface VoiceStatusCommand {
   type: "voice-status";
@@ -189,7 +192,7 @@ export interface VoiceStatusCommand {
   seq: number;
   takeId?: number;
 }
-export type RelayCommand = SubmitCommand | CancelCommand | VoiceStatusCommand;
+export type RelayCommand = SubmitCommand | CancelCommand | MergeCommand | VoiceStatusCommand;
 
 export type VoiceStatusPayload = {
   phase: VoicePhase;
