@@ -33,7 +33,7 @@ func schedulerMain(argv []string, stdout, stderr io.Writer, getenv func(string) 
 	if path == "" {
 		path = "/run/familiar-services/familiar.sock"
 	}
-	if origin := getenv("FAMILIAR_INSTANCE_ID"); origin != "" {
+	if origin := getenv("FAMILIAR_INSTANCE_ID"); origin != "" && !strings.HasPrefix(inv.op, "push.") {
 		inv.args["origin"] = origin
 	}
 	result, remote, err := serviceCall(path, serviceRequest{inv.op, inv.args})
@@ -73,7 +73,7 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 	jsonMode, soft := false, false
 	vals := map[string]string{}
 	pos := []string{}
-	value := map[string]bool{"in": true, "at": true, "target": true, "id": true, "priority": true, "type": true, "source": true, "body": true}
+	value := map[string]bool{"in": true, "at": true, "target": true, "id": true, "priority": true, "type": true, "source": true, "body": true, "title": true}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--json" {
@@ -150,6 +150,15 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 			m["id"] = x
 		}
 		return schedulerInvocation{"schedule.enqueue", m}, jsonMode, nil
+	case "push":
+		if len(pos) != 1 || soft {
+			return schedulerInvocation{}, false, errors.New("push requires one quoted message (and optional --title)")
+		}
+		m := map[string]any{"body": pos[0]}
+		if x := vals["title"]; x != "" {
+			m["title"] = x
+		}
+		return schedulerInvocation{"push.send", m}, jsonMode, nil
 	case "notify":
 		if len(pos) != 1 {
 			return schedulerInvocation{}, false, errors.New("notify requires one quoted reason")
@@ -263,6 +272,17 @@ func serviceCall(path string, req serviceRequest) (json.RawMessage, *remoteError
 }
 func writeSchedulerHuman(out io.Writer, op string, result json.RawMessage, stderr io.Writer) int {
 	switch op {
+	case "push.send":
+		var x struct{ Sent, Failed int }
+		if json.Unmarshal(result, &x) != nil {
+			return ExitProtocol
+		}
+		fmt.Fprintf(out, "pushed to %d device(s)", x.Sent)
+		if x.Failed > 0 {
+			fmt.Fprintf(out, ", %d failed", x.Failed)
+		}
+		fmt.Fprintln(out)
+		return 0
 	case "schedule.enqueue":
 		var x struct {
 			Event struct {
@@ -309,4 +329,5 @@ const schedulerHelp = `Usage:
   imp schedule cancel ID
   imp notify [--target TARGET] [--id ID] [--soft] "reason"
   imp dnd [on DURATION|off|status]
+  imp push [--title TITLE] "message"   (to Kevin's phone)
 `

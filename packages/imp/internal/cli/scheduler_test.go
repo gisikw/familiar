@@ -85,3 +85,16 @@ func mustTime(t *testing.T, s string) time.Time {
 	}
 	return v
 }
+
+func TestParsePush(t *testing.T) {
+	inv, _, err := parseScheduler([]string{"push", "--title", "Kes", "hi love"}, time.Now())
+	if err != nil || inv.op != "push.send" || inv.args["body"] != "hi love" || inv.args["title"] != "Kes" {
+		t.Fatalf("push parse: %+v %v", inv, err)
+	}
+	if _, _, err := parseScheduler([]string{"push"}, time.Now()); err == nil {
+		t.Fatal("push without a message must fail")
+	}
+	if _, _, err := parseScheduler([]string{"push", "--soft", "x"}, time.Now()); err == nil {
+		t.Fatal("push --soft is meaningless and must fail")
+	}
+}
