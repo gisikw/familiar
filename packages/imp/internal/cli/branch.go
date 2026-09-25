@@ -35,6 +35,8 @@ func branchMain(argv []string, stdout, stderr io.Writer, getenv func(string) str
 		return forkMain(argv[1:], stdout, stderr, getenv)
 	case "merge":
 		return finishBranch(argv[1:], stdout, stderr, getenv)
+	case "label":
+		return labelMain(argv[1:], stdout, stderr, getenv)
 	case "forks":
 		return forksMain(argv[1:], stdout, stderr, getenv)
 	}
@@ -270,7 +272,7 @@ func forksMain(args []string, out, errw io.Writer, getenv func(string) string) i
 		if e != nil {
 			continue
 		}
-		var m struct{ ID, Task string }
+		var m struct{ ID, Task, Label string }
 		if json.Unmarshal(b, &m) != nil || m.ID == "" {
 			continue
 		}
@@ -279,7 +281,11 @@ func forksMain(args []string, out, errw io.Writer, getenv func(string) string) i
 		if exec.Command(cmdName, args...).Run() == nil {
 			active = "active"
 		}
-		fmt.Fprintf(out, "%s  %s  %s\n", m.ID, active, m.Task)
+		name := m.Task
+		if m.Label != "" {
+			name = m.Label
+		}
+		fmt.Fprintf(out, "%s  %s  %s\n", m.ID, active, name)
 	}
 	return 0
 }
@@ -293,6 +299,7 @@ func systemctlCommand(g func(string) string, args ...string) (string, []string) 
 const branchHelp = `Usage:
   imp fork "task text"
   imp merge [--quiet]
+  imp label "short name"   (forks: name yourself in the Open list)
   imp forks
 `
 
@@ -304,3 +311,64 @@ func nodeBin(getenv func(string) string) string {
 	}
 	return "node"
 }
+
+// labelMain lets a fork name itself for the operator's Open list. The label is
+// a display name only: the task stays in fork.json unchanged for the record.
+func labelMain(args []string, out, errw io.Writer, getenv func(string) string) int {
+	text, e := oneText(args, "label")
+	if e != nil {
+		return usageError(errw, "%v", e)
+	}
+	text = strings.Join(strings.Fields(text), " ")
+	if n := []rune(text); len(n) > MaxLabelRunes {
+		text = string(n[:MaxLabelRunes])
+	}
+	if getenv("FAMILIAR_PI_FORK") != "1" {
+		fmt.Fprintln(errw, "imp: labels name forks; you're the top level")
+		return ExitUsage
+	}
+	env, e := envNeed(getenv, "FAMILIAR_STATE_DIR", "FAMILIAR_INSTANCE_ID")
+	if e != nil {
+		fmt.Fprintf(errw, "imp: %v\n", e)
+		return ExitUnavailable
+	}
+	id := env["FAMILIAR_INSTANCE_ID"]
+	if filepath.Base(id) != id || strings.ContainsAny(id, "\\/\x00\n\r") {
+		return branchError(errw, errors.New("invalid instance id"))
+	}
+	dir := filepath.Join(env["FAMILIAR_STATE_DIR"], "forks", id)
+	path := filepath.Join(dir, "fork.json")
+	b, e := os.ReadFile(path)
+	if e != nil {
+		return branchError(errw, e)
+	}
+	meta := map[string]any{}
+	if e = json.Unmarshal(b, &meta); e != nil {
+		return branchError(errw, e)
+	}
+	meta["label"] = text
+	b, _ = json.Marshal(meta)
+	tmp, e := os.CreateTemp(dir, ".fork.json.*")
+	if e != nil {
+		return branchError(errw, e)
+	}
+	_, e = tmp.Write(append(b, '\n'))
+	if c := tmp.Close(); e == nil {
+		e = c
+	}
+	if e == nil {
+		e = os.Chmod(tmp.Name(), 0600)
+	}
+	if e == nil {
+		e = os.Rename(tmp.Name(), path)
+	}
+	if e != nil {
+		os.Remove(tmp.Name())
+		return branchError(errw, e)
+	}
+	fmt.Fprintf(out, "labeled: %s\n", text)
+	return 0
+}
+
+// MaxLabelRunes keeps labels to one line in the Open list.
+const MaxLabelRunes = 60

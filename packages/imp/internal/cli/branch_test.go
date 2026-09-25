@@ -141,3 +141,36 @@ func TestForksListsSystemctlState(t *testing.T) {
 		t.Fatalf("code=%d out=%q err=%q", code, out.String(), er.String())
 	}
 }
+
+func TestForkLabelsItselfWithoutTouchingTask(t *testing.T) {
+	root := t.TempDir()
+	d := filepath.Join(root, "forks", "f1")
+	os.MkdirAll(d, 0700)
+	os.WriteFile(filepath.Join(d, "fork.json"), []byte(`{"id":"f1","task":"a very long original task"}`), 0600)
+	env := branchEnv(map[string]string{"FAMILIAR_STATE_DIR": root, "FAMILIAR_INSTANCE_ID": "f1", "FAMILIAR_PI_FORK": "1"})
+	var out, er bytes.Buffer
+	if code := branchMain([]string{"label", "  imp label\n feature "}, &out, &er, env); code != 0 {
+		t.Fatalf("code=%d err=%q", code, er.String())
+	}
+	var m map[string]any
+	b, _ := os.ReadFile(filepath.Join(d, "fork.json"))
+	json.Unmarshal(b, &m)
+	if m["label"] != "imp label feature" || m["task"] != "a very long original task" {
+		t.Fatalf("meta=%v", m)
+	}
+	if i, _ := os.Stat(filepath.Join(d, "fork.json")); i.Mode().Perm() != 0600 {
+		t.Fatalf("mode=%v", i.Mode())
+	}
+	ctl := filepath.Join(root, "systemctl")
+	os.WriteFile(ctl, []byte("#!/bin/sh\nexit 0\n"), 0700)
+	t.Setenv("PATH", root+":"+os.Getenv("PATH"))
+	out.Reset()
+	branchMain([]string{"forks"}, &out, &er, env)
+	if !strings.Contains(out.String(), "f1  active  imp label feature") {
+		t.Fatalf("forks=%q", out.String())
+	}
+	primary := branchEnv(map[string]string{"FAMILIAR_STATE_DIR": root, "FAMILIAR_INSTANCE_ID": "p"})
+	if code := branchMain([]string{"label", "x"}, &out, &er, primary); code != ExitUsage {
+		t.Fatalf("primary label code=%d", code)
+	}
+}
