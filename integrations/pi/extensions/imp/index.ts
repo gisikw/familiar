@@ -9,6 +9,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     const sessionFile = ctx.sessionManager.getSessionFile();
     if (sessionFile) process.env.FAMILIAR_SESSION_FILE = sessionFile;
+    process.env.FAMILIAR_NODE ??= process.execPath;
     (process as any)[IMP_BRANCH_HANDLER] = {
       handle(request: { operation: string; args: { text?: unknown } }) {
         if ((request.operation !== "merge" && request.operation !== "close") || typeof request.args.text !== "string")

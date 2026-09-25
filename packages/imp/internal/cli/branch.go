@@ -102,7 +102,7 @@ func forkMain(args []string, out, errw io.Writer, getenv func(string) string) in
 	}()
 	sessionDir := filepath.Join(tmp, "sessions")
 	os.MkdirAll(sessionDir, 0700)
-	cmd := exec.Command("node", env["FAMILIAR_FORK_HELPER"], env["PI_PACKAGE_DIR"], env["FAMILIAR_SESSION_FILE"], leaf, sessionDir, env["FAMILIAR_INSTANCE_ID"])
+	cmd := exec.Command(nodeBin(getenv), env["FAMILIAR_FORK_HELPER"], env["PI_PACKAGE_DIR"], env["FAMILIAR_SESSION_FILE"], leaf, sessionDir, env["FAMILIAR_INSTANCE_ID"])
 	raw, e := cmd.CombinedOutput()
 	if e != nil {
 		fmt.Fprintf(errw, "imp: fork helper: %v: %s\n", e, raw)
@@ -329,3 +329,12 @@ const branchHelp = `Usage:
   imp close "reason"
   imp forks
 `
+
+// nodeBin prefers the resident Pi's own Node (exported by the imp extension as
+// FAMILIAR_NODE): resident unit PATHs do not carry node.
+func nodeBin(getenv func(string) string) string {
+	if n := getenv("FAMILIAR_NODE"); n != "" {
+		return n
+	}
+	return "node"
+}
