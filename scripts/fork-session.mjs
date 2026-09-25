@@ -31,7 +31,7 @@ if (branchEntry?.type === "message" && branchEntry.message?.role === "assistant"
 const markerEntryId = fork.appendCustomEntry("familiar.fork.v1", { parentSessionId: parentId, branchEntryId: entryId });
 fork.appendCustomMessageEntry(
   "familiar.fork-note.v1",
-  `You are a fork of ${parentId}; the parent may keep going. \`imp merge\` ends your branch; when your turn settles you'll be asked to write your return. Other forks and the parent may be editing the same files: commit only the paths you changed, never \`git commit -a\`. Name yourself early with \`imp label "short name"\` (it is what Kev sees in the Open list), and relabel whenever your focus shifts.`,
+  `You are a fork of ${parentId}; the parent may keep going. \`imp merge\` ends your branch; when your turn settles you'll be asked to write your return. Other forks and the parent may be editing the same files: commit only the paths you changed, never \`git commit -a\`. Edit familiar in ~/Projects/familiar (or a clone), never in /var/lib/fort-tracked/familiar/repo: the deploy tracker resets that tree. Name yourself early with \`imp label "short name"\` (it is what Kev sees in the Open list), and relabel whenever your focus shifts.`,
   true,
   { parentSessionId: parentId, branchEntryId: entryId },
 );
