@@ -134,9 +134,9 @@ func forkMain(args []string, out, errw io.Writer, getenv func(string) string) in
 		return branchError(errw, e)
 	}
 	unit := "familiar-pi@" + made.ID + ".service"
-	c := exec.Command("sudo", "systemctl", "start", unit)
+	c := exec.Command("sudo", "systemctl", "start", "--no-block", unit)
 	if x := getenv("FAMILIAR_SYSTEMCTL"); x != "" {
-		c = exec.Command(x, "start", unit)
+		c = exec.Command(x, "start", "--no-block", unit)
 	}
 	if raw, e = c.CombinedOutput(); e != nil {
 		fmt.Fprintf(errw, "imp: starting fork: %v: %s\n", e, raw)
