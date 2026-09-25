@@ -37,7 +37,7 @@ async function serviceServer() {
   return { path, request, close: () => new Promise<void>((resolve) => server.close(() => resolve())) };
 }
 
-function harness(initial: any[]) {
+function harness(initial: any[], idle = false) {
   const entries = initial;
   const handlers = new Map<string, Handler[]>();
   let sequence = 0;
@@ -58,6 +58,7 @@ function harness(initial: any[]) {
       getSessionFile: () => "/state/fork.jsonl",
       getBranch: () => entries,
     },
+    isIdle: () => idle,
     shutdown: () => { shutdowns++; },
   };
   const emit = async (name: string) => {
@@ -118,5 +119,26 @@ test("the latest persisted pending merge is sent after a restart settle", async 
   await service.close();
   expect(wire.args.summary).toBe("replacement");
   expect(JSON.parse(wire.args.body).lastEntryId).toBe("restart-leaf");
+  expect(h.shutdowns()).toBe(1);
+});
+
+test("a pending merge flushes on an idle restart without waiting for a turn", async () => {
+  const service = await serviceServer();
+  process.env.FAMILIAR_SERVICES_SOCKET = service.path;
+  process.env.FAMILIAR_INSTANCE_ID = "fork-3";
+  const entries = forkPrefix();
+  entries.push(
+    { type: "custom", id: "pending", customType: "familiar.merge-pending.v1", data: { summary: "crashed before settle", quiet: true } },
+    { type: "message", id: "crash-leaf", message: { role: "assistant", content: [{ type: "text", text: "bye" }] } },
+  );
+  const h = harness(entries, true);
+  await h.emit("session_start");
+
+  const wire = await service.request;
+  await service.close();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(JSON.parse(wire.args.body).lastEntryId).toBe("crash-leaf");
+  expect(wire.args.summary).toBe("crashed before settle\n\nlast words:\nbye");
+  expect(h.entries.at(-1)).toMatchObject({ customType: "familiar.merge-sent.v1" });
   expect(h.shutdowns()).toBe(1);
 });

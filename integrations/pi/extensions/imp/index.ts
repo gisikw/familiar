@@ -47,6 +47,9 @@ export default function (pi: ExtensionAPI) {
         return { queued: true };
       },
     };
+    // A fork that crashed after queueing its merge restarts idle; no turn will
+    // settle on its own, so flush the pending return once startup finishes.
+    setTimeout(() => { if (ctx.isIdle()) void flush(ctx).catch(() => {}); }, 0);
     if (ctx.mode !== "tui" || ingress) return;
     const candidate = new ImpIngress();
     try {
@@ -58,7 +61,9 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  pi.on("agent_settled", async (_event, ctx) => {
+  pi.on("agent_settled", async (_event, ctx) => flush(ctx));
+
+  async function flush(ctx: any) {
     if (sending) return;
     const entries = ctx.sessionManager.getBranch() as Entry[];
     const pendingIndex = entries.findLastIndex((entry) => entry.type === "custom" && entry.customType === PENDING);
@@ -107,7 +112,7 @@ export default function (pi: ExtensionAPI) {
     } finally {
       sending = false;
     }
-  });
+  }
 
   pi.on("session_shutdown", async () => {
     const old = ingress;
