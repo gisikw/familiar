@@ -48,6 +48,8 @@ CONFIG_DIR="$REPO"
 [ -n "${FAMILIAR_CONFIG_PATH:-}" ] && CONFIG_DIR="$(dirname "$FAMILIAR_CONFIG_PATH")"
 STATE_DIR="$REPO/state"
 [ "$CONFIG_DIR" = "$REPO" ] || STATE_DIR="$CONFIG_DIR/state"
+export FAMILIAR_STATE_DIR="${FAMILIAR_STATE_DIR:-$STATE_DIR}"
+export FAMILIAR_FORK_HELPER="${FAMILIAR_FORK_HELPER:-$REPO/scripts/fork-session.mjs}"
 resolve_config_path() { case "$1" in /*) printf '%s' "$1";; *) printf '%s/%s' "$CONFIG_DIR" "$1";; esac; }
 
 # Local configuration must load before defaults and before dev-shell recursion:
@@ -432,13 +434,19 @@ run_pi() {
         }
       } end
     ' > "$PI_CODING_AGENT_DIR/models-store.json"
-  # --continue resumes the most recent session (or starts one when none
-  # exists). The process intentionally runs once: systemd owns every restart.
+  # Fork units pin one session file and provide one initial task; the primary
+  # continues its newest session. The process runs once: systemd owns restarts.
+  local session_args=(--continue) initial_args=()
+  if [ -n "${FAMILIAR_FORK_SESSION_FILE:-}" ]; then
+    session_args=(--session "$FAMILIAR_FORK_SESSION_FILE")
+    [ -z "${FAMILIAR_FORK_INITIAL_MESSAGE:-}" ] || initial_args=(-- "$FAMILIAR_FORK_INITIAL_MESSAGE")
+  fi
   exec pi \
-    --continue \
+    "${session_args[@]}" \
     --no-context-files \
     --no-skills \
-    --skill "$REPO/skills/"
+    --skill "$REPO/skills/" \
+    "${initial_args[@]}"
 }
 
 # --- image drop transport ----------------------------------------------------

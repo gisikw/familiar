@@ -60,7 +60,12 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(
 		return 0
 	}
 	if args[0] != "attn" {
-		return schedulerMain(args, stdout, stderr, getenv)
+		switch args[0] {
+		case "fork", "merge", "close", "forks":
+			return branchMain(args, stdout, stderr, getenv)
+		default:
+			return schedulerMain(args, stdout, stderr, getenv)
+		}
 	}
 	inv, done, code := attnMain(args[1:], stdin, stdout, stderr)
 	if done {
@@ -327,7 +332,7 @@ func safeErrorCode(s string) string {
 	return s
 }
 
-const rootHelp = `Usage: imp <attn|schedule|notify|dnd> ...
+const rootHelp = `Usage: imp <attn|schedule|notify|dnd|fork|merge|close|forks> ...
 
 A private CLI-shaped model tool for Attention and scheduled events.
 

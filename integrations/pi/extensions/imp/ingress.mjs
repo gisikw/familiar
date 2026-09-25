@@ -6,8 +6,10 @@ import { createServer } from "node:net";
 export const IMP_ENV = "FAMILIAR_IMP_SOCKET";
 export const IMP_WIRE_LIMIT = 1 << 20;
 export const IMP_ATTN_HANDLER = Symbol.for("familiar.imp.attn.v1");
+export const IMP_BRANCH_HANDLER = Symbol.for("familiar.imp.branch.v1");
 const IMP_AREA_HANDLERS = {
   attn: IMP_ATTN_HANDLER,
+  branch: IMP_BRANCH_HANDLER,
 };
 const IMP_INGRESS_OWNER = Symbol.for("familiar.imp.ingress.v1");
 const CONNECTION_LIMIT = 16;

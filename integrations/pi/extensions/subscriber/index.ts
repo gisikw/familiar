@@ -13,6 +13,9 @@ import { contextSaturation } from "./saturation.ts";
 // (./protocol.ts re-exports them). Public behavior toward pi is unchanged.
 
 export default function(pi: ExtensionAPI) {
+  // Forks keep this extension (and therefore the exact same extension/tool
+  // registration prefix) but cannot use the single-session gateway until M4b.
+  const forkNoop = process.env.FAMILIAR_PI_FORK === "1";
   const hub = new RelayHub();
   const audio = new NoopAudio();
   const echoes = new PendingEchoes();
@@ -24,6 +27,7 @@ export default function(pi: ExtensionAPI) {
 
   // Handler bodies are wrapped: an egress bug must cost a log line, never pi.
   const guard = (fn: () => void) => {
+    if (forkNoop) return;
     try { fn(); } catch (err) { errorLog("subscriber", { handlerError: String(err) }); }
   };
 

@@ -16,12 +16,8 @@ export default function (pi: ExtensionAPI) {
     client = new SchedulerClient(instance, {
       event(event) {
         if (!seen.has(event.id)) {
-          pi.sendMessage({
-            customType: "scheduler-event",
-            content: `<scheduler-event id="${escapeAttr(event.id)}" type="${escapeAttr(event.type)}" priority="${event.priority}" source="${escapeAttr(event.source)}">\n${event.body || event.summary}\n</scheduler-event>`,
-            display: true,
-            details: { id: event.id, event },
-          }, { deliverAs: "steer", triggerTurn: true });
+          const message = renderScheduledEvent(event);
+          pi.sendMessage(message, { deliverAs: "steer", triggerTurn: true });
           seen.add(event.id);
         }
       },
@@ -36,10 +32,28 @@ export default function (pi: ExtensionAPI) {
   });
 }
 
+export function renderScheduledEvent(event: ScheduledEvent) {
+  if (event.type === "merge") {
+    const merge = JSON.parse(event.body) as { summary: string; forkSessionId: string; forkSessionFile: string; branchEntryId: string; firstEntryId: string; lastEntryId: string; turnCount: number; forkedFurther: boolean };
+    return {
+      customType: "familiar.merge.v1",
+      content: `<familiar-merge fork="${escapeAttr(merge.forkSessionId)}" branch="${escapeAttr(merge.branchEntryId)}" divergence="${merge.turnCount}" forked-further="${merge.forkedFurther}">\n${merge.summary}\nfull record: ${merge.forkSessionFile} entries ${merge.firstEntryId}..${merge.lastEntryId}\n</familiar-merge>`,
+      display: true,
+      details: { id: event.id, event, ...merge },
+    };
+  }
+  return {
+    customType: "scheduler-event",
+    content: `<scheduler-event id="${escapeAttr(event.id)}" type="${escapeAttr(event.type)}" priority="${event.priority}" source="${escapeAttr(event.source)}">\n${event.body || event.summary}\n</scheduler-event>`,
+    display: true,
+    details: { id: event.id, event },
+  };
+}
+
 function deliveredIds(entries: readonly unknown[]): Set<string> {
   const ids = new Set<string>();
   for (const entry of entries as Array<{ type?: string; message?: { customType?: string; details?: { id?: unknown } } }>) {
-    if (entry.type === "message" && entry.message?.customType === "scheduler-event" && typeof entry.message.details?.id === "string") ids.add(entry.message.details.id);
+    if (entry.type === "message" && (entry.message?.customType === "scheduler-event" || entry.message?.customType === "familiar.merge.v1") && typeof entry.message.details?.id === "string") ids.add(entry.message.details.id);
   }
   return ids;
 }
