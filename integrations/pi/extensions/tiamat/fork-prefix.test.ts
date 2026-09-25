@@ -1,31 +1,54 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
-test("fork inherits the immutable prompt/tool prefix byte-for-byte", () => {
+function expectStrictPrefix(prefix: unknown[], whole: unknown[]) {
+  expect(prefix.length).toBeLessThan(whole.length);
+  expect(whole.slice(0, prefix.length)).toEqual(prefix);
+}
+
+test("fork provider messages retain the parent and previous-turn prefixes", async () => {
   const root = mkdtempSync(join(tmpdir(), "familiar-fork-prefix-"));
   try {
+    const piRoot = process.env.PI_PACKAGE_DIR!;
+    const { SessionManager } = await import(`${piRoot}/dist/core/session-manager.js`);
+    const { convertToLlm } = await import(`${piRoot}/dist/core/messages.js`);
     const parent = join(root, "parent.jsonl");
-    const sha = "a".repeat(64); // tiamat's digest of assembled system prompt + tool surface
+    const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
     const prefix = [
-      {type:"session",version:3,id:"parent-session",timestamp:"2026-01-01T00:00:00.000Z",cwd:root},
-      {type:"custom",id:"prompt01",parentId:null,timestamp:"2026-01-01T00:00:01.000Z",customType:"familiar.system-prompt.v1",data:{sha256:sha,text:"identical prompt and ordered tools"}},
-      {type:"message",id:"branch01",parentId:"prompt01",timestamp:"2026-01-01T00:00:02.000Z",message:{role:"assistant",content:[{type:"text",text:"ready"}]}}
+      { type: "session", version: 3, id: "parent-session", timestamp: "2026-01-01T00:00:00.000Z", cwd: root },
+      { type: "message", id: "user0001", parentId: null, timestamp: "2026-01-01T00:00:01.000Z", message: { role: "user", content: "Please delegate this.", timestamp: 1 } },
+      { type: "message", id: "branch01", parentId: "user0001", timestamp: "2026-01-01T00:00:02.000Z", message: { role: "assistant", content: [{ type: "toolCall", id: "call-fork", name: "bash", arguments: { command: "imp fork \"inspect cache\"" } }, { type: "toolCall", id: "call-other", name: "read", arguments: { path: "later" } }], api: "anthropic-messages", provider: "anthropic", model: "test", usage, stopReason: "toolUse", timestamp: 2 } },
     ];
-    writeFileSync(parent, prefix.map(x=>JSON.stringify(x)).join("\n")+"\n");
-    const sessions = join(root,"sessions"); mkdirSync(sessions);
-    const helper = resolve(import.meta.dir,"../../../../scripts/fork-session.mjs");
-    const run = spawnSync(process.execPath,[helper,process.env.PI_PACKAGE_DIR!,parent,"branch01",sessions,"parent-session"],{encoding:"utf8"});
-    expect(run.status).toBe(0);
+    writeFileSync(parent, prefix.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    const parentManager = SessionManager.open(parent, root);
+    const parentMessages = convertToLlm(parentManager.buildSessionContext().messages);
+
+    const sessions = join(root, "sessions");
+    mkdirSync(sessions);
+    const helper = resolve(import.meta.dir, "../../../../scripts/fork-session.mjs");
+    const run = spawnSync(process.execPath, [helper, piRoot, parent, "branch01", sessions, "parent-session"], { encoding: "utf8" });
+    expect(run.status, run.stderr).toBe(0);
     const made = JSON.parse(run.stdout);
-    const forkLines = readFileSync(made.file,"utf8").trim().split("\n").map(JSON.parse);
-    // The session header necessarily has a new identity. Every graph entry in
-    // the inherited prefix is byte-equivalent before fork-only suffix entries.
-    expect(forkLines.slice(1,3)).toEqual(prefix.slice(1));
-    expect(forkLines[1].data.sha256).toBe(sha);
-    expect(forkLines[3].customType).toBe("familiar.fork.v1");
-    expect(forkLines[4].customType ?? forkLines[4].message?.customType).toBe("familiar.fork-note.v1");
-  } finally { rmSync(root,{recursive:true,force:true}); }
+    const fork = SessionManager.open(made.file, sessions);
+
+    // Pi's initial-message path persists this user message before constructing
+    // the provider request. Build both requests from the session, as Pi does.
+    const task = "Inspect cache behavior.\n";
+    fork.appendMessage({ role: "user", content: task, timestamp: 3 });
+    const turn1 = convertToLlm(fork.buildSessionContext().messages);
+    fork.appendMessage({ role: "assistant", content: [{ type: "text", text: "Working." }], api: "anthropic-messages", provider: "anthropic", model: "test", usage, stopReason: "stop", timestamp: 4 });
+    fork.appendMessage({ role: "user", content: "Continue.", timestamp: 5 });
+    const turn2 = convertToLlm(fork.buildSessionContext().messages);
+
+    expectStrictPrefix(parentMessages, turn1);
+    expectStrictPrefix(turn1, turn2);
+    expect(turn1[2]).toMatchObject({ role: "toolResult", toolCallId: "call-fork", toolName: "bash", content: [{ type: "text", text: expect.stringContaining(`fork ${made.id} of parent-session`) }] });
+    expect(turn1[3]).toMatchObject({ role: "toolResult", toolCallId: "call-other", content: [{ type: "text", text: "Not run in this fork." }] });
+    expect(turn1.at(-1)).toMatchObject({ role: "user", content: task });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

@@ -9,6 +9,25 @@ const manager = SessionManager.open(source, sessionDir);
 const output = manager.createBranchedSession(entryId);
 if (!output) throw Error("session was not persisted");
 const fork = SessionManager.open(output, sessionDir);
+const leaf = fork.getLeafEntry();
+if (leaf?.type === "message" && leaf.message?.role === "assistant") {
+  for (const call of leaf.message.content?.filter((block) => block.type === "toolCall") ?? []) {
+    const isImpFork =
+      (call.name === "bash" && /(^|[;&|]\s*|\s)imp\s+fork(?:\s|$)/.test(call.arguments?.command ?? "")) ||
+      (call.name === "imp" && call.arguments?.operation === "fork");
+    const text = isImpFork
+      ? `Forked: you are fork ${fork.getSessionId()} of ${parentId}. The parent keeps going.`
+      : "Not run in this fork.";
+    fork.appendMessage({
+      role: "toolResult",
+      toolCallId: call.id,
+      toolName: call.name,
+      content: [{ type: "text", text }],
+      isError: false,
+      timestamp: Date.now(),
+    });
+  }
+}
 const markerEntryId = fork.appendCustomEntry("familiar.fork.v1", { parentSessionId: parentId, branchEntryId: entryId });
 fork.appendCustomMessageEntry(
   "familiar.fork-note.v1",

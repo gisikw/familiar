@@ -8,7 +8,10 @@ meta="$root/fork.json"
 export PI_CODING_AGENT_DIR="$root/pi"
 export FAMILIAR_PI_FORK=1
 export FAMILIAR_FORK_SESSION_FILE="$(jq -er .sessionFile "$meta")"
-task="$(jq -er .task "$meta")"
+# Keep trailing newlines: command substitution would otherwise change the task
+# between fork metadata and Pi's persisted initial user message.
+task="$(jq -er '.task + "\u0001"' "$meta")"
+task="${task%$'\001'}"
 export FAMILIAR_FORK_INITIAL_MESSAGE="$task"
 export FAMILIAR_PRESENCE_STATE_DIR="$root/presence"
 export FAMILIAR_PRESENCE_SOCKET="$root/presence/tmux.sock"
