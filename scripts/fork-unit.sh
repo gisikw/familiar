@@ -13,6 +13,12 @@ export FAMILIAR_FORK_SESSION_FILE="$(jq -er .sessionFile "$meta")"
 task="$(jq -er '.task + "\u0001"' "$meta")"
 task="${task%$'\001'}"
 export FAMILIAR_FORK_INITIAL_MESSAGE="$task"
+# The task is delivered once. A restarted fork resumes its own session; if any
+# message already follows the fork marker, the task was delivered, so re-sending
+# it would make the fork redo its work.
+if jq -se '(map(.customType == "familiar.fork.v1") | rindex(true)) as $m | $m != null and any(.[$m + 1:][]; .type == "message")' "$FAMILIAR_FORK_SESSION_FILE" >/dev/null 2>&1; then
+  unset FAMILIAR_FORK_INITIAL_MESSAGE
+fi
 export FAMILIAR_PRESENCE_STATE_DIR="$root/presence"
 export FAMILIAR_PRESENCE_SOCKET="$root/presence/tmux.sock"
 export FAMILIAR_PRESENCE_PID_FILE="$root/presence/pi.pid"
