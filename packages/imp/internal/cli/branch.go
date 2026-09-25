@@ -123,6 +123,11 @@ func forkMain(args []string, out, errw io.Writer, getenv func(string) string) in
 	for _, name := range []string{"auth.json", "models.json", "models-store.json", "settings.json", "keybindings.json"} {
 		copyRegular(filepath.Join(env["PI_CODING_AGENT_DIR"], name), filepath.Join(piDir, name))
 	}
+	// Auto-discovered extensions (e.g. familiar-ui) must load in forks too; share
+	// the resident's directory rather than copying so /reload semantics match.
+	if i, e := os.Stat(filepath.Join(env["PI_CODING_AGENT_DIR"], "extensions")); e == nil && i.IsDir() {
+		_ = os.Symlink(filepath.Join(env["PI_CODING_AGENT_DIR"], "extensions"), filepath.Join(piDir, "extensions"))
+	}
 	meta := map[string]any{"id": made.ID, "parentSessionId": env["FAMILIAR_INSTANCE_ID"], "branchEntryId": leaf, "sessionFile": made.File, "task": task, "cwd": mustCwd(), "createdAt": time.Now().UTC().Format(time.RFC3339Nano)}
 	b, _ := json.Marshal(meta)
 	if e = os.WriteFile(filepath.Join(final, "fork.json"), append(b, '\n'), 0600); e != nil {
