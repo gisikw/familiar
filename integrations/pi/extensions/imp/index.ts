@@ -91,8 +91,14 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("agent_settled", async (_event, ctx) => flush(ctx, true));
 
+  // The return turn is tool-free, but the tool set itself must not change:
+  // it lives in the cached prompt prefix, and swapping it would re-read the
+  // whole inherited context uncached. Refuse calls instead.
+  pi.on("tool_call", async () => returnDispatched
+    ? { block: true, reason: "You're writing your return; tools are closed. Reply in plain text; that reply is the merge." }
+    : undefined);
+
   async function requestReturn(ctx: any, parentSessionId: string, pendingEntryId: string, persist: boolean) {
-    pi.setActiveTools([]);
     if (persist) pi.appendEntry(RETURN_REQUESTED, { pendingEntryId });
     const outstanding = outstandingAgents();
     const suffix = outstanding.length ? ` Outstanding work: ${outstanding.join(", ")}.` : "";

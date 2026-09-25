@@ -71,7 +71,12 @@ function harness(initial: any[], idle = false) {
   const emit = async (name: string) => {
     for (const handler of handlers.get(name) ?? []) await handler({ type: name, reason: "startup" }, ctx);
   };
-  return { entries, emit, activeToolSets, sentMessages, shutdowns: () => shutdowns };
+  const toolCall = async () => {
+    let result: any;
+    for (const handler of handlers.get("tool_call") ?? []) result = (await handler({ type: "tool_call", toolName: "bash" }, ctx)) ?? result;
+    return result;
+  };
+  return { entries, emit, toolCall, activeToolSets, sentMessages, shutdowns: () => shutdowns };
 }
 
 const forkPrefix = () => [
@@ -94,7 +99,8 @@ test("the harness prompts a tool-free return turn and sends that turn as the mer
   );
   await h.emit("agent_settled");
 
-  expect(h.activeToolSets).toEqual([[]]);
+  expect(h.activeToolSets).toEqual([]);
+  expect(await h.toolCall()).toMatchObject({ block: true });
   expect(h.sentMessages).toHaveLength(1);
   expect(h.sentMessages[0]).toMatchObject({
     message: { customType: "familiar.merge-return-request.v1" },
@@ -128,7 +134,8 @@ test("operator merge while idle enters the same prompted path", async () => {
     .toEqual({ quiet: false, requestedBy: "operator" });
   expect(h.entries.some((entry) => entry.customType === "familiar.merge-return-requested.v1")).toBe(true);
   expect(h.sentMessages).toHaveLength(1);
-  expect(h.activeToolSets).toEqual([[]]);
+  expect(h.activeToolSets).toEqual([]);
+  expect(await h.toolCall()).toMatchObject({ block: true });
 });
 
 test("restart after return request re-requests instead of sending the old work answer", async () => {
@@ -146,7 +153,8 @@ test("restart after return request re-requests instead of sending the old work a
   await h.emit("session_start");
   await new Promise((resolve) => setTimeout(resolve, 10));
   expect(h.sentMessages).toHaveLength(1);
-  expect(h.activeToolSets).toEqual([[]]);
+  expect(h.activeToolSets).toEqual([]);
+  expect(await h.toolCall()).toMatchObject({ block: true });
 
   h.entries.push({ type: "message", id: "return-after-restart", message: { role: "assistant", content: [] } });
   await h.emit("agent_settled");
