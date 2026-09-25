@@ -70,10 +70,14 @@ export function renderScheduledEvent(event: ScheduledEvent) {
   };
 }
 
-function deliveredIds(entries: readonly unknown[]): Set<string> {
+export function deliveredIds(entries: readonly unknown[]): Set<string> {
   const ids = new Set<string>();
-  for (const entry of entries as Array<{ type?: string; message?: { customType?: string; details?: { id?: unknown } } }>) {
-    if (entry.type === "message" && (entry.message?.customType === "scheduler-event" || entry.message?.customType === "familiar.merge.v1") && typeof entry.message.details?.id === "string") ids.add(entry.message.details.id);
+  // Pi persists sendMessage() output as `custom_message` entries with customType
+  // and details at the top level; older sessions wrapped them in `message`.
+  type Entry = { type?: string; customType?: string; details?: { id?: unknown }; message?: { customType?: string; details?: { id?: unknown } } };
+  for (const entry of entries as Entry[]) {
+    const shape = entry.type === "custom_message" ? entry : entry.type === "message" ? entry.message : undefined;
+    if ((shape?.customType === "scheduler-event" || shape?.customType === "familiar.merge.v1") && typeof shape.details?.id === "string") ids.add(shape.details.id);
   }
   return ids;
 }
