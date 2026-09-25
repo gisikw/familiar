@@ -47,29 +47,23 @@ func jsonServer(t *testing.T, inspect func(map[string]any)) string {
 	}()
 	return p
 }
-func TestQuietMergeEnqueuesDetailsAndExit(t *testing.T) {
+func TestQuietMergeQueuesResidentIntent(t *testing.T) {
 	dir := t.TempDir()
 	session := filepath.Join(dir, "fork.jsonl")
 	writeForkSession(t, session)
 	imp := jsonServer(t, func(r map[string]any) {
-		if r["area"] != "branch" || r["operation"] != "merge" {
-			t.Errorf("request=%#v", r)
-		}
-	})
-	scheduler := jsonServer(t, func(r map[string]any) {
 		args := r["args"].(map[string]any)
-		if r["op"] != "schedule.enqueue" || args["urgency"] != "soft" {
+		if r["area"] != "branch" || r["operation"] != "merge" || args["text"] != "PR deployed" || args["quiet"] != true {
 			t.Errorf("request=%#v", r)
 		}
-		var body map[string]any
-		if json.Unmarshal([]byte(args["body"].(string)), &body) != nil || body["mergedAt"] == "" || body["summary"] != "PR deployed" {
-			t.Errorf("body=%#v", body)
-		}
 	})
-	env := map[string]string{"FAMILIAR_SESSION_FILE": session, "FAMILIAR_INSTANCE_ID": "fork-1", "FAMILIAR_IMP_SOCKET": imp, "FAMILIAR_SERVICES_SOCKET": scheduler}
+	env := map[string]string{"FAMILIAR_SESSION_FILE": session, "FAMILIAR_IMP_SOCKET": imp}
 	var out, er bytes.Buffer
 	if code := branchMain([]string{"merge", "--quiet", "PR deployed"}, &out, &er, branchEnv(env)); code != 0 {
 		t.Fatalf("code=%d out=%s err=%s", code, out.String(), er.String())
+	}
+	if strings.TrimSpace(out.String()) != "merge queued; it will be sent when this turn settles" {
+		t.Fatalf("out=%q", out.String())
 	}
 }
 func TestCloseCommandIsGone(t *testing.T) {

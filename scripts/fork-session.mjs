@@ -31,7 +31,7 @@ if (branchEntry?.type === "message" && branchEntry.message?.role === "assistant"
 const markerEntryId = fork.appendCustomEntry("familiar.fork.v1", { parentSessionId: parentId, branchEntryId: entryId });
 fork.appendCustomMessageEntry(
   "familiar.fork-note.v1",
-  `You are a fork of ${parentId}; the parent may keep going; when done, run \`imp merge "<first-person summary>"\`.`,
+  `You are a fork of ${parentId}; the parent may keep going. \`imp merge "<first-person summary>"\` queues your return; finish your turn, and your final words ride along.`,
   true,
   { parentSessionId: parentId, branchEntryId: entryId },
 );

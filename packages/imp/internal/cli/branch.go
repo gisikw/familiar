@@ -162,51 +162,25 @@ func finishBranch(args []string, out, errw io.Writer, getenv func(string) string
 	if e != nil {
 		return usageError(errw, "%v", e)
 	}
-	env, e := envNeed(getenv, "FAMILIAR_SESSION_FILE", "FAMILIAR_INSTANCE_ID", "FAMILIAR_IMP_SOCKET")
+	env, e := envNeed(getenv, "FAMILIAR_SESSION_FILE", "FAMILIAR_IMP_SOCKET")
 	if e != nil {
 		fmt.Fprintf(errw, "imp: %v\n", e)
 		return ExitUnavailable
 	}
-	leaf, first, turns, e := sessionFacts(env["FAMILIAR_SESSION_FILE"])
-	if e != nil {
-		return branchError(errw, e)
-	}
-	marker, e := findForkMarker(env["FAMILIAR_SESSION_FILE"])
-	if e != nil {
+	if _, e = findForkMarker(env["FAMILIAR_SESSION_FILE"]); e != nil {
 		fmt.Fprintln(errw, "imp: you're the top level; there's nothing to merge into")
 		return ExitUsage
 	}
-	mergedAt := time.Now().UTC().Format(time.RFC3339Nano)
-	body, _ := json.Marshal(map[string]any{"summary": text, "forkSessionId": env["FAMILIAR_INSTANCE_ID"], "forkSessionFile": env["FAMILIAR_SESSION_FILE"], "branchEntryId": marker.BranchEntryID, "firstEntryId": first, "lastEntryId": leaf, "turnCount": turns, "forkedFurther": forkedFurther(getenv("FAMILIAR_STATE_DIR"), env["FAMILIAR_INSTANCE_ID"]), "mergedAt": mergedAt})
-	enqueue := map[string]any{"id": "merge-" + env["FAMILIAR_INSTANCE_ID"] + "-" + leaf, "target": "instance:" + marker.ParentSessionID, "origin": env["FAMILIAR_INSTANCE_ID"], "type": "merge", "source": "imp.merge", "summary": text, "body": string(body)}
-	if quiet {
-		enqueue["urgency"] = "soft"
-	}
-	_, remote, e := serviceCall(defaultSocket(getenv), serviceRequest{"schedule.enqueue", enqueue})
-	if e != nil {
-		return branchError(errw, e)
-	}
-	if remote != nil {
-		fmt.Fprintf(errw, "imp: %s: %s\n", remote.Code, remote.Message)
-		return ExitRemote
-	}
-	_, remote, e = call(env["FAMILIAR_IMP_SOCKET"], Request{Version: 1, Area: "branch", Operation: "merge", Args: map[string]any{"text": text}})
+	_, remote, e := call(env["FAMILIAR_IMP_SOCKET"], Request{Version: 1, Area: "branch", Operation: "merge", Args: map[string]any{"text": text, "quiet": quiet}})
 	if e != nil {
 		return branchError(errw, e)
 	}
 	if remote != nil {
 		return branchError(errw, errors.New(remote.Message))
 	}
-	fmt.Fprintln(out, "merge sent")
+	fmt.Fprintln(out, "merge queued; it will be sent when this turn settles")
 	return 0
 }
-func defaultSocket(g func(string) string) string {
-	if x := g("FAMILIAR_SERVICES_SOCKET"); x != "" {
-		return x
-	}
-	return "/run/familiar-services/familiar.sock"
-}
-
 func sessionFacts(path string) (leaf, first string, turns int, err error) {
 	f, e := os.Open(path)
 	if e != nil {
@@ -278,23 +252,6 @@ func forkDepth(path string) int {
 	}
 	return n
 }
-func forkedFurther(stateDir, sessionID string) bool {
-	paths, _ := filepath.Glob(filepath.Join(stateDir, "forks", "*", "fork.json"))
-	for _, path := range paths {
-		b, e := os.ReadFile(path)
-		if e != nil {
-			continue
-		}
-		var m struct {
-			ParentSessionID string `json:"parentSessionId"`
-		}
-		if json.Unmarshal(b, &m) == nil && m.ParentSessionID == sessionID {
-			return true
-		}
-	}
-	return false
-}
-
 func forksMain(args []string, out, errw io.Writer, getenv func(string) string) int {
 	if len(args) != 0 {
 		return usageError(errw, "usage: imp forks")
