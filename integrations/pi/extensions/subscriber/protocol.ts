@@ -21,6 +21,7 @@ export type {
   SegmentEvent,
   SegmentAudioEvent,
   StreamEvent,
+  SessionIdentity,
   IngestEnvelope,
   SubmitCommand,
   CancelCommand,

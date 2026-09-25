@@ -15,6 +15,8 @@ export class RelayBus {
   private clients = new Set<http.ServerResponse>();
   private heartbeat: ReturnType<typeof setInterval> | null = null;
 
+  constructor(private onSubscriberChange?: (attached: boolean) => void) {}
+
   attach(req: http.IncomingMessage, res: http.ServerResponse) {
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
@@ -23,7 +25,15 @@ export class RelayBus {
     });
     res.write(":relay\n\n");
     this.clients.add(res);
-    req.on("close", () => this.clients.delete(res));
+    this.onSubscriberChange?.(true);
+    req.on("close", () => {
+      this.clients.delete(res);
+      if (this.clients.size === 0 && this.heartbeat) {
+        clearInterval(this.heartbeat);
+        this.heartbeat = null;
+      }
+      this.onSubscriberChange?.(this.clients.size > 0);
+    });
     if (!this.heartbeat) {
       this.heartbeat = setInterval(() => {
         for (const c of this.clients) c.write(":hb\n\n");

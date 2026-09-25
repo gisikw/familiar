@@ -1,5 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { errorLog } from "../lib/debug.ts";
+import type { SessionIdentity } from "./protocol.ts";
 import { RelayHub, NoopAudio, RelayClient } from "./relay.ts";
 import { Firehose } from "./firehose.ts";
 import { PendingEchoes } from "./echo.ts";
@@ -12,10 +15,21 @@ import { contextSaturation } from "./saturation.ts";
 // submit/cancel against the pi API. Protocol + event shapes live in the server
 // (./protocol.ts re-exports them). Public behavior toward pi is unchanged.
 
+function sessionIdentity(sessionId: string): SessionIdentity {
+  if (process.env.FAMILIAR_PI_FORK !== "1") return { sessionId, role: "primary" };
+  let parentSessionId: string | undefined;
+  try {
+    const root = process.env.FAMILIAR_STATE_DIR;
+    if (root) {
+      const meta = JSON.parse(readFileSync(join(root, "forks", sessionId, "fork.json"), "utf8"));
+      if (typeof meta.parentSessionId === "string") parentSessionId = meta.parentSessionId;
+    }
+  } catch (err) { errorLog("subscriber", { forkMetadataError: String(err), sessionId }); }
+  if (!parentSessionId) throw new Error(`fork ${sessionId} has no parent session metadata`);
+  return { sessionId, role: "fork", parentSessionId };
+}
+
 export default function(pi: ExtensionAPI) {
-  // Forks keep this extension (and therefore the exact same extension/tool
-  // registration prefix) but cannot use the single-session gateway until M4b.
-  const forkNoop = process.env.FAMILIAR_PI_FORK === "1";
   const hub = new RelayHub();
   const audio = new NoopAudio();
   const echoes = new PendingEchoes();
@@ -27,13 +41,17 @@ export default function(pi: ExtensionAPI) {
 
   // Handler bodies are wrapped: an egress bug must cost a log line, never pi.
   const guard = (fn: () => void) => {
-    if (forkNoop) return;
     try { fn(); } catch (err) { errorLog("subscriber", { handlerError: String(err) }); }
   };
 
   pi.on("session_start", async (_event, ctx) => {
     // On pi's startup path: a throw here would abort session start outright.
     guard(() => {
+      const sessionId = ctx.sessionManager.getSessionId() || process.env.FAMILIAR_INSTANCE_ID;
+      if (!sessionId) throw new Error("subscriber session has no id");
+      const identity = sessionIdentity(sessionId);
+      hub.setIdentity(identity);
+      client.setIdentity(identity);
       client.ctx = ctx;
       hub.announceSession();
       const saturation = contextSaturation(ctx);

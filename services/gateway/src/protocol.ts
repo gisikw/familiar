@@ -14,21 +14,24 @@
  * a couple of constants it still needs from this file.
  *
  * Endpoints (server):
- *   GET  /stream?audio=1            SSE firehose. audio=1 marks an audio
+ *   GET  /stream?audio=1&session=ID SSE firehose. audio=1 marks an audio
  *                                   listener (drives proactive synthesis).
  *   POST /ingest                    Egress from the extension (IngestEnvelope).
  *   POST /submit                    Ingress (text or chunked audio takes).
  *   POST /voice-status              Browser capture lifecycle before audio exists.
  *   POST /cancel                    Abort the in-flight turn. Idempotent,
  *                                   fire-and-forget, 204 always.
- *   GET  /relay                     SSE command bus, server → extension
+ *   GET  /relay?session=ID          SSE command bus, server → extension
  *                                   (RelayCommand: submit / cancel / voice-status). The
  *                                   extension is the only subscriber; it owns
  *                                   the pi API (sendUserMessage / abort).
  *   GET  /segments/:mid/:idx/audio  Synthesized wav for a segment.
  *                                   202 = synthesizing (retry), 404 = unknown/evicted, 503 = failed.
  *   GET  /terminal, /               Browser terminal (restty WASM).
- *   GET  /pty  (WebSocket)          restty PTY protocol bridged to a Presence attach.
+ *   GET  /pty?session=ID (WebSocket) restty PTY protocol bridged to a Presence attach.
+ *
+ * Public client routes accept optional session=ID; omission selects the most
+ * recently registered primary. /sessions lists primary and fork sessions.
  *
  * Stream events (one JSON object per SSE `data:` line on /stream):
  *
@@ -149,11 +152,20 @@ export type StreamEvent = MessageEvent | ToolEvent | SegmentEvent | SegmentAudio
 //   revise   → broadcast only, replaces the in-flight revision (mutable messages)
 //   lock     → clears the in-flight revision (the whole abort protocol)
 //   session  → new pi session: re-mint the epoch id, clear history
-export type IngestEnvelope =
+export interface SessionIdentity {
+  /** Stable Pi session id (FAMILIAR_INSTANCE_ID). */
+  sessionId: string;
+  role: "primary" | "fork";
+  /** Present for forks and identifies the channel they branched from. */
+  parentSessionId?: string;
+}
+
+export type IngestEnvelope = SessionIdentity & (
   | { kind: "publish"; event: StreamEvent }
   | { kind: "revise"; event: MessageEvent }
   | { kind: "lock" }
-  | { kind: "session" };
+  | { kind: "session" }
+);
 
 // Ingress: commands the server pushes down /relay for the extension to enact
 // against the pi API. STT/TTS are resolved server-side, so a submit carries

@@ -12,13 +12,17 @@ Binds `127.0.0.1:1692`. See `DESIGN.md` for the full protocol rationale.
   event stream for remote clients (Hearth), with history replay, a per-session
   epoch UUID, and 25s heartbeats. Ported faithfully from the old
   `subscriber/hub.ts`.
-- **Egress ingest** (`POST /ingest`) — the pi extension POSTs one
-  `IngestEnvelope` per event (publish / revise / lock / session). Localhost
-  only; low-rate, so POST-per-event over a persistent socket (see DESIGN.md).
+- **Egress ingest** (`POST /ingest`) — each primary or fork Pi extension POSTs
+  one session-tagged `IngestEnvelope` per event (publish / revise / lock /
+  session). Localhost only; low-rate, so POST-per-event over a persistent
+  socket (see DESIGN.md).
 - **Ingress** (`POST /submit`, `POST /cancel`) — text/voice in. The gateway owns
   STT/TTS (`FAMILIAR_STT_URL` / `FAMILIAR_TTS_URL`); it transcribes takes and
   pushes ready-to-dispatch commands down `GET /relay` (SSE), which the pi
   extension subscribes to and enacts against the pi API.
+- **Session discovery** (`GET /sessions`) — primary and fork metadata with
+  `live`, `stopped`, `merging`, or `merged` state. Fork metadata and merge
+  markers are read from `FAMILIAR_STATE_DIR/forks`.
 - **Segment audio** (`GET /segments/:mid/:idx/audio`) — synthesized wav.
 - **Browser terminal** (`GET /terminal`, `GET /`) — the restty WASM terminal
   bridged over a `/pty` WebSocket to a per-client `node-pty` child running
@@ -28,6 +32,27 @@ Binds `127.0.0.1:1692`. See `DESIGN.md` for the full protocol rationale.
   that viewer process without affecting Presence or workers. Replaces the
   Electron client's local-shell dance. Fonts + mouse + emoji-completer ported
   from the client renderer.
+
+## Session selection
+
+The gateway keeps independent history, epoch, agent state, relay, voice ingress,
+and audio state for every Pi session. These client routes accept an optional
+`?session=<Pi session id>`: `/stream`, `/relay`, `/agent`, `/submit`, `/cancel`,
+`/voice-status`, `/upload`, `/segments/:mid/:idx/audio`, and `/pty`. If omitted,
+they select the most recently registered `primary`, preserving existing client
+behavior. The subscriber always supplies `session`, `role=primary|fork`, and a
+fork's `parentSessionId`; commands therefore go only to the selected Pi.
+
+`/pty?session=<fork UUID>` uses
+`$FAMILIAR_STATE_DIR/forks/<id>/presence/tmux.sock`. Malformed ids and ids with
+no fork state directory are rejected. A detached channel remains reconnectable
+with its history for ten minutes after its last relay subscriber disconnects.
+
+`GET /sessions` returns objects shaped as:
+
+```json
+{"id":"…","role":"fork","parentSessionId":"…","task":"…","state":"live","startedAt":"…","lastEventAt":"…"}
+```
 
 ## Hearth stream decoding
 
@@ -150,7 +175,8 @@ outside that shell deliberately falls back to the vendored base font.
 | `FAMILIAR_VIEWER_BIN` | `familiar-viewer` from `PATH` (Nix wrapper: packaged viewer store path) | Native browser PTY child executable. |
 | `FAMILIAR_ATTACH_CMD` | — | Highest-priority test override for the browser PTY child. Set to `bash -l` to smoke-test without tmux. |
 | `FAMILIAR_ATTACH_CWD` | gateway cwd | working dir for the attach child |
-| `FAMILIAR_PRESENCE_SOCKET` | `${FAMILIAR_PRESENCE_STATE_DIR:-<repo>/state/presence}/tmux.sock` | Inner Presence tmux socket passed through to the viewer. |
+| `FAMILIAR_PRESENCE_SOCKET` | `${FAMILIAR_PRESENCE_STATE_DIR:-<repo>/state/presence}/tmux.sock` | Primary Presence tmux socket passed through to the viewer. |
+| `FAMILIAR_STATE_DIR` | — | Familiar state root used to discover forks and resolve fork Presence sockets. |
 | `FAMILIAR_RENDER_URL` | — | Optional Familiar-owned semantic `left-nav` endpoint passed to each viewer. |
 | `FAMILIAR_STT_URL` / `FAMILIAR_TTS_URL` | — | HTTP model base URLs; gateway calls `/v1/audio/transcriptions` and `/v1/audio/speech` respectively |
 | `FAMILIAR_TTS_VOICE` | — | optional TTS voice selection |

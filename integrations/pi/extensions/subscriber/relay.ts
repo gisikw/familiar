@@ -6,6 +6,7 @@ import {
   type IngestEnvelope,
   type MessageEvent,
   type RelayCommand,
+  type SessionIdentity,
   type StreamEvent,
   type VoiceStatusCommand,
 } from "./protocol.ts";
@@ -39,6 +40,9 @@ export class RelayHub {
   inflight: MessageEvent | null = null;
   private queue: IngestEnvelope[] = [];
   private flushing = false;
+  private identity: SessionIdentity | undefined;
+
+  setIdentity(identity: SessionIdentity) { this.identity = identity; }
 
   publish(event: StreamEvent) { this.enqueue({ kind: "publish", event }); }
 
@@ -60,8 +64,13 @@ export class RelayHub {
   // history (message-id space reset contract).
   announceSession() { this.enqueue({ kind: "session" }); }
 
-  private enqueue(env: IngestEnvelope) {
-    this.queue.push(env);
+  private enqueue(env:
+    | { kind: "publish"; event: StreamEvent }
+    | { kind: "revise"; event: MessageEvent }
+    | { kind: "lock" }
+    | { kind: "session" }) {
+    if (!this.identity) return;
+    this.queue.push({ ...env, ...this.identity } as IngestEnvelope);
     if (this.queue.length > RELAY_QUEUE_MAX) this.queue.splice(0, this.queue.length - RELAY_QUEUE_MAX);
     void this.flush();
   }
@@ -147,11 +156,14 @@ export class RelayClient {
   ctx: ExtensionContext | null = null;
   private abort: AbortController | null = null;
   private closed = false;
+  private identity: SessionIdentity | undefined;
   readonly voice: VoiceStatusController;
 
   constructor(private pi: ExtensionAPI, private echoes: PendingEchoes) {
     this.voice = new VoiceStatusController(pi);
   }
+
+  setIdentity(identity: SessionIdentity) { this.identity = identity; }
 
   // Subscribe to the server's command bus. Reconnects with backoff; the server
   // may not be up yet at session_start.
@@ -171,7 +183,13 @@ export class RelayClient {
     while (!this.closed) {
       this.abort = new AbortController();
       try {
-        const res = await fetch(`${baseUrl()}/relay`, {
+        if (!this.identity) throw new Error("relay session identity is not set");
+        const query = new URLSearchParams({
+          session: this.identity.sessionId,
+          role: this.identity.role,
+          ...(this.identity.parentSessionId ? { parentSessionId: this.identity.parentSessionId } : {}),
+        });
+        const res = await fetch(`${baseUrl()}/relay?${query}`, {
           headers: { Accept: "text/event-stream" },
           signal: this.abort.signal,
         });

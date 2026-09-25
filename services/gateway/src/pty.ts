@@ -1,12 +1,10 @@
 import type http from "http";
 import { WebSocketServer, type WebSocket } from "ws";
 import { spawn as ptySpawn, type IPty } from "node-pty";
-import path from "path";
-import { fileURLToPath } from "url";
 import { debugLog, errorLog } from "./debug.ts";
 import { attachCommand } from "./attach.ts";
 
-export { attachCommand } from "./attach.ts";
+export { attachCommand, resolvePresenceSocket, PtySessionError } from "./attach.ts";
 
 /* --- Browser terminal PTY bridge ------------------------------------------
  *
@@ -42,24 +40,20 @@ export { attachCommand } from "./attach.ts";
 const FLUSH_MS = Number(process.env.FAMILIAR_PTY_FLUSH_MS ?? 0);
 const HEARTBEAT_MS = Number(process.env.FAMILIAR_PTY_HEARTBEAT_MS ?? 30_000);
 
-const REPOSITORY_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
-
-// Normalize the Presence socket for the viewer. Lifecycle belongs to systemd.
-function familiarEnvironment(): Record<string, string> {
+// Normalize the selected Presence socket for the viewer. Lifecycle belongs to systemd.
+function familiarEnvironment(presenceSocket: string): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (value !== undefined) env[key] = value;
   }
-  const presenceState = env.FAMILIAR_PRESENCE_STATE_DIR
-    || path.join(REPOSITORY_ROOT, "state/presence");
-  env.FAMILIAR_PRESENCE_SOCKET ||= path.join(presenceState, "tmux.sock");
+  env.FAMILIAR_PRESENCE_SOCKET = presenceSocket;
   return env;
 }
 
-function startPty(cols: number, rows: number): IPty {
+function startPty(cols: number, rows: number, presenceSocket: string): IPty {
   const { file, args } = attachCommand();
   // Preserve Familiar context for the Presence adapter and resident pi.
-  const env = familiarEnvironment();
+  const env = familiarEnvironment(presenceSocket);
   for (const k of Object.keys(env)) {
     // Drop outer SSH context so it cannot override the positive
     // TERM_PROGRAM/KITTY_WINDOW_ID graphics capability signals. The server
@@ -92,7 +86,7 @@ export class PtyBridge {
     // noServer: we route the upgrade ourselves from the shared http.Server so
     // /pty coexists with the HTTP surface on the same port.
     this.wss = new WebSocketServer({ noServer: true });
-    this.wss.on("connection", (ws) => this.onConnection(ws));
+    this.wss.on("connection", (ws, request) => this.onConnection(ws, (request as any).familiarPresenceSocket));
     if (HEARTBEAT_MS > 0) {
       this.heartbeat = setInterval(() => {
         for (const client of this.wss.clients) {
@@ -109,17 +103,18 @@ export class PtyBridge {
     }
   }
 
-  handleUpgrade(req: http.IncomingMessage, socket: any, head: Buffer) {
+  handleUpgrade(req: http.IncomingMessage, socket: any, head: Buffer, presenceSocket: string) {
     // Disable Nagle on the raw TCP socket before ws wraps it. SSH clients set
     // TCP_NODELAY for exactly this workload (interactive keystroke echo); Node
     // sockets default to Nagle ON, which holds small writes hoping to batch
     // more and — interacting with delayed ACKs — can add tens of ms per echo.
     // This is the main feel difference vs the ssh-based Electron path.
     socket.setNoDelay?.(true);
+    (req as any).familiarPresenceSocket = presenceSocket;
     this.wss.handleUpgrade(req, socket, head, (ws) => this.wss.emit("connection", ws, req));
   }
 
-  private onConnection(ws: WebSocket) {
+  private onConnection(ws: WebSocket, presenceSocket: string) {
     const live = ws as WebSocket & { familiarAlive?: boolean };
     live.familiarAlive = true;
     ws.on("pong", () => { live.familiarAlive = true; });
@@ -134,7 +129,7 @@ export class PtyBridge {
     const start = (cols: number, rows: number) => {
       if (pty) return;
       try {
-        pty = startPty(cols, rows);
+        pty = startPty(cols, rows, presenceSocket);
       } catch (err) {
         errorLog("pty", { spawnError: String(err) });
         send({ type: "error", message: String(err) });
