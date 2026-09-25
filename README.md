@@ -75,9 +75,10 @@ conversation. The store is one atomically replaced file beneath
 The resident scheduler extension identifies the current Pi session, holds one
 outbound connection to `familiar-services`, injects pushed events, and
 acknowledges them. `imp schedule` creates future events; `imp notify` creates
-due-now events. The service owns timing, routing, deduplication, pacing, and DND.
-Unacknowledged events are replayed after reconnect, while the extension dedupes
-already-injected IDs from the session history.
+due-now events. Both accept `--soft`: soft events pass DND and ride with the
+next user turn instead of waking Pi. The service owns timing, routing,
+deduplication, pacing, and DND. Unacknowledged events are replayed after
+reconnect, while the extension dedupes already-injected IDs from session history.
 
 ## Quota footer
 

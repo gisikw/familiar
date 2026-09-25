@@ -12,9 +12,9 @@ export default function (pi: ExtensionAPI) {
     process.env.FAMILIAR_NODE ??= process.execPath;
     (process as any)[IMP_BRANCH_HANDLER] = {
       handle(request: { operation: string; args: { text?: unknown } }) {
-        if ((request.operation !== "merge" && request.operation !== "close") || typeof request.args.text !== "string")
+        if (request.operation !== "merge" || typeof request.args.text !== "string")
           throw Object.assign(new Error("invalid branch operation"), { code: "invalid_request" });
-        pi.appendEntry(request.operation === "merge" ? "familiar.merge-sent.v1" : "familiar.branch-close.v1", { reason: request.args.text });
+        pi.appendEntry("familiar.merge-sent.v1", { summary: request.args.text });
         setTimeout(() => void ctx.shutdown(), 25);
         return { exiting: true };
       },

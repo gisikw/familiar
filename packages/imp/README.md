@@ -60,10 +60,10 @@ origin themselves. Future and due-now events share the same model:
 
 ```sh
 imp schedule --in 30m 'check deployment'
-imp schedule --at 2026-10-01T09:00:00Z --target instance:SESSION 'follow up'
+imp schedule --at 2026-10-01T09:00:00Z --target instance:SESSION --soft 'follow up'
 imp schedule list
 imp schedule cancel EVENT_ID
-imp notify --id stable-settlement-id 'job finished'
+imp notify --id stable-settlement-id --soft 'job finished'
 imp dnd on 30m
 imp dnd status
 imp dnd off

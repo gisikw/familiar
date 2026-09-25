@@ -3,7 +3,7 @@ import { familiarServicesSocket } from "../lib/familiar-services.ts";
 
 export interface ScheduledEvent {
   id: string; due_at: number; target: string; origin: string; source: string;
-  priority: number; type: string; summary: string; body: string; state: string; created_at: number;
+  priority: number; type: string; summary: string; body: string; urgency: "wake" | "soft"; state: string; created_at: number;
 }
 export type SchedulerCallbacks = { event(event: ScheduledEvent): void | Promise<void>; error(error: Error): void };
 

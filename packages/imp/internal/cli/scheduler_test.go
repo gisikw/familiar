@@ -47,11 +47,11 @@ func runSchedulerSocket(t *testing.T, argv []string, inspect func(serviceRequest
 	return code, out.String(), stderr.String()
 }
 func TestScheduleFakeSocketCarriesInferredOrigin(t *testing.T) {
-	code, out, stderr := runSchedulerSocket(t, []string{"schedule", "--in", "30m", "--target", "instance:peer", "check deployment"}, func(req serviceRequest) {
+	code, out, stderr := runSchedulerSocket(t, []string{"schedule", "--in", "30m", "--target", "instance:peer", "--soft", "check deployment"}, func(req serviceRequest) {
 		if req.Op != "schedule.enqueue" {
 			t.Errorf("op=%s", req.Op)
 		}
-		if req.Args["origin"] != "session-a" || req.Args["target"] != "instance:peer" {
+		if req.Args["origin"] != "session-a" || req.Args["target"] != "instance:peer" || req.Args["urgency"] != "soft" {
 			t.Errorf("args=%#v", req.Args)
 		}
 		if _, ok := req.Args["due_at"].(float64); !ok {
@@ -71,6 +71,10 @@ func TestSchedulerParsing(t *testing.T) {
 	inv, _, err = parseScheduler([]string{"schedule", "--at", "11:00", "tomorrow"}, now)
 	if err != nil || inv.args["due_at"] != mustTime(t, "2026-01-02T11:00:00Z").UnixMilli() {
 		t.Fatalf("at: %#v %v", inv, err)
+	}
+	inv, _, err = parseScheduler([]string{"notify", "--soft", "PR deployed"}, now)
+	if err != nil || inv.args["urgency"] != "soft" {
+		t.Fatalf("soft notify: %#v %v", inv, err)
 	}
 }
 func mustTime(t *testing.T, s string) time.Time {

@@ -47,41 +47,44 @@ func jsonServer(t *testing.T, inspect func(map[string]any)) string {
 	}()
 	return p
 }
-func TestMergeAndCloseEnqueueMarkerAndExit(t *testing.T) {
-	for _, kind := range []string{"merge", "close"} {
-		t.Run(kind, func(t *testing.T) {
-			dir := t.TempDir()
-			session := filepath.Join(dir, "fork.jsonl")
-			writeForkSession(t, session)
-			imp := jsonServer(t, func(r map[string]any) {
-				if r["area"] != "branch" {
-					t.Errorf("request=%#v", r)
-				}
-			})
-			env := map[string]string{"FAMILIAR_SESSION_FILE": session, "FAMILIAR_INSTANCE_ID": "fork-1", "FAMILIAR_IMP_SOCKET": imp}
-			if kind == "merge" {
-				env["FAMILIAR_SERVICES_SOCKET"] = jsonServer(t, func(r map[string]any) {
-					if r["op"] != "schedule.enqueue" {
-						t.Errorf("request=%#v", r)
-					}
-				})
-			}
-			var out, er bytes.Buffer
-			if code := branchMain([]string{kind, "I finished it"}, &out, &er, branchEnv(env)); code != 0 {
-				t.Fatalf("code=%d out=%s err=%s", code, out.String(), er.String())
-			}
-		})
+func TestQuietMergeEnqueuesDetailsAndExit(t *testing.T) {
+	dir := t.TempDir()
+	session := filepath.Join(dir, "fork.jsonl")
+	writeForkSession(t, session)
+	imp := jsonServer(t, func(r map[string]any) {
+		if r["area"] != "branch" || r["operation"] != "merge" {
+			t.Errorf("request=%#v", r)
+		}
+	})
+	scheduler := jsonServer(t, func(r map[string]any) {
+		args := r["args"].(map[string]any)
+		if r["op"] != "schedule.enqueue" || args["urgency"] != "soft" {
+			t.Errorf("request=%#v", r)
+		}
+		var body map[string]any
+		if json.Unmarshal([]byte(args["body"].(string)), &body) != nil || body["mergedAt"] == "" || body["summary"] != "PR deployed" {
+			t.Errorf("body=%#v", body)
+		}
+	})
+	env := map[string]string{"FAMILIAR_SESSION_FILE": session, "FAMILIAR_INSTANCE_ID": "fork-1", "FAMILIAR_IMP_SOCKET": imp, "FAMILIAR_SERVICES_SOCKET": scheduler}
+	var out, er bytes.Buffer
+	if code := branchMain([]string{"merge", "--quiet", "PR deployed"}, &out, &er, branchEnv(env)); code != 0 {
+		t.Fatalf("code=%d out=%s err=%s", code, out.String(), er.String())
 	}
 }
-func TestPrimaryCannotMergeOrClose(t *testing.T) {
+func TestCloseCommandIsGone(t *testing.T) {
+	var out, er bytes.Buffer
+	if code := branchMain([]string{"close", "done"}, &out, &er, branchEnv(nil)); code != ExitUsage || !strings.Contains(er.String(), "unknown command") {
+		t.Fatalf("code=%d err=%q", code, er.String())
+	}
+}
+func TestPrimaryCannotMerge(t *testing.T) {
 	session := filepath.Join(t.TempDir(), "primary.jsonl")
 	_ = os.WriteFile(session, []byte("{\"type\":\"session\",\"id\":\"primary\"}\n{\"type\":\"message\",\"id\":\"leaf\"}\n"), 0600)
-	for _, kind := range []string{"merge", "close"} {
-		var out, er bytes.Buffer
-		code := branchMain([]string{kind, "done"}, &out, &er, branchEnv(map[string]string{"FAMILIAR_SESSION_FILE": session, "FAMILIAR_INSTANCE_ID": "primary", "FAMILIAR_IMP_SOCKET": "/unused"}))
-		if code != ExitUsage || !strings.Contains(er.String(), "you're the top level; there's nothing to merge into") {
-			t.Fatalf("%s code=%d err=%q", kind, code, er.String())
-		}
+	var out, er bytes.Buffer
+	code := branchMain([]string{"merge", "done"}, &out, &er, branchEnv(map[string]string{"FAMILIAR_SESSION_FILE": session, "FAMILIAR_INSTANCE_ID": "primary", "FAMILIAR_IMP_SOCKET": "/unused"}))
+	if code != ExitUsage || !strings.Contains(er.String(), "you're the top level; there's nothing to merge into") {
+		t.Fatalf("code=%d err=%q", code, er.String())
 	}
 }
 

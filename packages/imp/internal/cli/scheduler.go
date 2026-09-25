@@ -70,7 +70,7 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 	if len(args) == 1 && isHelp(args[0]) {
 		return schedulerInvocation{op: "help"}, false, nil
 	}
-	jsonMode := false
+	jsonMode, soft := false, false
 	vals := map[string]string{}
 	pos := []string{}
 	value := map[string]bool{"in": true, "at": true, "target": true, "id": true, "priority": true, "type": true, "source": true, "body": true}
@@ -78,6 +78,10 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 		a := args[i]
 		if a == "--json" {
 			jsonMode = true
+			continue
+		}
+		if a == "--soft" {
+			soft = true
 			continue
 		}
 		if strings.HasPrefix(a, "--") {
@@ -139,6 +143,9 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 		m["summary"] = pos[0]
 		m["body"] = "<system-reminder>Scheduled event: " + pos[0] + "</system-reminder>"
 		m["source"] = "imp.schedule"
+		if soft {
+			m["urgency"] = "soft"
+		}
 		if x := vals["id"]; x != "" {
 			m["id"] = x
 		}
@@ -149,6 +156,9 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 		}
 		m := originArgs()
 		m["summary"] = pos[0]
+		if soft {
+			m["urgency"] = "soft"
+		}
 		for _, k := range []string{"id", "type", "source", "body"} {
 			if x := vals[k]; x != "" {
 				m[k] = x
@@ -294,9 +304,9 @@ func writeSchedulerHuman(out io.Writer, op string, result json.RawMessage, stder
 }
 
 const schedulerHelp = `Usage:
-  imp schedule --in 30m|--at TIME [--target instance:ID|spawn:UNIT] "reason"
+  imp schedule --in 30m|--at TIME [--target instance:ID|spawn:UNIT] [--soft] "reason"
   imp schedule list [--json]
   imp schedule cancel ID
-  imp notify [--target TARGET] [--id ID] "reason"
+  imp notify [--target TARGET] [--id ID] [--soft] "reason"
   imp dnd [on DURATION|off|status]
 `

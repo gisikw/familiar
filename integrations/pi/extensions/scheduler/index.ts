@@ -6,38 +6,58 @@ import { SchedulerClient, type ScheduledEvent } from "./client.ts";
 export default function (pi: ExtensionAPI) {
   let client: SchedulerClient | undefined;
   let exportedInstance: string | undefined;
+  let seen = new Set<string>();
+  const waiting = new Map<string, () => void>();
 
   pi.on("session_start", async (_event, ctx) => {
     const instance = ctx.sessionManager.getSessionId();
     if (!instance) { errorLog("scheduler", { error: "session has no id" }); return; }
     exportedInstance = instance;
     process.env.FAMILIAR_INSTANCE_ID = instance;
-    const seen = deliveredIds(ctx.sessionManager.getBranch());
+    seen = deliveredIds(ctx.sessionManager.getBranch());
     client = new SchedulerClient(instance, {
       event(event) {
-        if (!seen.has(event.id)) {
-          const message = renderScheduledEvent(event);
-          pi.sendMessage(message, { deliverAs: "steer", triggerTurn: true });
-          seen.add(event.id);
+        if (seen.has(event.id)) return;
+        const message = renderScheduledEvent(event);
+        if (event.urgency === "soft") {
+          return new Promise<void>((resolve) => {
+            waiting.set(event.id, resolve);
+            pi.sendMessage(message, { deliverAs: "nextTurn" });
+          });
         }
+        pi.sendMessage(message, { deliverAs: "steer", triggerTurn: true });
+        seen.add(event.id);
       },
       error(error) { errorLog("scheduler", { error: error.message }); },
     });
     client.start();
   });
+  // Pi persists queued nextTurn custom messages before turn_start. Ack only after
+  // the event ID is visible in the durable branch; a restart before then causes
+  // scheduler reconnect redelivery rather than losing an in-memory queue.
+  pi.on("turn_start", (_event, ctx) => {
+    const persisted = deliveredIds(ctx.sessionManager.getBranch());
+    for (const id of persisted) {
+      seen.add(id);
+      const resolve = waiting.get(id);
+      if (resolve) { waiting.delete(id); resolve(); }
+    }
+  });
   pi.on("session_shutdown", async () => {
     client?.stop(); client = undefined;
     if (process.env.FAMILIAR_INSTANCE_ID === exportedInstance) delete process.env.FAMILIAR_INSTANCE_ID;
     exportedInstance = undefined;
+    waiting.clear();
+    seen = new Set();
   });
 }
 
 export function renderScheduledEvent(event: ScheduledEvent) {
   if (event.type === "merge") {
-    const merge = JSON.parse(event.body) as { summary: string; forkSessionId: string; forkSessionFile: string; branchEntryId: string; firstEntryId: string; lastEntryId: string; turnCount: number; forkedFurther: boolean };
+    const merge = JSON.parse(event.body) as { summary: string; forkSessionId: string; forkSessionFile: string; branchEntryId: string; firstEntryId: string; lastEntryId: string; turnCount: number; forkedFurther: boolean; mergedAt: string };
     return {
       customType: "familiar.merge.v1",
-      content: `<familiar-merge fork="${escapeAttr(merge.forkSessionId)}" branch="${escapeAttr(merge.branchEntryId)}" divergence="${merge.turnCount}" forked-further="${merge.forkedFurther}">\n${merge.summary}\nfull record: ${merge.forkSessionFile} entries ${merge.firstEntryId}..${merge.lastEntryId}\n</familiar-merge>`,
+      content: event.urgency === "soft" ? `fork ${merge.forkSessionId} merged: ${merge.summary}` : `<familiar-merge fork="${escapeAttr(merge.forkSessionId)}" branch="${escapeAttr(merge.branchEntryId)}" divergence="${merge.turnCount}" forked-further="${merge.forkedFurther}">\n${merge.summary}\nfull record: ${merge.forkSessionFile} entries ${merge.firstEntryId}..${merge.lastEntryId}\n</familiar-merge>`,
       display: true,
       details: { id: event.id, event, ...merge },
     };
