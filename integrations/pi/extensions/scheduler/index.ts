@@ -52,19 +52,26 @@ export default function (pi: ExtensionAPI) {
   });
 }
 
+// Soft (nextTurn) messages reach the model appended after the operator's text
+// in the same user turn; Pi orders them after the user message and the router
+// joins adjacent text blocks with nothing between. Lead with a blank line so a
+// notice never runs into his words.
+export const SOFT_SEPARATOR = "\n\n";
+
 export function renderScheduledEvent(event: ScheduledEvent) {
+  const lead = event.urgency === "soft" ? SOFT_SEPARATOR : "";
   if (event.type === "merge") {
     const merge = JSON.parse(event.body) as { summary: string; forkSessionId: string; forkSessionFile: string; branchEntryId: string; firstEntryId: string; lastEntryId: string; turnCount: number; forkedFurther: boolean; mergedAt: string };
     return {
       customType: "familiar.merge.v1",
-      content: event.urgency === "soft" ? `fork ${merge.forkSessionId} merged: ${merge.summary}` : `<familiar-merge fork="${escapeAttr(merge.forkSessionId)}" branch="${escapeAttr(merge.branchEntryId)}" divergence="${merge.turnCount}" forked-further="${merge.forkedFurther}">\n${merge.summary}\nfull record: ${merge.forkSessionFile} entries ${merge.firstEntryId}..${merge.lastEntryId}\n</familiar-merge>`,
+      content: event.urgency === "soft" ? `${lead}fork ${merge.forkSessionId} merged: ${merge.summary}` : `<familiar-merge fork="${escapeAttr(merge.forkSessionId)}" branch="${escapeAttr(merge.branchEntryId)}" divergence="${merge.turnCount}" forked-further="${merge.forkedFurther}">\n${merge.summary}\nfull record: ${merge.forkSessionFile} entries ${merge.firstEntryId}..${merge.lastEntryId}\n</familiar-merge>`,
       display: true,
       details: { id: event.id, event, ...merge },
     };
   }
   return {
     customType: "scheduler-event",
-    content: `<scheduler-event id="${escapeAttr(event.id)}" type="${escapeAttr(event.type)}" priority="${event.priority}" source="${escapeAttr(event.source)}">\n${event.body || event.summary}\n</scheduler-event>`,
+    content: `${lead}<scheduler-event id="${escapeAttr(event.id)}" type="${escapeAttr(event.type)}" priority="${event.priority}" source="${escapeAttr(event.source)}">\n${event.body || event.summary}\n</scheduler-event>`,
     display: true,
     details: { id: event.id, event },
   };

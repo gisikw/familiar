@@ -16,5 +16,12 @@ test("wake merge events become attributed durable custom messages", () => {
 test("soft merge is a short next-turn notice", () => {
   const message = renderScheduledEvent({...merge, urgency:"soft"});
   expect(message.customType).toBe("familiar.merge.v1");
-  expect(message.content).toBe("fork fork merged: I fixed it");
+  expect(message.content).toBe("\n\nfork fork merged: I fixed it");
+});
+
+test("soft notices lead with a blank line; wake events do not", () => {
+  const note = { ...merge, type: "notify", body: "", summary: "check the thing" };
+  expect(renderScheduledEvent({ ...note, urgency: "soft" }).content.startsWith("\n\n<scheduler-event ")).toBe(true);
+  expect(renderScheduledEvent(note).content.startsWith("<scheduler-event ")).toBe(true);
+  expect(renderScheduledEvent(merge).content.startsWith("<familiar-merge ")).toBe(true);
 });
