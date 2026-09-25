@@ -9,9 +9,9 @@ const manager = SessionManager.open(source, sessionDir);
 const output = manager.createBranchedSession(entryId);
 if (!output) throw Error("session was not persisted");
 const fork = SessionManager.open(output, sessionDir);
-const leaf = fork.getLeafEntry();
-if (leaf?.type === "message" && leaf.message?.role === "assistant") {
-  for (const call of leaf.message.content?.filter((block) => block.type === "toolCall") ?? []) {
+const branchEntry = fork.getEntry(entryId);
+if (branchEntry?.type === "message" && branchEntry.message?.role === "assistant") {
+  for (const call of branchEntry.message.content?.filter((block) => block.type === "toolCall") ?? []) {
     const isImpFork =
       (call.name === "bash" && /(^|[;&|]\s*|\s)imp\s+fork(?:\s|$)/.test(call.arguments?.command ?? "")) ||
       (call.name === "imp" && call.arguments?.operation === "fork");
