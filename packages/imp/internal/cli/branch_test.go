@@ -174,3 +174,42 @@ func TestForkLabelsItselfWithoutTouchingTask(t *testing.T) {
 		t.Fatalf("primary label code=%d", code)
 	}
 }
+
+func TestForkStatusLine(t *testing.T) {
+	root := t.TempDir()
+	d := filepath.Join(root, "forks", "f2")
+	os.MkdirAll(d, 0700)
+	os.WriteFile(filepath.Join(d, "fork.json"), []byte(`{"id":"f2","task":"t"}`), 0600)
+	env := branchEnv(map[string]string{"FAMILIAR_STATE_DIR": root, "FAMILIAR_INSTANCE_ID": "f2", "FAMILIAR_PI_FORK": "1"})
+	read := func() map[string]any {
+		var m map[string]any
+		b, _ := os.ReadFile(filepath.Join(d, "fork.json"))
+		json.Unmarshal(b, &m)
+		return m
+	}
+	var out, er bytes.Buffer
+	if code := branchMain([]string{"label", "Broker", "--status", "reading  index.mjs"}, &out, &er, env); code != 0 {
+		t.Fatalf("code=%d err=%q", code, er.String())
+	}
+	if m := read(); m["label"] != "Broker" || m["status"] != "reading index.mjs" || m["statusAt"] == nil || m["task"] != "t" {
+		t.Fatalf("meta=%v", m)
+	}
+	out.Reset()
+	branchMain([]string{"status"}, &out, &er, env)
+	if strings.TrimSpace(out.String()) != "reading index.mjs" {
+		t.Fatalf("print=%q", out.String())
+	}
+	long := strings.Repeat("x", 200)
+	branchMain([]string{"status", long}, &out, &er, env)
+	if s, _ := read()["status"].(string); len([]rune(s)) != MaxStatusRunes {
+		t.Fatalf("cap=%d", len([]rune(s)))
+	}
+	branchMain([]string{"status", "--clear"}, &out, &er, env)
+	if m := read(); m["status"] != nil || m["statusAt"] != nil || m["label"] != "Broker" {
+		t.Fatalf("clear=%v", m)
+	}
+	primary := branchEnv(map[string]string{"FAMILIAR_STATE_DIR": root, "FAMILIAR_INSTANCE_ID": "p"})
+	if code := branchMain([]string{"status", "x"}, &out, &er, primary); code != ExitUsage {
+		t.Fatalf("primary status code=%d", code)
+	}
+}

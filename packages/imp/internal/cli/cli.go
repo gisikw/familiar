@@ -61,7 +61,7 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(
 	}
 	if args[0] != "attn" {
 		switch args[0] {
-		case "fork", "merge", "forks", "label":
+		case "fork", "merge", "forks", "label", "status":
 			return branchMain(args, stdout, stderr, getenv)
 		default:
 			return schedulerMain(args, stdout, stderr, getenv)

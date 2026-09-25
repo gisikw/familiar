@@ -37,6 +37,8 @@ func branchMain(argv []string, stdout, stderr io.Writer, getenv func(string) str
 		return finishBranch(argv[1:], stdout, stderr, getenv)
 	case "label":
 		return labelMain(argv[1:], stdout, stderr, getenv)
+	case "status":
+		return statusMain(argv[1:], stdout, stderr, getenv)
 	case "forks":
 		return forksMain(argv[1:], stdout, stderr, getenv)
 	}
@@ -299,7 +301,8 @@ func systemctlCommand(g func(string) string, args ...string) (string, []string) 
 const branchHelp = `Usage:
   imp fork "task text"
   imp merge [--quiet]
-  imp label "short name"   (forks: name yourself in the Open list)
+  imp label "short name" [--status "doing what"]   (forks: your name in the Open list)
+  imp status ["what you're doing now" | --clear]   (forks: one-line status under your name)
   imp forks
 `
 
@@ -314,17 +317,79 @@ func nodeBin(getenv func(string) string) string {
 
 // labelMain lets a fork name itself for the operator's Open list. The label is
 // a display name only: the task stays in fork.json unchanged for the record.
+// `--status TEXT` sets the status line in the same write.
 func labelMain(args []string, out, errw io.Writer, getenv func(string) string) int {
+	var status *string
+	if len(args) == 3 && args[1] == "--status" {
+		s := args[2]
+		status, args = &s, args[:1]
+	}
 	text, e := oneText(args, "label")
 	if e != nil {
 		return usageError(errw, "%v", e)
 	}
-	text = strings.Join(strings.Fields(text), " ")
-	if n := []rune(text); len(n) > MaxLabelRunes {
-		text = string(n[:MaxLabelRunes])
+	text = clip(text, MaxLabelRunes)
+	return updateForkMeta(out, errw, getenv, "labels name forks", func(meta map[string]any) string {
+		meta["label"] = text
+		msg := "labeled: " + text
+		if status != nil {
+			msg += setStatus(meta, *status)
+		}
+		return msg
+	})
+}
+
+// statusMain sets, prints, or clears the fork's one-line status: what she is
+// doing now, beneath her stable label. Words for what, never for state.
+func statusMain(args []string, out, errw io.Writer, getenv func(string) string) int {
+	switch {
+	case len(args) == 0:
+		return updateForkMeta(out, errw, getenv, "status lines are for forks", func(meta map[string]any) string {
+			s, _ := meta["status"].(string)
+			return s
+		})
+	case len(args) == 1 && args[0] == "--clear":
+		return updateForkMeta(out, errw, getenv, "status lines are for forks", func(meta map[string]any) string {
+			delete(meta, "status")
+			delete(meta, "statusAt")
+			return "status cleared"
+		})
 	}
+	text, e := oneText(args, "status")
+	if e != nil {
+		return usageError(errw, "%v", e)
+	}
+	return updateForkMeta(out, errw, getenv, "status lines are for forks", func(meta map[string]any) string {
+		return strings.TrimPrefix(setStatus(meta, text), " · ")
+	})
+}
+
+func clip(text string, max int) string {
+	text = strings.Join(strings.Fields(text), " ")
+	if n := []rune(text); len(n) > max {
+		text = string(n[:max])
+	}
+	return text
+}
+
+func setStatus(meta map[string]any, text string) string {
+	text = clip(text, MaxStatusRunes)
+	if text == "" {
+		delete(meta, "status")
+		delete(meta, "statusAt")
+		return " · status cleared"
+	}
+	meta["status"] = text
+	meta["statusAt"] = time.Now().UTC().Format(time.RFC3339Nano)
+	return " · status: " + text
+}
+
+// updateForkMeta applies edit to this fork's fork.json with an atomic 0600
+// write and prints edit's message. Read-only edits return without writing only
+// if they do not change the map; for simplicity every call rewrites.
+func updateForkMeta(out, errw io.Writer, getenv func(string) string, primaryMsg string, edit func(map[string]any) string) int {
 	if getenv("FAMILIAR_PI_FORK") != "1" {
-		fmt.Fprintln(errw, "imp: labels name forks; you're the top level")
+		fmt.Fprintf(errw, "imp: %s; you're the top level\n", primaryMsg)
 		return ExitUsage
 	}
 	env, e := envNeed(getenv, "FAMILIAR_STATE_DIR", "FAMILIAR_INSTANCE_ID")
@@ -346,7 +411,7 @@ func labelMain(args []string, out, errw io.Writer, getenv func(string) string) i
 	if e = json.Unmarshal(b, &meta); e != nil {
 		return branchError(errw, e)
 	}
-	meta["label"] = text
+	msg := edit(meta)
 	b, _ = json.Marshal(meta)
 	tmp, e := os.CreateTemp(dir, ".fork.json.*")
 	if e != nil {
@@ -366,9 +431,11 @@ func labelMain(args []string, out, errw io.Writer, getenv func(string) string) i
 		os.Remove(tmp.Name())
 		return branchError(errw, e)
 	}
-	fmt.Fprintf(out, "labeled: %s\n", text)
+	if msg != "" {
+		fmt.Fprintln(out, msg)
+	}
 	return 0
 }
 
-// MaxLabelRunes keeps labels to one line in the Open list.
+const MaxStatusRunes = 80
 const MaxLabelRunes = 60
