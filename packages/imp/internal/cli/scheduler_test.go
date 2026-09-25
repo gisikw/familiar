@@ -98,3 +98,45 @@ func TestParsePush(t *testing.T) {
 		t.Fatal("push --soft is meaningless and must fail")
 	}
 }
+
+func pushArgsWith(t *testing.T, env map[string]string) map[string]any {
+	t.Helper()
+	dir := t.TempDir()
+	os.Chmod(dir, 0700)
+	path := filepath.Join(dir, "s.sock")
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	got := make(chan map[string]any, 1)
+	go func() {
+		c, e := ln.Accept()
+		if e != nil {
+			return
+		}
+		defer c.Close()
+		line, _ := bufio.NewReader(c).ReadBytes('\n')
+		var req serviceRequest
+		_ = json.Unmarshal(line, &req)
+		got <- req.Args
+		c.Write([]byte(`{"ok":true,"result":{"sent":1,"failed":0}}` + "\n"))
+	}()
+	var out, stderr bytes.Buffer
+	env["FAMILIAR_SERVICES_SOCKET"] = path
+	if code := Main([]string{"push", "hi"}, strings.NewReader(""), &out, &stderr, func(k string) string { return env[k] }); code != 0 {
+		t.Fatalf("code=%d err=%q", code, stderr.String())
+	}
+	return <-got
+}
+
+func TestPushFromForkCarriesItsSessionForTapDeepLink(t *testing.T) {
+	fork := pushArgsWith(t, map[string]string{"FAMILIAR_PI_FORK": "1", "FAMILIAR_INSTANCE_ID": "fork-1"})
+	if fork["session"] != "fork-1" || fork["origin"] != nil {
+		t.Fatalf("fork push args=%#v", fork)
+	}
+	primary := pushArgsWith(t, map[string]string{"FAMILIAR_INSTANCE_ID": "primary-1"})
+	if _, ok := primary["session"]; ok {
+		t.Fatalf("primary push must not name a session (tap goes home): %#v", primary)
+	}
+}

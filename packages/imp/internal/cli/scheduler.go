@@ -36,6 +36,13 @@ func schedulerMain(argv []string, stdout, stderr io.Writer, getenv func(string) 
 	if origin := getenv("FAMILIAR_INSTANCE_ID"); origin != "" && !strings.HasPrefix(inv.op, "push.") {
 		inv.args["origin"] = origin
 	}
+	// A fork's push opens that fork when tapped (the phone falls back to the
+	// primary if it has merged). The primary sends none: tapping goes home.
+	if inv.op == "push.send" && getenv("FAMILIAR_PI_FORK") == "1" {
+		if id := getenv("FAMILIAR_INSTANCE_ID"); id != "" {
+			inv.args["session"] = id
+		}
+	}
 	result, remote, err := serviceCall(path, serviceRequest{inv.op, inv.args})
 	if err != nil {
 		fmt.Fprintf(stderr, "imp: %v\n", err)
