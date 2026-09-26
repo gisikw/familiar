@@ -329,6 +329,9 @@ func parseAt(value string, now time.Time) (time.Time, error) {
 	return t, nil
 }
 func serviceCall(path string, req serviceRequest) (json.RawMessage, *remoteError, error) {
+	return serviceCallTimeout(path, req, ioTimeout)
+}
+func serviceCallTimeout(path string, req serviceRequest, timeout time.Duration) (json.RawMessage, *remoteError, error) {
 	if !filepath.IsAbs(path) {
 		return nil, nil, errors.New("FAMILIAR_SERVICES_SOCKET must be an absolute path")
 	}
@@ -343,7 +346,7 @@ func serviceCall(path string, req serviceRequest) (json.RawMessage, *remoteError
 		return nil, nil, fmt.Errorf("connecting to scheduler: %w", err)
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(ioTimeout))
+	_ = conn.SetDeadline(time.Now().Add(timeout))
 	if _, err = conn.Write(append(payload, '\n')); err != nil {
 		return nil, nil, err
 	}

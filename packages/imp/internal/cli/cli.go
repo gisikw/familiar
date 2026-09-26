@@ -63,6 +63,8 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(
 		switch args[0] {
 		case "fork", "merge", "forks", "label", "status":
 			return branchMain(args, stdout, stderr, getenv)
+		case "agent":
+			return agentMain(args[1:], stdout, stderr, getenv)
 		default:
 			return schedulerMain(args, stdout, stderr, getenv)
 		}
@@ -332,9 +334,10 @@ func safeErrorCode(s string) string {
 	return s
 }
 
-const rootHelp = `Usage: imp <attn|schedule|notify|dnd|fork|merge|label|forks> ...
+const rootHelp = `Usage: imp <attn|schedule|notify|dnd|fork|merge|label|forks|agent> ...
 
-A private CLI-shaped model tool for Attention and scheduled events.
+A private CLI-shaped model tool for Attention, scheduled events, forks, and
+fleet agents.
 
-Run 'imp attn --help' or 'imp schedule --help' for command discovery.
+Run 'imp attn --help', 'imp schedule --help', or 'imp agent --help' for command discovery.
 `
