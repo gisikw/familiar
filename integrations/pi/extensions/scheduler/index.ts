@@ -14,7 +14,10 @@ export default function (pi: ExtensionAPI) {
   let client: SchedulerClient | undefined;
   let exportedInstance: string | undefined;
   let seen = new Set<string>();
-  const waiting = new Map<string, () => void>();
+  // Soft events queued in Pi's nextTurn buffer, awaiting persistence. A
+  // redelivery (scheduler reconnect) of an ID already here adds a resolver
+  // rather than a second queued copy.
+  const waiting = new Map<string, Array<() => void>>();
   const idleWaiters: Array<() => void> = [];
   let isIdle: () => boolean = () => true;
 
@@ -65,7 +68,9 @@ export default function (pi: ExtensionAPI) {
         const message = renderScheduledEvent(event);
         if (event.urgency === "soft") {
           return new Promise<void>((resolve) => {
-            waiting.set(event.id, resolve);
+            const resolvers = waiting.get(event.id);
+            if (resolvers) { resolvers.push(resolve); return; }
+            waiting.set(event.id, [resolve]);
             pi.sendMessage(message, { deliverAs: "nextTurn" });
           });
         }
@@ -76,17 +81,23 @@ export default function (pi: ExtensionAPI) {
     });
     client.start();
   });
-  // Pi persists queued nextTurn custom messages before turn_start. Ack only after
-  // the event ID is visible in the durable branch; a restart before then causes
-  // scheduler reconnect redelivery rather than losing an in-memory queue.
-  pi.on("turn_start", (_event, ctx) => {
+  // Ack only after the event ID is visible in the durable branch; a restart
+  // before then causes scheduler reconnect redelivery rather than losing an
+  // in-memory queue. Pi persists prompt messages (the user turn and its queued
+  // nextTurn customs) at message_end, which on the first turn comes AFTER
+  // turn_start; so check at turn_end/agent_end too. Checking only at turn_start
+  // left single-turn replies unacked, and every reconnect re-queued a copy.
+  const settlePersisted = (ctx: { sessionManager: { getBranch(): unknown[] } }) => {
     const persisted = deliveredIds(ctx.sessionManager.getBranch());
     for (const id of persisted) {
       seen.add(id);
-      const resolve = waiting.get(id);
-      if (resolve) { waiting.delete(id); resolve(); }
+      const resolvers = waiting.get(id);
+      if (resolvers) { waiting.delete(id); for (const resolve of resolvers) resolve(); }
     }
-  });
+  };
+  pi.on("turn_start", (_event, ctx) => settlePersisted(ctx));
+  pi.on("turn_end", (_event, ctx) => settlePersisted(ctx));
+  pi.on("agent_end", (_event, ctx) => settlePersisted(ctx));
   pi.on("session_shutdown", async () => {
     client?.stop(); client = undefined;
     if (process.env.FAMILIAR_INSTANCE_ID === exportedInstance) delete process.env.FAMILIAR_INSTANCE_ID;
