@@ -377,7 +377,7 @@ func writeSchedulerHuman(out io.Writer, op string, result json.RawMessage, stder
 			if len(summary) > 90 {
 				summary = summary[:87] + "..."
 			}
-			fmt.Fprintf(out, "%-5s %-9s %-16s %-18s %s  %s  %s\n", x.kind(), x.State, time.UnixMilli(x.DueAt).In(loc).Format("Mon Jan 2 15:04"), rule, shortTarget(x.Target), x.ID, summary)
+			fmt.Fprintf(out, "%-5s %-9s %-16s %-20s %s  %s  %s\n", x.kind(), x.State, time.UnixMilli(x.DueAt).In(loc).Format("Mon Jan 2 15:04"), rule, shortTarget(x.Target), x.ID, summary)
 		}
 	case "schedule.cancel":
 		fmt.Fprintln(out, "cancelled")
