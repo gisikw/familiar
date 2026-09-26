@@ -17,8 +17,9 @@ afterEach(() => {
 const forkEvent = { id: "brief-at-1", due_at: Date.UTC(2026, 8, 28, 11), target: "instance:p", origin: "p", source: "imp.schedule", priority: 2, type: "fork", summary: "Daily briefing", body: JSON.stringify({ task: "Daily briefing", label: "daily briefing" }), urgency: "wake" as const, state: "delivered", created_at: 0, rule: "day 06:00", series: "brief" };
 
 test("forkRequest reads the JSON body and tolerates plain text", () => {
-  expect(forkRequest(forkEvent)).toEqual({ task: "Daily briefing", label: "daily briefing" });
-  expect(forkRequest({ ...forkEvent, body: "just do it" })).toEqual({ task: "just do it", label: "" });
+  expect(forkRequest(forkEvent)).toEqual({ task: "Daily briefing", label: "daily briefing", fresh: false, model: "", runner: false });
+  expect(forkRequest({ ...forkEvent, body: JSON.stringify({ task: "t", label: "l", fresh: true, model: "p/m", runner: true }) })).toEqual({ task: "t", label: "l", fresh: true, model: "p/m", runner: true });
+  expect(forkRequest({ ...forkEvent, body: "just do it" })).toEqual({ task: "just do it", label: "", fresh: false, model: "", runner: false });
 });
 
 test("a recorded scheduled fork counts as delivered", () => {

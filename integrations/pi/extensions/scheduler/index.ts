@@ -23,10 +23,13 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_settled", () => { for (const resolve of idleWaiters.splice(0)) resolve(); });
 
   async function spawnFork(event: ScheduledEvent) {
-    const { task, label } = forkRequest(event);
+    const { task, label, fresh, model, runner } = forkRequest(event);
     await whenIdle();
     const args = ["fork", "--origin", `schedule:${event.series || event.id}`];
     args.push("--label", label || `scheduled: ${task.slice(0, 60)}`);
+    if (fresh) args.push("--fresh");
+    if (model) args.push("--model", model);
+    if (runner) args.push("--runner");
     const stamp = new Date(event.due_at).toLocaleString("en-US", { timeZone: process.env.FAMILIAR_TZ || "America/Chicago", weekday: "short", hour: "numeric", minute: "2-digit" });
     args.push(`(Scheduled${event.rule ? ` every ${event.rule}` : ""}, due ${stamp}. Nobody is waiting on you live; do the work, then imp merge.)\n\n${task}`);
     const { stdout } = await execFileAsync("imp", args, { env: process.env, timeout: 60_000, maxBuffer: 64 * 1024 });
@@ -119,12 +122,18 @@ export function renderScheduledEvent(event: ScheduledEvent) {
   };
 }
 
-export function forkRequest(event: ScheduledEvent): { task: string; label: string } {
+export function forkRequest(event: ScheduledEvent): { task: string; label: string; fresh: boolean; model: string; runner: boolean } {
   try {
-    const body = JSON.parse(event.body) as { task?: unknown; label?: unknown };
-    if (typeof body.task === "string" && body.task.trim()) return { task: body.task, label: typeof body.label === "string" ? body.label : "" };
+    const body = JSON.parse(event.body) as { task?: unknown; label?: unknown; fresh?: unknown; model?: unknown; runner?: unknown };
+    if (typeof body.task === "string" && body.task.trim()) return {
+      task: body.task,
+      label: typeof body.label === "string" ? body.label : "",
+      fresh: body.fresh === true,
+      model: typeof body.model === "string" ? body.model : "",
+      runner: body.runner === true,
+    };
   } catch { /* plain-text body */ }
-  return { task: event.body || event.summary, label: "" };
+  return { task: event.body || event.summary, label: "", fresh: false, model: "", runner: false };
 }
 
 export function deliveredIds(entries: readonly unknown[]): Set<string> {

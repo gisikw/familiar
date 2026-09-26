@@ -106,10 +106,10 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 	if len(args) == 1 && isHelp(args[0]) {
 		return schedulerInvocation{op: "help"}, false, nil
 	}
-	jsonMode, soft, fork, all := false, false, false, false
+	jsonMode, soft, fork, all, fresh, runner := false, false, false, false, false, false
 	vals := map[string]string{}
 	pos := []string{}
-	value := map[string]bool{"in": true, "at": true, "every": true, "label": true, "target": true, "id": true, "priority": true, "type": true, "source": true, "body": true, "title": true}
+	value := map[string]bool{"in": true, "at": true, "every": true, "label": true, "target": true, "id": true, "priority": true, "type": true, "source": true, "body": true, "title": true, "model": true}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--json" {
@@ -126,6 +126,14 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 		}
 		if a == "--all" {
 			all = true
+			continue
+		}
+		if a == "--fresh" {
+			fresh = true
+			continue
+		}
+		if a == "--runner" {
+			runner = true
 			continue
 		}
 		if strings.HasPrefix(a, "--") {
@@ -174,6 +182,21 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 		if in == "" && at == "" && every == "" {
 			return schedulerInvocation{}, false, errors.New("schedule requires --in, --at, or --every")
 		}
+		if (fresh || runner || vals["model"] != "") && !fork {
+			return schedulerInvocation{}, false, errors.New("--fresh/--model/--runner shape a scheduled fork; use them with --fork")
+		}
+		if m := vals["model"]; m != "" {
+			if !modelRef.MatchString(m) {
+				return schedulerInvocation{}, false, errors.New("--model must be PROVIDER/MODEL")
+			}
+			// Refuse now, not at 6am: a model that can't carry Kes must be declared a runner.
+			if !runner && !carriesKes(m, os.Getenv("FAMILIAR_FORK_MODELS")) {
+				return schedulerInvocation{}, false, fmt.Errorf("--model %s is not on the list of models that carry Kes (FAMILIAR_FORK_MODELS); add --runner to schedule it as a marked lighter runner", m)
+			}
+		}
+		if runner && vals["model"] == "" {
+			return schedulerInvocation{}, false, errors.New("--runner needs --model")
+		}
 		if vals["label"] != "" && !fork {
 			return schedulerInvocation{}, false, errors.New("--label names a scheduled fork; use it with --fork")
 		}
@@ -207,7 +230,17 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 				return schedulerInvocation{}, false, errors.New("--fork and --soft don't combine: a scheduled fork never takes a turn")
 			}
 			m["type"] = "fork"
-			b, _ := json.Marshal(map[string]string{"task": pos[0], "label": vals["label"]})
+			req := map[string]any{"task": pos[0], "label": vals["label"]}
+			if fresh {
+				req["fresh"] = true
+			}
+			if m := vals["model"]; m != "" {
+				req["model"] = m
+			}
+			if runner {
+				req["runner"] = true
+			}
+			b, _ := json.Marshal(req)
 			m["body"] = string(b)
 		}
 		if soft {

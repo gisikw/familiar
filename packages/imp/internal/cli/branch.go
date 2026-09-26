@@ -10,10 +10,34 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// modelRef is a Pi PROVIDER/MODEL reference, e.g. tiamat-anthropic/claude-sonnet-5.
+var modelRef = regexp.MustCompile(`^[A-Za-z0-9._-]{1,80}/[A-Za-z0-9._:-]{1,120}$`)
+
+// carriesKes reports whether model is on the allowlist of models considered
+// able to carry Kes: comma-separated PROVIDER/MODEL patterns where "*" matches
+// any run of characters. Unset means the Opus family only.
+func carriesKes(model, list string) bool {
+	if strings.TrimSpace(list) == "" {
+		list = "*/claude-opus-*"
+	}
+	for _, p := range strings.Split(list, ",") {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		re := "^" + strings.ReplaceAll(regexp.QuoteMeta(p), `\*`, ".*") + "$"
+		if ok, _ := regexp.MatchString(re, model); ok {
+			return true
+		}
+	}
+	return false
+}
 
 type piRecord struct {
 	Type, ID, ParentID, CustomType string
@@ -67,10 +91,21 @@ func envNeed(getenv func(string) string, names ...string) (map[string]string, er
 func forkMain(args []string, out, errw io.Writer, getenv func(string) string) int {
 	// --label names the fork at birth (scheduled forks arrive already titled);
 	// --origin records who started it (e.g. schedule:<series>).
-	var label, origin string
+	// --fresh starts from the system prompt and the task alone, not the
+	// parent's conversation; --model PROVIDER/MODEL picks the fork's model
+	// (default: the parent's current model).
+	var label, origin, model string
+	fresh, runner := false, false
 	var rest []string
 	for i := 0; i < len(args); i++ {
 		switch {
+		case args[i] == "--fresh":
+			fresh = true
+		case args[i] == "--runner":
+			runner = true
+		case args[i] == "--model" && i+1 < len(args):
+			model = strings.TrimSpace(args[i+1])
+			i++
 		case (args[i] == "--label" || args[i] == "--origin") && i+1 < len(args):
 			if args[i] == "--label" {
 				label = strings.TrimSpace(args[i+1])
@@ -84,6 +119,17 @@ func forkMain(args []string, out, errw io.Writer, getenv func(string) string) in
 	}
 	if len(label) > 120 || len(origin) > 200 || strings.ContainsAny(label+origin, "\x00\n\r") {
 		return usageError(errw, "fork --label/--origin must be short single lines")
+	}
+	if model != "" && !modelRef.MatchString(model) {
+		return usageError(errw, "fork --model must be PROVIDER/MODEL")
+	}
+	// A declared model must be able to carry Kes, or the fork must say plainly
+	// that it is a lighter runner (it will not wear her name).
+	if model != "" && !runner && !carriesKes(model, getenv("FAMILIAR_FORK_MODELS")) {
+		return usageError(errw, "fork --model %s is not on the list of models that carry Kes (FAMILIAR_FORK_MODELS); pass --runner to run it as a marked lighter runner", model)
+	}
+	if runner && model == "" {
+		return usageError(errw, "fork --runner needs --model")
 	}
 	task, e := oneText(rest, "fork")
 	if e != nil {
@@ -126,13 +172,13 @@ func forkMain(args []string, out, errw io.Writer, getenv func(string) string) in
 	}()
 	sessionDir := filepath.Join(tmp, "sessions")
 	os.MkdirAll(sessionDir, 0700)
-	cmd := exec.Command(nodeBin(getenv), env["FAMILIAR_FORK_HELPER"], env["PI_PACKAGE_DIR"], env["FAMILIAR_SESSION_FILE"], leaf, sessionDir, env["FAMILIAR_INSTANCE_ID"])
+	cmd := exec.Command(nodeBin(getenv), env["FAMILIAR_FORK_HELPER"], env["PI_PACKAGE_DIR"], env["FAMILIAR_SESSION_FILE"], leaf, sessionDir, env["FAMILIAR_INSTANCE_ID"], map[bool]string{true: "fresh", false: "branch"}[fresh], model, mustCwd(), map[bool]string{true: "runner", false: "kes"}[runner])
 	raw, e := cmd.CombinedOutput()
 	if e != nil {
 		fmt.Fprintf(errw, "imp: fork helper: %v: %s\n", e, raw)
 		return ExitProtocol
 	}
-	var made struct{ ID, File, MarkerEntryID string }
+	var made struct{ ID, File, MarkerEntryID, Model string }
 	if json.Unmarshal(bytes.TrimSpace(raw), &made) != nil || made.ID == "" || filepath.Base(made.ID) != made.ID || strings.ContainsAny(made.ID, "\\/\x00\n\r") {
 		return branchError(errw, errors.New("invalid fork helper result"))
 	}
@@ -158,6 +204,15 @@ func forkMain(args []string, out, errw io.Writer, getenv func(string) string) in
 	}
 	if origin != "" {
 		meta["origin"] = origin
+	}
+	if fresh {
+		meta["fresh"] = true
+	}
+	if runner {
+		meta["role"] = "runner"
+	}
+	if made.Model != "" {
+		meta["model"] = made.Model
 	}
 	b, _ := json.Marshal(meta)
 	if e = os.WriteFile(filepath.Join(final, "fork.json"), append(b, '\n'), 0600); e != nil {

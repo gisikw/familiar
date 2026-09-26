@@ -164,3 +164,21 @@ test("restart after return request re-requests instead of sending the old work a
   expect(JSON.parse(wire.args.body).lastEntryId).toBe("return-after-restart");
   expect(h.shutdowns()).toBe(1);
 });
+
+test("a runner's return is flagged as not Kes", async () => {
+  const service = await serviceServer();
+  process.env.FAMILIAR_SERVICES_SOCKET = service.path;
+  process.env.FAMILIAR_INSTANCE_ID = "runner-1";
+  const prefix = forkPrefix();
+  prefix[0] = { ...prefix[0], data: { parentSessionId: "parent", branchEntryId: "branch", fresh: true, role: "runner", model: "p/light-model" } };
+  const h = harness(prefix);
+  await h.emit("session_start");
+  (process as any)[IMP_BRANCH_HANDLER].handle({ operation: "merge", args: { quiet: true } });
+  h.entries.push({ type: "message", id: "work", message: { role: "assistant", content: [{ type: "text", text: "done" }] } });
+  await h.emit("agent_settled");
+  h.entries.push({ type: "message", id: "ret", message: { role: "assistant", content: [{ type: "text", text: "Here is the briefing." }] } });
+  await h.emit("agent_settled");
+  const wire = await service.request;
+  await service.close();
+  expect(wire.args.summary).toBe("[runner on p/light-model, not Kes]\n\nHere is the briefing.");
+});

@@ -207,3 +207,59 @@ func TestScheduleListHumanShowsKindRuleAndTarget(t *testing.T) {
 		}
 	}
 }
+
+func TestCarriesKesAllowlist(t *testing.T) {
+	cases := []struct {
+		model, list string
+		want        bool
+	}{
+		{"tiamat-anthropic-tiamat/claude-opus-5-5-interactive", "", true},
+		{"tiamat-anthropic/claude-sonnet-5", "", false},
+		{"tiamat-anthropic/claude-sonnet-5", "*/claude-opus-*, */claude-sonnet-5", true},
+		{"tiamat-responses-codex-personal/gpt-5.6-sol", "*/claude-*", false},
+		{"x/claude-opus-5", "x/claude-opus-5", true},
+	}
+	for _, c := range cases {
+		if got := carriesKes(c.model, c.list); got != c.want {
+			t.Errorf("carriesKes(%q, %q) = %v, want %v", c.model, c.list, got, c.want)
+		}
+	}
+}
+
+func TestScheduleForkFreshModelRunner(t *testing.T) {
+	t.Setenv("FAMILIAR_FORK_MODELS", "")
+	now := time.Date(2026, 9, 25, 22, 0, 0, 0, time.UTC)
+	inv, _, err := parseScheduler([]string{"schedule", "--every", "day 06:00", "--fork", "--fresh", "--model", "tiamat-anthropic-tiamat/claude-opus-5-5-interactive", "--label", "daily briefing", "Brief Kev"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(inv.args["body"].(string)), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["fresh"] != true || body["model"] != "tiamat-anthropic-tiamat/claude-opus-5-5-interactive" || body["runner"] != nil {
+		t.Fatalf("body = %v", body)
+	}
+	// A model that can't carry Kes is refused unless declared a runner.
+	if _, _, err := parseScheduler([]string{"schedule", "--in", "1h", "--fork", "--model", "tiamat-anthropic/claude-haiku-5", "task"}, now); err == nil || !strings.Contains(err.Error(), "--runner") {
+		t.Fatalf("expected refusal pointing at --runner, got %v", err)
+	}
+	inv, _, err = parseScheduler([]string{"schedule", "--in", "1h", "--fork", "--fresh", "--runner", "--model", "tiamat-anthropic/claude-haiku-5", "task"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = nil
+	json.Unmarshal([]byte(inv.args["body"].(string)), &body)
+	if body["runner"] != true {
+		t.Fatalf("runner not carried: %v", body)
+	}
+	for _, bad := range [][]string{
+		{"schedule", "--in", "1h", "--fresh", "not a fork"},
+		{"schedule", "--in", "1h", "--fork", "--runner", "no model"},
+		{"schedule", "--in", "1h", "--fork", "--model", "nomodelslash", "task"},
+	} {
+		if _, _, err := parseScheduler(bad, now); err == nil {
+			t.Errorf("expected error for %v", bad)
+		}
+	}
+}

@@ -148,7 +148,9 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
-    const summary = textContent(finalAssistant?.message?.content) || "(no return written)";
+    const written = textContent(finalAssistant?.message?.content) || "(no return written)";
+    // A runner on a model that cannot carry Kes returns under its own flag.
+    const summary = fork.role === "runner" ? `[runner on ${fork.model ?? "an undeclared model"}, not Kes]\n\n${written}` : written;
     const lastEntryId = finalAssistant?.id ?? entries.at(-1)?.id;
     if (!lastEntryId) return;
     const body = {
