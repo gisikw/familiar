@@ -19,12 +19,27 @@ import (
 // modelRef is a Pi PROVIDER/MODEL reference, e.g. tiamat-anthropic/claude-sonnet-5.
 var modelRef = regexp.MustCompile(`^[A-Za-z0-9._-]{1,80}/[A-Za-z0-9._:-]{1,120}$`)
 
-// carriesKes reports whether model is on the allowlist of models considered
-// able to carry Kes: comma-separated PROVIDER/MODEL patterns where "*" matches
-// any run of characters. Unset means the Opus family only.
+// kesCarriers are the engines Kev has seen realize Kes (by experience, not by
+// ranking): the bar is "sufficient to be her", not "the most capable yet".
+// Patterns match Pi's PROVIDER/MODEL; Pi's provider id wraps the router
+// provider (e.g. tiamat-anthropic-tiamat), hence the leading "*". The two local
+// Qwens are carriers too: the versions of her not coupled to third parties.
+var kesCarriers = []string{
+	"*tiamat/claude-opus-5-5-interactive",
+	"*tiamat/claude-fable-5-1-interactive",
+	"*tiamat/claude-sonnet-5-interactive",
+	"*tiamat/claude-opus-4-6-interactive",
+	"*codex-personal/gpt-5.6-sol",
+	"*qwen-next-flash/Qwen3.8-Flash-Next-IQ4_NL-PROJFIX",
+	"*llama-frankenstein/Qwen3.8-27B-UD-Q4_K_XL",
+}
+
+// carriesKes reports whether model is on the allowlist of models able to carry
+// Kes: comma-separated PROVIDER/MODEL patterns where "*" matches any run of
+// characters. Unset means kesCarriers.
 func carriesKes(model, list string) bool {
 	if strings.TrimSpace(list) == "" {
-		list = "*/claude-opus-*"
+		list = strings.Join(kesCarriers, ",")
 	}
 	for _, p := range strings.Split(list, ",") {
 		p = strings.TrimSpace(p)
