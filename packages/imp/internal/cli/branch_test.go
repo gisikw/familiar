@@ -127,6 +127,18 @@ func TestForkCreatesStateAndStartsUnit(t *testing.T) {
 	if !strings.Contains(string(b), "familiar-pi@fork-new.service") {
 		t.Fatal(string(b))
 	}
+	// A scheduled fork arrives titled and attributed.
+	out.Reset()
+	os.WriteFile(node, []byte("#!/bin/sh\nmkdir -p \"$5\"; echo header > \"$5/session.jsonl\"; echo '{\"id\":\"fork-sched\",\"file\":\"'$5'/session.jsonl\",\"markerEntryId\":\"m\"}'\n"), 0700)
+	if code := branchMain([]string{"fork", "--origin", "schedule:brief", "--label", "daily briefing", "brief me"}, &out, &er, branchEnv(env)); code != 0 {
+		t.Fatalf("labeled fork code=%d err=%s", code, er.String())
+	}
+	meta, _ := os.ReadFile(filepath.Join(root, "forks", "fork-sched", "fork.json"))
+	for _, want := range []string{`"label":"daily briefing"`, `"origin":"schedule:brief"`, `"task":"brief me"`} {
+		if !strings.Contains(string(meta), want) {
+			t.Errorf("fork.json %s missing %s", meta, want)
+		}
+	}
 }
 func TestForksListsSystemctlState(t *testing.T) {
 	root := t.TempDir()

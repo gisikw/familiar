@@ -65,7 +65,27 @@ func envNeed(getenv func(string) string, names ...string) (map[string]string, er
 }
 
 func forkMain(args []string, out, errw io.Writer, getenv func(string) string) int {
-	task, e := oneText(args, "fork")
+	// --label names the fork at birth (scheduled forks arrive already titled);
+	// --origin records who started it (e.g. schedule:<series>).
+	var label, origin string
+	var rest []string
+	for i := 0; i < len(args); i++ {
+		switch {
+		case (args[i] == "--label" || args[i] == "--origin") && i+1 < len(args):
+			if args[i] == "--label" {
+				label = strings.TrimSpace(args[i+1])
+			} else {
+				origin = strings.TrimSpace(args[i+1])
+			}
+			i++
+		default:
+			rest = append(rest, args[i])
+		}
+	}
+	if len(label) > 120 || len(origin) > 200 || strings.ContainsAny(label+origin, "\x00\n\r") {
+		return usageError(errw, "fork --label/--origin must be short single lines")
+	}
+	task, e := oneText(rest, "fork")
 	if e != nil {
 		return usageError(errw, "%v", e)
 	}
@@ -133,6 +153,12 @@ func forkMain(args []string, out, errw io.Writer, getenv func(string) string) in
 		_ = os.Symlink(filepath.Join(env["PI_CODING_AGENT_DIR"], "extensions"), filepath.Join(piDir, "extensions"))
 	}
 	meta := map[string]any{"id": made.ID, "parentSessionId": env["FAMILIAR_INSTANCE_ID"], "branchEntryId": leaf, "sessionFile": made.File, "task": task, "cwd": mustCwd(), "createdAt": time.Now().UTC().Format(time.RFC3339Nano)}
+	if label != "" {
+		meta["label"] = label
+	}
+	if origin != "" {
+		meta["origin"] = origin
+	}
 	b, _ := json.Marshal(meta)
 	if e = os.WriteFile(filepath.Join(final, "fork.json"), append(b, '\n'), 0600); e != nil {
 		return branchError(errw, e)

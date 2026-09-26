@@ -9,10 +9,12 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+	_ "time/tzdata"
 )
 
 type serviceRequest struct {
@@ -35,6 +37,13 @@ func schedulerMain(argv []string, stdout, stderr io.Writer, getenv func(string) 
 	}
 	if origin := getenv("FAMILIAR_INSTANCE_ID"); origin != "" && !strings.HasPrefix(inv.op, "push.") {
 		inv.args["origin"] = origin
+	}
+	// A scheduled fork branches from the primary (a fork is ephemeral; its
+	// schedule outlives it), so default its target to the root of this lineage.
+	if inv.op == "schedule.enqueue" && inv.args["type"] == "fork" && inv.args["target"] == nil {
+		if root := rootInstance(getenv); root != "" {
+			inv.args["target"] = "instance:" + root
+		}
 	}
 	// A fork's push opens that fork when tapped (the phone falls back to the
 	// primary if it has merged). The primary sends none: tapping goes home.
@@ -68,6 +77,26 @@ type schedulerInvocation struct {
 	args map[string]any
 }
 
+// rootInstance follows fork.json parent links from this instance to the
+// primary it ultimately branched from.
+func rootInstance(getenv func(string) string) string {
+	id, state := getenv("FAMILIAR_INSTANCE_ID"), getenv("FAMILIAR_STATE_DIR")
+	for i := 0; i < 8 && id != "" && state != ""; i++ {
+		b, err := os.ReadFile(filepath.Join(state, "forks", filepath.Base(id), "fork.json"))
+		if err != nil {
+			return id
+		}
+		var m struct {
+			Parent string `json:"parentSessionId"`
+		}
+		if json.Unmarshal(b, &m) != nil || m.Parent == "" {
+			return id
+		}
+		id = m.Parent
+	}
+	return id
+}
+
 func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, error) {
 	if len(argv) == 0 || isHelp(argv[0]) {
 		return schedulerInvocation{op: "help"}, false, nil
@@ -77,10 +106,10 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 	if len(args) == 1 && isHelp(args[0]) {
 		return schedulerInvocation{op: "help"}, false, nil
 	}
-	jsonMode, soft := false, false
+	jsonMode, soft, fork, all := false, false, false, false
 	vals := map[string]string{}
 	pos := []string{}
-	value := map[string]bool{"in": true, "at": true, "target": true, "id": true, "priority": true, "type": true, "source": true, "body": true, "title": true}
+	value := map[string]bool{"in": true, "at": true, "every": true, "label": true, "target": true, "id": true, "priority": true, "type": true, "source": true, "body": true, "title": true}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--json" {
@@ -89,6 +118,14 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 		}
 		if a == "--soft" {
 			soft = true
+			continue
+		}
+		if a == "--fork" {
+			fork = true
+			continue
+		}
+		if a == "--all" {
+			all = true
 			continue
 		}
 		if strings.HasPrefix(a, "--") {
@@ -113,9 +150,13 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 	case "schedule":
 		if len(pos) > 0 && pos[0] == "list" {
 			if len(pos) != 1 {
-				return schedulerInvocation{}, false, errors.New("usage: imp schedule list")
+				return schedulerInvocation{}, false, errors.New("usage: imp schedule list [--all] [--json]")
 			}
-			return schedulerInvocation{"schedule.list", originArgs()}, jsonMode, nil
+			m := originArgs()
+			if all {
+				m["all"] = true
+			}
+			return schedulerInvocation{"schedule.list", m}, jsonMode, nil
 		}
 		if len(pos) > 0 && pos[0] == "cancel" {
 			if len(pos) != 2 {
@@ -126,9 +167,15 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 		if len(pos) != 1 {
 			return schedulerInvocation{}, false, errors.New("schedule requires one quoted reason")
 		}
-		in, at := vals["in"], vals["at"]
-		if (in == "") == (at == "") {
-			return schedulerInvocation{}, false, errors.New("schedule requires exactly one of --in or --at")
+		in, at, every := vals["in"], vals["at"], vals["every"]
+		if in != "" && at != "" {
+			return schedulerInvocation{}, false, errors.New("schedule takes at most one of --in or --at")
+		}
+		if in == "" && at == "" && every == "" {
+			return schedulerInvocation{}, false, errors.New("schedule requires --in, --at, or --every")
+		}
+		if vals["label"] != "" && !fork {
+			return schedulerInvocation{}, false, errors.New("--label names a scheduled fork; use it with --fork")
 		}
 		var due time.Time
 		var err error
@@ -139,17 +186,30 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 			if d <= 0 && err == nil {
 				err = errors.New("duration must be positive")
 			}
-		} else {
+		} else if at != "" {
 			due, err = parseAt(at, now)
 		}
 		if err != nil {
 			return schedulerInvocation{}, false, fmt.Errorf("invalid time: %v", err)
 		}
 		m := originArgs()
-		m["due_at"] = due.UnixMilli()
+		if !due.IsZero() {
+			m["due_at"] = due.UnixMilli()
+		}
+		if every != "" {
+			m["rule"] = every
+		}
 		m["summary"] = pos[0]
 		m["body"] = "<system-reminder>Scheduled event: " + pos[0] + "</system-reminder>"
 		m["source"] = "imp.schedule"
+		if fork {
+			if soft {
+				return schedulerInvocation{}, false, errors.New("--fork and --soft don't combine: a scheduled fork never takes a turn")
+			}
+			m["type"] = "fork"
+			b, _ := json.Marshal(map[string]string{"task": pos[0], "label": vals["label"]})
+			m["body"] = string(b)
+		}
 		if soft {
 			m["urgency"] = "soft"
 		}
@@ -292,25 +352,32 @@ func writeSchedulerHuman(out io.Writer, op string, result json.RawMessage, stder
 		return 0
 	case "schedule.enqueue":
 		var x struct {
-			Event struct {
-				ID    string `json:"id"`
-				DueAt int64  `json:"due_at"`
-			} `json:"event"`
+			Event schedEvent `json:"event"`
 		}
 		if json.Unmarshal(result, &x) != nil {
 			return ExitProtocol
 		}
-		fmt.Fprintf(out, "%s  %s\n", x.Event.ID, time.UnixMilli(x.Event.DueAt).Format(time.RFC3339))
-	case "schedule.list":
-		var xs []struct {
-			ID, Summary, State string
-			DueAt              int64 `json:"due_at"`
+		fmt.Fprintf(out, "%s  %s", x.Event.ID, time.UnixMilli(x.Event.DueAt).Format(time.RFC3339))
+		if x.Event.Rule != "" {
+			fmt.Fprintf(out, "  every %s", x.Event.Rule)
 		}
+		fmt.Fprintln(out)
+	case "schedule.list":
+		var xs []schedEvent
 		if json.Unmarshal(result, &xs) != nil {
 			return ExitProtocol
 		}
+		loc := listZone()
 		for _, x := range xs {
-			fmt.Fprintf(out, "%s  %s  %s  %s\n", x.ID, x.State, time.UnixMilli(x.DueAt).Format(time.RFC3339), x.Summary)
+			rule := "once"
+			if x.Rule != "" {
+				rule = "every " + x.Rule
+			}
+			summary := x.Summary
+			if len(summary) > 90 {
+				summary = summary[:87] + "..."
+			}
+			fmt.Fprintf(out, "%-5s %-9s %-16s %-18s %s  %s  %s\n", x.kind(), x.State, time.UnixMilli(x.DueAt).In(loc).Format("Mon Jan 2 15:04"), rule, shortTarget(x.Target), x.ID, summary)
 		}
 	case "schedule.cancel":
 		fmt.Fprintln(out, "cancelled")
@@ -332,9 +399,48 @@ func writeSchedulerHuman(out io.Writer, op string, result json.RawMessage, stder
 
 const schedulerHelp = `Usage:
   imp schedule --in 30m|--at TIME [--target instance:ID|spawn:UNIT] [--soft] "reason"
-  imp schedule list [--json]
-  imp schedule cancel ID
+  imp schedule --every RULE [--at TIME] [--soft] "reason"          (recurring)
+  imp schedule --every RULE|--at TIME|--in D --fork [--label L] "task"
+                              (spawn a background fork of the primary; no turn)
+  imp schedule list [--all] [--json]
+  imp schedule cancel ID       (a recurring ID cancels the whole series)
   imp notify [--target TARGET] [--id ID] [--soft] "reason"
   imp dnd [on DURATION|off|status]
   imp push [--title TITLE] "message"   (to Kevin's phone)
+
+RULE: an interval (90m, 2h, 1d) or DAYS HH:MM, where DAYS is day, weekday,
+weekend, or a list like mon,wed,fri. Local time (America/Chicago), DST-correct.
+A missed occurrence fires once on catch-up; nothing replays.
 `
+
+type schedEvent struct {
+	ID, Summary, State, Target, Type, Urgency, Rule, Series string
+	DueAt                                                   int64 `json:"due_at"`
+}
+
+func (e schedEvent) kind() string {
+	switch {
+	case e.Type == "fork" || e.Type == "merge":
+		return e.Type
+	case e.Urgency == "soft":
+		return "soft"
+	}
+	return "wake"
+}
+func shortTarget(t string) string {
+	id := strings.TrimPrefix(t, "instance:")
+	if id != t && len(id) > 8 {
+		return id[:8]
+	}
+	return t
+}
+func listZone() *time.Location {
+	name := os.Getenv("FAMILIAR_TZ")
+	if name == "" {
+		name = "America/Chicago"
+	}
+	if loc, err := time.LoadLocation(name); err == nil {
+		return loc
+	}
+	return time.Local
+}

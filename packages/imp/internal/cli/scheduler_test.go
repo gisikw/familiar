@@ -140,3 +140,70 @@ func TestPushFromForkCarriesItsSessionForTapDeepLink(t *testing.T) {
 		t.Fatalf("primary push must not name a session (tap goes home): %#v", primary)
 	}
 }
+
+func TestScheduleEveryForkCarriesRuleTypeAndTaskBody(t *testing.T) {
+	code, out, stderr := runSchedulerSocket(t, []string{"schedule", "--every", "weekday 06:00", "--fork", "--label", "daily briefing", "Write today's briefing"}, func(req serviceRequest) {
+		if req.Op != "schedule.enqueue" || req.Args["rule"] != "weekday 06:00" || req.Args["type"] != "fork" {
+			t.Errorf("args=%#v", req.Args)
+		}
+		if _, has := req.Args["due_at"]; has {
+			t.Errorf("--every alone lets the service pick the first occurrence: %#v", req.Args)
+		}
+		var body struct{ Task, Label string }
+		if json.Unmarshal([]byte(req.Args["body"].(string)), &body) != nil || body.Task != "Write today's briefing" || body.Label != "daily briefing" {
+			t.Errorf("body=%v", req.Args["body"])
+		}
+		// No fork.json for session-a: it is its own root, so the fork targets itself.
+		if req.Args["target"] != "instance:session-a" {
+			t.Errorf("target=%v", req.Args["target"])
+		}
+	})
+	if code != 0 || !strings.Contains(out, "e1") {
+		t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
+	}
+}
+
+func TestScheduleRejectsConfusedCombinations(t *testing.T) {
+	for _, argv := range [][]string{
+		{"schedule", "reason"},
+		{"schedule", "--in", "1h", "--at", "06:00", "reason"},
+		{"schedule", "--in", "1h", "--label", "x", "reason"},
+		{"schedule", "--every", "day 06:00", "--fork", "--soft", "reason"},
+	} {
+		if _, _, err := parseScheduler(argv, time.Now()); err == nil {
+			t.Errorf("%v: want error", argv)
+		}
+	}
+	inv, _, err := parseScheduler([]string{"schedule", "list", "--all"}, time.Now())
+	if err != nil || inv.args["all"] != true {
+		t.Fatalf("list --all: %#v %v", inv, err)
+	}
+}
+
+func TestRootInstanceFollowsForkParents(t *testing.T) {
+	state := t.TempDir()
+	for id, parent := range map[string]string{"grandchild": "child", "child": "primary"} {
+		os.MkdirAll(filepath.Join(state, "forks", id), 0700)
+		os.WriteFile(filepath.Join(state, "forks", id, "fork.json"), []byte(`{"parentSessionId":"`+parent+`"}`), 0600)
+	}
+	got := rootInstance(func(k string) string {
+		return map[string]string{"FAMILIAR_INSTANCE_ID": "grandchild", "FAMILIAR_STATE_DIR": state}[k]
+	})
+	if got != "primary" {
+		t.Fatalf("root=%q", got)
+	}
+}
+
+func TestScheduleListHumanShowsKindRuleAndTarget(t *testing.T) {
+	var buf, errw bytes.Buffer
+	result := []byte(`[{"id":"brief-at-1","summary":"Daily briefing","state":"pending","target":"instance:01a015ff-13bd","type":"fork","urgency":"wake","rule":"day 06:00","series":"brief","due_at":1790395200000}]`)
+	if code := writeSchedulerHuman(&buf, "schedule.list", result, &errw); code != 0 {
+		t.Fatal(code)
+	}
+	line := buf.String()
+	for _, want := range []string{"fork", "pending", "every day 06:00", "01a015ff", "brief-at-1", "Daily briefing"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("list line %q missing %q", line, want)
+		}
+	}
+}
