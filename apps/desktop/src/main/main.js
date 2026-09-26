@@ -1,4 +1,5 @@
-const { app, BrowserWindow, ipcMain, session, Menu, nativeImage } = require("electron");
+const { app, BrowserWindow, ipcMain, session, Menu, nativeImage, shell } = require("electron");
+const { windowOpenTarget, navigationTarget } = require("./links.js");
 const path = require("path");
 const fs = require("fs");
 
@@ -219,9 +220,22 @@ function createWindow() {
     if (url && !url.startsWith("file:")) retryDelay = 0;
   });
 
-  // Open target=_blank / window.open in the same window rather than spawning
-  // chrome-less popups (keeps the shell "single window").
-  mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  // Links and new windows: the shell stays a single window on Familiar. Any
+  // new-window request (target=_blank, window.open, the reader's pop-out) and
+  // any link followed from Familiar to another origin go to the default browser.
+  const openOutside = (url) => {
+    shell.openExternal(url).catch((err) => console.warn(`[familiar] openExternal failed: ${err && err.message}`));
+  };
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (windowOpenTarget(url) === "external") openOutside(url);
+    return { action: "deny" };
+  });
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    const target = navigationTarget(url, baseUrl, mainWindow.webContents.getURL());
+    if (target === "allow") return;
+    event.preventDefault();
+    if (target === "external") openOutside(url);
+  });
 
   mainWindow.on("resize", persistBounds);
   mainWindow.on("move", persistBounds);
