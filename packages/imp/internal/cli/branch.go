@@ -396,6 +396,9 @@ func systemctlCommand(g func(string) string, args ...string) (string, []string) 
 
 const branchHelp = `Usage:
   imp fork "task text"
+      The fork inherits this whole conversation (unless --fresh), so the task
+      text only needs to say which piece is hers, e.g. "Voice research; see
+      Kev's last message." Write a full brief only for --fresh forks.
   imp merge [--quiet]
   imp label "short name" [--status "doing what"]   (forks: your name in the Open list)
   imp status ["what you're doing now" | --clear]   (forks: one-line status under your name)
