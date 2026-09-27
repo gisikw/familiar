@@ -3,7 +3,7 @@ import { createServer, type Socket } from "node:net";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import scheduler, { deliveredIds, forkRequest, SCHEDULED_FORK } from "./index.ts";
+import scheduler, { deliveredIds, forkRequest, resolveTask, SCHEDULED_FORK } from "./index.ts";
 
 const roots: string[] = [];
 const savedPath = process.env.PATH;
@@ -17,9 +17,9 @@ afterEach(() => {
 const forkEvent = { id: "brief-at-1", due_at: Date.UTC(2026, 8, 28, 11), target: "instance:p", origin: "p", source: "imp.schedule", priority: 2, type: "fork", summary: "Daily briefing", body: JSON.stringify({ task: "Daily briefing", label: "daily briefing" }), urgency: "wake" as const, state: "delivered", created_at: 0, rule: "day 06:00", series: "brief" };
 
 test("forkRequest reads the JSON body and tolerates plain text", () => {
-  expect(forkRequest(forkEvent)).toEqual({ task: "Daily briefing", label: "daily briefing", fresh: false, model: "", runner: false });
-  expect(forkRequest({ ...forkEvent, body: JSON.stringify({ task: "t", label: "l", fresh: true, model: "p/m", runner: true }) })).toEqual({ task: "t", label: "l", fresh: true, model: "p/m", runner: true });
-  expect(forkRequest({ ...forkEvent, body: "just do it" })).toEqual({ task: "just do it", label: "", fresh: false, model: "", runner: false });
+  expect(forkRequest(forkEvent)).toEqual({ task: "Daily briefing", label: "daily briefing", fresh: false, model: "", runner: false, taskFile: "" });
+  expect(forkRequest({ ...forkEvent, body: JSON.stringify({ task: "t", label: "l", fresh: true, model: "p/m", runner: true, taskFile: "" }) })).toEqual({ task: "t", label: "l", fresh: true, model: "p/m", runner: true, taskFile: "" });
+  expect(forkRequest({ ...forkEvent, body: "just do it" })).toEqual({ task: "just do it", label: "", fresh: false, model: "", runner: false, taskFile: "" });
 });
 
 test("a recorded scheduled fork counts as delivered", () => {
@@ -86,4 +86,21 @@ test("a fork event waits for idle, spawns imp fork with origin and label, record
 
   for (const h of handlers.get("session_shutdown") ?? []) await h({}, ctx);
   await new Promise<void>((r) => server.close(() => r()));
+});
+
+test("a task file is read at fire time; unreadable files still start the fork, told why", () => {
+  const dir = mkdtempSync(join(tmpdir(), "task-file-"));
+  const file = join(dir, "watch.md");
+  writeFileSync(file, "# The morning watch\n\nRead, decide, write, come home.\n");
+  expect(forkRequest({ ...forkEvent, body: JSON.stringify({ task: "", label: "watch", taskFile: file }) })).toMatchObject({ taskFile: file, label: "watch" });
+  expect(resolveTask("summary", file)).toBe("# The morning watch\n\nRead, decide, write, come home.");
+  writeFileSync(file, "edited\n");
+  expect(resolveTask("summary", file)).toBe("edited");
+  const missing = resolveTask("summary", join(dir, "gone.md"));
+  expect(missing).toContain("could not be read");
+  expect(missing).toContain("summary");
+  writeFileSync(file, "  \n");
+  expect(resolveTask("", file)).toContain("file is empty");
+  expect(resolveTask("plain", "")).toBe("plain");
+  rmSync(dir, { recursive: true, force: true });
 });

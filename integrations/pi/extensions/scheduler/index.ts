@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execFile } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { promisify } from "node:util";
 import { errorLog } from "../lib/debug.ts";
 import { SchedulerClient, type ScheduledEvent } from "./client.ts";
@@ -26,8 +27,9 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_settled", () => { for (const resolve of idleWaiters.splice(0)) resolve(); });
 
   async function spawnFork(event: ScheduledEvent) {
-    const { task, label, fresh, model, runner } = forkRequest(event);
+    const { task: rawTask, label, fresh, model, runner, taskFile } = forkRequest(event);
     await whenIdle();
+    const task = resolveTask(rawTask, taskFile);
     const args = ["fork", "--origin", `schedule:${event.series || event.id}`];
     args.push("--label", label || `scheduled: ${task.slice(0, 60)}`);
     if (fresh) args.push("--fresh");
@@ -42,7 +44,7 @@ export default function (pi: ExtensionAPI) {
     seen.add(event.id);
     pi.sendMessage({
       customType: "familiar.fork-dispatched.v1",
-      content: `\n\nscheduled fork ${forkId || "(unknown id)"} started${event.rule ? ` (every ${event.rule})` : ""}: ${label || task}\n(no action needed)`,
+      content: `\n\nscheduled fork ${forkId || "(unknown id)"} started${event.rule ? ` (every ${event.rule})` : ""}: ${label || task.slice(0, 80)}\n(no action needed)`,
       display: true,
       details: { forkId, task, source: "schedule", eventId: event.id, series: event.series },
     }, { deliverAs: "nextTurn" });
@@ -133,18 +135,34 @@ export function renderScheduledEvent(event: ScheduledEvent) {
   };
 }
 
-export function forkRequest(event: ScheduledEvent): { task: string; label: string; fresh: boolean; model: string; runner: boolean } {
+export function forkRequest(event: ScheduledEvent): { task: string; label: string; fresh: boolean; model: string; runner: boolean; taskFile: string } {
   try {
-    const body = JSON.parse(event.body) as { task?: unknown; label?: unknown; fresh?: unknown; model?: unknown; runner?: unknown };
-    if (typeof body.task === "string" && body.task.trim()) return {
-      task: body.task,
+    const body = JSON.parse(event.body) as { task?: unknown; label?: unknown; fresh?: unknown; model?: unknown; runner?: unknown; taskFile?: unknown };
+    const taskFile = typeof body.taskFile === "string" ? body.taskFile : "";
+    if ((typeof body.task === "string" && body.task.trim()) || taskFile) return {
+      task: typeof body.task === "string" ? body.task : "",
       label: typeof body.label === "string" ? body.label : "",
       fresh: body.fresh === true,
       model: typeof body.model === "string" ? body.model : "",
       runner: body.runner === true,
+      taskFile,
     };
   } catch { /* plain-text body */ }
-  return { task: event.body || event.summary, label: "", fresh: false, model: "", runner: false };
+  return { task: event.body || event.summary, label: "", fresh: false, model: "", runner: false, taskFile: "" };
+}
+
+/** A task file is read at every fire, so editing it changes the next run.
+ * If it can't be read the fork still starts, told so, rather than silently
+ * skipping a morning. */
+export function resolveTask(task: string, taskFile: string, read: (p: string) => string = (p) => readFileSync(p, "utf8")): string {
+  if (!taskFile) return task;
+  try {
+    const text = read(taskFile).trim();
+    if (text) return text;
+    throw new Error("file is empty");
+  } catch (err) {
+    return `(Your task file ${taskFile} could not be read: ${(err as Error).message}. Say so plainly in your return, then imp merge.)${task ? `\n\n${task}` : ""}`;
+  }
 }
 
 export function deliveredIds(entries: readonly unknown[]): Set<string> {

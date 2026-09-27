@@ -267,3 +267,31 @@ func TestScheduleForkFreshModelRunner(t *testing.T) {
 		}
 	}
 }
+
+func TestScheduleForkTaskFile(t *testing.T) {
+	now := time.Date(2026, 9, 27, 5, 0, 0, 0, time.UTC)
+	file := filepath.Join(t.TempDir(), "watch.md")
+	if err := os.WriteFile(file, []byte("# watch\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inv, _, err := parseScheduler([]string{"schedule", "--every", "day 06:00", "--fork", "--fresh", "--label", "morning watch", "--task-file", file}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(inv.args["body"].(string)), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["taskFile"] != file || body["fresh"] != true || inv.args["summary"] != "task file watch.md" {
+		t.Fatalf("body = %v summary = %v", body, inv.args["summary"])
+	}
+	for _, bad := range [][]string{
+		{"schedule", "--in", "1h", "--task-file", file, "not a fork"},
+		{"schedule", "--in", "1h", "--fork", "--task-file", "relative.md"},
+		{"schedule", "--in", "1h", "--fork", "--task-file", filepath.Join(t.TempDir(), "missing.md")},
+	} {
+		if _, _, err := parseScheduler(bad, now); err == nil {
+			t.Fatalf("expected refusal for %v", bad)
+		}
+	}
+}

@@ -109,7 +109,7 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 	jsonMode, soft, fork, all, fresh, runner := false, false, false, false, false, false
 	vals := map[string]string{}
 	pos := []string{}
-	value := map[string]bool{"in": true, "at": true, "every": true, "label": true, "target": true, "id": true, "priority": true, "type": true, "source": true, "body": true, "title": true, "model": true}
+	value := map[string]bool{"in": true, "at": true, "every": true, "label": true, "target": true, "id": true, "priority": true, "type": true, "source": true, "body": true, "title": true, "model": true, "task-file": true}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--json" {
@@ -172,6 +172,22 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 			}
 			return schedulerInvocation{"schedule.cancel", map[string]any{"id": pos[1]}}, jsonMode, nil
 		}
+		taskFile := vals["task-file"]
+		if taskFile != "" {
+			if !fork {
+				return schedulerInvocation{}, false, errors.New("--task-file is a scheduled fork's task; use it with --fork")
+			}
+			if !filepath.IsAbs(taskFile) {
+				return schedulerInvocation{}, false, errors.New("--task-file must be an absolute path")
+			}
+			// Checked now so a typo fails at scheduling time; read again at every fire.
+			if fi, e := os.Stat(taskFile); e != nil || !fi.Mode().IsRegular() {
+				return schedulerInvocation{}, false, fmt.Errorf("--task-file %s is not a readable file", taskFile)
+			}
+			if len(pos) == 0 {
+				pos = []string{"task file " + filepath.Base(taskFile)}
+			}
+		}
 		if len(pos) != 1 {
 			return schedulerInvocation{}, false, errors.New("schedule requires one quoted reason")
 		}
@@ -231,6 +247,9 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 			}
 			m["type"] = "fork"
 			req := map[string]any{"task": pos[0], "label": vals["label"]}
+			if taskFile != "" {
+				req["taskFile"] = taskFile
+			}
 			if fresh {
 				req["fresh"] = true
 			}
@@ -438,6 +457,9 @@ const schedulerHelp = `Usage:
   imp schedule --every RULE [--at TIME] [--soft] "reason"          (recurring)
   imp schedule --every RULE|--at TIME|--in D --fork [--label L] "task"
                               (spawn a background fork of the primary; no turn)
+  imp schedule ... --fork --task-file /abs/path.md ["summary"]
+                              (the task is read from the file at every fire;
+                               edit the file to change the task, no reschedule)
   imp schedule list [--all] [--json]
   imp schedule cancel ID       (a recurring ID cancels the whole series)
   imp notify [--target TARGET] [--id ID] [--soft] "reason"
