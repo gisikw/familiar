@@ -43,7 +43,7 @@ skip_version_check = 1
 # subscriber_port = 1692
 # tz = "America/Chicago"
 # debug_level = "debug"
-# use_stuff = false # nudge the resident agent to discover the Stuff CLI
+# use_stuff: retired (Stuff is end-of-life); accepted but ignored
 
 # Familiar's own private identity is nested here to avoid colliding with
 # identity_path. It maps to FAMILIAR_IDENTITY_* (not FAMILIAR_FAMILIAR_*).

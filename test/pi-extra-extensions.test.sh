@@ -4,7 +4,7 @@ set -euo pipefail
 REPO=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/familiar-extra-extensions.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT
-mkdir -p "$TMP/bin" "$TMP/plugin"
+mkdir -p "$TMP/bin" "$TMP/plugin" "$TMP/skills"
 : > "$TMP/familiar.toml"
 chmod 600 "$TMP/familiar.toml"
 
@@ -113,7 +113,7 @@ set -e
 # counts to prove unique merging across plugin and deployment sources.
 jq -e --arg root "$REPO/integrations/pi/extensions" '
   ([
-    "footer", "handoff", "identity", "imp", "scheduler", "stuff", "subscriber",
+    "footer", "handoff", "identity", "imp", "scheduler", "subscriber",
     "tiamat", "web", "zip"
   ] | map($root + "/" + .)) as $builtins
   | ($builtins - .extensions | length) == 0
@@ -123,6 +123,11 @@ jq -e --arg root "$REPO/integrations/pi/extensions" '
     and ([.extensions[] | select(. == "/etc/familiar-ui-extension/index.js")] | length) == 1
 ' "$state/settings.json" >/dev/null
 grep -qx -- '--continue' "$state/cli-args"
+# Skills: auto-discovery stays off; the repo's skills and the instance's own
+# skills directory (beside the config file) are the only roots.
+grep -qx -- '--no-skills' "$state/cli-args"
+grep -qx -- "$REPO/skills/" "$state/cli-args"
+grep -qx -- "$TMP/skills/" "$state/cli-args" || { echo 'FAIL: instance skills dir not passed to pi' >&2; exit 1; }
 grep -qx 'from-manifest' "$state/plugin-env"
 
 # Unset (as opposed to explicitly empty) defaults to no deployment extensions.

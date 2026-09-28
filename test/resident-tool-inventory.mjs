@@ -23,7 +23,6 @@ const residentNames = [
   "handoff",
   "identity",
   "imp",
-  "stuff",
   "subscriber",
   "tiamat",
   "web",

@@ -37,8 +37,6 @@ export interface AssembleOptions {
   options: BuildSystemPromptOptions;
   /** Conditional Imp shell-capability guidance ("" when not live). */
   impGuidance?: string;
-  /** Conditional Stuff guidance ("" when not enabled). */
-  stuffGuidance?: string;
 }
 
 /** Cross-tool file-exploration rule, mirrored from Pi's prompt construction. */
@@ -103,7 +101,7 @@ export function projectContextSection(contextFiles: BuildSystemPromptOptions["co
   return block;
 }
 
-export function assembleSystemPrompt({ identity, options, impGuidance = "", stuffGuidance = "" }: AssembleOptions): string {
+export function assembleSystemPrompt({ identity, options, impGuidance = "" }: AssembleOptions): string {
   const { skills = [], cwd, toolSnippets = {}, appendSystemPrompt, contextFiles } = options;
   const tools = options.selectedTools ?? DEFAULT_TOOLS;
 
@@ -128,7 +126,6 @@ export function assembleSystemPrompt({ identity, options, impGuidance = "", stuf
     skillsSection,
     `Available Tools:\n${toolsList}`,
     impGuidance,
-    stuffGuidance,
     guidelines,
     appendSystemPrompt ?? "",
     projectContextSection(contextFiles),

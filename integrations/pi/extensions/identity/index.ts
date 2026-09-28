@@ -2,7 +2,7 @@ import type { BeforeAgentStartEvent, ExtensionAPI } from "@earendil-works/pi-cod
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { errorLog } from "../lib/debug.ts";
-import { impGuidance, stuffGuidance } from "./guidance.ts";
+import { impGuidance } from "./guidance.ts";
 import { assembleSystemPrompt } from "./prompt.ts";
 
 // Familiar replaces Pi's system prompt outright rather than chaining onto
@@ -65,7 +65,6 @@ export default function(pi: ExtensionAPI) {
       identity,
       options: event.systemPromptOptions,
       impGuidance: impGuidance(),
-      stuffGuidance: stuffGuidance(),
     });
 
     // Only cache a prompt that actually carries identity: an empty or

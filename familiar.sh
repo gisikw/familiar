@@ -392,7 +392,7 @@ run_pi() {
         # Keep the live extension set explicit. Imp owns the sole private
         # resident socket used by Attention.
         extensions: (([
-          "footer", "handoff", "identity", "imp", "stuff", "subscriber",
+          "footer", "handoff", "identity", "imp", "subscriber",
           "tiamat", "web", "scheduler", "zip"
         ] | map($ext + "/" + .)) + $pluginExts + $extraExts | unique)
       }
@@ -437,6 +437,12 @@ run_pi() {
   # Fork units pin one session file and provide one initial task; the primary
   # continues its newest session. The process runs once: systemd owns restarts.
   local session_args=(--continue) initial_args=()
+  # Skills: the repo's shared skills, plus the instance's own (private) skills
+  # directory when there is one. Auto-discovery stays off; these are the only roots.
+  local skill_args=(--skill "$REPO/skills/")
+  if [ "$CONFIG_DIR" != "$REPO" ] && [ -d "$CONFIG_DIR/skills" ]; then
+    skill_args+=(--skill "$CONFIG_DIR/skills/")
+  fi
   if [ -n "${FAMILIAR_FORK_SESSION_FILE:-}" ]; then
     session_args=(--session "$FAMILIAR_FORK_SESSION_FILE")
     [ -z "${FAMILIAR_FORK_INITIAL_MESSAGE:-}" ] || initial_args=(-- "$FAMILIAR_FORK_INITIAL_MESSAGE")
@@ -445,7 +451,7 @@ run_pi() {
     "${session_args[@]}" \
     --no-context-files \
     --no-skills \
-    --skill "$REPO/skills/" \
+    "${skill_args[@]}" \
     "${initial_args[@]}"
 }
 

@@ -35,7 +35,6 @@ try {
     "identity",
     "imp",
     "scheduler",
-    "stuff",
     "subscriber",
     "tiamat",
     "timegap",

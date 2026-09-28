@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { impGuidance, stuffGuidance } from "./guidance.ts";
+import { impGuidance } from "./guidance.ts";
 
 /* Familiar's prompt assembler is a deliberate replacement for Pi's, trued up
  * against the pinned Pi (0.85.1) `buildSystemPrompt`. These tests exercise the
@@ -112,19 +112,6 @@ function toolBullets(prompt: string, heading: string): string[] {
 
 /* ------------------------------------------------------------------------- */
 describe("guidance helpers", () => {
-  test("use_stuff adds a compact self-discovery nudge to identity", () => {
-    const guidance = stuffGuidance("true");
-    expect(guidance).toContain("`stuff` CLI stores inert Items and linked Notes");
-    expect(guidance).toContain("`stuff --help`");
-    expect(guidance).toContain("does not dispatch or orchestrate");
-  });
-
-  test("Stuff nudge is opt-in and requires canonical true", () => {
-    expect(stuffGuidance("")).toBe("");
-    expect(stuffGuidance("false")).toBe("");
-    expect(stuffGuidance("TRUE")).toBe("");
-  });
-
   test("Imp guidance advertises only a live shell-native surface", () => {
     expect(impGuidance("", "/tmp/imp.sock")).toBe("");
     expect(impGuidance("/nix/store/imp/bin", "")).toBe("");
@@ -158,11 +145,11 @@ describe("assembled identity prompt (through the extension handler)", () => {
     for (const rejected of REJECTED_PI_BASELINE_GUIDELINES) expect(systemPrompt).not.toContain(rejected);
   });
 
-  test("section topology: identity, skills, tools, imp, stuff, guidelines, append, project context, cwd", async () => {
+  test("section topology: identity, skills, tools, imp, guidelines, append, project context, cwd", async () => {
     process.env.FAMILIAR_IDENTITY_PATH = identityDir({ "identity.md": IDENTITY });
     process.env.FAMILIAR_IMP_BIN = "/nix/store/imp/bin";
     process.env.FAMILIAR_IMP_SOCKET = "/run/imp.sock";
-    process.env.FAMILIAR_USE_STUFF = "true";
+    process.env.FAMILIAR_USE_STUFF = "true"; // legacy flag: must no longer add any Stuff guidance
     const { systemPrompt } = await runHandler(residentOptions({
       appendSystemPrompt: "OPERATOR APPEND TEXT",
       contextFiles: [{ path: "/proj/AGENTS.md", content: "PROJECT RULES" }],
@@ -173,7 +160,6 @@ describe("assembled identity prompt (through the extension handler)", () => {
       "<available_skills>",
       "Available Tools:\n- read: Read file contents",
       "Shell-native capabilities:",
-      "Durable context: the `stuff` CLI",
       "Guidelines:\n- Use bash for file operations like ls, rg, find",
       "OPERATOR APPEND TEXT",
       "<project_context>",
@@ -186,12 +172,13 @@ describe("assembled identity prompt (through the extension handler)", () => {
       last = at;
     }
     expect(systemPrompt.endsWith("Current working directory: C:/Users/kevin/work")).toBe(true);
+    expect(systemPrompt).not.toContain("`stuff`");
     // Imp guidance sits beside tool discovery, before the guideline list.
     expect(systemPrompt.indexOf("Shell-native capabilities:")).toBeGreaterThan(systemPrompt.indexOf("Available Tools:"));
     expect(systemPrompt.indexOf("Shell-native capabilities:")).toBeLessThan(systemPrompt.indexOf("Guidelines:"));
   });
 
-  test("Imp and Stuff sections are absent when not live/enabled; append and project context absent when empty", async () => {
+  test("Imp section is absent when not live; Stuff guidance is gone; append and project context absent when empty", async () => {
     process.env.FAMILIAR_IDENTITY_PATH = identityDir({ "identity.md": IDENTITY });
     process.env.FAMILIAR_IMP_BIN = "/nix/store/imp/bin"; // socket missing
     const { systemPrompt } = await runHandler(residentOptions());
