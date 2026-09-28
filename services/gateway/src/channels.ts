@@ -35,7 +35,7 @@ export class Channel {
   apply(env: IngestEnvelope) {
     this.lastEventAt = new Date().toISOString();
     switch (env.kind) {
-      case "session": this.hub.newSession(); return;
+      case "session": this.hub.newSession(); this.audio.reset(); return;
       case "lock": this.hub.lockInflight(); return;
       case "revise": this.hub.revise(env.event); return;
       case "publish": {

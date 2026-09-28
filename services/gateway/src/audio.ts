@@ -21,9 +21,23 @@ export class AudioCache {
 
   constructor(private hub: StreamHub) { }
 
+  /** New pi session: message ids restart, so every cached "id:index" key is
+   * about to be reused by a different turn. Drop them all; otherwise register()
+   * keeps the old entry and serve() plays a previous turn's audio (observed
+   * Sep 28 after a familiar-instance restart). In-flight synthesis for a
+   * dropped entry notices and discards its result. */
+  reset() {
+    this.entries.clear();
+    this.synthesizing.clear();
+  }
+
   register(messageId: number, index: number, text: string, synthesize: boolean) {
     const key = `${messageId}:${index}`;
-    if (this.entries.has(key)) return;
+    const existing = this.entries.get(key);
+    // Same segment re-registered (replay): keep it. Different text under the
+    // same key means the id space moved under us: replace it.
+    if (existing && existing.text === text) return;
+    if (existing) { this.entries.delete(key); this.synthesizing.delete(key); }
     this.entries.set(key, { text, status: "pending" });
     while (this.entries.size > AUDIO_CACHE_MAX) {
       const oldest = this.entries.keys().next().value;
@@ -61,7 +75,7 @@ export class AudioCache {
     this.synthesizing.add(key);
     this.queue = this.queue.then(async () => {
       const entry = this.entries.get(key);
-      if (!entry || entry.status !== "pending") return;
+      if (!entry || entry.status !== "pending") { this.synthesizing.delete(key); return; }
       try {
         const url = process.env.FAMILIAR_TTS_URL;
         if (!url) throw new Error("FAMILIAR_TTS_URL not set");
@@ -75,10 +89,16 @@ export class AudioCache {
           signal: AbortSignal.timeout(300_000),
         });
         if (!res.ok) throw new Error(`tts ${res.status}`);
-        entry.wav = Buffer.from(await res.arrayBuffer());
+        const wav = Buffer.from(await res.arrayBuffer());
+        // Reset or replaced while synthesizing: this audio belongs to a dead turn.
+        if (this.entries.get(key) !== entry) return;
+        this.synthesizing.delete(key);
+        entry.wav = wav;
         entry.status = "ready";
         this.hub.publish({ event: "segment_audio", message_id: messageId, index, ok: true });
       } catch (err) {
+        if (this.entries.get(key) !== entry) return;
+        this.synthesizing.delete(key);
         entry.status = "failed";
         errorLog("subscriber", { ttsError: String(err), key });
         this.hub.publish({ event: "segment_audio", message_id: messageId, index, ok: false });
