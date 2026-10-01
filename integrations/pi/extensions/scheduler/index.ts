@@ -7,6 +7,14 @@ import { SchedulerClient, type ScheduledEvent } from "./client.ts";
 
 const execFileAsync = promisify(execFile);
 export const SCHEDULED_FORK = "familiar.scheduled-fork.v1";
+export const RESTARTED = "familiar.restarted.v1";
+/** Grace after the scheduler connects, so reconnect redeliveries land first
+ * and the restart notice can count them. */
+export const RESTART_NOTICE_DELAY_MS = 8_000;
+
+// Module scope survives /clear (a new session in the same process) but not a
+// process restart: the first session_start in a primary process is a boot.
+let bootNoticePending = process.env.FAMILIAR_PI_FORK !== "1" && process.env.NODE_ENV !== "test";
 
 /** The Pi is only a scheduler transport endpoint: connect, inject, acknowledge.
  * The one exception is a `fork` event: it spawns a background fork of this
@@ -82,6 +90,18 @@ export default function (pi: ExtensionAPI) {
       error(error) { errorLog("scheduler", { error: error.message }); },
     });
     client.start();
+    if (bootNoticePending) {
+      bootNoticePending = false;
+      const deliveredBefore = seen.size;
+      setTimeout(() => {
+        try {
+          const redelivered = Math.max(0, seen.size - deliveredBefore) + waiting.size;
+          const notice = renderRestartNotice({ at: new Date(), sha: trackedSha(), redelivered });
+          // Already woken by a redelivered event: ride along, don't add a turn.
+          pi.sendMessage(notice, redelivered > 0 || !isIdle() ? { deliverAs: "nextTurn" } : { deliverAs: "steer", triggerTurn: true });
+        } catch (error) { errorLog("scheduler", { restartNoticeError: String(error) }); }
+      }, RESTART_NOTICE_DELAY_MS).unref?.();
+    }
   });
   // Ack only after the event ID is visible in the durable branch; a restart
   // before then causes scheduler reconnect redelivery rather than losing an
@@ -108,6 +128,24 @@ export default function (pi: ExtensionAPI) {
     for (const resolve of idleWaiters.splice(0)) resolve();
     seen = new Set();
   });
+}
+
+/** Every primary boot gets a turn, so a self-restart needs no hand-set wake. */
+export function renderRestartNotice({ at, sha, redelivered }: { at: Date; sha: string; redelivered: number }) {
+  const stamp = at.toLocaleString("en-US", { timeZone: process.env.FAMILIAR_TZ || "America/Chicago", weekday: "short", hour: "numeric", minute: "2-digit" });
+  const missed = redelivered > 0 ? `${redelivered} scheduled event${redelivered === 1 ? "" : "s"} redelivered on reconnect` : "no missed scheduled events";
+  return {
+    customType: RESTARTED,
+    content: `<familiar-restart at="${escapeAttr(stamp)}" familiar="${escapeAttr(sha.slice(0, 7) || "unknown")}">\nfamiliar restarted; ${missed}. Continue whatever was in flight; no reply needed if nothing was.\n</familiar-restart>`,
+    display: true,
+    details: { at: at.toISOString(), sha, redelivered },
+  };
+}
+
+function trackedSha(read: (p: string) => string = (p) => readFileSync(p, "utf8")): string {
+  const repo = process.env.FAMILIAR_REPO;
+  if (!repo) return "";
+  try { return read(`${repo}/../current.sha`).trim(); } catch { return ""; }
 }
 
 // Soft (nextTurn) messages reach the model appended after the operator's text
