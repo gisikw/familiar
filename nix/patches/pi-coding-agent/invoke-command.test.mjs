@@ -46,7 +46,10 @@ async function fixture() {
       getPrompts: () => ({ prompts: [{ name: "template" }] }),
       getSkills: () => ({ skills: [{ name: "test" }] }),
     },
-    agent: { state: { systemPrompt: "test system prompt" } },
+    // Pi 1.0 renders the prompt from structured options; force exact text.
+    _baseSystemPromptOptions: { forceSystemPrompt: "test system prompt" },
+    _deferredSettledActions: [],
+    agent: { state: {} },
   });
   // Use the real session getCommands binding, with inert dependencies.
   AgentSession.prototype._bindExtensionCore.call(session, runner);
@@ -232,7 +235,7 @@ for (const options of [undefined, { streamingBehavior: "followUp" }]) {
     },
   });
   assert.equal(received[0], "busy");
-  assert.equal(accepted, true);
+  assert.equal(accepted, "handled"); // Pi 1.0 preflight reports an outcome string
 }
 let busyPromptSettled = false;
 const busyPrompt = session.prompt("/async").then(() => {
@@ -315,6 +318,65 @@ runner.emit = originalEmit;
 assert.equal(session._agentSettledDispatchDepth, 0);
 await pi.invokeExtensionCommand("hello");
 
+// Pi 0.87+ defers runs requested from agent_settled handlers until all settled
+// handlers finish, then runs them inside _emitAgentSettled. The settled fence spans
+// those deferred actions too; idle waiters resume only after it is released.
+{
+  const f = await fixture();
+  let targetRuns = 0,
+    probeRuns = 0,
+    waiterResult;
+  f.pi.registerCommand("target", {
+    handler: async () => {
+      targetRuns++;
+    },
+  });
+  f.pi.registerCommand("probe", {
+    handler: async (_args, ctx) => {
+      probeRuns++;
+      assert.equal(ctx.isIdle(), true);
+      assert.equal(f.session._agentSettledDispatchDepth, 1);
+      assert.equal(f.runner.eventDispatchDepth, 0);
+      await assert.rejects(
+        f.pi.invokeExtensionCommand("target"),
+        /requires an idle AgentSession/,
+      );
+      await new Promise((resolve) => setImmediate(resolve));
+      await assert.rejects(
+        f.pi.invokeExtensionCommand("target"),
+        /requires an idle AgentSession/,
+      );
+    },
+  });
+  f.pi.on("agent_settled", async () => {
+    // Upstream prompt() defers instead of dispatching during settled handlers.
+    await f.session.prompt("/probe");
+    assert.equal(probeRuns, 0, "prompt is deferred until settled handlers finish");
+  });
+  f.session._isAgentRunActive = true;
+  const waiter = f.session.waitForIdle().then(() =>
+    f.pi.invokeExtensionCommand("target").then(
+      () => (waiterResult = "ran"),
+      (e) => (waiterResult = e),
+    ),
+  );
+  await f.session._emitAgentSettled();
+  assert.equal(probeRuns, 1);
+  assert.equal(targetRuns, 0);
+  assert.equal(f.session._agentSettledDispatchDepth, 0);
+  await waiter;
+  assert.equal(waiterResult, "ran", "idle waiters observe the released fence");
+  assert.equal(targetRuns, 1);
+  // A failing deferred action still releases the fence.
+  f.session._deferredSettledActions.push(async () => {
+    throw boom;
+  });
+  await assert.rejects(f.session._emitAgentSettled(), (e) => e === boom);
+  assert.equal(f.session._agentSettledDispatchDepth, 0);
+  await f.pi.invokeExtensionCommand("target");
+  assert.equal(targetRuns, 2);
+}
+
 // Every runner pipeline rejects even with a genuinely idle owning session.
 // Explicit barriers prove the depth spans awaits, not just synchronous callbacks.
 const eventError = {
@@ -344,14 +406,44 @@ const dispatchCases = [
   [
     "user_bash",
     (r) => r.emitUserBash({ type: "user_bash" }),
-    { result: { output: "test", exitCode: 0 } },
+    // Pi 0.86+ validates user_bash results fail-closed.
+    { result: { output: "test", exitCode: 0, cancelled: false, truncated: false } },
   ],
-  ["context", (r) => r.emitContext([])],
+  ["context", (r) => r.emitContext([{ role: "user", content: "test" }])],
+  // Pi 0.99+: second request-time phase inside the same emitContext pipeline.
+  ["context_with_system", (r) => r.emitContext([])],
+  // Pi 0.87+: actionable boundaries no longer go through emit(); they have their own
+  // awaited dispatcher, which also awaits the session's context builder.
+  [
+    "turn_end",
+    (r) =>
+      r
+        .emitBoundary({ type: "turn_end", turnIndex: 0 }, async () => ({}))
+        .then(({ entries, continue: c, valid }) => ({ entries, continue: c, valid })),
+    undefined,
+    { entries: [], continue: false, valid: true },
+  ],
+  [
+    "agent_before_settle",
+    (r) =>
+      r
+        .emitBoundary({ type: "agent_before_settle" }, async () => ({}))
+        .then(({ entries, continue: c, valid }) => ({ entries, continue: c, valid })),
+    { continue: true },
+    { entries: [], continue: true, valid: true },
+  ],
+  // Pi 0.99+: idle prompt-cache warming decisions are awaited runner dispatches.
+  [
+    "cache_warming_decision",
+    (r) => r.emitCacheWarmingDecision({ type: "cache_warming_decision", action: "warm" }),
+    { action: "stop" },
+    "stop",
+  ],
   ["before_provider_request", (r) => r.emitBeforeProviderRequest({})],
   ["before_provider_headers", (r) => r.emitBeforeProviderHeaders({})],
   [
     "before_agent_start",
-    (r) => r.emitBeforeAgentStart("test", undefined, "system", {}),
+    (r) => r.emitBeforeAgentStart("test", undefined, {}),
   ],
   [
     "resources_discover",
@@ -363,7 +455,7 @@ const dispatchCases = [
     { action: "handled" },
   ],
 ];
-for (const [event, dispatch, result] of dispatchCases) {
+for (const [event, dispatch, result, expected = result] of dispatchCases) {
   const f = await fixture();
   let runs = 0,
     checks = 0,
@@ -393,7 +485,7 @@ for (const [event, dispatch, result] of dispatchCases) {
   assert.equal(runs, 0, event);
   resumeEvent();
   const actual = await pendingEvent;
-  if (result) assert.deepEqual(actual, result);
+  if (expected !== undefined) assert.deepEqual(actual, expected);
   assert.equal(checks, 2, event);
   assert.deepEqual(emittedErrors, []);
   assert.equal(f.runner.eventDispatchDepth, 0);

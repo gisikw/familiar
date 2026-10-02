@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Real pinned Pi 0.85.1 loader proof for the ordinary resident extension set.
+// Real pinned Pi 1.0.0 loader proof for the ordinary resident extension set.
 // This never starts a session, provider, owner, relay, or live action.
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";

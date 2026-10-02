@@ -1,4 +1,4 @@
-import type { BeforeAgentStartEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { BuildSystemPromptOptions, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { errorLog } from "../lib/debug.ts";
@@ -30,14 +30,36 @@ export default function(pi: ExtensionAPI) {
 
   pi.on("before_agent_start", async (event, ctx) => {
     try {
-      return { systemPrompt: await buildPrompt(event) };
+      return { systemPrompt: await buildPrompt(event.systemPromptOptions) };
     } catch (err) {
       errorLog("identity", { promptBuildFailed: String(err), degraded: lastGood ? "last-good" : "pi-default" });
       return lastGood ? { systemPrompt: lastGood } : undefined;
     }
   });
 
-  const buildPrompt = async (event: BeforeAgentStartEvent): Promise<string | undefined> => {
+  // Pi 0.86+ applies a returned `systemPrompt` (`forceSystemPrompt`) only to
+  // runs started by prompt(); runs started any other way — sendMessage with
+  // triggerTurn (scheduler wakes, Imp attention, handoff orientation) — never
+  // emit before_agent_start and would reach the provider with Pi's generic
+  // default prompt. Pi 0.85.1 instead kept the last identity prompt in agent
+  // state. Re-impose identity on every request the same way Pi's own forced
+  // projection does: one leading system message holding the prompt and the
+  // currently declared tools, all other system messages dropped. For
+  // prompt() runs Pi's projection runs after this with identical text.
+  pi.on("context_with_system", async (event, ctx) => {
+    if (!event.messages.some((message) => message.role === "system")) return undefined;
+    let prompt: string | undefined;
+    try {
+      prompt = await buildPrompt(ctx.getSystemPromptOptions());
+    } catch (err) {
+      errorLog("identity", { promptBuildFailed: String(err), degraded: lastGood ? "last-good" : "pi-default", event: "context_with_system" });
+      prompt = lastGood;
+    }
+    if (prompt === undefined) return undefined;
+    return { messages: projectIdentityPrompt(event.messages, prompt) };
+  });
+
+  const buildPrompt = async (options: BuildSystemPromptOptions): Promise<string | undefined> => {
     const identityDir = process.env.FAMILIAR_IDENTITY_PATH;
     if (!identityDir) return undefined;
 
@@ -63,7 +85,7 @@ export default function(pi: ExtensionAPI) {
     // assembled into the prompt and never logged.
     const systemPrompt = assembleSystemPrompt({
       identity,
-      options: event.systemPromptOptions,
+      options,
       impGuidance: impGuidance(),
     });
 
@@ -73,4 +95,37 @@ export default function(pi: ExtensionAPI) {
     if (identity) lastGood = systemPrompt;
     return systemPrompt;
   };
+}
+
+type TranscriptTool = { name: string };
+type TranscriptSystemMessage = {
+  role: "system";
+  timestamp?: number;
+  toolsAdded?: TranscriptTool[];
+  toolsRemoved?: TranscriptTool[];
+};
+
+/**
+ * Mirror of Pi 1.0's forced-prompt projection (AgentSession
+ * `_installAgentForcedPromptProjection`): collapse every system message into
+ * one leading message carrying `prompt` and the current tool declarations,
+ * replayed like pi-ai's `getCurrentTools` (removals, then additions, in order).
+ */
+export function projectIdentityPrompt<M extends { role: string }>(messages: readonly M[], prompt: string): M[] {
+  const tools = new Map<string, TranscriptTool>();
+  let timestamp: number | undefined;
+  for (const message of messages) {
+    if (message.role !== "system") continue;
+    const system = message as unknown as TranscriptSystemMessage;
+    timestamp ??= system.timestamp;
+    for (const tool of system.toolsRemoved ?? []) tools.delete(tool.name);
+    for (const tool of system.toolsAdded ?? []) tools.set(tool.name, tool);
+  }
+  const head = {
+    role: "system",
+    content: prompt,
+    ...(tools.size > 0 ? { toolsAdded: [...tools.values()] } : {}),
+    timestamp: timestamp ?? Date.now(),
+  } as unknown as M;
+  return [head, ...messages.filter((message) => message.role !== "system")];
 }

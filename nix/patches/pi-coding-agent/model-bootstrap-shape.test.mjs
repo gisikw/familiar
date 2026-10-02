@@ -18,6 +18,10 @@ if (!services.includes("await handler(Object.freeze({ ...request }))")) throw ne
 const bootstrap = services.indexOf("export async function bootstrapExtensionModels");
 const flush = services.indexOf("flushExtensionProviders(services);", bootstrap);
 if (bootstrap < 0 || flush < bootstrap) throw new Error("bootstrap registrations are not flushed");
+// Pi 1.0 also queues virtual-model registrations; the shared flush must drain all three queues.
+const flushBody = services.slice(services.indexOf("function flushExtensionProviders"), bootstrap);
+for (const queue of ["pendingProviderRegistrations", "pendingNativeProviderRegistrations", "pendingVirtualModelRegistrations"])
+  if (!flushBody.includes(`extensionsResult.runtime.${queue} = [];`)) throw new Error(`bootstrap flush does not drain ${queue}`);
 const invoke = main.indexOf("await bootstrapExtensionModels(services, requestedModelBootstrap(");
 const scope = main.indexOf("const modelPatterns =", invoke);
 if (invoke < 0 || scope < invoke) throw new Error("bootstrap must precede CLI/scope model resolution");

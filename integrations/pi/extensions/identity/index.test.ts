@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { impGuidance } from "./guidance.ts";
 
 /* Familiar's prompt assembler is a deliberate replacement for Pi's, trued up
- * against the pinned Pi (0.85.1) `buildSystemPrompt`. These tests exercise the
+ * against the pinned Pi (1.0.0) `buildSystemPrompt`. These tests exercise the
  * actual assembled output through the extension handler and pin:
  *   - identity-first topology and the intentional omissions (no generic
  *     assistant framing, no Pi docs prose, no baseline style bullets);
@@ -72,17 +72,25 @@ function residentOptions(overrides: Record<string, unknown> = {}) {
       mark: "Mark the current point as a future branch anchor",
       // agents_dispatch deliberately has no snippet: it must stay out of Available Tools.
     },
-    // Tool order as AgentSession emits them: built-ins first, then custom tools.
-    promptGuidelines: [
-      "Use read to examine files instead of cat or sed.",
-      "You can inspect PI_* environment variables for current model and session details.",
-      "Use edit for precise changes (edits[].oldText must match exactly)",
-      "When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls",
-      "Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.",
-      "Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.",
-      "Use write only for new files or complete rewrites.",
-      "  Use write only for new files or complete rewrites.  ", // duplicate after trim
-    ],
+    // Pi 0.86+ passes tool-owned guidelines per tool (emitted in selectedTools
+    // order); promptGuidelines holds only extra, non-tool bullets.
+    toolGuidelines: {
+      write: [
+        "Use write only for new files or complete rewrites.",
+        "  Use write only for new files or complete rewrites.  ", // duplicate after trim
+      ],
+      read: ["Use read to examine files instead of cat or sed."],
+      bash: ["You can inspect PI_* environment variables for current model and session details."],
+      edit: [
+        "Use edit for precise changes (edits[].oldText must match exactly)",
+        "When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls",
+        "Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.",
+        "Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.",
+      ],
+      // Registered but not selected: must not reach the prompt.
+      grep: ["UNSELECTED TOOL GUIDELINE"],
+    } as Record<string, string[]>,
+    promptGuidelines: [] as string[],
     skills: [
       { name: "pi", description: "Use when the user asks about pi itself", filePath: "/repo/skills/pi/SKILL.md", baseDir: "/repo/skills/pi" },
       { name: "hidden", description: "never advertised", filePath: "/repo/skills/hidden/SKILL.md", baseDir: "/repo/skills/hidden", disableModelInvocation: true },
@@ -135,7 +143,7 @@ describe("assembled identity prompt (through the extension handler)", () => {
     expect(systemPrompt).toContain("Second authored section");
     expect(systemPrompt).not.toContain("DISABLED SECTION");
     expect(systemPrompt).not.toContain("not markdown");
-    // Intentional identity divergences from Pi 0.85.1.
+    // Intentional identity divergences from Pi 1.0.0.
     expect(systemPrompt).not.toContain("expert coding assistant");
     expect(systemPrompt).not.toContain("helpful AI assistant");
     expect(systemPrompt).not.toContain("PI DEFAULT PROMPT");
@@ -189,9 +197,10 @@ describe("assembled identity prompt (through the extension handler)", () => {
     expect(systemPrompt.endsWith("Current working directory: /srv/familiar/work")).toBe(true);
   });
 
-  test("tool-owned promptGuidelines reach the model in tool order, deduplicated, then Familiar's own", async () => {
+  test("tool-owned guidelines reach the model in tool order, deduplicated, then extra and Familiar's own", async () => {
     process.env.FAMILIAR_IDENTITY_PATH = identityDir({ "identity.md": IDENTITY });
-    const { systemPrompt } = await runHandler(residentOptions());
+    const { systemPrompt } = await runHandler(residentOptions({ promptGuidelines: ["EXTRA PROMPT GUIDELINE", "Use read to examine files instead of cat or sed."] }));
+    expect(systemPrompt).not.toContain("UNSELECTED TOOL GUIDELINE");
     expect(guidelineBullets(systemPrompt)).toEqual([
       "Use bash for file operations like ls, rg, find",
       "Use read to examine files instead of cat or sed.",
@@ -201,6 +210,7 @@ describe("assembled identity prompt (through the extension handler)", () => {
       "Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.",
       "Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.",
       "Use write only for new files or complete rewrites.",
+      "EXTRA PROMPT GUIDELINE",
       "Message text beginning with 🗣 was transcribed from audio: expect transcription errors, and weigh odd words or homophones accordingly rather than taking them literally",
       "Use `imp schedule` for future wakes.",
       "If a topic feels likely to become a rabbit hole or substantial tangent, consider using mark before diving in so it can be zipped cleanly later; do not mark routine topic changes",
@@ -270,14 +280,24 @@ describe("assembled identity prompt (through the extension handler)", () => {
       ],
     }));
     expect(systemPrompt).toContain(
-      "\n\nAPPEND-SENTINEL-7f3a\n\n<project_context>\n\nProject-specific instructions and guidelines:\n\n" +
+      "\n\nAPPEND-SENTINEL-7f3a\n\n<project_context>\nProject-specific instructions and guidelines:\n\n" +
       '<project_instructions path="/proj/AGENTS.md">\nCONTEXT-SENTINEL-19bd\n</project_instructions>\n\n' +
-      '<project_instructions path="/proj/sub/AGENTS.md">\nsecond file\n</project_instructions>\n\n</project_context>\n\nCurrent working directory:',
+      '<project_instructions path="/proj/sub/AGENTS.md">\nsecond file\n</project_instructions>\n</project_context>\n\nCurrent working directory:',
     );
     const { existsSync, readdirSync } = await import("node:fs");
     expect(existsSync(`${logPath}.identity`)).toBe(false);
     expect(readdirSync(join(logPath, "..")).filter((f) => f.startsWith("log"))).toEqual([]);
     delete process.env.FAMILIAR_LOG_PATH;
+  });
+
+  test("extension prompt sections (Pi 0.86+) follow cwd with Pi's tags; empty sections are omitted", () => {
+    const systemPrompt = assembleSystemPrompt({
+      identity: IDENTITY,
+      options: residentOptions({ sections: { mcp_servers: "SERVERS", empty: "" } }),
+    });
+    expect(systemPrompt.endsWith("Current working directory: /srv/familiar/work\n\n<mcp_servers>\nSERVERS\n</mcp_servers>")).toBe(true);
+    expect(systemPrompt).not.toContain("<empty>");
+    expect(buildSystemPrompt(residentOptions({ sections: { mcp_servers: "SERVERS", empty: "" } }))).toContain("\n\n<mcp_servers>\nSERVERS\n</mcp_servers>");
   });
 
   test("operator append text preserves bytes rather than normalizing authored whitespace", () => {
@@ -314,19 +334,80 @@ describe("assembled identity prompt (through the extension handler)", () => {
 });
 
 /* ------------------------------------------------------------------------- */
+describe("identity on runs that do not start with prompt() (Pi 0.86+ forceSystemPrompt scope)", () => {
+  function contextHandler(): Handler {
+    const handlers: Handler[] = [];
+    identityExtension({ on: (name: string, h: Handler) => { if (name === "context_with_system") handlers.push(h); } } as any);
+    expect(handlers).toHaveLength(1);
+    return handlers[0];
+  }
+  const tool = (name: string) => ({ name, description: name, parameters: {} });
+  const transcript = () => [
+    { role: "system", content: "", sections: { preamble: "You are an expert coding assistant" }, toolsAdded: [tool("read"), tool("bash"), tool("zip")], timestamp: 11 },
+    { role: "user", content: "hi", timestamp: 12 },
+    { role: "assistant", content: [{ type: "text", text: "hello" }], timestamp: 13 },
+    { role: "system", content: "", sections: { cwd: "<cwd>\n/x\n</cwd>" }, toolsRemoved: [tool("zip")], toolsAdded: [tool("mark")], timestamp: 14 },
+    { role: "custom", customType: "wake", content: "wake up", timestamp: 15 },
+  ];
+
+  test("collapses every system message into one identity head with the replayed tool declarations", async () => {
+    process.env.FAMILIAR_IDENTITY_PATH = identityDir({ "identity.md": IDENTITY });
+    const messages = transcript();
+    const result = await contextHandler()({ type: "context_with_system", messages }, { getSystemPromptOptions: () => residentOptions() });
+    const [head, ...rest] = result.messages;
+    expect(head.role).toBe("system");
+    expect(head.content.startsWith(IDENTITY)).toBe(true);
+    expect(head.content).toBe(assembleSystemPrompt({ identity: IDENTITY, options: residentOptions() }));
+    expect(head.content).not.toContain("expert coding assistant");
+    expect(head.sections).toBeUndefined();
+    expect(head.toolsAdded.map((t: any) => t.name)).toEqual(["read", "bash", "mark"]);
+    expect(head.timestamp).toBe(11);
+    expect(rest).toEqual(messages.filter((m) => m.role !== "system"));
+    expect(messages).toEqual(transcript()); // input not mutated
+  });
+
+  test("leaves the request untouched without an identity dir or without system messages", async () => {
+    const handler = contextHandler();
+    expect(await handler({ type: "context_with_system", messages: transcript() }, { getSystemPromptOptions: () => residentOptions() })).toBeUndefined();
+    process.env.FAMILIAR_IDENTITY_PATH = identityDir({ "identity.md": IDENTITY });
+    const plain = [{ role: "user", content: "hi", timestamp: 1 }];
+    expect(await handler({ type: "context_with_system", messages: plain }, { getSystemPromptOptions: () => residentOptions() })).toBeUndefined();
+  });
+
+  test("degrades to the last identity-bearing prompt when the identity read fails", async () => {
+    const dir = identityDir({ "identity.md": IDENTITY });
+    process.env.FAMILIAR_IDENTITY_PATH = dir;
+    const handlers: Record<string, Handler> = {};
+    identityExtension({ on: (name: string, h: Handler) => { handlers[name] = h; } } as any);
+    const good = await handlers.before_agent_start({ type: "before_agent_start", prompt: "hi", systemPrompt: "", systemPromptOptions: residentOptions() }, {});
+    process.env.FAMILIAR_IDENTITY_PATH = join(dir, "missing");
+    const result = await handlers.context_with_system({ type: "context_with_system", messages: transcript() }, { getSystemPromptOptions: () => residentOptions({ cwd: "/elsewhere" }) });
+    expect(result.messages[0].content).toBe(good.systemPrompt);
+  });
+});
+
+/* ------------------------------------------------------------------------- */
 describe("parity with pinned Pi buildSystemPrompt (structural affordances only)", () => {
   // Run Pi's real default-prompt construction on the same options and compare
   // the parts Familiar owns by parity. Generic identity prose is excluded by
   // design; if a Pi upgrade changes these structures this block fails.
+  // Pi 0.86+ renders its default prompt as XML-tagged sections.
   const piGuidelines = (piPrompt: string): string[] => {
-    const m = piPrompt.match(/\nGuidelines:\n([\s\S]*?)\n\nPi documentation/);
-    if (!m) throw new Error("Pi default prompt shape changed: Guidelines block not found");
+    const m = piPrompt.match(/\n<rules>\n([\s\S]*?)\n<\/rules>\n/);
+    if (!m) throw new Error("Pi default prompt shape changed: <rules> block not found");
     return m[1].split("\n").map((l) => l.replace(/^- /, ""));
+  };
+  const piTools = (piPrompt: string): string[] => {
+    const m = piPrompt.match(/\n<tools>\n([\s\S]*?)\n\nIn addition to the tools above/);
+    if (!m) throw new Error("Pi default prompt shape changed: <tools> block not found");
+    return m[1].split("\n");
   };
 
   for (const [label, options] of [
     ["resident-shaped", residentOptions()],
     ["append + context files", residentOptions({ appendSystemPrompt: "APPEND", contextFiles: [{ path: "/p/AGENTS.md", content: "ctx" }] })],
+    ["extra prompt guidelines", residentOptions({ promptGuidelines: ["EXTRA PROMPT GUIDELINE"] })],
+    ["extension sections", residentOptions({ sections: { extra_section: "SECTION BODY" } })],
     ["bash-only skills loading", residentOptions({ selectedTools: ["bash", "edit"] })],
     ["no skill reader", residentOptions({ selectedTools: ["edit", "write"] })],
     ["grep present suppresses bash exploration rule", residentOptions({ selectedTools: ["read", "bash", "grep", "edit"] })],
@@ -349,7 +430,7 @@ describe("parity with pinned Pi buildSystemPrompt (structural affordances only)"
       }
 
       // Available tools: identical bullet list.
-      expect(toolBullets(familiar, "Available Tools:")).toEqual(toolBullets(pi, "Available tools:"));
+      expect(toolBullets(familiar, "Available Tools:")).toEqual(piTools(pi));
 
       // Skills block: identical presence and wording (read vs bash loader).
       const skillsRe = /The following skills provide[\s\S]*?<\/available_skills>/;
@@ -358,14 +439,25 @@ describe("parity with pinned Pi buildSystemPrompt (structural affordances only)"
       // Project context block and append text: identical.
       const ctxRe = /<project_context>[\s\S]*?<\/project_context>/;
       expect(familiar.match(ctxRe)?.[0] ?? "").toBe(pi.match(ctxRe)?.[0] ?? "");
+      // Pi 0.86+ wraps append text in <addendum>; Familiar keeps the raw bytes.
       if (options.appendSystemPrompt) {
         expect(familiar).toContain(`\n\n${options.appendSystemPrompt}\n\n`);
-        expect(pi).toContain(`\n\n${options.appendSystemPrompt}\n\n`);
+        expect(pi).toContain(`\n\n<addendum>\n${options.appendSystemPrompt}\n</addendum>\n\n`);
+      }
+
+      // Extension sections: identical tagged blocks.
+      for (const [name, content] of Object.entries(options.sections ?? {})) {
+        const block = `<${name}>\n${content}\n</${name}>`;
+        expect(pi).toContain(block);
+        expect(familiar).toContain(block);
       }
 
       // Working directory line: identical normalization.
-      const cwdLine = (p: string) => p.match(/Current working directory: .*$/m)?.[0];
-      expect(cwdLine(familiar)).toBe(cwdLine(pi));
+      // Pi 0.86+ emits <cwd>; Familiar keeps its orientation line.
+      const familiarCwd = familiar.match(/^Current working directory: (.*)$/m)?.[1];
+      const piCwd = pi.match(/\n<cwd>\n(.*)\n<\/cwd>/)?.[1];
+      expect(piCwd).toBeDefined();
+      expect(familiarCwd).toBe(piCwd);
 
       // Identity-first; Pi's framing is what Pi emits, never what Familiar does.
       expect(pi.startsWith("You are an expert coding assistant")).toBe(true);
