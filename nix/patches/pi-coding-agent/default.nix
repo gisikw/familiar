@@ -2,21 +2,21 @@
 let
   base = pkgs.pi-coding-agent;
   lockedBaseVersion = "0.84.1";
-  targetVersion = "0.85.1";
-  targetCommit = "d981de1229ef899957bbe968bc8dcda02a21f477";
+  targetVersion = "1.0.0";
+  targetCommit = "a13d35a742c6ef8462812a28fbe1d8c8b7431c32";
   targetSrc = pkgs.fetchFromGitHub {
     owner = "earendil-works";
     repo = "pi";
     rev = targetCommit;
-    hash = "sha256-gU8BSiqqOYt2RRuQONHHGvZeSM5KFQVrwif9bmuUXUc=";
+    hash = "sha256-CGznIVHXG6gr2F8vzHcR/v4P9xJgZHeMTt/CJ/kB78o=";
   };
   targetModelData = pkgs.fetchurl {
     url = "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-${targetVersion}.tgz";
-    hash = "sha256-r30RmGF5RFzm/oizfVfeIvgjwP/TplyuMcVVt/XpklM=";
+    hash = "sha256-85uZwpuFmPF1sQhA5dKoGYPnwM5crk19+DoQB0R9LCs=";
   };
 in
 assert pkgs.lib.assertMsg (base.version == lockedBaseVersion)
-  "Familiar Pi adaptation: unverified locked nixpkgs base ${base.version}; expected ${lockedBaseVersion}. Review the 0.85.1 recipe adaptation before updating.";
+  "Familiar Pi adaptation: unverified locked nixpkgs base ${base.version}; expected ${lockedBaseVersion}. Review the 1.0.0 recipe adaptation before updating.";
 assert pkgs.lib.assertMsg (base.src.outputHash == "sha256-lg+I4S/aAjazjhGZU567ow+rksoNiqOqjHl//TjAMes=")
   "Familiar Pi adaptation: locked nixpkgs base source changed; review the recipe and patch ordering.";
 base.overrideAttrs (old:
@@ -25,31 +25,27 @@ assert pkgs.lib.assertMsg ((old.patches or []) == [] && (old.prePatch or "") == 
 {
   version = targetVersion;
   src = targetSrc;
-  npmDepsHash = "sha256-jzlsZIQzfl1FCZZ5//dHFWwMfBZQ4nRD6KB4HHifPqE=";
+  npmDepsHash = "sha256-ndEvWdB6sa5nNNtabk2OMZKUFG9x3op185deZHxFnXk=";
   # overrideAttrs runs after buildNpmPackage formed its fetched dependency tree,
   # so replace that derived input as well as documenting its vendor hash.
   npmDeps = pkgs.fetchNpmDeps {
     name = "pi-coding-agent-${targetVersion}-npm-deps";
     src = targetSrc;
-    hash = "sha256-jzlsZIQzfl1FCZZ5//dHFWwMfBZQ4nRD6KB4HHifPqE=";
+    hash = "sha256-ndEvWdB6sa5nNNtabk2OMZKUFG9x3op185deZHxFnXk=";
   };
   modelData = targetModelData;
 
-  # Pi 0.85.1 added chord/server workspace dependencies and requires pruning
-  # only after all workspace builds. Keep this synchronized with nixpkgs' exact
-  # 0.85.1 recipe while the repository's locked nixpkgs still packages 0.84.1.
+  # Pi 1.0.0 added codemode, mcp and durable workspaces (plus a bundled
+  # coding-agent CLI built by scripts/build-coding-agent-bundle.mjs) and its
+  # TypeScript 7 devDependency is the native compiler. Upstream's root
+  # `build:offline` script owns the workspace order (chord, tui, telemetry,
+  # codemode, mcp, ai, durable, agent, protocol, client, server, coding-agent)
+  # and checks the restored model data instead of fetching it. This mirrors
+  # nixpkgs' exact 1.0.0 recipe while the locked nixpkgs still packages 0.84.1.
   buildPhase = ''
     runHook preBuild
 
-    npx tsgo -p packages/chord/tsconfig.build.json
-    npx tsgo -p packages/tui/tsconfig.build.json
-    npx tsgo -p packages/telemetry/tsconfig.build.json
-    npx tsgo -p packages/ai/tsconfig.build.json
-    npx tsgo -p packages/agent/tsconfig.build.json
-    npx tsgo -p packages/protocol/tsconfig.build.json
-    npx tsgo -p packages/client/tsconfig.build.json
-    npx tsgo -p packages/server/tsconfig.build.json
-    npm run build --workspace=packages/coding-agent
+    npm run build:offline
 
     runHook postBuild
   '';
@@ -61,7 +57,7 @@ assert pkgs.lib.assertMsg ((old.patches or []) == [] && (old.prePatch or "") == 
   # Verify pristine inputs BEFORE downstream patches. Whole-file hashes
   # intentionally fail closed on unrelated source movement.
   prePatch = ''
-    echo 'Verifying Familiar Pi 0.85.1 patch inputs (fail closed)'
+    echo 'Verifying Familiar Pi 1.0.0 patch inputs (fail closed)'
     sha256sum --check --strict ${./upstream.sha256}
   '';
   # Order is contractual: command fencing, then the provider-only
@@ -83,7 +79,7 @@ assert pkgs.lib.assertMsg ((old.patches or []) == [] && (old.prePatch or "") == 
     runHook postCheck
   '';
 
-  # Pi 0.85.1's package recipe adds chord to the copied runtime workspaces.
+  # Pi 1.0.0's package recipe adds codemode and mcp to the copied runtime workspaces.
   # Validate installed output unconditionally after reproducing that install step.
   postInstall = ''
     local nm="$out/lib/node_modules/pi-monorepo/node_modules"
@@ -92,6 +88,8 @@ assert pkgs.lib.assertMsg ((old.patches or []) == [] && (old.prePatch or "") == 
               @earendil-works/pi-ai:packages/ai \
               @earendil-works/pi-agent-core:packages/agent \
               @earendil-works/pi-client:packages/client \
+              @earendil-works/pi-codemode:packages/codemode \
+              @earendil-works/pi-mcp:packages/mcp \
               @earendil-works/pi-protocol:packages/protocol \
               @earendil-works/pi-telemetry:packages/telemetry \
               @earendil-works/pi-tui:packages/tui; do
@@ -104,7 +102,7 @@ assert pkgs.lib.assertMsg ((old.patches or []) == [] && (old.prePatch or "") == 
     find "$nm/.bin" -xtype l -delete
 
     ${pkgs.lib.optionalString pkgs.stdenvNoCC.hostPlatform.isDarwin ''
-      # Keep nixpkgs' 0.85.1 Darwin cleanup: these are foreign Linux binaries
+      # Keep nixpkgs' 1.0.0 Darwin cleanup: these are foreign Linux binaries
       # which otherwise make audit-tmpdir inspect ELF RPATHs with patchelf.
       rm -rf \
         "$nm/@anthropic-ai/sandbox-runtime/dist/vendor/seccomp" \

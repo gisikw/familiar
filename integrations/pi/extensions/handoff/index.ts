@@ -35,7 +35,9 @@ const SATURATION_WARN = 70;
 const SATURATION_NEAR = 85;
 const SATURATION_HANDOFF = 90;
 
-// Coding-agent 0.85.1 requires firstKeptEntryId. Its context builder retains
+// Coding-agent extension compaction results still require a string
+// firstKeptEntryId in 1.0.0 (only the internal appendCompaction accepts null
+// for retain-none). Its context builder retains
 // nothing before the compaction when that ID is absent from the path.
 // Pi-generated entry IDs are eight hex characters, so this cannot collide.
 const KEEP_NOTHING_ENTRY_ID = "__familiar_zero_tail__";

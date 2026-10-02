@@ -1,13 +1,16 @@
 # Familiar's downstream Pi patch (no fork)
 
-This directory owns the Nix adaptation of **earendil-works/pi v0.85.1** used
+This directory owns the Nix adaptation of **earendil-works/pi v1.0.0** used
 by the top-level locked nixpkgs. It is not an extension and does not belong in
 `integrations/pi`. There is no replacement source checkout or maintained git fork.
 `default.nix` adapts the locked nixpkgs 0.84.1 recipe to immutable upstream commit
-`d981de1229ef899957bbe968bc8dcda02a21f477`, including the exact 0.85.1 source,
-npm dependency, model-data, workspace-build and install metadata. The nixpkgs
+`a13d35a742c6ef8462812a28fbe1d8c8b7431c32` (tag `v1.0.0`), including the exact
+1.0.0 source, npm dependency, model-data, workspace-build and install metadata,
+taken from nixpkgs' own 1.0.0 recipe: `npm run build:offline` (upstream's root
+workspace order, now including codemode, mcp and durable plus the bundled CLI)
+and runtime copies of the codemode and mcp workspaces. The nixpkgs
 wrappers, install checks and platform cleanup remain in force. In particular,
-the 0.85.1 Darwin post-install step removes both foreign Linux seccomp vendor
+the 1.0.0 Darwin post-install step removes both foreign Linux seccomp vendor
 directories from `@anthropic-ai/sandbox-runtime`; Darwin derivation inspection
 is part of the release check.
 Both default/pi shells and `PI_PACKAGE_DIR` use this package. It is also exported
@@ -66,34 +69,46 @@ this general API now enforces its own admission fence rather than trusting that
 frontend or documentation. The name `invokeExtensionCommand` deliberately excludes
 built-ins/templates/skills; there is no broad `invokeCommand` compatibility alias.
 
-We remain pinned to verified **0.85.1**. Its owning-session `isIdle` is backed by
+We are pinned to verified **1.0.0**. Its owning-session `isIdle` is backed by
 `_isAgentRunActive` and `isCompacting`; the former spans the run and post-run
 retries/continuations, rather than only `agent.state.isStreaming`. This is the
 upstream lifecycle predicate, not a new quiescence implementation. Because `_emitAgentSettled` clears that flag before
 awaiting handlers, the separate session-owned dispatch depth fences that interval
-without changing `ctx.isIdle()` (which is true inside `agent_settled`). Admission
+without changing `ctx.isIdle()` (which is true inside `agent_settled`). Since 0.87,
+runs requested from `agent_settled` handlers (`prompt()`, triggered custom
+messages) are deferred until all settled handlers finish and then run inside
+`_emitAgentSettled`. The depth wraps the complete pristine method body, so it
+spans handlers, synchronous session listeners, and those deferred actions; it is
+released in `finally` synchronously after upstream's idle-waiter resolution, so
+waiters resume (in later microtasks) with admission restored. Admission
 checks both synchronously, plus runner event dispatch depth, before acquiring the
 public-only exclusive slot.
 
-An exhaustive 0.85.1 runner audit found 11 awaited handler-dispatching methods:
-`emit`, `emitMessageEnd`, `emitToolResult`, `emitToolCall`, `emitUserBash`,
-`emitContext`, `emitBeforeProviderRequest`, `emitBeforeProviderHeaders`,
-`emitBeforeAgentStart`, `emitResourcesDiscover`, and `emitInput`. Each complete
+An exhaustive 1.0.0 runner audit found 13 awaited handler-dispatching methods:
+`emitBoundary` (0.87: actionable `turn_end`/`agent_before_settle`, no longer
+routed through `emit`; it also awaits the session's boundary-context builder),
+`emit`, `emitCacheWarmingDecision` (0.86), `emitMessageEnd`, `emitToolResult`,
+`emitToolCall`, `emitUserBash`, `emitContext` (now both the `context` and
+`context_with_system` phases), `emitBeforeProviderRequest`,
+`emitBeforeProviderHeaders`, `emitBeforeAgentStart`, `emitResourcesDiscover`, and
+`emitInput`. Each complete
 method body is wrapped in a runner-local depth increment and `try/finally`
 decrement. Nested/concurrent emissions cannot clear each other's fence. Original
-handler order, results, error swallowing, early cancel/handled returns and thrown
-`emitToolCall` errors remain unchanged. Synchronous `emitError` only notifies
+handler order, results, error swallowing, early cancel/handled returns, thrown
+`emitToolCall` errors and 0.86's fail-closed `emitUserBash` rethrow remain unchanged. Synchronous `emitError` only notifies
 listeners and is not independently guarded (notifications inside an emitter are
-still within its depth). The new 0.85.1 `after_provider_response` SDK hook also
-delegates to guarded generic `emit`. The standalone `emitSessionShutdownEvent`
-helper delegates to guarded `emit`. `emitProjectTrustEvent` has no runner, so it
-uses a finally-safe depth on the shared extension runtime; even an unusually
-captured, already-bound API rejects while that handler is awaited.
+still within its depth). The `after_provider_response` and `provider_stream_event`
+SDK hooks delegate to guarded generic `emit`. The standalone `emitSessionShutdownEvent`
+helper delegates to guarded `emit`. The standalone `emitProjectTrustEvent` is not
+wrapped (an earlier revision of this README claimed a runtime-level depth there;
+no shipped patch implemented it). It only runs on the pre-trust extension set
+that `DefaultResourceLoader` loads before any runner binds that runtime, so the
+public API there is still the unbound runtime stub and rejects as not initialized.
 
 Awaited extension lifecycle callbacks are not admissible. This includes shutdown,
 before-switch/fork, compaction/tree, startup/reload, model changes and
-resource/input/provider pipelines. Public calls reject while runner or project-trust
-event dispatch is active; events themselves are not serialized or blocked. The
+resource/input/provider pipelines. Public calls reject while runner event dispatch is
+active; events themselves are not serialized or blocked. The
 old runner is invalidated synchronously immediately after reload's guarded shutdown
 and remains stale across settings/resource awaits, so there is no callable old-API
 reload gap. This is not a scheduler, provenance check or session-wide action lock.
@@ -104,7 +119,7 @@ prompt/public overlap is explicitly permitted by core, and upstream prompt dispa
 neither checks nor acquires the event guard or public slot.
 
 Do **not** queue slash text via `sendUserMessage(... followUp)` as a substitute.
-In 0.85.1 it defaults to literal model-visible text. The `expandPromptTemplates`
+In 1.0.0 it defaults to literal model-visible text. The `expandPromptTemplates`
 opt-in dispatches before streaming queueing, is void on the extension facade,
 and expands skills/templates too. It does not replace an awaited idle-only API.
 
@@ -139,23 +154,29 @@ import replacement flows. Extensions never inspect argv or settings/session file
 Each runtime has its own `ModelRuntime`, loader and extension instances, so a
 bootstrap registration cannot leak into a replaced runtime.
 
-## 0.85.1 rebase assumptions and patch order
+## 1.0.0 rebase assumptions and patch order
 
-Upstream tag `v0.85.1` is the lightweight tag at
-`d981de1229ef899957bbe968bc8dcda02a21f477`. Familiar applies exactly:
+Upstream tag `v1.0.0` is the lightweight tag at
+`a13d35a742c6ef8462812a28fbe1d8c8b7431c32`. Familiar applies exactly:
 
 1. `invoke-command.patch` — awaited exact-name direct extension-command
    invocation and complete event/settled admission fences.
 2. `model-bootstrap.patch` — awaited provider-only materialization from the exact
    effective CLI/restored/default request before any initial model resolution.
 
-Neither facility exists upstream in 0.85.1, so no downstream portion was
+Neither facility exists upstream in 1.0.0, so no downstream portion was
 superseded. The rebase preserves the changed upstream loader factory/runtime
 ownership, session-runtime replacement bodies, SDK construction, prompt body,
 SessionManager loading/appending and compaction flow. The command patch only
-wraps the 11 awaited runner emitter bodies and hash-checks each body after
-removing that one indentation level. Upstream commit `56700d42ed65a94a80af7376adb19a9298065164` (PR #8782,
-issue #6879), included in 0.85.1, moved next-turn preparation into the continuing
+wraps the 13 awaited runner emitter bodies and the `_emitAgentSettled` body and
+hash-checks each body after removing that one indentation level. The bootstrap
+patch's shared provider flush now also drains 0.99's queued virtual-model
+registrations. Its `session` request still reports
+`SessionManager.buildSessionContext().model` (the latest model change or
+assistant model); 0.99's SDK restore prefers a recorded *virtual* model over the
+physical model that answered, which no Familiar extension registers.
+Upstream commit `56700d42ed65a94a80af7376adb19a9298065164` (PR #8782,
+issue #6879), included since 0.85.1, moved next-turn preparation into the continuing
 agent loop. This allows threshold compaction after a large tool result and before
 the next provider request in the same run. Familiar does not patch this path.
 Upstream republishes `agent.state.model` and `agent.state.thinkingLevel` after
@@ -167,12 +188,12 @@ an explicit provider rejection of no reasoning and retains dedicated tests.
 ## Fail-closed update procedure
 
 Inspected nixpkgs `pkgs/by-name/pi/pi-coding-agent/package.nix`: it builds the
-GitHub monorepo (not the published coding-agent tarball), uses tsgo for workspace
-deps, restores the model catalogue from matching npm pi-ai, then installs compiled
+GitHub monorepo (not the published coding-agent tarball), builds workspaces with
+upstream's `build:offline` script (TypeScript 7, formerly tsgo), restores the model catalogue from matching npm pi-ai, then installs compiled
 coding-agent output at `lib/node_modules/pi-monorepo`.
 
 Evaluation asserts the expected locked nixpkgs 0.84.1 base recipe and its source,
-then replaces it with exact **0.85.1** commit/source/vendor/model-data metadata.
+then replaces it with exact **1.0.0** commit/source/vendor/model-data metadata.
 It also asserts absence of nixpkgs patches or a prePatch hook. Before applying
 any downstream patch, SHA-256 checks cover whole `loader.ts`, `runner.ts`,
 `types.ts`, `agent-session.ts`, `session-manager.ts`, `agent-session-runtime.ts`,
@@ -184,13 +205,14 @@ prompt dispatch, SDK session construction, getCommands binding, replacement,
 persistence and mid-run compaction internals—not merely nearby patch context.
 Source rearrangements fail before patch application; patch fuzz is not the
 verification mechanism. `invoke-command-shape.test.mjs` additionally checks the separate admission
-binding, settled depth/finally, unchanged owning-session getter and default context
+binding, settled depth/finally around the hash-pinned pristine `_emitAgentSettled`
+body (including deferred settled actions), unchanged owning-session getter and default context
 idle semantics, prompt-before-streaming ordering, direct prompt handler path,
 public-only exclusive guard, and absence of a public bypass/legacy alias. A new
 SHA-256 assertion pins the restored `_tryExecuteExtensionCommand` method byte-for-byte
 to upstream, including its error runner selection and context creation. The entire
 `prompt` section is also hash-pinned. Shape checks enumerate all async runner
-methods, require complete finally-safe wrappers on all 11 emitters, reject dispatch
+methods, require complete finally-safe wrappers on all 13 emitters, reject dispatch
 sites outside them, and hash each unwrapped body against pristine upstream (only
 the added indentation is removed). Full pristine file hashes remain unchanged.
 
@@ -209,7 +231,11 @@ rejection, guard cleanup, real `_emitAgentSettled` execution where ctx.isIdle is
 true but invocation rejects without running the target (including across an await),
 settled dispatch failure cleanup and synchronous listener-tail rejection, real
 `AgentSession.reload()` shutdown rejection with settings/resource I/O stubbed,
-before-switch/fork cancellation, every non-generic emitter, normal/early/throw
+before-switch/fork cancellation, every non-generic emitter (including `emitBoundary`
+for `turn_end`/`agent_before_settle`, `context_with_system` and
+`emitCacheWarmingDecision`), 0.87 deferred settled runs (a deferred `prompt()`
+command rejects public invocation; an idle waiter's continuation is admitted; a
+failing deferred action still releases the fence), normal/early/throw
 cleanup, nested/concurrent event depth, real `AgentSession.prompt()` execution while busy,
 prompt/public overlap in both directions, prompt error reporting, and stale API/
 context behavior during and after replacement/reload. Session/resource I/O is stubbed
@@ -234,17 +260,17 @@ pattern, and router outage.
 
 Source shape checks run in `postPatch`. Runtime tests run in `checkPhase` and again
 unconditionally in `postInstall` against the installed runtime, plus installed
-declaration assertions. The runtime test also checks incremental load/append and
-exact-boundary accounting, 8-hex collision-safe control IDs, project-trust and
-entry-notification reentrancy fences, and admitted continuation without a provider
-call: model/auth readiness, disabled compaction, unchanged leaf, no duplicate user
-append, `agent.continue()` rather than `prompt()`, and one settled event. `mid-turn-compaction.test.mjs` verifies in both source and
-compiled output that 0.85.1's `prepareNextTurn` compaction path runs before the
+declaration assertions. (Earlier revisions of this README also listed
+runtime-control checks — incremental load/append accounting, control IDs,
+project-trust/entry-notification fences, admitted continuation — that belonged to
+the since-removed background runtime patch; the shipped tests do not contain
+them.) `mid-turn-compaction.test.mjs` verifies in both source and
+compiled output that 1.0.0's `prepareNextTurn` compaction path runs before the
 next assistant request and republishes the effective model/thinking level. Setting
 `doCheck` or `doInstallCheck` false cannot silently skip installed validation.
 No provider call, operator state, or resident Presence is used.
 
-For the 0.85.1 integration, run the following on x86_64-linux. The all-systems
+For the 1.0.0 integration, run the following on x86_64-linux. The all-systems
 Darwin limitation remains the unrelated gateway output that references a missing
 viewer package. Non-native patched outputs are evaluation gates, not native builds.
 
@@ -260,7 +286,7 @@ nix eval --raw .#checks.aarch64-darwin.pi-invoke-command.drvPath
 nix develop .#pi -c /nix/store/glcp73hgagq2b24i80jlgbvj28vdb6kk-nodejs-24.19.0/bin/node test/extension-loader-smoke.mjs
 nix develop .#pi -c /nix/store/glcp73hgagq2b24i80jlgbvj28vdb6kk-nodejs-24.19.0/bin/node test/pi-tiamat-bootstrap.mjs
 nix develop .#pi -c bash -c 'bash test/pi-extra-extensions.test.sh && bash test/pi-model-store.test.sh'
-nix shell nixpkgs#bun -c bun test integrations/pi/extensions/tiamat
+nix develop .#pi -c nix shell nixpkgs#bun -c bun test integrations/pi/extensions
 ```
 
 The existing pi shell does not put Node on PATH; the smoke command explicitly uses

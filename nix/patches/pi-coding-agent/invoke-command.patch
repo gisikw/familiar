@@ -1,10 +1,10 @@
 diff --git a/packages/coding-agent/docs/extensions.md b/packages/coding-agent/docs/extensions.md
-index ce13db62..fc4e6555 100644
+index 9ecc4d995..ba0ebf4ab 100644
 --- a/packages/coding-agent/docs/extensions.md
 +++ b/packages/coding-agent/docs/extensions.md
-@@ -1557,6 +1557,48 @@ pi.registerCommand("deploy", {
- });
- ```
+@@ -212,6 +212,51 @@ These operations are command-only because calling them from lifecycle handlers c
+ 
+ Session replacement invalidates the old context. Capture only plain data before switching, then use the fresh context supplied to `withSession` for session-bound work.
  
 +### pi.invokeExtensionCommand(name, args?) (Familiar downstream)
 +
@@ -26,6 +26,8 @@ index ce13db62..fc4e6555 100644
 +at admission. `ctx.isIdle()` retains upstream semantics (true during that event). Active
 +run tools/events cannot cross into command-only session controls: waiting there
 +can deadlock on the caller itself (upstream commit `0d9fddec`, issue #2023).
++The settled fence spans the handlers, session listeners and any deferred runs
++requested from `agent_settled` handlers.
 +One runner-local public-invocation slot excludes even A -> B: different commands still
 +mutate the same session. Calls reject rather than queue. The slot is released
 +in `finally`, including handler failures and successful runtime replacement.
@@ -37,42 +39,78 @@ index ce13db62..fc4e6555 100644
 +while streaming, overlap, context creation, and error reporting retain upstream
 +behavior. It neither acquires nor checks the public API slot. Hosts must coordinate
 +prompt/public concurrency. Public calls reject while runner event dispatch is active,
-+including idle shutdown, before-switch/fork, compaction/tree, startup/reload and
++including idle shutdown, before-switch/fork, compaction/tree, startup/reload,
++turn_end/agent_before_settle boundaries, cache-warming decisions and
 +resource/input/provider pipelines. No other idle lifecycle callbacks are admissible.
 +A runner-local depth spans each complete awaited emitter, including early returns
 +and throws; it does not serialize events or lock unrelated non-event actions.
 +The public API has no bypass option.
 +
-+Do not use a follow-up user message as a command queue. In 0.85.1,
++Do not use a follow-up user message as a command queue. In 1.0.0,
 +`sendUserMessage` defaults to literal model-visible text; its `expandPromptTemplates`
 +opt-in is void, parses text, expands skills/templates, and dispatches commands before
 +streaming queueing. It does not replace this awaited idle-only API.
 +
- ### pi.getCommands()
+ <a id="state-management"></a>
+ <a id="persist-state"></a>
  
- Get the slash commands available for invocation via `prompt` in the current session. Includes extension commands, prompt templates, and skill commands.
 diff --git a/packages/coding-agent/src/core/agent-session.ts b/packages/coding-agent/src/core/agent-session.ts
-index ac2bd4b1..8799d17e 100644
+index 63aa588da..724057417 100644
 --- a/packages/coding-agent/src/core/agent-session.ts
 +++ b/packages/coding-agent/src/core/agent-session.ts
-@@ -626,12 +626,16 @@ export class AgentSession {
+@@ -1047,27 +1047,36 @@ export class AgentSession {
  		resolve();
  	}
  
 +	private _agentSettledDispatchDepth = 0;
 +
++	// Spans handlers, session listeners and deferred settled actions. Upstream body is unchanged;
++	// idle waiters resume in later microtasks, after this synchronous finally.
  	private async _emitAgentSettled(): Promise<void> {
+-		this._cacheWarmer?.onAgentSettled();
+-		this._isAgentRunActive = false;
+-		this._isEmittingAgentSettled = true;
 +		this._agentSettledDispatchDepth++;
- 		this._isAgentRunActive = false;
  		try {
- 			await this._extensionRunner.emit({ type: "agent_settled" });
- 			this._emit({ type: "agent_settled" });
- 		} finally {
+-			await this._extensionRunner.emit({ type: "agent_settled" });
+-			this._emit({ type: "agent_settled" });
+-		} finally {
+-			this._isEmittingAgentSettled = false;
+-		}
+-
+-		const deferred = this._deferredSettledActions.splice(0);
+-		if (deferred.length > 0) {
++			this._cacheWarmer?.onAgentSettled();
++			this._isAgentRunActive = false;
++			this._isEmittingAgentSettled = true;
+ 			try {
+-				for (const action of deferred) await action();
++				await this._extensionRunner.emit({ type: "agent_settled" });
++				this._emit({ type: "agent_settled" });
+ 			} finally {
+-				this._resolveIdleWaitIfIdle();
++				this._isEmittingAgentSettled = false;
+ 			}
+-			return;
++
++			const deferred = this._deferredSettledActions.splice(0);
++			if (deferred.length > 0) {
++				try {
++					for (const action of deferred) await action();
++				} finally {
++					this._resolveIdleWaitIfIdle();
++				}
++				return;
++			}
++			this._resolveIdleWaitIfIdle();
++		} finally {
 +			this._agentSettledDispatchDepth--;
- 			this._resolveIdleWaitIfIdle();
  		}
+-		this._resolveIdleWaitIfIdle();
  	}
-@@ -2545,6 +2549,7 @@ export class AgentSession {
+ 
+ 	/** Internal handler for agent events - shared by subscribe and reconnect */
+@@ -3311,6 +3320,7 @@ export class AgentSession {
  	}
  
  	private _bindExtensionCore(runner: ExtensionRunner): void {
@@ -81,10 +119,10 @@ index ac2bd4b1..8799d17e 100644
  			const extensionCommands: SlashCommandInfo[] = runner.getRegisteredCommands().map((command) => ({
  				name: command.invocationName,
 diff --git a/packages/coding-agent/src/core/extensions/loader.ts b/packages/coding-agent/src/core/extensions/loader.ts
-index 32ca6c95..ca87f135 100644
+index a35adbb86..65ee48e5b 100644
 --- a/packages/coding-agent/src/core/extensions/loader.ts
 +++ b/packages/coding-agent/src/core/extensions/loader.ts
-@@ -199,6 +199,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
+@@ -179,6 +179,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
  		// registerTool() is valid during extension load; refresh is only needed post-bind.
  		refreshTools: () => {},
  		getCommands: notInitialized,
@@ -92,7 +130,7 @@ index 32ca6c95..ca87f135 100644
  		setModel: () => Promise.reject(new Error("Extension runtime not initialized")),
  		getThinkingLevel: notInitialized,
  		setThinkingLevel: notInitialized,
-@@ -407,6 +408,11 @@ function createExtensionAPI(
+@@ -426,6 +427,11 @@ function createExtensionAPI(
  			runtime.setActiveTools(toolNames);
  		},
  
@@ -105,10 +143,10 @@ index 32ca6c95..ca87f135 100644
  			assertActive();
  			return runtime.getCommands();
 diff --git a/packages/coding-agent/src/core/extensions/runner.ts b/packages/coding-agent/src/core/extensions/runner.ts
-index 3346645a..84625928 100644
+index 59e1eb62e..0297ed196 100644
 --- a/packages/coding-agent/src/core/extensions/runner.ts
 +++ b/packages/coding-agent/src/core/extensions/runner.ts
-@@ -298,6 +298,10 @@ export class ExtensionRunner {
+@@ -390,6 +390,10 @@ export class ExtensionRunner {
  	private staleMessage: string | undefined;
  	private uiPromptDepth = 0;
  	private activeUIPrompt: { kind: UIPromptKind; title?: string } | undefined;
@@ -119,7 +157,7 @@ index 3346645a..84625928 100644
  
  	constructor(
  		extensions: Extension[],
-@@ -335,6 +339,7 @@ export class ExtensionRunner {
+@@ -430,6 +434,7 @@ export class ExtensionRunner {
  		this.runtime.setActiveTools = actions.setActiveTools;
  		this.runtime.refreshTools = actions.refreshTools;
  		this.runtime.getCommands = actions.getCommands;
@@ -127,7 +165,7 @@ index 3346645a..84625928 100644
  		this.runtime.setModel = actions.setModel;
  		this.runtime.getThinkingLevel = actions.getThinkingLevel;
  		this.runtime.setThinkingLevel = actions.setThinkingLevel;
-@@ -703,6 +708,34 @@ export class ExtensionRunner {
+@@ -848,6 +853,34 @@ export class ExtensionRunner {
  		return this.resolveRegisteredCommands().find((command) => command.invocationName === name);
  	}
  
@@ -162,17 +200,112 @@ index 3346645a..84625928 100644
  	/**
  	 * Request a graceful shutdown. Called by extension tools and event handlers.
  	 * The actual shutdown behavior is provided by the mode via bindExtensions().
-@@ -849,283 +882,323 @@ export class ExtensionRunner {
+@@ -1021,51 +1054,56 @@ export class ExtensionRunner {
+ 		baseEvent: BoundaryBaseEvent,
+ 		buildContext: (entries: SessionBoundaryDraft[]) => BoundaryContextPreview | Promise<BoundaryContextPreview>,
+ 	): Promise<BoundaryDispatchResult> {
+-		const ctx = this.createContext();
+-		let entries: SessionBoundaryDraft[] = [];
+-		let shouldContinue = false;
+-		let context = await buildContext(entries);
+-		let valid = true;
+-
+-		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, baseEvent.type)) {
+-			for (const handler of handlers) {
+-				const event = {
+-					...baseEvent,
+-					entries,
+-					continue: shouldContinue,
+-					context,
+-				} as TurnEndEvent | AgentBeforeSettleEvent;
+-				try {
+-					const handlerResult = (await handler(event, ctx)) as BoundaryResult | undefined;
+-					if (handlerResult?.entries !== undefined) entries = handlerResult.entries;
+-					if (handlerResult?.continue !== undefined) shouldContinue = handlerResult.continue;
+-				} catch (err) {
+-					this.emitError({
+-						extensionPath: ext.path,
+-						event: baseEvent.type,
+-						error: err instanceof Error ? err.message : String(err),
+-						stack: err instanceof Error ? err.stack : undefined,
+-					});
+-				}
++		this.eventDispatchDepth++;
++		try {
++			const ctx = this.createContext();
++			let entries: SessionBoundaryDraft[] = [];
++			let shouldContinue = false;
++			let context = await buildContext(entries);
++			let valid = true;
++
++			for (const { ext, handlers } of snapshotEventHandlers(this.extensions, baseEvent.type)) {
++				for (const handler of handlers) {
++					const event = {
++						...baseEvent,
++						entries,
++						continue: shouldContinue,
++						context,
++					} as TurnEndEvent | AgentBeforeSettleEvent;
++					try {
++						const handlerResult = (await handler(event, ctx)) as BoundaryResult | undefined;
++						if (handlerResult?.entries !== undefined) entries = handlerResult.entries;
++						if (handlerResult?.continue !== undefined) shouldContinue = handlerResult.continue;
++					} catch (err) {
++						this.emitError({
++							extensionPath: ext.path,
++							event: baseEvent.type,
++							error: err instanceof Error ? err.message : String(err),
++							stack: err instanceof Error ? err.stack : undefined,
++						});
++					}
+ 
+-				try {
+-					context = await buildContext(entries);
+-					valid = true;
+-				} catch (err) {
+-					valid = false;
+-					this.emitError({
+-						extensionPath: ext.path,
+-						event: baseEvent.type,
+-						error: `Invalid boundary entries: ${err instanceof Error ? err.message : String(err)}`,
+-						stack: err instanceof Error ? err.stack : undefined,
+-					});
++					try {
++						context = await buildContext(entries);
++						valid = true;
++					} catch (err) {
++						valid = false;
++						this.emitError({
++							extensionPath: ext.path,
++							event: baseEvent.type,
++							error: `Invalid boundary entries: ${err instanceof Error ? err.message : String(err)}`,
++							stack: err instanceof Error ? err.stack : undefined,
++						});
++					}
+ 				}
+ 			}
+-		}
+ 
+-		return valid
+-			? { entries, continue: shouldContinue, context, valid: true }
+-			: { entries: [], continue: false, context, valid: false };
++			return valid
++				? { entries, continue: shouldContinue, context, valid: true }
++				: { entries: [], continue: false, context, valid: false };
++		} finally {
++			this.eventDispatchDepth--;
++		}
+ 	}
+ 
+ 	private isSessionBeforeEvent(event: RunnerEmitEvent): event is SessionBeforeEvent {
+@@ -1078,207 +1116,237 @@ export class ExtensionRunner {
  	}
  
  	async emit<TEvent extends RunnerEmitEvent>(event: TEvent): Promise<RunnerEmitResult<TEvent>> {
 -		const ctx = this.createContext();
 -		let result: SessionBeforeEventResult | undefined;
 -
--		for (const ext of this.extensions) {
--			const handlers = ext.handlers.get(event.type);
--			if (!handlers || handlers.length === 0) continue;
--
+-		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, event.type)) {
 -			for (const handler of handlers) {
 -				try {
 -					const handlerResult = await handler(event, ctx);
@@ -186,10 +319,7 @@ index 3346645a..84625928 100644
 +			const ctx = this.createContext();
 +			let result: SessionBeforeEventResult | undefined;
 +
-+			for (const ext of this.extensions) {
-+				const handlers = ext.handlers.get(event.type);
-+				if (!handlers || handlers.length === 0) continue;
-+
++			for (const { ext, handlers } of snapshotEventHandlers(this.extensions, event.type)) {
 +				for (const handler of handlers) {
 +					try {
 +						const handlerResult = await handler(event, ctx);
@@ -230,30 +360,72 @@ index 3346645a..84625928 100644
 +		}
  	}
  
+ 	/** Returns the event's own action unless a handler overrides it; the last override wins. */
+ 	async emitCacheWarmingDecision(event: CacheWarmingDecisionEvent): Promise<CacheWarmingAction> {
+-		const ctx = this.createContext();
+-		let action = event.action;
+-
+-		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, event.type)) {
+-			for (const handler of handlers) {
+-				try {
+-					const result = (await handler(event, ctx)) as CacheWarmingDecisionEventResult | undefined;
+-					if (result?.action !== undefined) action = result.action;
+-				} catch (err) {
+-					this.emitError({
+-						extensionPath: ext.path,
+-						event: event.type,
+-						error: err instanceof Error ? err.message : String(err),
+-						stack: err instanceof Error ? err.stack : undefined,
+-					});
++		this.eventDispatchDepth++;
++		try {
++			const ctx = this.createContext();
++			let action = event.action;
++
++			for (const { ext, handlers } of snapshotEventHandlers(this.extensions, event.type)) {
++				for (const handler of handlers) {
++					try {
++						const result = (await handler(event, ctx)) as CacheWarmingDecisionEventResult | undefined;
++						if (result?.action !== undefined) action = result.action;
++					} catch (err) {
++						this.emitError({
++							extensionPath: ext.path,
++							event: event.type,
++							error: err instanceof Error ? err.message : String(err),
++							stack: err instanceof Error ? err.stack : undefined,
++						});
++					}
+ 				}
+ 			}
+-		}
+ 
+-		return action;
++			return action;
++		} finally {
++			this.eventDispatchDepth--;
++		}
+ 	}
+ 
  	async emitMessageEnd(event: MessageEndEvent): Promise<AgentMessage | undefined> {
 -		const ctx = this.createContext();
 -		let currentMessage = event.message;
 -		let modified = false;
 -
--		for (const ext of this.extensions) {
--			const handlers = ext.handlers.get("message_end");
--			if (!handlers || handlers.length === 0) continue;
--
+-		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "message_end")) {
 -			for (const handler of handlers) {
 -				try {
 -					const currentEvent: MessageEndEvent = { ...event, message: currentMessage };
 -					const handlerResult = (await handler(currentEvent, ctx)) as MessageEndEventResult | undefined;
 -					if (!handlerResult?.message) continue;
+-
+-					if (handlerResult.message.role !== currentMessage.role) {
 +		this.eventDispatchDepth++;
 +		try {
 +			const ctx = this.createContext();
 +			let currentMessage = event.message;
 +			let modified = false;
 +
-+			for (const ext of this.extensions) {
-+				const handlers = ext.handlers.get("message_end");
-+				if (!handlers || handlers.length === 0) continue;
-+
++			for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "message_end")) {
 +				for (const handler of handlers) {
 +					try {
 +						const currentEvent: MessageEndEvent = { ...event, message: currentMessage };
@@ -268,8 +440,7 @@ index 3346645a..84625928 100644
 +							});
 +							continue;
 +						}
- 
--					if (handlerResult.message.role !== currentMessage.role) {
++
 +						currentMessage = handlerResult.message;
 +						modified = true;
 +					} catch (err) {
@@ -312,10 +483,7 @@ index 3346645a..84625928 100644
 -		const currentEvent: ToolResultEvent = { ...event };
 -		let modified = false;
 -
--		for (const ext of this.extensions) {
--			const handlers = ext.handlers.get("tool_result");
--			if (!handlers || handlers.length === 0) continue;
--
+-		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "tool_result")) {
 -			for (const handler of handlers) {
 -				try {
 -					const handlerResult = (await handler(currentEvent, ctx)) as ToolResultEventResult | undefined;
@@ -323,10 +491,16 @@ index 3346645a..84625928 100644
 -
 -					if (handlerResult.content !== undefined) {
 -						currentEvent.content = handlerResult.content;
+-						// Structured content that is not replaced along with the content may no longer match it.
+-						if (handlerResult.structuredContent === undefined) delete currentEvent.structuredContent;
 -						modified = true;
 -					}
 -					if (handlerResult.details !== undefined) {
 -						currentEvent.details = handlerResult.details;
+-						modified = true;
+-					}
+-					if (handlerResult.structuredContent !== undefined) {
+-						currentEvent.structuredContent = handlerResult.structuredContent;
 -						modified = true;
 -					}
 -					if (handlerResult.isError !== undefined) {
@@ -342,10 +516,7 @@ index 3346645a..84625928 100644
 +			const currentEvent: ToolResultEvent = { ...event };
 +			let modified = false;
 +
-+			for (const ext of this.extensions) {
-+				const handlers = ext.handlers.get("tool_result");
-+				if (!handlers || handlers.length === 0) continue;
-+
++			for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "tool_result")) {
 +				for (const handler of handlers) {
 +					try {
 +						const handlerResult = (await handler(currentEvent, ctx)) as ToolResultEventResult | undefined;
@@ -353,10 +524,16 @@ index 3346645a..84625928 100644
 +
 +						if (handlerResult.content !== undefined) {
 +							currentEvent.content = handlerResult.content;
++							// Structured content that is not replaced along with the content may no longer match it.
++							if (handlerResult.structuredContent === undefined) delete currentEvent.structuredContent;
 +							modified = true;
 +						}
 +						if (handlerResult.details !== undefined) {
 +							currentEvent.details = handlerResult.details;
++							modified = true;
++						}
++						if (handlerResult.structuredContent !== undefined) {
++							currentEvent.structuredContent = handlerResult.structuredContent;
 +							modified = true;
 +						}
 +						if (handlerResult.isError !== undefined) {
@@ -400,12 +577,14 @@ index 3346645a..84625928 100644
 -		return {
 -			content: currentEvent.content,
 -			details: currentEvent.details,
+-			structuredContent: currentEvent.structuredContent,
 -			isError: currentEvent.isError,
 -			usage: currentEvent.usage,
 -		};
 +			return {
 +				content: currentEvent.content,
 +				details: currentEvent.details,
++				structuredContent: currentEvent.structuredContent,
 +				isError: currentEvent.isError,
 +				usage: currentEvent.usage,
 +			};
@@ -422,15 +601,10 @@ index 3346645a..84625928 100644
 +			const ctx = this.createContext();
 +			let result: ToolCallEventResult | undefined;
  
--		for (const ext of this.extensions) {
--			const handlers = ext.handlers.get("tool_call");
--			if (!handlers || handlers.length === 0) continue;
-+			for (const ext of this.extensions) {
-+				const handlers = ext.handlers.get("tool_call");
-+				if (!handlers || handlers.length === 0) continue;
- 
+-		for (const { handlers } of snapshotEventHandlers(this.extensions, "tool_call")) {
 -			for (const handler of handlers) {
 -				const handlerResult = await handler(event, ctx);
++			for (const { handlers } of snapshotEventHandlers(this.extensions, "tool_call")) {
 +				for (const handler of handlers) {
 +					const handlerResult = await handler(event, ctx);
  
@@ -457,28 +631,31 @@ index 3346645a..84625928 100644
  
  	async emitUserBash(event: UserBashEvent): Promise<UserBashEventResult | undefined> {
 -		const ctx = this.createContext();
-+		this.eventDispatchDepth++;
-+		try {
-+			const ctx = this.createContext();
- 
--		for (const ext of this.extensions) {
--			const handlers = ext.handlers.get("user_bash");
--			if (!handlers || handlers.length === 0) continue;
-+			for (const ext of this.extensions) {
-+				const handlers = ext.handlers.get("user_bash");
-+				if (!handlers || handlers.length === 0) continue;
- 
+-
+-		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "user_bash")) {
 -			for (const handler of handlers) {
 -				try {
 -					const handlerResult = await handler(event, ctx);
--					if (handlerResult) {
--						return handlerResult as UserBashEventResult;
+-					if (handlerResult === undefined) continue;
+-					if (!isUserBashEventResult(handlerResult)) {
+-						throw new Error(
+-							"Invalid user_bash handler result: return undefined for local execution or exactly one valid { operations } or { result } object",
+-						);
++		this.eventDispatchDepth++;
++		try {
++			const ctx = this.createContext();
++
++			for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "user_bash")) {
 +				for (const handler of handlers) {
 +					try {
 +						const handlerResult = await handler(event, ctx);
-+						if (handlerResult) {
-+							return handlerResult as UserBashEventResult;
++						if (handlerResult === undefined) continue;
++						if (!isUserBashEventResult(handlerResult)) {
++							throw new Error(
++								"Invalid user_bash handler result: return undefined for local execution or exactly one valid { operations } or { result } object",
++							);
 +						}
++						return handlerResult;
 +					} catch (err) {
 +						const message = err instanceof Error ? err.message : String(err);
 +						const stack = err instanceof Error ? err.stack : undefined;
@@ -488,7 +665,9 @@ index 3346645a..84625928 100644
 +							error: message,
 +							stack,
 +						});
++						throw err;
  					}
+-					return handlerResult;
 -				} catch (err) {
 -					const message = err instanceof Error ? err.message : String(err);
 -					const stack = err instanceof Error ? err.stack : undefined;
@@ -498,6 +677,7 @@ index 3346645a..84625928 100644
 -						error: message,
 -						stack,
 -					});
+-					throw err;
  				}
  			}
 -		}
@@ -509,35 +689,56 @@ index 3346645a..84625928 100644
 +		}
  	}
  
+ 	/**
+@@ -1287,125 +1355,140 @@ export class ExtensionRunner {
+ 	 * handlers then see the full transcript and their output is used as returned.
+ 	 */
  	async emitContext(messages: AgentMessage[]): Promise<AgentMessage[]> {
 -		const ctx = this.createContext();
 -		let currentMessages = structuredClone(messages);
+-
+-		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "context")) {
+-			for (const handler of handlers) {
+-				try {
+-					const visibleMessages = currentMessages.filter((message) => message.role !== "system");
+-					const visibleSnapshot = visibleMessages.slice();
+-					const event: ContextEvent = { type: "context", messages: visibleMessages };
+-					const handlerResult = (await handler(event, ctx)) as ContextEventResult | undefined;
+-
+-					// Handlers may return a new list or edit event.messages in place.
+-					const returned =
+-						handlerResult?.messages ??
+-						(sameMessages(visibleMessages, visibleSnapshot) ? undefined : visibleMessages);
+-					if (!returned) continue;
+-					currentMessages = restoreSystemMessages(currentMessages, visibleSnapshot, returned);
+-				} catch (err) {
+-					const message = err instanceof Error ? err.message : String(err);
+-					const stack = err instanceof Error ? err.stack : undefined;
+-					this.emitError({
+-						extensionPath: ext.path,
+-						event: "context",
+-						error: message,
+-						stack,
+-					});
 +		this.eventDispatchDepth++;
 +		try {
 +			const ctx = this.createContext();
 +			let currentMessages = structuredClone(messages);
- 
--		for (const ext of this.extensions) {
--			const handlers = ext.handlers.get("context");
--			if (!handlers || handlers.length === 0) continue;
-+			for (const ext of this.extensions) {
-+				const handlers = ext.handlers.get("context");
-+				if (!handlers || handlers.length === 0) continue;
- 
--			for (const handler of handlers) {
--				try {
--					const event: ContextEvent = { type: "context", messages: currentMessages };
--					const handlerResult = await handler(event, ctx);
++
++			for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "context")) {
 +				for (const handler of handlers) {
 +					try {
-+						const event: ContextEvent = { type: "context", messages: currentMessages };
-+						const handlerResult = await handler(event, ctx);
- 
--					if (handlerResult && (handlerResult as ContextEventResult).messages) {
--						currentMessages = (handlerResult as ContextEventResult).messages!;
-+						if (handlerResult && (handlerResult as ContextEventResult).messages) {
-+							currentMessages = (handlerResult as ContextEventResult).messages!;
-+						}
++						const visibleMessages = currentMessages.filter((message) => message.role !== "system");
++						const visibleSnapshot = visibleMessages.slice();
++						const event: ContextEvent = { type: "context", messages: visibleMessages };
++						const handlerResult = (await handler(event, ctx)) as ContextEventResult | undefined;
++
++						// Handlers may return a new list or edit event.messages in place.
++						const returned =
++							handlerResult?.messages ??
++							(sameMessages(visibleMessages, visibleSnapshot) ? undefined : visibleMessages);
++						if (!returned) continue;
++						currentMessages = restoreSystemMessages(currentMessages, visibleSnapshot, returned);
 +					} catch (err) {
 +						const message = err instanceof Error ? err.message : String(err);
 +						const stack = err instanceof Error ? err.stack : undefined;
@@ -547,13 +748,54 @@ index 3346645a..84625928 100644
 +							error: message,
 +							stack,
 +						});
++					}
+ 				}
+ 			}
+-		}
+ 
+-		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "context_with_system")) {
+-			for (const handler of handlers) {
+-				try {
+-					const hadLeadingSystemMessage = currentMessages[0]?.role === "system";
+-					const event: ContextWithSystemEvent = { type: "context_with_system", messages: currentMessages };
+-					const handlerResult = (await handler(event, ctx)) as ContextEventResult | undefined;
+-					currentMessages = handlerResult?.messages ?? currentMessages;
+-					// Providers read the prompt and initial tools from the leading system message.
+-					// Losing it is never intended; report it but honor the handler's output.
+-					if (hadLeadingSystemMessage && currentMessages[0]?.role !== "system") {
++			for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "context_with_system")) {
++				for (const handler of handlers) {
++					try {
++						const hadLeadingSystemMessage = currentMessages[0]?.role === "system";
++						const event: ContextWithSystemEvent = { type: "context_with_system", messages: currentMessages };
++						const handlerResult = (await handler(event, ctx)) as ContextEventResult | undefined;
++						currentMessages = handlerResult?.messages ?? currentMessages;
++						// Providers read the prompt and initial tools from the leading system message.
++						// Losing it is never intended; report it but honor the handler's output.
++						if (hadLeadingSystemMessage && currentMessages[0]?.role !== "system") {
++							this.emitError({
++								extensionPath: ext.path,
++								event: "context_with_system",
++								error: "Handler removed the leading system message; the request has no prompt or initial tool declarations. Keep it at index 0 or replace a dropped prefix with getCurrentSystemMessage().",
++							});
++						}
++					} catch (err) {
++						const message = err instanceof Error ? err.message : String(err);
++						const stack = err instanceof Error ? err.stack : undefined;
+ 						this.emitError({
+ 							extensionPath: ext.path,
+ 							event: "context_with_system",
+-							error: "Handler removed the leading system message; the request has no prompt or initial tool declarations. Keep it at index 0 or replace a dropped prefix with getCurrentSystemMessage().",
++							error: message,
++							stack,
+ 						});
  					}
 -				} catch (err) {
 -					const message = err instanceof Error ? err.message : String(err);
 -					const stack = err instanceof Error ? err.stack : undefined;
 -					this.emitError({
 -						extensionPath: ext.path,
--						event: "context",
+-						event: "context_with_system",
 -						error: message,
 -						stack,
 -					});
@@ -572,10 +814,7 @@ index 3346645a..84625928 100644
 -		const ctx = this.createContext();
 -		let currentPayload = payload;
 -
--		for (const ext of this.extensions) {
--			const handlers = ext.handlers.get("before_provider_request");
--			if (!handlers || handlers.length === 0) continue;
--
+-		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "before_provider_request")) {
 -			for (const handler of handlers) {
 -				try {
 -					const event: BeforeProviderRequestEvent = {
@@ -590,10 +829,7 @@ index 3346645a..84625928 100644
 +			const ctx = this.createContext();
 +			let currentPayload = payload;
 +
-+			for (const ext of this.extensions) {
-+				const handlers = ext.handlers.get("before_provider_request");
-+				if (!handlers || handlers.length === 0) continue;
-+
++			for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "before_provider_request")) {
 +				for (const handler of handlers) {
 +					try {
 +						const event: BeforeProviderRequestEvent = {
@@ -637,10 +873,7 @@ index 3346645a..84625928 100644
  	async emitBeforeProviderHeaders(headers: ProviderHeaders): Promise<ProviderHeaders> {
 -		const ctx = this.createContext();
 -
--		for (const ext of this.extensions) {
--			const handlers = ext.handlers.get("before_provider_headers");
--			if (!handlers || handlers.length === 0) continue;
--
+-		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "before_provider_headers")) {
 -			for (const handler of handlers) {
 -				try {
 -					// Handlers mutate `headers` in place; the return value is ignored.
@@ -662,10 +895,7 @@ index 3346645a..84625928 100644
 +		try {
 +			const ctx = this.createContext();
 +
-+			for (const ext of this.extensions) {
-+				const handlers = ext.handlers.get("before_provider_headers");
-+				if (!handlers || handlers.length === 0) continue;
-+
++			for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "before_provider_headers")) {
 +				for (const handler of handlers) {
 +					try {
 +						// Handlers mutate `headers` in place; the return value is ignored.
@@ -696,82 +926,74 @@ index 3346645a..84625928 100644
  	}
  
  	async emitBeforeAgentStart(
-@@ -1134,64 +1207,69 @@ export class ExtensionRunner {
- 		systemPrompt: string,
+@@ -1413,53 +1496,58 @@ export class ExtensionRunner {
+ 		images: ImageContent[] | undefined,
  		systemPromptOptions: BuildSystemPromptOptions,
- 	): Promise<BeforeAgentStartCombinedResult | undefined> {
--		let currentSystemPrompt = systemPrompt;
+ 	): Promise<BeforeAgentStartCombinedResult> {
+-		const currentOptions = normalizeBuildSystemPromptOptions(systemPromptOptions);
+-		const renderCurrentSystemPrompt = (): string => buildSystemPrompt(currentOptions);
 -		const ctx = Object.defineProperties(
 -			{},
 -			Object.getOwnPropertyDescriptors(this.createContext()),
 -		) as ExtensionContext;
 -		ctx.getSystemPrompt = () => {
 -			this.assertActive();
--			return currentSystemPrompt;
+-			return renderCurrentSystemPrompt();
 -		};
 -		const messages: NonNullable<BeforeAgentStartEventResult["message"]>[] = [];
--		let systemPromptModified = false;
 -
--		for (const ext of this.extensions) {
--			const handlers = ext.handlers.get("before_agent_start");
--			if (!handlers || handlers.length === 0) continue;
--
+-		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "before_agent_start")) {
 -			for (const handler of handlers) {
 -				try {
 -					const event: BeforeAgentStartEvent = {
 -						type: "before_agent_start",
 -						prompt,
 -						images,
--						systemPrompt: currentSystemPrompt,
--						systemPromptOptions,
+-						get systemPrompt() {
+-							return renderCurrentSystemPrompt();
+-						},
+-						systemPromptOptions: currentOptions,
 -					};
 -					const handlerResult = await handler(event, ctx);
 -
 -					if (handlerResult) {
 -						const result = handlerResult as BeforeAgentStartEventResult;
--						if (result.message) {
--							messages.push(result.message);
--						}
+-						if (result.message) messages.push(result.message);
 -						if (result.systemPrompt !== undefined) {
--							currentSystemPrompt = result.systemPrompt;
--							systemPromptModified = true;
+-							currentOptions.forceSystemPrompt = result.systemPrompt;
 +		this.eventDispatchDepth++;
 +		try {
-+			let currentSystemPrompt = systemPrompt;
++			const currentOptions = normalizeBuildSystemPromptOptions(systemPromptOptions);
++			const renderCurrentSystemPrompt = (): string => buildSystemPrompt(currentOptions);
 +			const ctx = Object.defineProperties(
 +				{},
 +				Object.getOwnPropertyDescriptors(this.createContext()),
 +			) as ExtensionContext;
 +			ctx.getSystemPrompt = () => {
 +				this.assertActive();
-+				return currentSystemPrompt;
++				return renderCurrentSystemPrompt();
 +			};
 +			const messages: NonNullable<BeforeAgentStartEventResult["message"]>[] = [];
-+			let systemPromptModified = false;
 +
-+			for (const ext of this.extensions) {
-+				const handlers = ext.handlers.get("before_agent_start");
-+				if (!handlers || handlers.length === 0) continue;
-+
++			for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "before_agent_start")) {
 +				for (const handler of handlers) {
 +					try {
 +						const event: BeforeAgentStartEvent = {
 +							type: "before_agent_start",
 +							prompt,
 +							images,
-+							systemPrompt: currentSystemPrompt,
-+							systemPromptOptions,
++							get systemPrompt() {
++								return renderCurrentSystemPrompt();
++							},
++							systemPromptOptions: currentOptions,
 +						};
 +						const handlerResult = await handler(event, ctx);
 +
 +						if (handlerResult) {
 +							const result = handlerResult as BeforeAgentStartEventResult;
-+							if (result.message) {
-+								messages.push(result.message);
-+							}
++							if (result.message) messages.push(result.message);
 +							if (result.systemPrompt !== undefined) {
-+								currentSystemPrompt = result.systemPrompt;
-+								systemPromptModified = true;
++								currentOptions.forceSystemPrompt = result.systemPrompt;
 +							}
  						}
 +					} catch (err) {
@@ -797,28 +1019,15 @@ index 3346645a..84625928 100644
  			}
 -		}
  
--		if (messages.length > 0 || systemPromptModified) {
--			return {
--				messages: messages.length > 0 ? messages : undefined,
--				systemPrompt: systemPromptModified ? currentSystemPrompt : undefined,
--			};
--		}
-+			if (messages.length > 0 || systemPromptModified) {
-+				return {
-+					messages: messages.length > 0 ? messages : undefined,
-+					systemPrompt: systemPromptModified ? currentSystemPrompt : undefined,
-+				};
-+			}
- 
--		return undefined;
-+			return undefined;
+-		return { messages, systemPromptOptions: currentOptions };
++			return { messages, systemPromptOptions: currentOptions };
 +		} finally {
 +			this.eventDispatchDepth--;
 +		}
  	}
  
  	async emitResourcesDiscover(
-@@ -1202,44 +1280,49 @@ export class ExtensionRunner {
+@@ -1470,41 +1558,46 @@ export class ExtensionRunner {
  		promptPaths: Array<{ path: string; extensionPath: string }>;
  		themePaths: Array<{ path: string; extensionPath: string }>;
  	}> {
@@ -827,10 +1036,7 @@ index 3346645a..84625928 100644
 -		const promptPaths: Array<{ path: string; extensionPath: string }> = [];
 -		const themePaths: Array<{ path: string; extensionPath: string }> = [];
 -
--		for (const ext of this.extensions) {
--			const handlers = ext.handlers.get("resources_discover");
--			if (!handlers || handlers.length === 0) continue;
--
+-		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "resources_discover")) {
 -			for (const handler of handlers) {
 -				try {
 -					const event: ResourcesDiscoverEvent = { type: "resources_discover", cwd, reason };
@@ -852,10 +1058,7 @@ index 3346645a..84625928 100644
 +			const promptPaths: Array<{ path: string; extensionPath: string }> = [];
 +			const themePaths: Array<{ path: string; extensionPath: string }> = [];
 +
-+			for (const ext of this.extensions) {
-+				const handlers = ext.handlers.get("resources_discover");
-+				if (!handlers || handlers.length === 0) continue;
-+
++			for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "resources_discover")) {
 +				for (const handler of handlers) {
 +					try {
 +						const event: ResourcesDiscoverEvent = { type: "resources_discover", cwd, reason };
@@ -902,7 +1105,7 @@ index 3346645a..84625928 100644
  	}
  
  	/** Emit input event. Transforms chain, "handled" short-circuits. */
-@@ -1249,38 +1332,43 @@ export class ExtensionRunner {
+@@ -1514,38 +1607,43 @@ export class ExtensionRunner {
  		source: InputSource,
  		streamingBehavior?: "steer" | "followUp",
  	): Promise<InputEventResult> {
@@ -910,8 +1113,8 @@ index 3346645a..84625928 100644
 -		let currentText = text;
 -		let currentImages = images;
 -
--		for (const ext of this.extensions) {
--			for (const handler of ext.handlers.get("input") ?? []) {
+-		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "input")) {
+-			for (const handler of handlers) {
 -				try {
 -					const event: InputEvent = {
 -						type: "input",
@@ -931,8 +1134,8 @@ index 3346645a..84625928 100644
 +			let currentText = text;
 +			let currentImages = images;
 +
-+			for (const ext of this.extensions) {
-+				for (const handler of ext.handlers.get("input") ?? []) {
++			for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "input")) {
++				for (const handler of handlers) {
 +					try {
 +						const event: InputEvent = {
 +							type: "input",
@@ -976,10 +1179,10 @@ index 3346645a..84625928 100644
  	}
  }
 diff --git a/packages/coding-agent/src/core/extensions/types.ts b/packages/coding-agent/src/core/extensions/types.ts
-index eaff3a86..d8793e30 100644
+index 3e0ea47ba..9d215a469 100644
 --- a/packages/coding-agent/src/core/extensions/types.ts
 +++ b/packages/coding-agent/src/core/extensions/types.ts
-@@ -1408,6 +1408,22 @@ export interface ExtensionAPI {
+@@ -1725,6 +1725,22 @@ export interface ExtensionAPI {
  	/** Get available slash commands in the current session. */
  	getCommands(): SlashCommandInfo[];
  
@@ -1002,7 +1205,7 @@ index eaff3a86..d8793e30 100644
  	// =========================================================================
  	// Model and Thinking Level
  	// =========================================================================
-@@ -1667,6 +1683,8 @@ export type SetLabelHandler = (entryId: string, label: string | undefined) => vo
+@@ -2094,6 +2110,8 @@ export type SetLabelHandler = (entryId: string, label: string | undefined) => vo
   * Contains flag values (defaults set during registration, CLI values set after).
   */
  export interface ExtensionRuntimeState {

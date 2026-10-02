@@ -6,7 +6,7 @@
 // Runs inside the flake check sandbox (no network, scratch HOME). It asserts:
 //   * one `bin` with the executables Agents rely on (per platform);
 //   * `bin/pi` fails closed on every missing/invalid Tiamat launch input and
-//     execs Familiar's immutable patched Pi 0.85.1 on the valid path;
+//     execs Familiar's immutable patched Pi 1.0.0 on the valid path;
 //   * the packaged `herdr` is the pinned 0.9.1 release from the pinned input;
 //   * `share/familiar-worker/runtime.json` is schema 1 and describes exactly
 //     the shipped Pi/Herdr components;
@@ -22,7 +22,7 @@ import { dirname, join, relative } from "node:path";
 const [runtime, extensionsRoot] = process.argv.slice(2);
 assert.ok(runtime && extensionsRoot, "usage: worker-runtime.mjs <runtime> <extensions-src>");
 
-const EXPECTED_PI = "0.85.1";
+const EXPECTED_PI = "1.0.0";
 const EXPECTED_PI_PATCHES = ["invoke-command.patch", "model-bootstrap.patch"];
 const EXPECTED_HERDR = "0.9.1";
 const EXPECTED_HERDR_NIX_REV = "2bcfa02424385730d0c65cfa8cd355bb3afecef8";
@@ -141,8 +141,14 @@ for (const [name, source] of Object.entries(shipped)) {
 
 // 6. Profile template: public path only, resource trust off, no providers.
 const settings = JSON.parse(readFileSync(join(share, "profile", "settings.json"), "utf8"));
-assert.deepEqual(Object.keys(settings).sort(), ["defaultProjectTrust", "extensions", "lastChangelogVersion"]);
-assert.deepEqual(settings.extensions, [join(shippedRoot, "tiamat")]);
+assert.deepEqual(Object.keys(settings).sort(), ["defaultProjectTrust", "extensions", "lastChangelogVersion", "tuiMode"]);
+assert.deepEqual(settings.extensions, [
+  join(shippedRoot, "tiamat"),
+  "-builtin:mcp",
+  "-builtin:codemode",
+  "-builtin:tool-search",
+]);
+assert.equal(settings.tuiMode, "regular");
 assert.ok(statSync(join(settings.extensions[0], "index.ts")).isFile());
 assert.equal(settings.defaultProjectTrust, "never");
 assert.equal(settings.lastChangelogVersion, EXPECTED_PI);

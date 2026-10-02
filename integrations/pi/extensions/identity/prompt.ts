@@ -4,7 +4,7 @@ import { formatSkillsForPrompt } from "@earendil-works/pi-coding-agent";
 /* Familiar's system prompt assembler.
  *
  * This is a deliberate replacement for Pi's default prompt, trued up against
- * the pinned Pi (0.85.1) `buildSystemPrompt`. The topology is identity-first
+ * the pinned Pi (1.0.0) `buildSystemPrompt`. The topology is identity-first
  * and fixed; the affordance-sensitive pieces (tool list, tool-owned guidelines,
  * skill read-tool selection, operator append text, project context, cwd) are
  * built from `BuildSystemPromptOptions` the same way Pi builds them, so that
@@ -18,7 +18,11 @@ import { formatSkillsForPrompt } from "@earendil-works/pi-coding-agent";
  *     demand;
  *   - no "Be concise" / "Show file paths clearly" baseline bullets; register
  *     and voice belong to the authored identity;
- *   - skills sit directly after identity rather than after project context.
+ *   - skills sit directly after identity rather than after project context;
+ *   - Pi 0.86+ renders its default prompt as XML-tagged transcript sections
+ *     (`<tools>`, `<rules>`, `<addendum>`, `<cwd>`, ...). Familiar keeps
+ *     its own headings and raw operator append bytes; only the
+ *     `<project_context>` block and extension `sections` reuse Pi's bytes.
  */
 
 /** Pi's default tool set when the session does not narrow `selectedTools`. */
@@ -68,9 +72,12 @@ export function familiarGuidelines(tools: readonly string[]): string[] {
 }
 
 /**
- * Ordered, deduplicated guideline bullets: Pi's cross-tool rule first, then
- * tool-owned `promptGuidelines` in tool order, then Familiar's own. Dedupe is
- * exact-string after trim, as in Pi.
+ * Ordered, deduplicated guideline bullets, as Pi's `<rules>` section orders
+ * them: Pi's cross-tool rule first, then tool-owned guidelines in selected-tool
+ * order (Pi 0.86+ passes these per tool as `toolGuidelines`; earlier Pi
+ * flattened them into `promptGuidelines`), then any remaining
+ * `promptGuidelines`, then Familiar's own. Dedupe is exact-string after trim,
+ * as in Pi.
  */
 export function buildGuidelines(options: BuildSystemPromptOptions): string[] {
   const tools = options.selectedTools ?? DEFAULT_TOOLS;
@@ -83,26 +90,38 @@ export function buildGuidelines(options: BuildSystemPromptOptions): string[] {
     out.push(normalized);
   };
   add(fileExplorationGuideline(tools));
+  const toolGuidelines = options.toolGuidelines ?? {};
+  for (const name of tools) for (const guideline of toolGuidelines[name] ?? []) add(guideline);
   for (const guideline of options.promptGuidelines ?? []) add(guideline);
   for (const guideline of familiarGuidelines(tools)) add(guideline);
   return out;
 }
 
-/** Pi's `<project_context>` block, byte-for-byte, or "" when there are no files. */
+/** Pi's `<project_context>` section, byte-for-byte, or "" when there are no files. */
 export function projectContextSection(contextFiles: BuildSystemPromptOptions["contextFiles"]): string {
   const files = contextFiles ?? [];
   if (files.length === 0) return "";
-  let block = "<project_context>\n\n";
-  block += "Project-specific instructions and guidelines:\n\n";
-  for (const { path, content } of files) {
-    block += `<project_instructions path="${path}">\n${content}\n</project_instructions>\n\n`;
-  }
-  block += "</project_context>";
-  return block;
+  const body = [
+    "Project-specific instructions and guidelines:",
+    ...files.map(({ path, content }) => `<project_instructions path="${path}">\n${content}\n</project_instructions>`),
+  ].join("\n\n");
+  return `<project_context>\n${body}\n</project_context>`;
+}
+
+/**
+ * Extension-supplied `sections` (Pi 0.86+), rendered as Pi renders them after
+ * cwd: `<name>\ncontent\n</name>`, empty content omitted. Nothing resident
+ * sets these today (the built-in mcp extension that would is disabled), but a
+ * replacement prompt must not silently drop them.
+ */
+export function customSections(sections: BuildSystemPromptOptions["sections"]): string[] {
+  return Object.entries(sections ?? {})
+    .filter(([, content]) => !!content)
+    .map(([name, content]) => `<${name}>\n${content}\n</${name}>`);
 }
 
 export function assembleSystemPrompt({ identity, options, impGuidance = "" }: AssembleOptions): string {
-  const { skills = [], cwd, toolSnippets = {}, appendSystemPrompt, contextFiles } = options;
+  const { skills = [], cwd, toolSnippets = {}, appendSystemPrompt, contextFiles, sections } = options;
   const tools = options.selectedTools ?? DEFAULT_TOOLS;
 
   // A tool appears in Available Tools only when it carries a one-line snippet.
@@ -130,5 +149,6 @@ export function assembleSystemPrompt({ identity, options, impGuidance = "" }: As
     appendSystemPrompt ?? "",
     projectContextSection(contextFiles),
     orientation,
+    ...customSections(sections),
   ].filter(Boolean).join("\n\n");
 }

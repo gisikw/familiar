@@ -122,6 +122,17 @@ jq -e --arg root "$REPO/integrations/pi/extensions" '
     and ([.extensions[] | select(. == "/etc/shared/index.js")] | length) == 1
     and ([.extensions[] | select(. == "/etc/familiar-ui-extension/index.js")] | length) == 1
 ' "$state/settings.json" >/dev/null
+# Pi 1.0 compatibility: regular (scrollback) TUI for tmux/the PTY viewer, the
+# 0.99 built-in mcp/codemode/tool-search extensions excluded, and the 0.86
+# prompt-cache warming default neutralized. builtin:llama.cpp stays enabled.
+jq -e '
+  .tuiMode == "regular"
+  and .cacheWarming == "off"
+  and (.extensions | index("-builtin:mcp")) != null
+  and (.extensions | index("-builtin:codemode")) != null
+  and (.extensions | index("-builtin:tool-search")) != null
+  and (.extensions | map(select(test("llama"))) | length) == 0
+' "$state/settings.json" >/dev/null || { echo 'FAIL: Pi 1.0 compatibility settings missing' >&2; exit 1; }
 grep -qx -- '--continue' "$state/cli-args"
 # Skills: auto-discovery stays off; the repo's skills and the instance's own
 # skills directory (beside the config file) are the only roots.
