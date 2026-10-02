@@ -40,7 +40,8 @@ assert.match(
 assert.match(dispatcher, /await command\.handler\(args, ctx\)/);
 assert.match(dispatcher, /this\._extensionRunner\.emitError\(/);
 assert(!dispatcher.includes("invokeExtensionCommand"));
-// Pristine 0.85.1 method, including context creation and error runner selection.
+// Pristine method (unchanged from 0.85.1 through 1.0.0), including context
+// creation and error runner selection.
 assert.equal(
   createHash("sha256").update(dispatcher).digest("hex"),
   "cc6796c07663e960235679c3d85156d69dd9eb307bf12e4da2b1b8e63a296fec",
@@ -50,14 +51,28 @@ assert.match(
   session,
   /runner\.bindCommandAdmission\(\(\) => this\.isIdle && this\._agentSettledDispatchDepth === 0\)/,
 );
-assert.match(
-  session,
-  /_agentSettledDispatchDepth\+\+;\s*this\._isAgentRunActive = false/,
-);
-assert.match(
-  session,
-  /finally \{\s*this\._agentSettledDispatchDepth--;\s*this\._resolveIdleWaitIfIdle\(\)/,
-);
+// Pi 0.87+ runs deferred settled actions inside _emitAgentSettled. The depth wraps
+// the complete pristine upstream body (handlers, listeners, deferred runs, idle
+// resolution); only one indentation level may differ.
+{
+  const start = session.indexOf("\n\tprivate async _emitAgentSettled(): Promise<void> {\n");
+  assert(start >= 0, "_emitAgentSettled must exist");
+  const method = session.slice(start, session.indexOf("\n\t}\n", start) + 3);
+  const wrapper = method.match(
+    /^\n\tprivate async _emitAgentSettled\(\): Promise<void> \{\n\t\tthis\._agentSettledDispatchDepth\+\+;\n\t\ttry \{\n([\s\S]*)\n\t\t\} finally \{\n\t\t\tthis\._agentSettledDispatchDepth--;\n\t\t\}\n\t\}$/,
+  );
+  assert(wrapper, "_emitAgentSettled: complete finally-safe settled fence required");
+  const body = wrapper[1].replace(/^\t/gm, "");
+  assert.equal(
+    createHash("sha256").update(body).digest("hex"),
+    "ad220e2271015ddf6e7720bceedda5ece79dff2a9976e6c9039037fc92ca791f",
+    "_emitAgentSettled: upstream settled/deferred behavior must remain unchanged",
+  );
+  assert(body.indexOf("this._isAgentRunActive = false") < body.indexOf('emit({ type: "agent_settled" })'));
+  assert.match(body, /this\._deferredSettledActions\.splice\(0\)/);
+  assert.equal((session.match(/_agentSettledDispatchDepth\+\+/g) ?? []).length, 1);
+  assert.equal((session.match(/_agentSettledDispatchDepth--/g) ?? []).length, 1);
+}
 assert.match(
   runner,
   /this\.runtime\.invokeExtensionCommand = \(name, args\) => this\.invokeExtensionCommand\(name, args\)/,
@@ -82,31 +97,37 @@ assert(!types.includes("invokeExtensionCommandFromPrompt"));
 assert(!types.includes("invokeCommand("));
 assert.equal(
   createHash("sha256").update(prompt).digest("hex"),
-  "0bfe4e2dd9d49a301697f4ae2aabe13ddda4507659d1b9a5995f4748b0ad460d",
+  "131889da0caa28bc255886cbf633ff8b9e2b03b8bd79d4bf9825260cfbccc375",
 );
 // Exhaustive pinned runner audit. Verify both the wrapper and the unchanged body:
 // only one indentation level may differ. New async methods/dispatch sites fail loudly.
+// Pi 1.0.0 has 13: 0.87 added emitBoundary (turn_end/agent_before_settle, no longer
+// routed through emit) and cache warming added emitCacheWarmingDecision.
 const emitterHashes = {
-  emit: "f306553d899cf17270adde279d7ef9494a14166364e9ea8a176f0424e50957a2",
+  emitBoundary:
+    "ee2433263493d457480213361c7f5ceaedef08026d94c10094cd4960b71c2290",
+  emit: "a869ace34ce638f7c8bd8cc527778f439585a29260023d2674a70302280aab4e",
+  emitCacheWarmingDecision:
+    "f9b270e3b58df83a776640f689b20516800c3b19f1a5f1f2a9d7781972615a49",
   emitMessageEnd:
-    "8ab5c1a6fadd03b7e86c824062b21422be865e7bdf9d5cfab45a4980883a9845",
+    "f05e7f41d067d8c14c92fac8aa5fb9d299441680b8abf9d4b9ffbc5472e1af29",
   emitToolResult:
-    "b445115005e741d95bcaa555ef85f53c85d6cfdb6865095ab4b337fa9f471446",
+    "603c8b36938f76d130acd4255154b07183e8aa48b5f2acba5aa15d69d46a3dea",
   emitToolCall:
-    "433df0048a4afa205da9e3dd6a7eeb895704c85154ee716aed90bebcce6e0231",
+    "7e7fe4f9e097f1357a4153e240dc17f1a7937ad2e0b7a11f26a6752f8657dbe8",
   emitUserBash:
-    "33390fc08f687d8d298d9bd30830eeda9c212b1f4ee5b713368e3c58de5d867e",
+    "9525e73b32bb91167b4341aa32c8bec7da6ba563f68ad69e9fb3a69a11ca7ac9",
   emitContext:
-    "d2b5c0dc9cc3b38f01aab1edec00bb383d4677ce836279c774ca2f17ed621978",
+    "c068d8f2393a5fec999de055338aded7102abd1985e8ec426564434d37e83c21",
   emitBeforeProviderRequest:
-    "9d7bc80fe0c70508ea024f3cd5b10195ee08d3169e99e31de7944d5f8e11e667",
+    "61c1ffc801193ea20e288de10959c8413e0a468ebd1061769b5978cd1a3a59dd",
   emitBeforeProviderHeaders:
-    "df1d59d8865c326bbcc5cb3c72ef79930ac38a88a717e90929135ef72801520a",
+    "36e37d4a97bb09304f246f5679a797a5d7b8ab34bf9e61083dc001e234033bd6",
   emitBeforeAgentStart:
-    "ff28c527a7731246f5e01f453996e216ed65144353b7952624439781bee03c28",
+    "ee0dd76e93a2b8d405367955623b181d0e14815d6c0ed7b1e4076ef6718c2cbc",
   emitResourcesDiscover:
-    "c11b8232d1ba1c33b63e35dc6bf35da1e340030c8b81dd8fb10697defef470e4",
-  emitInput: "274bd320c8fbda40abf0120f6cc3ee31b10db4723c7da58e00e35c50248ff0e6",
+    "52222c54c1815ddedf0fe7de3db97adb02c1b44db6f55e1a6365f1664bbf061e",
+  emitInput: "b1d2bb0cb0f50631b784af0a42590bc9d628b748ae82868ec7c1b3667472e35a",
 };
 const runnerClass = runner.slice(
   runner.indexOf("export class ExtensionRunner"),
@@ -140,8 +161,8 @@ assert(
   "unreviewed handler dispatch outside fenced emitters",
 );
 assert.match(runner, /private eventDispatchDepth = 0/);
-assert.equal((runner.match(/this\.eventDispatchDepth\+\+/g) ?? []).length, 11);
-assert.equal((runner.match(/this\.eventDispatchDepth--/g) ?? []).length, 11);
+assert.equal((runner.match(/this\.eventDispatchDepth\+\+/g) ?? []).length, 13);
+assert.equal((runner.match(/this\.eventDispatchDepth--/g) ?? []).length, 13);
 const admission = runner.slice(
   runner.indexOf("\n\tasync invokeExtensionCommand"),
   runner.indexOf("\n\t/**", runner.indexOf("\n\tasync invokeExtensionCommand")),

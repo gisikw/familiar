@@ -14,7 +14,7 @@ nix build github:gisikw/familiar/<40-hex-commit>#familiar-worker-runtime
 
 ```text
 bin/                         one merged bin directory (buildEnv, collisions fail)
-  pi                         fail-closed launcher for patched Pi 0.85.1
+  pi                         fail-closed launcher for patched Pi 1.0.0
   herdr                      pinned Herdr 0.9.1 release CLI (flake input `herdr`)
   bash git jq rg fd python3 ssh ssh-keygen ...   worker tools (below)
 share/familiar-worker/
@@ -58,9 +58,11 @@ verifies the shipped tree equals that graph byte-for-byte.
 ### Profile template
 
 `profile/settings.json` contains only the public extension path (the
-immutable store path of this output), `defaultProjectTrust: "never"`, and
-`lastChangelogVersion`. A node that prefers a stable pointer path may rewrite
-the extension entry. Providers and credentials never appear here: Tiamat is
+immutable store path of this output), `defaultProjectTrust: "never"`,
+`lastChangelogVersion`, `tuiMode: "regular"` (Pi 1.0 otherwise defaults to
+fullscreen), and `-builtin:mcp`/`-builtin:codemode`/`-builtin:tool-search`
+exclusions so Pi 0.99+ built-ins do not change the worker tool surface. A node
+that prefers a stable pointer path may rewrite the extension entry. Providers and credentials never appear here: Tiamat is
 configured at launch through `FAMILIAR_TIAMAT_URL` and the absolute
 `FAMILIAR_TIAMAT_TOKEN_FILE` reference, and reads the token file per request
 (see `integrations/pi/extensions/tiamat/README.md`). The fleet `bin/pi`
@@ -75,7 +77,7 @@ extension to come up disabled.
   "name": "familiar-worker-runtime",
   "familiar_rev": "<40-hex commit, -dirty suffixed for dirty trees, or unknown>",
   "system": "x86_64-linux",
-  "pi": { "version": "0.85.1", "upstream_commit": "d981de…", "patches": ["invoke-command.patch", "model-bootstrap.patch"], "store_path": "/nix/store/…", "entrypoint": "bin/pi", "fail_closed_tiamat": true },
+  "pi": { "version": "1.0.0", "upstream_commit": "a13d35…", "patches": ["invoke-command.patch", "model-bootstrap.patch"], "store_path": "/nix/store/…", "entrypoint": "bin/pi", "fail_closed_tiamat": true },
   "herdr": { "name": "herdr", "version": "0.9.1", "store_path": "/nix/store/…", "nix_input_revision": "2bcfa02424385730d0c65cfa8cd355bb3afecef8" },
   "tools": [ { "name": "git", "version": "…", "store_path": "/nix/store/…" }, … ],
   "extensions": ["tiamat"],

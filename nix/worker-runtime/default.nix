@@ -101,8 +101,12 @@ pkgs.buildEnv {
     # node's FAMILIAR_TIAMAT_URL / FAMILIAR_TIAMAT_TOKEN_FILE references at
     # launch, never through this file. The path is the immutable store path
     # of this output; a node that prefers a stable pointer rewrites it.
+    # Pi 1.0 compatibility: keep the regular (scrollback) TUI instead of the
+    # new fullscreen default, and exclude the 0.99 built-in mcp/codemode/
+    # tool-search extensions so the worker tool surface is unchanged.
     ${pkgs.jq}/bin/jq -n --arg ext "$share/extensions/tiamat" '{
-      extensions: [$ext],
+      extensions: [$ext, "-builtin:mcp", "-builtin:codemode", "-builtin:tool-search"],
+      tuiMode: "regular",
       defaultProjectTrust: "never",
       lastChangelogVersion: ${builtins.toJSON patchedPi.version}
     }' > "$share/profile/settings.json"

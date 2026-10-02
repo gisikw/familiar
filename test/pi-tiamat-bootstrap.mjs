@@ -392,9 +392,11 @@ try {
   assert.match(listed[0], /tiamat-anthropic-aa-first\s+seed-row/);
   cases.push("bounded --list-models seed");
 
-  // 8. A bare/fuzzy CLI pattern never expands the catalogue into pi.
+  // 8. A bare/fuzzy CLI pattern never expands the catalogue into pi. The
+  //    pattern names an exact catalogue row but no built-in Pi model (Pi 1.0's
+  //    catalogue fuzzy-matches the former "row" pattern to quiverai/arrow-2).
   settings({});
-  result = run("--model", "row", "-p", "hi");
+  result = run("--model", "other-row", "-p", "hi");
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /not found|No models available|ambiguous/i, result.stderr);
   assert.deepEqual(result.bound, []);
