@@ -106,7 +106,7 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 	if len(args) == 1 && isHelp(args[0]) {
 		return schedulerInvocation{op: "help"}, false, nil
 	}
-	jsonMode, soft, fork, all, fresh, runner := false, false, false, false, false, false
+	jsonMode, soft, fork, all, fresh, runner, hidden := false, false, false, false, false, false, false
 	vals := map[string]string{}
 	pos := []string{}
 	value := map[string]bool{"in": true, "at": true, "every": true, "label": true, "target": true, "id": true, "priority": true, "type": true, "source": true, "body": true, "title": true, "model": true, "task-file": true}
@@ -126,6 +126,10 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 		}
 		if a == "--all" {
 			all = true
+			continue
+		}
+		if a == "--hidden" {
+			hidden = true
 			continue
 		}
 		if a == "--fresh" {
@@ -213,6 +217,9 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 		if runner && vals["model"] == "" {
 			return schedulerInvocation{}, false, errors.New("--runner needs --model")
 		}
+		if hidden && !fork {
+			return schedulerInvocation{}, false, errors.New("--hidden quiets a scheduled fork; use it with --fork")
+		}
 		if vals["label"] != "" && !fork {
 			return schedulerInvocation{}, false, errors.New("--label names a scheduled fork; use it with --fork")
 		}
@@ -258,6 +265,9 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 			}
 			if runner {
 				req["runner"] = true
+			}
+			if hidden {
+				req["hidden"] = true
 			}
 			b, _ := json.Marshal(req)
 			m["body"] = string(b)
@@ -460,6 +470,10 @@ const schedulerHelp = `Usage:
   imp schedule ... --fork --task-file /abs/path.md ["summary"]
                               (the task is read from the file at every fire;
                                edit the file to change the task, no reschedule)
+  imp schedule ... --fork --hidden "task"
+                              (quiet, not secret: the start notice and its merge
+                               stay in the record but out of the display; a merge
+                               whose return is just "nothing" adds no context)
   imp schedule list [--all] [--json]
   imp schedule cancel ID       (a recurring ID cancels the whole series)
   imp notify [--target TARGET] [--id ID] [--soft] "reason"

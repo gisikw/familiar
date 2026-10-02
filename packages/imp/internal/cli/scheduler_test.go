@@ -295,3 +295,21 @@ func TestScheduleForkTaskFile(t *testing.T) {
 		}
 	}
 }
+
+func TestScheduleForkHidden(t *testing.T) {
+	now := time.Date(2026, 10, 2, 17, 0, 0, 0, time.UTC)
+	inv, _, err := parseScheduler([]string{"schedule", "--every", "day 09:00", "--fork", "--hidden", "--label", "presence", "reach?"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(inv.args["body"].(string)), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["hidden"] != true || body["label"] != "presence" {
+		t.Fatalf("body = %v", body)
+	}
+	if _, _, err := parseScheduler([]string{"schedule", "--in", "1h", "--hidden", "not a fork"}, now); err == nil {
+		t.Fatal("expected --hidden without --fork to be refused")
+	}
+}

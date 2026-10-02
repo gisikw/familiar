@@ -8,6 +8,16 @@ import { SchedulerClient, type ScheduledEvent } from "./client.ts";
 const execFileAsync = promisify(execFile);
 export const SCHEDULED_FORK = "familiar.scheduled-fork.v1";
 export const RESTARTED = "familiar.restarted.v1";
+/** A hidden fork's "nothing" merge: kept in the record, out of context. */
+export const QUIET_MERGE = "familiar.quiet-merge.v1";
+
+// Forks spawned --hidden. Module scope survives /clear, so a merge that lands
+// in the next session is still recognized; session_start also rebuilds it
+// from the branch's SCHEDULED_FORK records.
+const hiddenForks = new Set<string>();
+export const isHiddenFork = (forkId: string) => hiddenForks.has(forkId);
+/** A return that is just "nothing" (any case, optional trailing period). */
+export const isNothingReturn = (summary: string) => /^\s*nothing\.?\s*$/i.test(summary);
 /** Grace after the scheduler connects, so reconnect redeliveries land first
  * and the restart notice can count them. */
 export const RESTART_NOTICE_DELAY_MS = 8_000;
@@ -35,7 +45,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_settled", () => { for (const resolve of idleWaiters.splice(0)) resolve(); });
 
   async function spawnFork(event: ScheduledEvent) {
-    const { task: rawTask, label, fresh, model, runner, taskFile } = forkRequest(event);
+    const { task: rawTask, label, fresh, model, runner, taskFile, hidden } = forkRequest(event);
     await whenIdle();
     const task = resolveTask(rawTask, taskFile);
     const args = ["fork", "--origin", `schedule:${event.series || event.id}`];
@@ -48,13 +58,14 @@ export default function (pi: ExtensionAPI) {
     const { stdout } = await execFileAsync("imp", args, { env: process.env, timeout: 60_000, maxBuffer: 64 * 1024 });
     const forkId = String(stdout).trim().split("\n").pop() ?? "";
     // Durable before ack: a redelivery after a crash sees this and skips.
-    pi.appendEntry(SCHEDULED_FORK, { id: event.id, forkId, series: event.series ?? "", task });
+    pi.appendEntry(SCHEDULED_FORK, { id: event.id, forkId, series: event.series ?? "", task, ...(hidden ? { hidden: true } : {}) });
+    if (hidden && forkId) hiddenForks.add(forkId);
     seen.add(event.id);
     pi.sendMessage({
       customType: "familiar.fork-dispatched.v1",
       content: `\n\nscheduled fork ${forkId || "(unknown id)"} started${event.rule ? ` (every ${event.rule})` : ""}: ${label || task.slice(0, 80)}\n(no action needed)`,
-      display: true,
-      details: { forkId, task, source: "schedule", eventId: event.id, series: event.series },
+      display: !hidden,
+      details: { forkId, task, source: "schedule", eventId: event.id, series: event.series, hidden },
     }, { deliverAs: "nextTurn" });
   }
 
@@ -64,6 +75,7 @@ export default function (pi: ExtensionAPI) {
     exportedInstance = instance;
     process.env.FAMILIAR_INSTANCE_ID = instance;
     seen = deliveredIds(ctx.sessionManager.getBranch());
+    for (const id of hiddenForkIds(ctx.sessionManager.getBranch())) hiddenForks.add(id);
     isIdle = () => ctx.isIdle();
     client = new SchedulerClient(instance, {
       event(event) {
@@ -74,6 +86,13 @@ export default function (pi: ExtensionAPI) {
             errorLog("scheduler", { forkError: String(error), id: event.id });
             throw error;
           });
+        }
+        const quietMerge = quietMergeRecord(event);
+        if (quietMerge) {
+          // Durable record, no model context, no display: ack right away.
+          pi.appendEntry(QUIET_MERGE, quietMerge);
+          seen.add(event.id);
+          return;
         }
         const message = renderScheduledEvent(event);
         if (event.urgency === "soft") {
@@ -161,7 +180,7 @@ export function renderScheduledEvent(event: ScheduledEvent) {
     return {
       customType: "familiar.merge.v1",
       content: event.urgency === "soft" ? `${lead}fork ${merge.forkSessionId} merged: ${merge.summary}` : `<familiar-merge fork="${escapeAttr(merge.forkSessionId)}" branch="${escapeAttr(merge.branchEntryId)}" divergence="${merge.turnCount}" forked-further="${merge.forkedFurther}">\n${merge.summary}\nfull record: ${merge.forkSessionFile} entries ${merge.firstEntryId}..${merge.lastEntryId}\n</familiar-merge>`,
-      display: true,
+      display: !isHiddenFork(merge.forkSessionId),
       details: { id: event.id, event, ...merge },
     };
   }
@@ -173,9 +192,9 @@ export function renderScheduledEvent(event: ScheduledEvent) {
   };
 }
 
-export function forkRequest(event: ScheduledEvent): { task: string; label: string; fresh: boolean; model: string; runner: boolean; taskFile: string } {
+export function forkRequest(event: ScheduledEvent): { task: string; label: string; fresh: boolean; model: string; runner: boolean; taskFile: string; hidden: boolean } {
   try {
-    const body = JSON.parse(event.body) as { task?: unknown; label?: unknown; fresh?: unknown; model?: unknown; runner?: unknown; taskFile?: unknown };
+    const body = JSON.parse(event.body) as { task?: unknown; label?: unknown; fresh?: unknown; model?: unknown; runner?: unknown; taskFile?: unknown; hidden?: unknown };
     const taskFile = typeof body.taskFile === "string" ? body.taskFile : "";
     if ((typeof body.task === "string" && body.task.trim()) || taskFile) return {
       task: typeof body.task === "string" ? body.task : "",
@@ -184,10 +203,32 @@ export function forkRequest(event: ScheduledEvent): { task: string; label: strin
       model: typeof body.model === "string" ? body.model : "",
       runner: body.runner === true,
       taskFile,
+      hidden: body.hidden === true,
     };
   } catch { /* plain-text body */ }
-  return { task: event.body || event.summary, label: "", fresh: false, model: "", runner: false, taskFile: "" };
+  return { task: event.body || event.summary, label: "", fresh: false, model: "", runner: false, taskFile: "", hidden: false };
 }
+
+/** A hidden fork that found nothing to do merges into the record only. */
+export function quietMergeRecord(event: ScheduledEvent): { id: string; forkId: string; summary: string; forkSessionFile: string } | undefined {
+  if (event.type !== "merge") return undefined;
+  try {
+    const merge = JSON.parse(event.body) as { summary?: unknown; forkSessionId?: unknown; forkSessionFile?: unknown };
+    if (typeof merge.forkSessionId !== "string" || !isHiddenFork(merge.forkSessionId)) return undefined;
+    if (typeof merge.summary !== "string" || !isNothingReturn(merge.summary)) return undefined;
+    return { id: event.id, forkId: merge.forkSessionId, summary: merge.summary.trim(), forkSessionFile: typeof merge.forkSessionFile === "string" ? merge.forkSessionFile : "" };
+  } catch { return undefined; }
+}
+
+export function hiddenForkIds(entries: readonly unknown[]): string[] {
+  type Entry = { type?: string; customType?: string; data?: { forkId?: unknown; hidden?: unknown } };
+  return (entries as Entry[])
+    .filter((e) => e.type === "custom" && e.customType === SCHEDULED_FORK && e.data?.hidden === true && typeof e.data.forkId === "string" && e.data.forkId)
+    .map((e) => e.data!.forkId as string);
+}
+
+/** Test seam. */
+export function resetHiddenForks(ids: string[] = []) { hiddenForks.clear(); for (const id of ids) hiddenForks.add(id); }
 
 /** A task file is read at every fire, so editing it changes the next run.
  * If it can't be read the fork still starts, told so, rather than silently
@@ -211,6 +252,7 @@ export function deliveredIds(entries: readonly unknown[]): Set<string> {
   type Entry = { type?: string; customType?: string; data?: { id?: unknown }; details?: { id?: unknown }; message?: { customType?: string; details?: { id?: unknown } } };
   for (const entry of entries as Entry[]) {
     if (entry.type === "custom" && entry.customType === SCHEDULED_FORK && typeof entry.data?.id === "string") { ids.add(entry.data.id); continue; }
+    if (entry.type === "custom" && entry.customType === QUIET_MERGE && typeof entry.data?.id === "string") { ids.add(entry.data.id); continue; }
     const shape = entry.type === "custom_message" ? entry : entry.type === "message" ? entry.message : undefined;
     if ((shape?.customType === "scheduler-event" || shape?.customType === "familiar.merge.v1") && typeof shape.details?.id === "string") ids.add(shape.details.id);
   }
