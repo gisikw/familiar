@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { promisify } from "node:util";
 import { errorLog } from "../lib/debug.ts";
 import { SchedulerClient, type ScheduledEvent } from "./client.ts";
+import { stampDeliveries } from "./stamp.ts";
 
 const execFileAsync = promisify(execFile);
 export const SCHEDULED_FORK = "familiar.scheduled-fork.v1";
@@ -138,6 +139,9 @@ export default function (pi: ExtensionAPI) {
       if (resolvers) { waiting.delete(id); for (const resolve of resolvers) resolve(); }
     }
   };
+  // Every scheduler-delivered item says when it happened and how long it
+  // waited, so soft items don't read as arriving with his words.
+  pi.on("context", (event) => ({ messages: stampDeliveries(event.messages as never[]) }));
   pi.on("turn_start", (_event, ctx) => settlePersisted(ctx));
   pi.on("turn_end", (_event, ctx) => settlePersisted(ctx));
   pi.on("agent_end", (_event, ctx) => settlePersisted(ctx));
