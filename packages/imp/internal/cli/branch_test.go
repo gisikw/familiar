@@ -225,3 +225,42 @@ func TestForkStatusLine(t *testing.T) {
 		t.Fatalf("primary status code=%d", code)
 	}
 }
+
+// `imp fork --help` once spawned a fork whose task was "--help". Help and
+// stray flags must never reach the spawn path.
+func TestForkHelpAndStrayFlagsNeverSpawn(t *testing.T) {
+	root := t.TempDir()
+	bin := filepath.Join(root, "bin")
+	os.Mkdir(bin, 0700)
+	calls := filepath.Join(root, "calls")
+	spawn := "#!/bin/sh\necho \"$*\" >> \"$CALLS\"\n"
+	for _, name := range []string{"node", "systemctl", "sudo"} {
+		os.WriteFile(filepath.Join(bin, name), []byte(spawn), 0700)
+	}
+	parent := filepath.Join(root, "parent.jsonl")
+	os.WriteFile(parent, []byte("{\"type\":\"session\",\"id\":\"parent\"}\n{\"type\":\"message\",\"id\":\"leaf0001\"}\n"), 0600)
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	t.Setenv("CALLS", calls)
+	env := map[string]string{"FAMILIAR_INSTANCE_ID": "parent", "FAMILIAR_SESSION_FILE": parent, "FAMILIAR_STATE_DIR": root, "PI_CODING_AGENT_DIR": root, "PI_PACKAGE_DIR": "/pi", "FAMILIAR_FORK_HELPER": "/helper"}
+
+	for _, h := range []string{"--help", "-h", "help"} {
+		for _, sub := range []string{"fork", "merge", "label", "status", "forks"} {
+			var out, er bytes.Buffer
+			if code := branchMain([]string{sub, h}, &out, &er, branchEnv(env)); code != 0 || !strings.Contains(out.String(), "Usage:") {
+				t.Errorf("%s %s: code=%d out=%q err=%q", sub, h, code, out.String(), er.String())
+			}
+		}
+	}
+	for _, argv := range [][]string{{"fork", "-x"}, {"fork", "--nope", "task"}, {"fork", "--label", "ok", "-dash task"}} {
+		var out, er bytes.Buffer
+		if code := branchMain(argv, &out, &er, branchEnv(env)); code != ExitUsage || !strings.Contains(er.String(), "unknown flag") {
+			t.Errorf("%v: code=%d err=%q", argv, code, er.String())
+		}
+	}
+	if b, err := os.ReadFile(calls); err == nil {
+		t.Fatalf("spawn path was reached: %s", b)
+	}
+	if _, err := os.Stat(filepath.Join(root, "forks")); err == nil {
+		t.Fatal("fork state was created")
+	}
+}

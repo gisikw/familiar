@@ -69,6 +69,16 @@ func branchMain(argv []string, stdout, stderr io.Writer, getenv func(string) str
 		io.WriteString(stdout, branchHelp)
 		return 0
 	}
+	// `imp fork --help` once spawned a fork whose whole task was "--help"
+	// (twice; the second duplicated real work). Help on any subcommand is
+	// help, never an action.
+	if len(argv) > 1 && isHelp(argv[1]) {
+		switch argv[0] {
+		case "fork", "merge", "label", "status", "forks":
+			io.WriteString(stdout, branchHelp)
+			return 0
+		}
+	}
 	switch argv[0] {
 	case "fork":
 		return forkMain(argv[1:], stdout, stderr, getenv)
@@ -129,6 +139,11 @@ func forkMain(args []string, out, errw io.Writer, getenv func(string) string) in
 			}
 			i++
 		default:
+			// A task never begins with "-": that is a mistyped or unknown flag,
+			// and spawning on it would hand a fork a nonsense task.
+			if strings.HasPrefix(args[i], "-") {
+				return usageError(errw, "fork: unknown flag %q (a task cannot begin with \"-\"; see imp fork --help)", args[i])
+			}
 			rest = append(rest, args[i])
 		}
 	}
@@ -395,7 +410,7 @@ func systemctlCommand(g func(string) string, args ...string) (string, []string) 
 }
 
 const branchHelp = `Usage:
-  imp fork "task text"
+  imp fork [--label L] [--origin O] [--fresh] [--model P/M [--runner]] "task text"
       The fork inherits this whole conversation (unless --fresh), so the task
       text only needs to say which piece is hers, e.g. "Voice research; see
       Kev's last message." Write a full brief only for --fresh forks.
