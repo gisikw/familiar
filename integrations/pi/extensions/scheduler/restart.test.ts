@@ -13,3 +13,18 @@ test("restart notice counts redeliveries", () => {
   expect(n.content).toContain('familiar="unknown"');
   expect(n.content).toContain("2 scheduled events redelivered");
 });
+
+// Oct 3: a restart that only redelivered a soft/fork/quiet event sent the
+// notice as nextTurn, so it waited ~10 min for Kev instead of waking the
+// session. The notice is a wake unless a redelivered wake already started one.
+test("restart notice wakes the session even after soft redeliveries", async () => {
+  const { restartNoticeDelivery } = await import("./index.ts");
+  expect(restartNoticeDelivery(false)).toEqual({ deliverAs: "steer", triggerTurn: true });
+});
+
+test("restart notice rides along when a redelivered wake already started a turn", async () => {
+  const { restartNoticeDelivery } = await import("./index.ts");
+  const d = restartNoticeDelivery(true);
+  expect(d.deliverAs).toBe("steer");
+  expect(d.triggerTurn).toBe(false);
+});

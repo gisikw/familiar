@@ -39,6 +39,8 @@ export default function (pi: ExtensionAPI) {
   const waiting = new Map<string, Array<() => void>>();
   const idleWaiters: Array<() => void> = [];
   let isIdle: () => boolean = () => true;
+  // Set when a redelivered wake event has already started a turn since boot.
+  let wokeSinceBoot = false;
 
   // Branch from a settled turn, never from the middle of one.
   const whenIdle = () => isIdle() ? Promise.resolve() : new Promise<void>((resolve) => idleWaiters.push(resolve));
@@ -104,6 +106,7 @@ export default function (pi: ExtensionAPI) {
           });
         }
         pi.sendMessage(message, { deliverAs: "steer", triggerTurn: true });
+        wokeSinceBoot = true;
         seen.add(event.id);
       },
       error(error) { errorLog("scheduler", { error: error.message }); },
@@ -116,8 +119,7 @@ export default function (pi: ExtensionAPI) {
         try {
           const redelivered = Math.max(0, seen.size - deliveredBefore) + waiting.size;
           const notice = renderRestartNotice({ at: new Date(), sha: trackedSha(), redelivered });
-          // Already woken by a redelivered event: ride along, don't add a turn.
-          pi.sendMessage(notice, redelivered > 0 || !isIdle() ? { deliverAs: "nextTurn" } : { deliverAs: "steer", triggerTurn: true });
+          pi.sendMessage(notice, restartNoticeDelivery(wokeSinceBoot));
         } catch (error) { errorLog("scheduler", { restartNoticeError: String(error) }); }
       }, RESTART_NOTICE_DELAY_MS).unref?.();
     }
@@ -147,6 +149,18 @@ export default function (pi: ExtensionAPI) {
     for (const resolve of idleWaiters.splice(0)) resolve();
     seen = new Set();
   });
+}
+
+/** How the restart notice is delivered. It is a wake: its whole point is a
+ * turn of its own after a restart nobody is watching. It used to go soft
+ * (nextTurn) whenever anything was redelivered or a turn was running, but
+ * redeliveries are often soft events, scheduled forks or quiet merges that
+ * start no turn, so the notice sat until Kev's next message (Oct 3, 19:03Z,
+ * ~10 min late). `steer` joins a turn that is already running, and
+ * `triggerTurn` starts one when idle. Only when a redelivered *wake* already
+ * started a turn does the notice ride along without asking for another. */
+export function restartNoticeDelivery(wokeSinceBoot: boolean): { deliverAs: "steer"; triggerTurn: boolean } {
+  return { deliverAs: "steer", triggerTurn: !wokeSinceBoot };
 }
 
 /** Every primary boot gets a turn, so a self-restart needs no hand-set wake. */
