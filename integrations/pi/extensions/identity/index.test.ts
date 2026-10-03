@@ -34,7 +34,7 @@ mock.module("@earendil-works/pi-coding-agent", () => ({ ...realCodingAgent }));
 const { buildSystemPrompt } = await import(join(piPackageDir, "dist/core/system-prompt.js"));
 
 const { assembleSystemPrompt, buildGuidelines, REJECTED_PI_BASELINE_GUIDELINES } = await import("./prompt.ts");
-const { default: identityExtension } = await import("./index.ts");
+const { default: identityExtension, isPiDefaultPrompt } = await import("./index.ts");
 
 type Handler = (event: any, ctx: any) => Promise<any>;
 const roots: string[] = [];
@@ -374,4 +374,63 @@ describe("parity with pinned Pi buildSystemPrompt (structural affordances only)"
       expect(familiar).not.toContain("Pi documentation");
     });
   }
+});
+
+/* ------------------------------------------------------------------------- */
+/* Pi 0.85.1 starts triggerTurn runs (scheduler wakes, restart notices, imp
+ * merges) without before_agent_start, and refreshes the system prompt after
+ * every tool call as `override ?? base`. Both put Pi's generic prompt on the
+ * wire; tiamat captures showed it on Oct 3 2026. The wire guard swaps it out. */
+describe("wire guard: identity on every provider request", () => {
+  function wired() {
+    const handlers: Record<string, Handler> = {};
+    identityExtension({ on: (name: string, h: Handler) => { handlers[name] = h; } } as any);
+    return {
+      start: (options: unknown) => handlers.before_agent_start({ type: "before_agent_start", prompt: "hi", systemPrompt: "x", systemPromptOptions: options }, {}),
+      send: (payload: unknown) => handlers.before_provider_request({ type: "before_provider_request", payload }, {}),
+    };
+  }
+  const piDefault = () => buildSystemPrompt(residentOptions()) as string;
+  const anthropic = (text: string) => ({ model: "m", system: [{ type: "text", text, cache_control: { type: "ephemeral" } }], messages: [{ role: "user", content: "wake" }] });
+
+  test("the guard recognizes the default prompt the pinned Pi actually builds", () => {
+    expect(isPiDefaultPrompt(piDefault())).toBe(true);
+  });
+
+  test("right after boot (no prompt()-run yet): identity is spliced over Pi's framing, Pi's affordances kept", async () => {
+    process.env.FAMILIAR_IDENTITY_PATH = identityDir({ "00.md": IDENTITY });
+    const out = await wired().send(anthropic(piDefault()));
+    const text = out.system[0].text as string;
+    expect(text.startsWith(IDENTITY)).toBe(true);
+    expect(text).not.toContain("expert coding assistant");
+    expect(text).toContain("Current working directory: /srv/familiar/work");
+    expect(out.system).toHaveLength(1);
+    expect(out.system[0].cache_control).toEqual({ type: "ephemeral" });
+    expect(out.messages).toEqual([{ role: "user", content: "wake" }]);
+  });
+
+  test("after a prompt()-run, a woken or post-tool request carries exactly the assembled identity prompt", async () => {
+    process.env.FAMILIAR_IDENTITY_PATH = identityDir({ "00.md": IDENTITY });
+    const w = wired();
+    const assembled = (await w.start(residentOptions())).systemPrompt as string;
+    const chat = await w.send({ messages: [{ role: "system", content: piDefault() }, { role: "user", content: "x" }] });
+    expect(chat.messages[0].content).toBe(assembled);
+    const responses = await w.send({ instructions: piDefault(), input: [] });
+    expect(responses.instructions).toBe(assembled);
+    const blocks = await w.send(anthropic(piDefault()));
+    expect(blocks.system[0].text).toBe(assembled);
+  });
+
+  test("prompts that are not Pi's default pass through untouched", async () => {
+    process.env.FAMILIAR_IDENTITY_PATH = identityDir({ "00.md": IDENTITY });
+    const w = wired();
+    const assembled = (await w.start(residentOptions())).systemPrompt as string;
+    expect(await w.send(anthropic(assembled))).toBeUndefined();
+    expect(await w.send(anthropic("You are a context summarization assistant."))).toBeUndefined();
+    expect(await w.send({ contents: [] })).toBeUndefined();
+  });
+
+  test("without an identity there is nothing to splice: Pi's payload is left alone", async () => {
+    expect(await wired().send(anthropic(piDefault()))).toBeUndefined();
+  });
 });
