@@ -23,7 +23,7 @@ if (process.argv.includes("--selftest")) {
 const { resolveBaseUrl, readConfigFile, writeConfigFile } = require("./config");
 const { createAuthManager } = require("./auth");
 const { isAllowedBundledFile } = require("./security");
-const { hideMacWindowButtons } = require("./window-controls");
+const { windowChromeOptions } = require("./window-controls");
 
 // ---------------------------------------------------------------------------
 // Familiar is a DUMB CLIENT: a thin, near-chromeless Electron window that loads
@@ -165,10 +165,10 @@ function createWindow() {
     y: Number.isInteger(bounds.y) ? bounds.y : undefined,
     icon: iconPng(512) || undefined, // Linux/Windows window + taskbar icon
     backgroundColor: "#282828", // static mirror: terminal bg, avoiding a light flash
-    // Edgeless: no native titlebar. The served page (and our offline page) each
-    // carry a slim -webkit-app-region:drag strip so the window stays draggable.
-    frame: false,
-    titleBarStyle: process.platform === "darwin" ? "hidden" : "default",
+    // Edgeless: no native titlebar at all (see window-controls.js for why not
+    // titleBarStyle "hidden"). The served page's topbar and our offline page's
+    // strip carry -webkit-app-region: drag so the window stays draggable.
+    ...windowChromeOptions(),
     webPreferences: {
       preload: path.join(__dirname, "..", "preload", "preload.js"),
       partition: PARTITION, // persistent -> auth cookie survives restarts
@@ -177,10 +177,6 @@ function createWindow() {
       sandbox: true,
     },
   });
-
-  // Electron's supported macOS API removes the traffic lights entirely. This
-  // leaves the custom drag strip unobstructed without changing other platforms.
-  hideMacWindowButtons(mainWindow);
 
   // ---------------------------------------------------------------------------
   // Zoom chords. The page is a real web document now, so Cmd/Ctrl +/-/0 map to
