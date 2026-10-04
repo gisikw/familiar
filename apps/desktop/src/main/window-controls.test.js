@@ -1,21 +1,14 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { hideMacWindowButtons } = require("./window-controls");
+const { windowChromeOptions } = require("./window-controls");
 
-test("hides native window buttons on macOS", () => {
-  const calls = [];
-  hideMacWindowButtons(
-    { setWindowButtonVisibility: (visible) => calls.push(visible) },
-    "darwin"
-  );
-  assert.deepEqual(calls, [false]);
-});
-
-for (const platform of ["win32", "linux"]) {
-  test(`leaves native window buttons unchanged on ${platform}`, () => {
-    const window = {
-      setWindowButtonVisibility: () => assert.fail("must remain macOS-only"),
-    };
-    hideMacWindowButtons(window, platform);
+for (const platform of ["darwin", "win32", "linux"]) {
+  test(`${platform}: frameless, with no native titlebar left over the content`, () => {
+    const opts = windowChromeOptions(platform);
+    assert.equal(opts.frame, false);
+    // "hidden"/"hiddenInset"/"customButtonsOnHover" keep a native titlebar view
+    // that eats clicks in the top ~28pt of the page.
+    assert.equal(opts.titleBarStyle, undefined);
+    assert.equal(opts.titleBarOverlay, undefined);
   });
 }
