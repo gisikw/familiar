@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // maxAttnRows bounds every human list rendering by construction; the resident
@@ -25,6 +27,7 @@ var attnValueFlags = map[string]bool{
 	"owner": true, "edge": true, "q": true, "title": true, "summary": true, "policy": true,
 	"reason": true, "text": true, "detail": true, "kind": true, "ref": true, "meta": true,
 	"name": true, "model": true, "host": true, "harness": true, "state": true, "question": true,
+	"hold-until": true,
 }
 var attnBoolFlags = map[string]bool{"hidden": true, "undo": true}
 
@@ -283,6 +286,16 @@ func parseAttn(argv []string, stdin io.Reader) (invocation, error) {
 		}
 		out.args["lane"] = positional[0]
 		positional = positional[1:]
+		if v, ok := flags.take("hold-until"); ok {
+			if out.args["lane"] != "settling" {
+				return out, fmt.Errorf("--hold-until only applies to settling")
+			}
+			t, err := parseHoldUntil(v, time.Now())
+			if err != nil {
+				return out, err
+			}
+			out.args["hold_until"] = t.UTC().Format(time.RFC3339)
+		}
 	case "card.block":
 		id, err := takePositional("card id")
 		if err != nil {
@@ -388,6 +401,7 @@ type attnCard struct {
 	Lane            string  `json:"lane"`
 	Title           string  `json:"title"`
 	Owner           *string `json:"owner"`
+	HoldUntil       *string `json:"hold_until"`
 	Policy          *string `json:"policy"`
 	EffectivePolicy string  `json:"effective_policy"`
 	Diverges        bool    `json:"diverges"`
@@ -430,6 +444,83 @@ type attnProject struct {
 }
 
 // attnList accepts either a bare array or {items|cards: [...], total, truncated}.
+// parseHoldUntil reads a settling hold: RFC3339, a local HH:MM (next
+// occurrence), or a duration from now (Go durations plus whole days, "2d").
+func parseHoldUntil(v string, now time.Time) (time.Time, error) {
+	bad := fmt.Errorf("--hold-until must be RFC3339, HH:MM, or a duration like 90m, 36h, 2d")
+	if strings.HasSuffix(v, "d") {
+		n, err := strconv.Atoi(strings.TrimSuffix(v, "d"))
+		if err != nil || n <= 0 || n > 60 {
+			return time.Time{}, bad
+		}
+		return now.Add(time.Duration(n) * 24 * time.Hour), nil
+	}
+	if d, err := time.ParseDuration(v); err == nil {
+		if d <= 0 {
+			return time.Time{}, bad
+		}
+		return now.Add(d), nil
+	}
+	t, err := parseAt(v, now)
+	if err != nil {
+		return time.Time{}, bad
+	}
+	if !t.After(now) {
+		return time.Time{}, fmt.Errorf("--hold-until must be in the future")
+	}
+	return t, nil
+}
+
+// scheduleHoldWake schedules the wake that keeps a settling hold honest: at the
+// hold time Kes either archives the card or hands it to Kevin. It targets the
+// root of this lineage, since a fork that sets a hold won't be around to keep it.
+func scheduleHoldWake(getenv func(string) string, result json.RawMessage, hold string) error {
+	var card struct {
+		ID    string `json:"id"`
+		Title string `json:"title"`
+	}
+	if err := json.Unmarshal(result, &card); err != nil || card.ID == "" {
+		return fmt.Errorf("unreadable card in result")
+	}
+	due, err := time.Parse(time.RFC3339, hold)
+	if err != nil {
+		return err
+	}
+	short := card.ID
+	if len(short) > 8 {
+		short = short[:8]
+	}
+	title := card.Title
+	if r := []rune(title); len(r) > 80 {
+		title = string(r[:80]) + "…"
+	}
+	reason := fmt.Sprintf("Settling hold is up on card %s %q. If it's done, archive it (imp attn card move %s archived). Otherwise hand it to Kev (imp attn card set %s --owner kevin), or extend the hold if there's a real reason. If the hold was already extended or released, ignore this.", short, title, short, short)
+	args := map[string]any{
+		"due_at":  due.UnixMilli(),
+		"summary": reason,
+		"body":    "<system-reminder>Scheduled event: " + reason + "</system-reminder>",
+		"source":  "imp.attn",
+	}
+	if origin := getenv("FAMILIAR_INSTANCE_ID"); origin != "" {
+		args["origin"] = origin
+	}
+	if root := rootInstance(getenv); root != "" {
+		args["target"] = "instance:" + root
+	}
+	path := getenv("FAMILIAR_SERVICES_SOCKET")
+	if path == "" {
+		path = "/run/familiar-services/familiar.sock"
+	}
+	_, remote, err := serviceCall(path, serviceRequest{"schedule.enqueue", args})
+	if err != nil {
+		return err
+	}
+	if remote != nil {
+		return fmt.Errorf("%s: %s", safeErrorCode(remote.Code), remote.Message)
+	}
+	return nil
+}
+
 func attnList(raw json.RawMessage) (items []json.RawMessage, total int, truncated bool, err error) {
 	if err = json.Unmarshal(raw, &items); err == nil {
 		return items, len(items), false, nil
@@ -479,6 +570,9 @@ func attnRow(c attnCard) string {
 	owner := "-"
 	if c.Owner != nil {
 		owner = *c.Owner
+	}
+	if c.HoldUntil != nil {
+		owner += " (held)"
 	}
 	fields := []string{prefix, c.Lane, owner}
 	if c.Diverges && c.Policy != nil {
@@ -535,6 +629,9 @@ func writeAttnCard(w io.Writer, raw json.RawMessage) error {
 		policy += " (default)"
 	}
 	fmt.Fprintln(w, strings.ReplaceAll(c.Title, "\n", " "))
+	if c.HoldUntil != nil {
+		owner += " (held until " + *c.HoldUntil + ")"
+	}
 	fmt.Fprintf(w, "project: %s  lane: %s  owner: %s  policy: %s\n", c.Project, c.Lane, owner, policy)
 	line := fmt.Sprintf("id: %s  captured %s ago  moved %s ago", c.ID, attnAge(c.AgeS), attnAge(c.MovedS))
 	if c.Blocked != nil {
@@ -750,7 +847,7 @@ var attnUsage = map[string]string{
 	"card.get":       "Usage: imp attn card get ID [--json]\n\nPrints title, project/lane/owner/policy, summary, evidence, the short timeline, and notes.\nThe raw event log is available only with --json.\n",
 	"card.add":       "Usage: imp attn card add --project SLUG (--title TEXT | --title -) [--lane LANE] [--summary TEXT|-] [--owner kevin|kes] [--policy POLICY] [--json]\n",
 	"card.set":       "Usage: imp attn card set ID [--title TEXT|-] [--summary TEXT|-] [--owner kevin|kes] [--policy POLICY|default] [--json]\n\n--policy default clears the card's policy back to the project default.\n",
-	"card.move":      "Usage: imp attn card move ID <captured|icebox|clarified|inflight|review|settling|archived> [--json]\n",
+	"card.move":      "Usage: imp attn card move ID <captured|icebox|clarified|inflight|review|settling|archived> [--hold-until TIME] [--json]\n\nSettling means \"Kev, this is probably done; close it when you're satisfied\", so a card\nmoved to settling becomes Kevin's. To keep it in settling yourself, pass --hold-until TIME\n(RFC3339, HH:MM, or a duration like 90m, 36h, 2d): the card stays yours until then and a\nwake is scheduled for that time to archive it or hand it to Kevin.\n",
 	"card.block":     "Usage: imp attn card block ID --reason TEXT [--json]\n",
 	"card.unblock":   "Usage: imp attn card unblock ID [--json]\n",
 	"card.done":      "Usage: imp attn card done ID [--undo] [--json]\n\nJots (_today) only. --undo marks the jot not done.\n",

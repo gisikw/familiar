@@ -90,6 +90,12 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(
 		}
 		return ExitRemote
 	}
+	if hold, ok := inv.args["hold_until"].(string); ok && inv.operation == "card.move" {
+		if err := scheduleHoldWake(getenv, result, hold); err != nil {
+			fmt.Fprintf(stderr, "imp: the card is held until %s, but scheduling its wake failed: %v\n", hold, err)
+			return ExitProtocol
+		}
+	}
 	if inv.json {
 		stdout.Write(result)
 		io.WriteString(stdout, "\n")
