@@ -182,7 +182,12 @@ func TestUpstreamPassthrough(t *testing.T) {
 		if r.URL.Path != "/base/v1/audio/transcriptions" {
 			t.Errorf("path %s", r.URL.Path)
 		}
-		b, _ := io.ReadAll(r.Body)
+		ff, _, ferr := r.FormFile("file")
+		if ferr != nil {
+			t.Errorf("no file part: %v", ferr)
+			return
+		}
+		b, _ := io.ReadAll(ff)
 		if string(b) != "payload" {
 			t.Errorf("body %q", b)
 		}
@@ -256,7 +261,14 @@ func fallbackServer(t *testing.T, h http.HandlerFunc) (*Server, *atomic.Int32) {
 
 func TestFallbackUsesUpstreamWhenHealthy(t *testing.T) {
 	s, calls := fallbackServer(t, func(w http.ResponseWriter, r *http.Request) {
-		b, _ := io.ReadAll(r.Body)
+		// Raw audio from the gateway is wrapped as multipart "file" for upstream.
+		f, _, err := r.FormFile("file")
+		if err != nil {
+			t.Errorf("upstream got no file part: %v", err)
+			w.WriteHeader(400)
+			return
+		}
+		b, _ := io.ReadAll(f)
 		if string(b) != "audio" {
 			t.Errorf("body %q", b)
 		}
@@ -297,14 +309,16 @@ func TestFallbackOnHungUpstreamLeavesLocalBudget(t *testing.T) {
 	}
 }
 
-func TestFallbackPasses4xxThrough(t *testing.T) {
-	s, _ := fallbackServer(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(422)
-		w.Write([]byte(`{"error":"bad audio"}`))
+func TestFallbackOn4xxReplaysLocally(t *testing.T) {
+	// fort's /transcribe answered the gateway's raw body with 400 "missing 'file'
+	// field" and Kev lost a voice chunk (Oct 5). Any non-2xx now falls back.
+	s, calls := fallbackServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(400)
+		w.Write([]byte(`{"error":"missing 'file' field"}`))
 	})
 	w := request(s.Handler(), "", []byte("audio"))
-	if w.Code != 422 {
-		t.Fatalf("%d %s", w.Code, w.Body)
+	if w.Code != 200 || text(t, w) != "hello world" || calls.Load() != 1 {
+		t.Fatalf("%d %s calls=%d", w.Code, w.Body, calls.Load())
 	}
 }
 

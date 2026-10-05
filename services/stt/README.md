@@ -12,7 +12,7 @@ or verbatim to the upstream URL when its path already names an endpoint (ends in
 `/transcribe` or `/transcriptions`, e.g. `https://stt.gisi.network/transcribe`).
 If `STT_MODEL` is also set (and `STT_FALLBACK` isn't `0`), the body is buffered
 and an upstream transport error, 5xx, or `STT_UPSTREAM_TIMEOUT_SECONDS` stall is
-retried once on the local CPU path; 4xx answers pass through. Without a local
+retried once on the local CPU path, as is any non-2xx answer. Raw audio is wrapped as multipart `file` for the upstream. Without a local
 model the body is streamed straight through (no transcription retries). Every
 request logs one `transcribed` line with mode (`upstream`/`local`/`fallback`),
 bytes and ms.

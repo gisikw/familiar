@@ -29,9 +29,9 @@ type Config struct {
 	Deadline                           time.Duration
 	Logger                             *slog.Logger
 	// Fallback: with both Upstream and Model configured, a failed upstream
-	// attempt (transport error, 5xx, or UpstreamTimeout) is retried once on
-	// the local CPU backend. 4xx answers are the caller's problem and pass
-	// through unchanged.
+	// attempt (transport error, any non-2xx, or UpstreamTimeout) is retried
+	// once on the local CPU backend. Raw audio bodies are wrapped as
+	// multipart "file" for the upstream.
 	Fallback bool
 	// UpstreamTimeout bounds the upstream attempt when Fallback is on, so a
 	// hung GPU box leaves enough of Deadline for the local path. Zero means
@@ -151,20 +151,22 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 
 // tryUpstream makes one bounded upstream attempt with a buffered body. It
 // writes the response and returns true when the upstream answered with a
-// non-5xx status; otherwise nothing is written and the caller falls back.
+// 2xx status; otherwise nothing is written and the caller falls back.
 func (s *Server) tryUpstream(ctx context.Context, w http.ResponseWriter, r *http.Request, body []byte) bool {
 	uctx, cancel := context.WithTimeout(ctx, s.c.UpstreamTimeout)
 	defer cancel()
 	u := *s.c.Upstream
 	u.Path = upstreamPath(u.Path, r.URL.Path)
 	u.RawQuery = r.URL.RawQuery
-	req, err := http.NewRequestWithContext(uctx, http.MethodPost, u.String(), bytes.NewReader(body))
+	upBody, upType := asMultipart(body, r.Header.Get("Content-Type"))
+	req, err := http.NewRequestWithContext(uctx, http.MethodPost, u.String(), bytes.NewReader(upBody))
 	if err != nil {
 		return false
 	}
 	copyHeaders(req.Header, r.Header)
 	req.Header.Del("Content-Length")
-	req.ContentLength = int64(len(body))
+	req.Header.Set("Content-Type", upType)
+	req.ContentLength = int64(len(upBody))
 	req.Host = u.Host
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -172,7 +174,10 @@ func (s *Server) tryUpstream(ctx context.Context, w http.ResponseWriter, r *http
 		return false
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 500 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Any non-2xx falls back: a 4xx from a differently-shaped upstream (e.g. a
+		// 400 "missing 'file' field") must not cost Kev a voice chunk when the
+		// local model can still transcribe it.
 		s.c.Logger.Warn("upstream failed; falling back to local", "status", resp.StatusCode)
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return false
@@ -371,13 +376,21 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 	u := *s.c.Upstream
 	u.Path = upstreamPath(u.Path, r.URL.Path)
 	u.RawQuery = r.URL.RawQuery
-	body := http.MaxBytesReader(w, r.Body, s.c.MaxBody)
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, u.String(), body)
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.c.MaxBody))
+	if err != nil {
+		reply(w, 413, map[string]string{"error": publicError(413)})
+		return
+	}
+	upBody, upType := asMultipart(raw, r.Header.Get("Content-Type"))
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, u.String(), bytes.NewReader(upBody))
 	if err != nil {
 		reply(w, 500, map[string]string{"error": "proxy request failed"})
 		return
 	}
 	copyHeaders(req.Header, r.Header)
+	req.Header.Del("Content-Length")
+	req.Header.Set("Content-Type", upType)
+	req.ContentLength = int64(len(upBody))
 	req.Host = u.Host
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -424,6 +437,44 @@ func safeError(e error) string {
 		return "audio exceeds limit"
 	}
 	return "backend/request error (details suppressed)"
+}
+
+// asMultipart passes multipart bodies through unchanged and wraps a raw audio
+// body (what the gateway sends) as multipart/form-data with a single "file"
+// part, the shape both OpenAI-style and fort's /transcribe upstreams require.
+func asMultipart(body []byte, ct string) ([]byte, string) {
+	if strings.HasPrefix(strings.ToLower(ct), "multipart/") {
+		return body, ct
+	}
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	part, err := mw.CreateFormFile("file", "audio"+audioExt(body))
+	if err != nil {
+		return body, ct
+	}
+	_, _ = part.Write(body)
+	_ = mw.Close()
+	return buf.Bytes(), mw.FormDataContentType()
+}
+
+// audioExt guesses a filename extension from magic bytes so upstream decoders
+// that key off the filename pick the right demuxer.
+func audioExt(b []byte) string {
+	switch {
+	case len(b) >= 12 && string(b[0:4]) == "RIFF" && string(b[8:12]) == "WAVE":
+		return ".wav"
+	case len(b) >= 12 && string(b[4:8]) == "ftyp":
+		return ".m4a"
+	case len(b) >= 4 && string(b[0:4]) == "OggS":
+		return ".ogg"
+	case len(b) >= 4 && b[0] == 0x1A && b[1] == 0x45 && b[2] == 0xDF && b[3] == 0xA3:
+		return ".webm"
+	case len(b) >= 3 && (string(b[0:3]) == "ID3" || (b[0] == 0xFF && b[1]&0xE0 == 0xE0)):
+		return ".mp3"
+	case len(b) >= 4 && string(b[0:4]) == "fLaC":
+		return ".flac"
+	}
+	return ".bin"
 }
 
 // upstreamPath: an upstream URL whose path already names a transcription
