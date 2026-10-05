@@ -7,8 +7,15 @@ contains audio, and returning `{"text":"..."}`. Existing Familiar consumers
 that post to a base URL have not yet been cut over; that migration is a separate
 integration change.
 
-With `STT_UPSTREAM_URL`, the request body and end-to-end headers are streamed
-once to `<upstream>/v1/audio/transcriptions` (no transcription retries).
+With `STT_UPSTREAM_URL`, the request goes once to `<upstream>/v1/audio/transcriptions`,
+or verbatim to the upstream URL when its path already names an endpoint (ends in
+`/transcribe` or `/transcriptions`, e.g. `https://stt.gisi.network/transcribe`).
+If `STT_MODEL` is also set (and `STT_FALLBACK` isn't `0`), the body is buffered
+and an upstream transport error, 5xx, or `STT_UPSTREAM_TIMEOUT_SECONDS` stall is
+retried once on the local CPU path; 4xx answers pass through. Without a local
+model the body is streamed straight through (no transcription retries). Every
+request logs one `transcribed` line with mode (`upstream`/`local`/`fallback`),
+bytes and ms.
 Without it, the first request single-flight initializes the local toolchain. Each local
 request is written to a private temporary directory, normalized by ffmpeg to
 16 kHz mono WAV, and passed to `transcribe-cli`; all files are removed afterward.
@@ -30,7 +37,9 @@ service does not download models or log request headers/bodies/upstream URLs.
 | Environment | Default | Meaning |
 |---|---:|---|
 | `STT_LISTEN` | `127.0.0.1:9932` | listen address (loopback by default) |
-| `STT_UPSTREAM_URL` | unset | HTTP(S) upstream base URL |
+| `STT_UPSTREAM_URL` | unset | HTTP(S) upstream base URL, or exact endpoint URL |
+| `STT_FALLBACK` | on | `0` disables local fallback when both upstream and model are set |
+| `STT_UPSTREAM_TIMEOUT_SECONDS` | 20 | budget for the upstream attempt before falling back |
 | `STT_MODEL` | required locally | local `.gguf` path |
 | `STT_FFMPEG` | `ffmpeg` | ffmpeg executable |
 | `STT_TRANSCRIBE_CLI` | `transcribe-cli` | transcribe.cpp executable |

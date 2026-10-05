@@ -31,6 +31,9 @@ const BASE = `http://127.0.0.1:${SERVER_PORT}`;
 
 // --- mock STT: echoes a deterministic transcript, records that it was hit. ---
 let sttHits = 0;
+// When > 0, the mock STT answers 503 this many more times (an STT child
+// mid-restart), then recovers.
+let sttFailuresLeft = 0;
 let lastSttPath: string | undefined;
 let lastSttBody: Buffer | null = null;
 let stt: http.Server;
@@ -44,6 +47,11 @@ beforeAll(async () => {
       sttHits++;
       lastSttPath = req.url;
       lastSttBody = Buffer.concat(chunks);
+      if (sttFailuresLeft > 0) {
+        sttFailuresLeft--;
+        res.writeHead(503, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ error: "restarting" }));
+      }
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ text: "hello from the microphone" }));
     });
@@ -181,6 +189,24 @@ describe("voice /submit → /relay protocol", () => {
 
     await new Promise((r) => setTimeout(r, 150));
     expect(cmds.filter((c) => c.type === "submit").length).toBe(0);
+    close();
+  });
+
+  test("STT down briefly (child restart) is retried with backoff, not replaced by a placeholder", async () => {
+    const saved = Ingress.retryDelaysMs;
+    Ingress.retryDelaysMs = [20, 40, 80];
+    const cmds: any[] = [];
+    const close = await openRelay((c) => cmds.push(c));
+    await new Promise((r) => setTimeout(r, 100));
+    sttFailuresLeft = 2;
+    const res = await postSubmit({ type: "audio", id: 55502, seq: 0, data: Buffer.from("RIFF").toString("base64"), segments: 1 });
+    expect(res.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 400));
+    const submits = cmds.filter((c) => c.type === "submit");
+    expect(submits.length).toBe(1);
+    expect(submits[0].parts[0]).toContain("hello from the microphone");
+    expect(submits[0].parts[0]).not.toContain("segment missing");
+    Ingress.retryDelaysMs = saved;
     close();
   });
 

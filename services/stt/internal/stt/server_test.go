@@ -238,3 +238,87 @@ func TestHealthAndMethods(t *testing.T) {
 		t.Fatal(w.Code)
 	}
 }
+
+func fallbackServer(t *testing.T, h http.HandlerFunc) (*Server, *atomic.Int32) {
+	t.Helper()
+	var calls atomic.Int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1); h(w, r) }))
+	t.Cleanup(up.Close)
+	u, _ := url.Parse(up.URL)
+	c := config(t)
+	c.Upstream, c.Fallback = u, true
+	s, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s, &calls
+}
+
+func TestFallbackUsesUpstreamWhenHealthy(t *testing.T) {
+	s, calls := fallbackServer(t, func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		if string(b) != "audio" {
+			t.Errorf("body %q", b)
+		}
+		w.Write([]byte(`{"text":"gpu"}`))
+	})
+	w := request(s.Handler(), "", []byte("audio"))
+	if w.Code != 200 || text(t, w) != "gpu" || calls.Load() != 1 {
+		t.Fatalf("%d %s calls=%d", w.Code, w.Body, calls.Load())
+	}
+}
+
+func TestFallbackOn5xxReplaysBodyLocally(t *testing.T) {
+	s, calls := fallbackServer(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(503) })
+	w := request(s.Handler(), "", []byte("audio"))
+	if w.Code != 200 || text(t, w) != "hello world" || calls.Load() != 1 {
+		t.Fatalf("%d %s calls=%d", w.Code, w.Body, calls.Load())
+	}
+}
+
+func TestFallbackOnUnreachableUpstream(t *testing.T) {
+	c := config(t)
+	u, _ := url.Parse("http://127.0.0.1:1")
+	c.Upstream, c.Fallback = u, true
+	s, _ := New(c)
+	w := request(s.Handler(), "", []byte("audio"))
+	if w.Code != 200 || text(t, w) != "hello world" {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+}
+
+func TestFallbackOnHungUpstreamLeavesLocalBudget(t *testing.T) {
+	s, _ := fallbackServer(t, func(w http.ResponseWriter, r *http.Request) { time.Sleep(2 * time.Second) })
+	s.c.Deadline, s.c.UpstreamTimeout = time.Second, 50*time.Millisecond
+	start := time.Now()
+	w := request(s.Handler(), "", []byte("audio"))
+	if w.Code != 200 || text(t, w) != "hello world" || time.Since(start) > 900*time.Millisecond {
+		t.Fatalf("%d %s after %s", w.Code, w.Body, time.Since(start))
+	}
+}
+
+func TestFallbackPasses4xxThrough(t *testing.T) {
+	s, _ := fallbackServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(422)
+		w.Write([]byte(`{"error":"bad audio"}`))
+	})
+	w := request(s.Handler(), "", []byte("audio"))
+	if w.Code != 422 {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+}
+
+func TestUpstreamPathRule(t *testing.T) {
+	for _, c := range []struct{ base, want string }{
+		{"", "/v1/audio/transcriptions"},
+		{"/", "/v1/audio/transcriptions"},
+		{"/base", "/base/v1/audio/transcriptions"},
+		{"/transcribe", "/transcribe"},
+		{"/api/transcribe/", "/api/transcribe"},
+		{"/v1/audio/transcriptions", "/v1/audio/transcriptions"},
+	} {
+		if got := upstreamPath(c.base, "/v1/audio/transcriptions"); got != c.want {
+			t.Errorf("%q -> %q, want %q", c.base, got, c.want)
+		}
+	}
+}

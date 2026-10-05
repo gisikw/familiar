@@ -1,6 +1,7 @@
 package stt
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -27,6 +28,15 @@ type Config struct {
 	Concurrency                        int
 	Deadline                           time.Duration
 	Logger                             *slog.Logger
+	// Fallback: with both Upstream and Model configured, a failed upstream
+	// attempt (transport error, 5xx, or UpstreamTimeout) is retried once on
+	// the local CPU backend. 4xx answers are the caller's problem and pass
+	// through unchanged.
+	Fallback bool
+	// UpstreamTimeout bounds the upstream attempt when Fallback is on, so a
+	// hung GPU box leaves enough of Deadline for the local path. Zero means
+	// half of Deadline.
+	UpstreamTimeout time.Duration
 }
 
 type Server struct {
@@ -45,6 +55,12 @@ func New(c Config) (*Server, error) {
 	}
 	if c.Upstream == nil && c.Model == "" {
 		return nil, errors.New("STT_MODEL is required without STT_UPSTREAM_URL")
+	}
+	if c.Fallback && (c.Upstream == nil || c.Model == "") {
+		c.Fallback = false
+	}
+	if c.UpstreamTimeout <= 0 || c.UpstreamTimeout > c.Deadline {
+		c.UpstreamTimeout = c.Deadline / 2
 	}
 	if c.FFmpeg == "" {
 		c.FFmpeg = "ffmpeg"
@@ -93,21 +109,84 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), s.c.Deadline)
 	defer cancel()
-	if s.c.Upstream != nil {
+	start := time.Now()
+	if s.c.Upstream != nil && !s.c.Fallback {
 		s.proxy(w, r.WithContext(ctx))
+		s.c.Logger.Info("transcribed", "mode", "upstream", "bytes", r.ContentLength, "ms", time.Since(start).Milliseconds())
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, s.c.MaxBody)
+	mode := "local"
+	if s.c.Fallback {
+		// Buffer so the same bytes can be replayed locally if the upstream fails.
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			status := 400
+			var mb *http.MaxBytesError
+			if errors.As(err, &mb) {
+				status = 413
+			}
+			reply(w, status, map[string]string{"error": publicError(status)})
+			return
+		}
+		if s.tryUpstream(ctx, w, r, body) {
+			s.c.Logger.Info("transcribed", "mode", "upstream", "bytes", len(body), "ms", time.Since(start).Milliseconds())
+			return
+		}
+		mode = "fallback"
+		r.Body = io.NopCloser(bytes.NewReader(body))
+	}
 	text, status, err := s.local(ctx, r)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			status = 504
 		}
-		s.c.Logger.Warn("transcription failed", "status", status, "error", safeError(err))
+		s.c.Logger.Warn("transcription failed", "mode", mode, "status", status, "ms", time.Since(start).Milliseconds(), "error", safeError(err))
 		reply(w, status, map[string]string{"error": publicError(status)})
 		return
 	}
+	s.c.Logger.Info("transcribed", "mode", mode, "bytes", r.ContentLength, "ms", time.Since(start).Milliseconds())
 	reply(w, 200, map[string]string{"text": text})
+}
+
+// tryUpstream makes one bounded upstream attempt with a buffered body. It
+// writes the response and returns true when the upstream answered with a
+// non-5xx status; otherwise nothing is written and the caller falls back.
+func (s *Server) tryUpstream(ctx context.Context, w http.ResponseWriter, r *http.Request, body []byte) bool {
+	uctx, cancel := context.WithTimeout(ctx, s.c.UpstreamTimeout)
+	defer cancel()
+	u := *s.c.Upstream
+	u.Path = upstreamPath(u.Path, r.URL.Path)
+	u.RawQuery = r.URL.RawQuery
+	req, err := http.NewRequestWithContext(uctx, http.MethodPost, u.String(), bytes.NewReader(body))
+	if err != nil {
+		return false
+	}
+	copyHeaders(req.Header, r.Header)
+	req.Header.Del("Content-Length")
+	req.ContentLength = int64(len(body))
+	req.Host = u.Host
+	resp, err := s.client.Do(req)
+	if err != nil {
+		s.c.Logger.Warn("upstream failed; falling back to local", "error", safeError(err))
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 500 {
+		s.c.Logger.Warn("upstream failed; falling back to local", "status", resp.StatusCode)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return false
+	}
+	out, err := io.ReadAll(resp.Body)
+	if err != nil {
+		s.c.Logger.Warn("upstream body failed; falling back to local", "error", safeError(err))
+		return false
+	}
+	copyHeaders(w.Header(), resp.Header)
+	w.Header().Del("Content-Length")
+	w.WriteHeader(resp.StatusCode)
+	_, _ = w.Write(out)
+	return true
 }
 
 func (s *Server) initialize(ctx context.Context) error {
@@ -290,7 +369,7 @@ func copyHeaders(dst, src http.Header) {
 }
 func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 	u := *s.c.Upstream
-	u.Path = strings.TrimRight(u.Path, "/") + r.URL.Path
+	u.Path = upstreamPath(u.Path, r.URL.Path)
 	u.RawQuery = r.URL.RawQuery
 	body := http.MaxBytesReader(w, r.Body, s.c.MaxBody)
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, u.String(), body)
@@ -345,4 +424,16 @@ func safeError(e error) string {
 		return "audio exceeds limit"
 	}
 	return "backend/request error (details suppressed)"
+}
+
+// upstreamPath: an upstream URL whose path already names a transcription
+// endpoint (ends in /transcribe or /transcriptions, e.g. fort's Parakeet
+// server at https://stt.gisi.network/transcribe) is used verbatim. Any other
+// upstream path is an OpenAI-style base, and the request path is appended.
+func upstreamPath(base, req string) string {
+	b := strings.TrimRight(base, "/")
+	if strings.HasSuffix(b, "/transcribe") || strings.HasSuffix(b, "/transcriptions") {
+		return b
+	}
+	return b + req
 }

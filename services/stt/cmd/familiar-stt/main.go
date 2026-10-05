@@ -25,6 +25,9 @@ func main() {
 			os.Exit(2)
 		}
 		cfg.Upstream = u
+		// With a local model also configured, the CPU path is the fallback.
+		cfg.Fallback = os.Getenv("STT_FALLBACK") != "0"
+		cfg.UpstreamTimeout = time.Duration(num("STT_UPSTREAM_TIMEOUT_SECONDS", 20)) * time.Second
 	}
 	s, e := stt.New(cfg)
 	if e != nil {
@@ -44,7 +47,7 @@ func main() {
 		defer cancel()
 		_ = h.Shutdown(c)
 	}()
-	log.Info("listening", "address", addr, "mode", map[bool]string{true: "upstream", false: "local"}[cfg.Upstream != nil])
+	log.Info("listening", "address", addr, "mode", map[bool]string{true: "upstream", false: "local"}[cfg.Upstream != nil], "fallback", cfg.Fallback && cfg.Model != "")
 	if e = h.ListenAndServe(); e != nil && !errors.Is(e, http.ErrServerClosed) {
 		log.Error("server failed", "error", e.Error())
 		os.Exit(1)

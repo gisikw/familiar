@@ -940,7 +940,9 @@ server() {
   if [ -z "${FAMILIAR_LLM_UPSTREAM:-}" ]; then
     provision_server_model llm "${FAMILIAR_MODEL_FILE:-}" "${FAMILIAR_MODEL_URL:-}"
   fi
-  if [ -z "${STT_UPSTREAM_URL:-}" ]; then
+  if [ -z "${STT_UPSTREAM_URL:-}" ] || [ "${STT_FALLBACK:-1}" != 0 ]; then
+    # Without an upstream this is the backend; with one it is the warm-spare
+    # CPU fallback familiar-stt uses when the upstream is down or hung.
     provision_server_model stt "${FAMILIAR_STT_MODEL_FILE:-}" "${FAMILIAR_STT_MODEL_URL:-}"
     export STT_MODEL="$MODEL_DIR/$FAMILIAR_STT_MODEL_FILE"
   fi

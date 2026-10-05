@@ -3,6 +3,10 @@ import { errorLog } from "./debug.ts";
 import type { RelayBus } from "./relay.ts";
 import type { SubmitPayload, VoiceStatusPayload } from "./protocol.ts";
 
+function chunkLog(obj: Record<string, unknown>) {
+  process.stderr.write(`[stt-chunk] ${JSON.stringify(obj)}\n`);
+}
+
 /* --- Ingress: text / chunked-audio takes → RelayCommand -------------------
  *
  * Ported from integrations/pi/extensions/subscriber/server.ts (handleSubmit + transcribe*).
@@ -56,15 +60,32 @@ export class Ingress {
       });
   }
 
-  // One retry on transcription failure; after that resolve to a bracketed
-  // placeholder so inference proceeds on the segments we do have.
-  private transcribeWithRetry(data: string): Promise<string> {
-    return this.transcribe(data)
-      .catch(() => this.transcribe(data))
-      .catch((err) => {
-        errorLog("subscriber", { error: String(err) });
-        return "[transcribed segment missing]";
-      });
+  // Retry with backoff long enough (~15s) to outlast an STT child restart
+  // (deploys restart children; that is what produced the Oct 3 gaps). Only
+  // then resolve to a bracketed placeholder so inference proceeds on the
+  // segments we do have. Every chunk logs one line to stderr regardless of
+  // FAMILIAR_DEBUG_LEVEL: chunk arrival timing is the voice-latency evidence.
+  static retryDelaysMs = [500, 1000, 2000, 4000, 8000];
+  private async transcribeWithRetry(data: string, take: number, seq: number): Promise<string> {
+    const receivedAt = new Date();
+    const bytes = Math.floor((data.length * 3) / 4);
+    let attempts = 0;
+    let lastErr: unknown;
+    for (const delay of [0, ...Ingress.retryDelaysMs]) {
+      if (delay) await new Promise((r) => setTimeout(r, delay));
+      attempts++;
+      const started = Date.now();
+      try {
+        const text = await this.transcribe(data);
+        chunkLog({ take, seq, bytes, receivedAt: receivedAt.toISOString(), sttMs: Date.now() - started, totalMs: Date.now() - receivedAt.getTime(), attempts, ok: true });
+        return text;
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    chunkLog({ take, seq, bytes, receivedAt: receivedAt.toISOString(), totalMs: Date.now() - receivedAt.getTime(), attempts, ok: false, error: String(lastErr).slice(0, 200) });
+    errorLog("subscriber", { error: String(lastErr) });
+    return "[transcribed segment missing]";
   }
 
   // correlationId: client-chosen submit id, echoed on the user message the
@@ -124,7 +145,7 @@ export class Ingress {
       this.emitVoice("transcribing", id);
       const take = this.audioSegmentBuffer[id] = this.audioSegmentBuffer[id] || {};
       if (take[seq] === undefined) {
-        take[seq] = { data, transcription: this.transcribeWithRetry(data) };
+        take[seq] = { data, transcription: this.transcribeWithRetry(data, id, seq) };
       }
 
       if (segments && segments > 0) {
