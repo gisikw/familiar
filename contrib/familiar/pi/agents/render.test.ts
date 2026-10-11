@@ -211,3 +211,13 @@ test("resultText(status list): paginated envelope shows page size and total", ()
   expect(expanded).toContain("2 jobs (of 42)");
   expect(expanded).toContain("#j2");
 });
+
+test("resultText(status list): active section renders before recent settled", () => {
+  const env = { total: 9, offset: 0, limit: 5, active: [{ id: "a1", state: "running" }], jobs: [{ id: "j1", state: "done", settlement: { verdict: "ok" } }] };
+  const result: AgentsResult = { content: [{ type: "text", text: JSON.stringify(env) }], details: env };
+  const collapsed = resultText("agents_status", result, { expanded: false }, theme, {});
+  expect(collapsed.indexOf("1 active")).toBeLessThan(collapsed.indexOf("recent settled (of 9)"));
+  expect(collapsed).toContain("#a1");
+  const none = resultText("agents_status", { content: [], details: { ...env, active: [] } } as any, { expanded: false }, theme, {});
+  expect(none).toContain("no active jobs");
+});

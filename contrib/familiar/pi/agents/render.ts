@@ -336,11 +336,16 @@ export function resultText(toolName: string, result: AgentsResult, options: Agen
       if (list) {
         const total = env && typeof env.total === "number" ? env.total : list.length;
         const suffix = total > list.length ? ` (of ${total})` : "";
+        const active = env ? arr(env.active) : null;
+        const head = active && active.length
+          ? `${active.length} active:\n` + active.map((x) => "  • " + summarizeJob(rec(x) ?? {}, { expanded })).join("\n") + "\n"
+          : active ? "no active jobs\n" : "";
+        const label = active ? "recent settled" : "jobs";
         if (!expanded) {
           const top = list.slice(0, 4).map((x) => summarizeJob(rec(x) ?? {}, { expanded: false }));
-          body = `${list.length} jobs${suffix}` + (top.length ? `:\n${top.join("\n")}${list.length > 4 ? `\n  … +${list.length - 4} more` : ""}` : "");
+          body = head + `${list.length} ${label}${suffix}` + (top.length ? `:\n${top.join("\n")}${list.length > 4 ? `\n  … +${list.length - 4} more` : ""}` : "");
         } else {
-          body = `${list.length} jobs${suffix}:\n` + list.map((x) => "  • " + summarizeJob(rec(x) ?? {}, { expanded: true })).join("\n");
+          body = head + `${list.length} ${label}${suffix}:\n` + list.map((x) => "  • " + summarizeJob(rec(x) ?? {}, { expanded: true })).join("\n");
         }
       } else {
         body = env ? summarizeJob(env, { expanded }) : summarizeGeneric(d, { expanded });

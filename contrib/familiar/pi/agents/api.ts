@@ -47,6 +47,16 @@ export class GolemClient {
   capabilities():Promise<Capabilities>{return this.json("GET","/v1/capabilities")}
   async dispatch(p:Dispatch):Promise<any>{const c=await this.capabilities();const h=c.harnesses[p.harness];if(!h)throw new Error(`harness ${p.harness} is not advertised`);if(!h.models.includes(p.model))throw new Error(`model ${p.model} is not advertised for ${p.harness}`);if("project" in p.workspace&&!c.projects.some(x=>x.name===p.workspace.project))throw new Error(`project ${p.workspace.project} is not advertised`);if("repo" in p.workspace&&!c.clone_enabled)throw new Error("this golemd does not allow repository clones");return this.json("POST","/v1/jobs",p)}
   list(state?:string){return this.json("GET","/v1/jobs"+(state?`?state=${encodeURIComponent(state)}`:""))}
+  // Server-paged, newest-first. Returns null when golemd predates paging (no
+  // X-Total-Count), so callers can fall back to list().
+  async listPage(states:readonly string[],limit:number,offset:number):Promise<{jobs:any[];total:number}|null>{
+    const q=new URLSearchParams({limit:String(limit),offset:String(offset)});if(states.length)q.set("state",states.join(","));
+    const r=await this.raw("GET","/v1/jobs?"+q.toString());const text=Buffer.from(r.body).toString("utf8");
+    if(r.status<200||r.status>=300)throw new Error(`golemd ${r.status}: ${text.slice(0,1000)}`);
+    const header=r.headers["x-total-count"];const total=Number(Array.isArray(header)?header[0]:header);
+    if(header===undefined||!Number.isFinite(total))return null;
+    const jobs=text?JSON.parse(text):[];return{jobs:Array.isArray(jobs)?jobs:[],total};
+  }
   // Durable, sequenced SSE. Opens GET /v1/events?since=N and invokes onEvent for
   // each `data:` frame. Resolves on stream end/abort; rejects on connect/HTTP
   // error so the caller's reconnect loop can back off. Never buffers the whole

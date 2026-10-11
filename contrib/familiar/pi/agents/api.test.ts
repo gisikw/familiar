@@ -5,3 +5,17 @@ let posted:any; const seen:string[]=[];
 const server=createServer((req,res)=>{seen.push(`${req.method} ${req.url}`);expect(req.headers.authorization).toBe("Bearer secret");if(req.url==="/v1/capabilities"){res.setHeader("content-type","application/json");return res.end(JSON.stringify({harnesses:{pi:{models:["operator/model"]}},projects:[{name:"familiar"}],clone_enabled:false}))}if(req.url==="/v1/jobs"&&req.method==="POST"){const chunks:Buffer[]=[];req.on("data",x=>chunks.push(x));return req.on("end",()=>{posted=JSON.parse(Buffer.concat(chunks).toString());res.end(JSON.stringify({id:"job-1",state:"assigned"}))})}res.statusCode=404;res.end("missing")});
 await new Promise<void>(ok=>server.listen(0,"127.0.0.1",ok)); const address=server.address();if(!address||typeof address==="string")throw Error("listen");const client=new GolemClient(`http://127.0.0.1:${address.port}`,"secret");afterAll(()=>server.close());
 describe("direct golemd API transport",()=>{test("dispatch validates capabilities and sends the standalone workspace contract",async()=>{const out=await client.dispatch({harness:"pi",model:"operator/model",workspace:{project:"familiar",worktree:"phase6"},prompt:"cold task",idempotency_key:"key-1"});expect(out.id).toBe("job-1");expect(seen).toEqual(["GET /v1/capabilities","POST /v1/jobs"]);expect(posted).toEqual({harness:"pi",model:"operator/model",workspace:{project:"familiar",worktree:"phase6"},prompt:"cold task",idempotency_key:"key-1"});expect(JSON.stringify(posted)).not.toContain("provider")});test("rejects an unadvertised model without dispatch",async()=>{expect(client.dispatch({harness:"pi",model:"wrong",workspace:{project:"familiar",worktree:"x"},prompt:"x"})).rejects.toThrow("not advertised")});test("streamEvents opens since=N and parses newline-framed data frames",async()=>{const srv=createServer((req,res)=>{expect(req.url).toBe("/v1/events?since=7");res.setHeader("content-type","text/event-stream");res.write("data: {\"seq\":8,\"job_id\":\"j1\",\"state\":\"done\"}\n");res.write("data: {\"seq\":9,\"job_id\":\"j2\",\"state\":\"failed\"}\n");res.end()});await new Promise<void>(ok=>srv.listen(0,"127.0.0.1",ok));const a=srv.address();if(!a||typeof a==="string")throw Error("listen");const c=new (client.constructor as any)(`http://127.0.0.1:${a.port}`);const got:any[]=[];const ac=new AbortController();await c.streamEvents(7,(e:any)=>got.push(e),ac.signal);srv.close();expect(got).toEqual([{seq:8,job_id:"j1",state:"done"},{seq:9,job_id:"j2",state:"failed"}])})});
+
+test("listPage sends limit/offset/state and reads X-Total-Count; null on legacy golemd", async () => {
+  const { createServer } = await import("node:http");
+  let seen = "", legacy = false;
+  const server = createServer((req, res) => { seen = req.url || ""; res.setHeader("content-type", "application/json"); if (!legacy) res.setHeader("x-total-count", "42"); res.end("[]"); });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const port = (server.address() as any).port;
+  const api = new GolemClient(`http://127.0.0.1:${port}`);
+  expect(await api.listPage(["done", "failed"], 5, 10)).toEqual({ jobs: [], total: 42 });
+  expect(seen).toBe("/v1/jobs?limit=5&offset=10&state=done%2Cfailed");
+  legacy = true;
+  expect(await api.listPage([], 5, 0)).toBeNull();
+  server.close();
+});
