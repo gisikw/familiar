@@ -322,5 +322,5 @@ pin `8ef403a6…`, re-reviewed). All 13 pinned runner emitters are unchanged in
 1.1.0; `session-manager.ts`, `agent-session-runtime.ts`,
 `agent-session-services.ts` and `compaction.ts` are byte-identical to 1.0.0.
 The nixpkgs base (0.84.1 recipe) is unchanged. Recipe notes above that say
-"1.0.0" about the build recipe still apply to 1.1.0 (no recipe changes in the
-1.0.x/1.1.0 releases' package metadata beyond deps).
+"1.0.0" about the build recipe still apply: the 1.0.0 recipe builds 1.1.0
+unchanged (new src/npmDeps/modelData hashes only; flake checks green).
