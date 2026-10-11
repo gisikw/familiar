@@ -86,6 +86,8 @@ skip_version_check = 1
 # url = "https://stt.example.invalid"        # omit to spawn local
 # model_file = "stt.gguf"
 # model_url = "https://models.example.invalid/stt.gguf"
+# lexicon = "/abs/path/stt-lexicon.tsv"   # heard<TAB>meant fixes for names STT always misses
+# keep_dir = "/abs/path/stt-takes"        # opt-in: retain raw audio + transcript per chunk (0700)
 
 [tts]
 # url = "https://tts.example.invalid"        # omit to spawn local

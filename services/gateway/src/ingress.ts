@@ -2,6 +2,7 @@ import type http from "http";
 import { errorLog } from "./debug.ts";
 import type { RelayBus } from "./relay.ts";
 import type { SubmitPayload, VoiceStatusPayload } from "./protocol.ts";
+import { correctTranscript, keepTake } from "./stt-lexicon.ts";
 
 function chunkLog(obj: Record<string, unknown>) {
   process.stderr.write(`[stt-chunk] ${JSON.stringify(obj)}\n`);
@@ -78,7 +79,8 @@ export class Ingress {
       try {
         const text = await this.transcribe(data);
         chunkLog({ take, seq, bytes, receivedAt: receivedAt.toISOString(), sttMs: Date.now() - started, totalMs: Date.now() - receivedAt.getTime(), attempts, ok: true });
-        return text;
+        keepTake(data, text, take, seq);
+        return correctTranscript(text);
       } catch (err) {
         lastErr = err;
       }
