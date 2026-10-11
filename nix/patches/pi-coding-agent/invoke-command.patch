@@ -1,8 +1,8 @@
 diff --git a/packages/coding-agent/docs/extensions.md b/packages/coding-agent/docs/extensions.md
-index 9ecc4d995..ba0ebf4ab 100644
+index c350e662..91074f5d 100644
 --- a/packages/coding-agent/docs/extensions.md
 +++ b/packages/coding-agent/docs/extensions.md
-@@ -212,6 +212,51 @@ These operations are command-only because calling them from lifecycle handlers c
+@@ -216,6 +216,51 @@ These operations are command-only because calling them from lifecycle handlers c
  
  Session replacement invalidates the old context. Capture only plain data before switching, then use the fresh context supplied to `withSession` for session-bound work.
  
@@ -55,10 +55,10 @@ index 9ecc4d995..ba0ebf4ab 100644
  <a id="persist-state"></a>
  
 diff --git a/packages/coding-agent/src/core/agent-session.ts b/packages/coding-agent/src/core/agent-session.ts
-index 63aa588da..724057417 100644
+index 5decccd8..e9fc7a51 100644
 --- a/packages/coding-agent/src/core/agent-session.ts
 +++ b/packages/coding-agent/src/core/agent-session.ts
-@@ -1047,27 +1047,36 @@ export class AgentSession {
+@@ -1075,28 +1075,37 @@ export class AgentSession {
  		resolve();
  	}
  
@@ -72,8 +72,9 @@ index 63aa588da..724057417 100644
 -		this._isEmittingAgentSettled = true;
 +		this._agentSettledDispatchDepth++;
  		try {
--			await this._extensionRunner.emit({ type: "agent_settled" });
--			this._emit({ type: "agent_settled" });
+-			const aborted = this._agentRunAbortRequested;
+-			await this._extensionRunner.emit({ type: "agent_settled", aborted });
+-			this._emit({ type: "agent_settled", aborted });
 -		} finally {
 -			this._isEmittingAgentSettled = false;
 -		}
@@ -85,8 +86,9 @@ index 63aa588da..724057417 100644
 +			this._isEmittingAgentSettled = true;
  			try {
 -				for (const action of deferred) await action();
-+				await this._extensionRunner.emit({ type: "agent_settled" });
-+				this._emit({ type: "agent_settled" });
++				const aborted = this._agentRunAbortRequested;
++				await this._extensionRunner.emit({ type: "agent_settled", aborted });
++				this._emit({ type: "agent_settled", aborted });
  			} finally {
 -				this._resolveIdleWaitIfIdle();
 +				this._isEmittingAgentSettled = false;
@@ -110,7 +112,7 @@ index 63aa588da..724057417 100644
  	}
  
  	/** Internal handler for agent events - shared by subscribe and reconnect */
-@@ -3311,6 +3320,7 @@ export class AgentSession {
+@@ -3358,6 +3367,7 @@ export class AgentSession {
  	}
  
  	private _bindExtensionCore(runner: ExtensionRunner): void {
@@ -119,10 +121,10 @@ index 63aa588da..724057417 100644
  			const extensionCommands: SlashCommandInfo[] = runner.getRegisteredCommands().map((command) => ({
  				name: command.invocationName,
 diff --git a/packages/coding-agent/src/core/extensions/loader.ts b/packages/coding-agent/src/core/extensions/loader.ts
-index a35adbb86..65ee48e5b 100644
+index bee134d3..e96eff01 100644
 --- a/packages/coding-agent/src/core/extensions/loader.ts
 +++ b/packages/coding-agent/src/core/extensions/loader.ts
-@@ -179,6 +179,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
+@@ -180,6 +180,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
  		// registerTool() is valid during extension load; refresh is only needed post-bind.
  		refreshTools: () => {},
  		getCommands: notInitialized,
@@ -130,7 +132,7 @@ index a35adbb86..65ee48e5b 100644
  		setModel: () => Promise.reject(new Error("Extension runtime not initialized")),
  		getThinkingLevel: notInitialized,
  		setThinkingLevel: notInitialized,
-@@ -426,6 +427,11 @@ function createExtensionAPI(
+@@ -433,6 +434,11 @@ function createExtensionAPI(
  			runtime.setActiveTools(toolNames);
  		},
  
@@ -143,10 +145,10 @@ index a35adbb86..65ee48e5b 100644
  			assertActive();
  			return runtime.getCommands();
 diff --git a/packages/coding-agent/src/core/extensions/runner.ts b/packages/coding-agent/src/core/extensions/runner.ts
-index 59e1eb62e..0297ed196 100644
+index 11ffaca7..7a39d5ba 100644
 --- a/packages/coding-agent/src/core/extensions/runner.ts
 +++ b/packages/coding-agent/src/core/extensions/runner.ts
-@@ -390,6 +390,10 @@ export class ExtensionRunner {
+@@ -391,6 +391,10 @@ export class ExtensionRunner {
  	private staleMessage: string | undefined;
  	private uiPromptDepth = 0;
  	private activeUIPrompt: { kind: UIPromptKind; title?: string } | undefined;
@@ -157,7 +159,7 @@ index 59e1eb62e..0297ed196 100644
  
  	constructor(
  		extensions: Extension[],
-@@ -430,6 +434,7 @@ export class ExtensionRunner {
+@@ -431,6 +435,7 @@ export class ExtensionRunner {
  		this.runtime.setActiveTools = actions.setActiveTools;
  		this.runtime.refreshTools = actions.refreshTools;
  		this.runtime.getCommands = actions.getCommands;
@@ -165,7 +167,7 @@ index 59e1eb62e..0297ed196 100644
  		this.runtime.setModel = actions.setModel;
  		this.runtime.getThinkingLevel = actions.getThinkingLevel;
  		this.runtime.setThinkingLevel = actions.setThinkingLevel;
-@@ -848,6 +853,34 @@ export class ExtensionRunner {
+@@ -857,6 +862,34 @@ export class ExtensionRunner {
  		return this.resolveRegisteredCommands().find((command) => command.invocationName === name);
  	}
  
@@ -200,7 +202,7 @@ index 59e1eb62e..0297ed196 100644
  	/**
  	 * Request a graceful shutdown. Called by extension tools and event handlers.
  	 * The actual shutdown behavior is provided by the mode via bindExtensions().
-@@ -1021,51 +1054,56 @@ export class ExtensionRunner {
+@@ -1030,51 +1063,56 @@ export class ExtensionRunner {
  		baseEvent: BoundaryBaseEvent,
  		buildContext: (entries: SessionBoundaryDraft[]) => BoundaryContextPreview | Promise<BoundaryContextPreview>,
  	): Promise<BoundaryDispatchResult> {
@@ -298,7 +300,7 @@ index 59e1eb62e..0297ed196 100644
  	}
  
  	private isSessionBeforeEvent(event: RunnerEmitEvent): event is SessionBeforeEvent {
-@@ -1078,207 +1116,237 @@ export class ExtensionRunner {
+@@ -1087,207 +1125,237 @@ export class ExtensionRunner {
  	}
  
  	async emit<TEvent extends RunnerEmitEvent>(event: TEvent): Promise<RunnerEmitResult<TEvent>> {
@@ -690,7 +692,7 @@ index 59e1eb62e..0297ed196 100644
  	}
  
  	/**
-@@ -1287,125 +1355,140 @@ export class ExtensionRunner {
+@@ -1296,125 +1364,140 @@ export class ExtensionRunner {
  	 * handlers then see the full transcript and their output is used as returned.
  	 */
  	async emitContext(messages: AgentMessage[]): Promise<AgentMessage[]> {
@@ -926,7 +928,7 @@ index 59e1eb62e..0297ed196 100644
  	}
  
  	async emitBeforeAgentStart(
-@@ -1413,53 +1496,58 @@ export class ExtensionRunner {
+@@ -1422,53 +1505,58 @@ export class ExtensionRunner {
  		images: ImageContent[] | undefined,
  		systemPromptOptions: BuildSystemPromptOptions,
  	): Promise<BeforeAgentStartCombinedResult> {
@@ -1027,7 +1029,7 @@ index 59e1eb62e..0297ed196 100644
  	}
  
  	async emitResourcesDiscover(
-@@ -1470,41 +1558,46 @@ export class ExtensionRunner {
+@@ -1479,41 +1567,46 @@ export class ExtensionRunner {
  		promptPaths: Array<{ path: string; extensionPath: string }>;
  		themePaths: Array<{ path: string; extensionPath: string }>;
  	}> {
@@ -1105,7 +1107,7 @@ index 59e1eb62e..0297ed196 100644
  	}
  
  	/** Emit input event. Transforms chain, "handled" short-circuits. */
-@@ -1514,38 +1607,43 @@ export class ExtensionRunner {
+@@ -1523,38 +1616,43 @@ export class ExtensionRunner {
  		source: InputSource,
  		streamingBehavior?: "steer" | "followUp",
  	): Promise<InputEventResult> {
@@ -1179,10 +1181,10 @@ index 59e1eb62e..0297ed196 100644
  	}
  }
 diff --git a/packages/coding-agent/src/core/extensions/types.ts b/packages/coding-agent/src/core/extensions/types.ts
-index 3e0ea47ba..9d215a469 100644
+index 5d65cce9..9aa74b51 100644
 --- a/packages/coding-agent/src/core/extensions/types.ts
 +++ b/packages/coding-agent/src/core/extensions/types.ts
-@@ -1725,6 +1725,22 @@ export interface ExtensionAPI {
+@@ -1752,6 +1752,22 @@ export interface ExtensionAPI {
  	/** Get available slash commands in the current session. */
  	getCommands(): SlashCommandInfo[];
  
@@ -1205,7 +1207,7 @@ index 3e0ea47ba..9d215a469 100644
  	// =========================================================================
  	// Model and Thinking Level
  	// =========================================================================
-@@ -2094,6 +2110,8 @@ export type SetLabelHandler = (entryId: string, label: string | undefined) => vo
+@@ -2121,6 +2137,8 @@ export type SetLabelHandler = (entryId: string, label: string | undefined) => vo
   * Contains flag values (defaults set during registration, CLI values set after).
   */
  export interface ExtensionRuntimeState {

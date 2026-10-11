@@ -2,21 +2,21 @@
 let
   base = pkgs.pi-coding-agent;
   lockedBaseVersion = "0.84.1";
-  targetVersion = "1.0.0";
-  targetCommit = "a13d35a742c6ef8462812a28fbe1d8c8b7431c32";
+  targetVersion = "1.1.0";
+  targetCommit = "abe508e1b89912adde45528136c3221eb69acdd7";
   targetSrc = pkgs.fetchFromGitHub {
     owner = "earendil-works";
     repo = "pi";
     rev = targetCommit;
-    hash = "sha256-CGznIVHXG6gr2F8vzHcR/v4P9xJgZHeMTt/CJ/kB78o=";
+    hash = "sha256-lwjspkMGrW+8Fl/yBEDEFsHZJA57OKOhmVQmi6zfej4=";
   };
   targetModelData = pkgs.fetchurl {
     url = "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-${targetVersion}.tgz";
-    hash = "sha256-85uZwpuFmPF1sQhA5dKoGYPnwM5crk19+DoQB0R9LCs=";
+    hash = "sha256-bKqzPOxXSA7QLFf+N0KKAwp3zCoGYoFLQ1pc+JMq2Ck=";
   };
 in
 assert pkgs.lib.assertMsg (base.version == lockedBaseVersion)
-  "Familiar Pi adaptation: unverified locked nixpkgs base ${base.version}; expected ${lockedBaseVersion}. Review the 1.0.0 recipe adaptation before updating.";
+  "Familiar Pi adaptation: unverified locked nixpkgs base ${base.version}; expected ${lockedBaseVersion}. Review the ${targetVersion} recipe adaptation before updating.";
 assert pkgs.lib.assertMsg (base.src.outputHash == "sha256-lg+I4S/aAjazjhGZU567ow+rksoNiqOqjHl//TjAMes=")
   "Familiar Pi adaptation: locked nixpkgs base source changed; review the recipe and patch ordering.";
 base.overrideAttrs (old:
@@ -25,13 +25,13 @@ assert pkgs.lib.assertMsg ((old.patches or []) == [] && (old.prePatch or "") == 
 {
   version = targetVersion;
   src = targetSrc;
-  npmDepsHash = "sha256-ndEvWdB6sa5nNNtabk2OMZKUFG9x3op185deZHxFnXk=";
+  npmDepsHash = "sha256-GOh5WG+rRgzoy/yVHY5PoEKJZGQcEGhISrDDJxkP8W4=";
   # overrideAttrs runs after buildNpmPackage formed its fetched dependency tree,
   # so replace that derived input as well as documenting its vendor hash.
   npmDeps = pkgs.fetchNpmDeps {
     name = "pi-coding-agent-${targetVersion}-npm-deps";
     src = targetSrc;
-    hash = "sha256-ndEvWdB6sa5nNNtabk2OMZKUFG9x3op185deZHxFnXk=";
+    hash = "sha256-GOh5WG+rRgzoy/yVHY5PoEKJZGQcEGhISrDDJxkP8W4=";
   };
   modelData = targetModelData;
 
@@ -57,7 +57,7 @@ assert pkgs.lib.assertMsg ((old.patches or []) == [] && (old.prePatch or "") == 
   # Verify pristine inputs BEFORE downstream patches. Whole-file hashes
   # intentionally fail closed on unrelated source movement.
   prePatch = ''
-    echo 'Verifying Familiar Pi 1.0.0 patch inputs (fail closed)'
+    echo 'Verifying Familiar Pi ${targetVersion} patch inputs (fail closed)'
     sha256sum --check --strict ${./upstream.sha256}
   '';
   # Order is contractual: command fencing, then the provider-only

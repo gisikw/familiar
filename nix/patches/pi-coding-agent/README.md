@@ -1,11 +1,11 @@
 # Familiar's downstream Pi patch (no fork)
 
-This directory owns the Nix adaptation of **earendil-works/pi v1.0.0** used
+This directory owns the Nix adaptation of **earendil-works/pi v1.1.0** used
 by the top-level locked nixpkgs. It is not an extension and does not belong in
 `integrations/pi`. There is no replacement source checkout or maintained git fork.
 `default.nix` adapts the locked nixpkgs 0.84.1 recipe to immutable upstream commit
-`a13d35a742c6ef8462812a28fbe1d8c8b7431c32` (tag `v1.0.0`), including the exact
-1.0.0 source, npm dependency, model-data, workspace-build and install metadata,
+`abe508e1b89912adde45528136c3221eb69acdd7` (tag `v1.1.0`), including the exact
+1.1.0 source, npm dependency, model-data, workspace-build and install metadata,
 taken from nixpkgs' own 1.0.0 recipe: `npm run build:offline` (upstream's root
 workspace order, now including codemode, mcp and durable plus the bundled CLI)
 and runtime copies of the codemode and mcp workspaces. The nixpkgs
@@ -69,7 +69,7 @@ this general API now enforces its own admission fence rather than trusting that
 frontend or documentation. The name `invokeExtensionCommand` deliberately excludes
 built-ins/templates/skills; there is no broad `invokeCommand` compatibility alias.
 
-We are pinned to verified **1.0.0**. Its owning-session `isIdle` is backed by
+We are pinned to verified **1.1.0**. Its owning-session `isIdle` is backed by
 `_isAgentRunActive` and `isCompacting`; the former spans the run and post-run
 retries/continuations, rather than only `agent.state.isStreaming`. This is the
 upstream lifecycle predicate, not a new quiescence implementation. Because `_emitAgentSettled` clears that flag before
@@ -156,8 +156,8 @@ bootstrap registration cannot leak into a replaced runtime.
 
 ## 1.0.0 rebase assumptions and patch order
 
-Upstream tag `v1.0.0` is the lightweight tag at
-`a13d35a742c6ef8462812a28fbe1d8c8b7431c32`. Familiar applies exactly:
+Upstream tag `v1.1.0` is the lightweight tag at
+`abe508e1b89912adde45528136c3221eb69acdd7`. Familiar applies exactly:
 
 1. `invoke-command.patch` — awaited exact-name direct extension-command
    invocation and complete event/settled admission fences.
@@ -193,7 +193,7 @@ upstream's `build:offline` script (TypeScript 7, formerly tsgo), restores the mo
 coding-agent output at `lib/node_modules/pi-monorepo`.
 
 Evaluation asserts the expected locked nixpkgs 0.84.1 base recipe and its source,
-then replaces it with exact **1.0.0** commit/source/vendor/model-data metadata.
+then replaces it with exact **1.1.0** commit/source/vendor/model-data metadata.
 It also asserts absence of nixpkgs patches or a prePatch hook. Before applying
 any downstream patch, SHA-256 checks cover whole `loader.ts`, `runner.ts`,
 `types.ts`, `agent-session.ts`, `session-manager.ts`, `agent-session-runtime.ts`,
@@ -311,3 +311,16 @@ and passed:
 ```sh
 nix build --no-link -L --impure --expr 'let f = builtins.getFlake (toString ./.); in f.packages.x86_64-linux.pi-coding-agent.overrideAttrs { doCheck = false; doInstallCheck = false; }'
 ```
+
+## 1.0.0 → 1.1.0 true-up (Oct 10, 2026)
+
+Rebased both patches from `v1.0.0` onto `v1.1.0` (`abe508e1`). `model-bootstrap`
+rebased cleanly. `invoke-command` conflicted only in `_emitAgentSettled`, where
+1.1.0 added `aborted` to `agent_settled` (upstream #10607); the depth fence now
+wraps the 1.1.0 body, verified byte-identical after de-indentation (shape-test
+pin `8ef403a6…`, re-reviewed). All 13 pinned runner emitters are unchanged in
+1.1.0; `session-manager.ts`, `agent-session-runtime.ts`,
+`agent-session-services.ts` and `compaction.ts` are byte-identical to 1.0.0.
+The nixpkgs base (0.84.1 recipe) is unchanged. Recipe notes above that say
+"1.0.0" about the build recipe still apply to 1.1.0 (no recipe changes in the
+1.0.x/1.1.0 releases' package metadata beyond deps).

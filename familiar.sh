@@ -385,7 +385,7 @@ run_pi() {
       --arg dir "$PI_CODING_AGENT_DIR" \
       --arg ext "$REPO/integrations/pi/extensions" '
       $prev + {
-        lastChangelogVersion: "1.0.0",
+        lastChangelogVersion: "1.1.0",
         theme: "familiar",
         themes: [ ($dir + "/themes") ],
         # Pi 1.0 defaults to a fullscreen TUI. Presence runs Pi inside tmux
