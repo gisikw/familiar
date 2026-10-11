@@ -205,6 +205,7 @@ func TestAttnHelpEnumeratesNounsAndVerbs(t *testing.T) {
 }
 
 func TestAttnRequestSpelling(t *testing.T) {
+	pinAttnNow(t)
 	card := "{\"ok\":true,\"result\":{\"id\":\"c1\"}}\n"
 	cases := []struct {
 		name             string
@@ -237,6 +238,21 @@ func TestAttnRequestSpelling(t *testing.T) {
 		{"jot.add-kes", []string{"attn", "jot", "add", "--title", "-", "--owner", "kes", "--json"}, "look into the flake\n", "jot.add", map[string]any{"title": "look into the flake", "owner": "kes"}},
 		{"jot.list", []string{"attn", "jot", "list", "--json"}, "", "jot.list", map[string]any{}},
 		{"jot.clear-done", []string{"attn", "jot", "clear-done", "--json"}, "", "jot.clear-done", map[string]any{}},
+		{"jot.add-due", []string{"attn", "jot", "add", "--title", "septic", "--due", "fri", "--json"}, "", "jot.add", map[string]any{"title": "septic", "due": "2026-10-16"}},
+		{"jot.list-all", []string{"attn", "jot", "list", "--all", "--json"}, "", "jot.list", map[string]any{"all": true}},
+		{"card.set-due", []string{"attn", "card", "set", "c1", "--due", "tomorrow", "--json"}, "", "card.set", map[string]any{"id": "c1", "due": "2026-10-15"}},
+		{"card.set-due-none", []string{"attn", "card", "set", "c1", "--due", "none", "--maybe-on", "2026-11-02", "--json"}, "", "card.set", map[string]any{"id": "c1", "due": nil, "maybe_on": "2026-11-02"}},
+		{"card.set-maybe-none", []string{"attn", "card", "set", "c1", "--maybe-on", "none", "--json"}, "", "card.set", map[string]any{"id": "c1", "maybe_on": nil}},
+		{"ask.add", []string{"attn", "ask", "add", "--json-in", "--json"}, `{"card":"6c5e0e39","question":"Close M4?","actions":[{"key":"close","label":"Close it","primary":true,"ops":[{"op":"card.move","id":"6c5e0e39","lane":"archived"}]}]}` + "\n", "ask.add", map[string]any{"card": "6c5e0e39", "question": "Close M4?", "actions": []any{map[string]any{"key": "close", "label": "Close it", "primary": true, "ops": []any{map[string]any{"op": "card.move", "id": "6c5e0e39", "lane": "archived"}}}}}},
+		{"ask.add-stage", []string{"attn", "ask", "add", "--json-in", "--stage", "--json"}, `{"card":"6c5e0e39","question":"Q?","actions":[]}`, "ask.add", map[string]any{"card": "6c5e0e39", "question": "Q?", "actions": []any{}, "stage": true}},
+		{"ask.list", []string{"attn", "ask", "list", "--json"}, "", "ask.list", map[string]any{}},
+		{"ask.list-all", []string{"attn", "ask", "list", "--all", "--json"}, "", "ask.list", map[string]any{"all": true}},
+		{"ask.resolve", []string{"attn", "ask", "resolve", "7", "close", "--json"}, "", "ask.resolve", map[string]any{"id": 7, "choice": "close"}},
+		{"ask.resolve-not-now", []string{"attn", "ask", "resolve", "#7", "not-now", "--json"}, "", "ask.resolve", map[string]any{"id": 7, "choice": "not-now"}},
+		{"ask.more", []string{"attn", "ask", "more", "--json"}, "", "ask.more", map[string]any{}},
+		{"ask.drop", []string{"attn", "ask", "drop", "7", "--json"}, "", "ask.drop", map[string]any{"id": 7}},
+		{"ask.surface", []string{"attn", "ask", "surface", "7", "--json"}, "", "ask.surface", map[string]any{"id": 7}},
+		{"ask.talk", []string{"attn", "ask", "talk", "7", "--json"}, "", "ask.talk", map[string]any{"id": 7}},
 		{"status", []string{"attn", "status", "--json"}, "", "status", map[string]any{}},
 	}
 	seen := map[string]bool{}
@@ -399,5 +415,174 @@ func TestAttnOtherHumanOutput(t *testing.T) {
 	code, out, stderr := runWithSocket(t, []string{"attn", "status"}, "", "{\"ok\":false,\"error\":{\"code\":\"unavailable\",\"message\":\"attn unavailable in this owning Familiar resident\"}}\n", nil)
 	if code != ExitUnavailable || out != "" || !strings.Contains(stderr, "unavailable") {
 		t.Errorf("code=%d out=%q err=%q", code, out, stderr)
+	}
+}
+
+// pinAttnNow fixes the DATE clock at Wed 2026-10-14 23:30 America/Chicago,
+// which is already Thursday in UTC.
+func pinAttnNow(t *testing.T) {
+	t.Helper()
+	old := attnNow
+	attnNow = func() time.Time { return time.Date(2026, 10, 15, 4, 30, 0, 0, time.UTC) }
+	t.Cleanup(func() { attnNow = old })
+}
+
+func TestParseAttnDate(t *testing.T) {
+	// Wednesday evening in Chicago (Thursday in UTC).
+	now := time.Date(2026, 10, 15, 4, 30, 0, 0, time.UTC)
+	for in, want := range map[string]string{
+		"2026-12-25": "2026-12-25",
+		"today":      "2026-10-14",
+		"Tomorrow":   "2026-10-15",
+		"wed":        "2026-10-14", // today counts
+		"Wednesday":  "2026-10-14",
+		"thu":        "2026-10-15",
+		"thurs":      "2026-10-15",
+		"fri":        "2026-10-16",
+		"sat":        "2026-10-17",
+		"sun":        "2026-10-18",
+		"mon":        "2026-10-19",
+		"tue":        "2026-10-20", // furthest: 6 days out
+		"tuesday":    "2026-10-20",
+	} {
+		got, err := parseAttnDate(in, now)
+		if err != nil || got != want {
+			t.Errorf("%s: got %q %v want %q", in, got, err, want)
+		}
+	}
+	// Month rollover and Sunday-as-today.
+	if got, _ := parseAttnDate("fri", time.Date(2026, 10, 30, 18, 0, 0, 0, time.UTC)); got != "2026-10-30" {
+		t.Errorf("fri on Fri 10-30: %q", got)
+	}
+	if got, _ := parseAttnDate("mon", time.Date(2026, 10, 30, 18, 0, 0, 0, time.UTC)); got != "2026-11-02" {
+		t.Errorf("mon rollover: %q", got)
+	}
+	for _, bad := range []string{"", "someday", "2026-13-01", "2026-02-30", "10/14/2026", "next fri", "none"} {
+		if got, err := parseAttnDate(bad, now); err == nil {
+			t.Errorf("%q accepted as %q", bad, got)
+		}
+	}
+}
+
+func TestAttnDateFlagValidation(t *testing.T) {
+	pinAttnNow(t)
+	for _, argv := range [][]string{
+		{"attn", "jot", "add", "--title", "x", "--due", "none"},
+		{"attn", "jot", "add", "--title", "x", "--due", "someday"},
+		{"attn", "card", "set", "c1", "--due", "soon"},
+		{"attn", "card", "set", "c1", "--maybe-on", "2026-99-01"},
+		{"attn", "ask", "add"},                   // --json-in required
+		{"attn", "ask", "add", "--json-in"},      // empty stdin
+		{"attn", "ask", "resolve", "7"},          // no choice
+		{"attn", "ask", "resolve", "x", "close"}, // bad id
+		{"attn", "ask", "drop", "0"},             // bad id
+		{"attn", "ask", "more", "extra"},         // stray arg
+		{"attn", "ask", "list", "--stage"},       // flag not for list
+	} {
+		var out, stderr bytes.Buffer
+		if code := Main(argv, strings.NewReader(""), &out, &stderr, func(string) string { return "/never/dialled.sock" }); code != ExitUsage {
+			t.Errorf("%v code=%d err=%s", argv, code, stderr.String())
+		}
+	}
+	for _, body := range []string{`[1]`, `"x"`, `null`, `{"a":1} {"b":2}`, `{`} {
+		var out, stderr bytes.Buffer
+		if code := Main([]string{"attn", "ask", "add", "--json-in"}, strings.NewReader(body), &out, &stderr, func(string) string { return "/never/dialled.sock" }); code != ExitUsage {
+			t.Errorf("body %q code=%d err=%s", body, code, stderr.String())
+		}
+	}
+}
+
+func TestAskListHumanOutput(t *testing.T) {
+	list := `{"surfaced":[` +
+		`{"id":7,"card":{"id":"6c5e0e39-0000","project":"familiar-services","title":"M4"},"question":"Close M4?","actions":[{"key":"close","label":"Close it","primary":true},{"key":"keep","label":"Keep"}],"state":"surfaced"},` +
+		`{"id":8,"card":{"id":"aaaaaaaa-0000","project":"familiar","title":"T"},"question":"Two\nlines?","actions":[{"key":"yes","label":"Y"}],"state":"surfaced"}],` +
+		`"staged":[{"id":9,"card":{"id":"bbbbbbbb-0000","project":"familiar","title":"T"},"question":"Later?","actions":[{"key":"ok","label":"OK"},{"key":"no","label":"No"}],"state":"staged"}]`
+	resolved := `,"resolved":[{"id":3,"card":{"id":"cccccccc","project":"familiar","title":"T"},"question":"Old?","actions":[{"key":"a","label":"A"}],"state":"resolved","resolution":"a"}]`
+	_, out, stderr := runWithSocket(t, []string{"attn", "ask", "list"}, "", `{"ok":true,"result":`+list+`}}`+"\n", nil)
+	want := "#7 [surfaced] familiar-services · Close M4? — close|keep\n" +
+		"#8 [surfaced] familiar · Two lines? — yes\n" +
+		"#9 [staged] familiar · Later? — ok|no\n"
+	if out != want || stderr != "" {
+		t.Fatalf("out=%q err=%q", out, stderr)
+	}
+	_, out, _ = runWithSocket(t, []string{"attn", "ask", "list", "--all"}, "", `{"ok":true,"result":`+list+resolved+`}}`+"\n", nil)
+	if out != want+"#3 [resolved] familiar · Old? — a\n" {
+		t.Fatalf("--all out=%q", out)
+	}
+	_, out, _ = runWithSocket(t, []string{"attn", "ask", "list"}, "", `{"ok":true,"result":{"surfaced":[],"staged":[]}}`+"\n", nil)
+	if out != "No asks.\n" {
+		t.Errorf("empty out=%q", out)
+	}
+	_, out, _ = runWithSocket(t, []string{"attn", "ask", "list", "--json"}, "", `{"ok":true,"result":{"surfaced":[],"staged":[]}}`+"\n", nil)
+	if out != `{"surfaced":[],"staged":[]}`+"\n" {
+		t.Errorf("json out=%q", out)
+	}
+}
+
+func TestAskConfirmations(t *testing.T) {
+	ask := `{"id":7,"card":{"id":"c1","project":"p","title":"t"},"question":"Q?","actions":[],"state":"%s","resolution":%s}`
+	for _, tc := range []struct {
+		argv   []string
+		stdin  string
+		result string
+		want   string
+	}{
+		{[]string{"attn", "ask", "add", "--json-in"}, `{"card":"c1","question":"Q?","actions":[]}`, fmt.Sprintf(ask, "surfaced", "null"), "asked #7 [surfaced]\n"},
+		{[]string{"attn", "ask", "add", "--json-in", "--stage"}, `{"card":"c1","question":"Q?","actions":[]}`, fmt.Sprintf(ask, "staged", "null"), "asked #7 [staged]\n"},
+		{[]string{"attn", "ask", "resolve", "7", "close"}, "", `{"resolved":` + fmt.Sprintf(ask, "resolved", `"close"`) + `,"card":{"id":"c1"}}`, "resolved #7 (close)\n"},
+		{[]string{"attn", "ask", "more"}, "", `{"surfaced":2,"staged_left":1}`, "surfaced 2 more; 1 staged left\n"},
+		{[]string{"attn", "ask", "drop", "7"}, "", fmt.Sprintf(ask, "dropped", `"dropped"`), "dropped #7\n"},
+		{[]string{"attn", "ask", "surface", "7"}, "", fmt.Sprintf(ask, "surfaced", "null"), "surfaced #7\n"},
+		{[]string{"attn", "ask", "talk", "7"}, "", fmt.Sprintf(ask, "surfaced", "null"), "noted conversation about #7\n"},
+	} {
+		code, out, stderr := runWithSocket(t, tc.argv, tc.stdin, `{"ok":true,"result":`+tc.result+"}\n", nil)
+		if code != 0 || out != tc.want || stderr != "" {
+			t.Errorf("%v: code=%d out=%q err=%q want %q", tc.argv, code, out, stderr, tc.want)
+		}
+	}
+}
+
+func TestJotRowsShowDueAndMaybe(t *testing.T) {
+	pinAttnNow(t) // Wed 2026-10-14 in Chicago
+	row := func(due, maybe string) string {
+		return `{"id":"deadbeef-1","project":"_today","lane":"captured","title":"Septic","owner":"kevin","effective_policy":"ship-tell","age_s":7200,"agents":{"running":0,"blocked":0},"due":` + due + `,"maybe_on":` + maybe + `}`
+	}
+	result := `{"ok":true,"result":[` + strings.Join([]string{
+		row(`"2026-10-14"`, `null`),
+		row(`"2026-10-16"`, `null`),
+		row(`"2026-10-12"`, `null`),
+		row(`"2027-01-05"`, `null`),
+		row(`null`, `"2026-10-14"`),
+		row(`null`, `null`),
+	}, ",") + `]}` + "\n"
+	_, out, _ := runWithSocket(t, []string{"attn", "jot", "list", "--all"}, "", result, nil)
+	want := "deadbeef  captured  kevin  due today  2h  Septic\n" +
+		"deadbeef  captured  kevin  due Fri  2h  Septic\n" +
+		"deadbeef  captured  kevin  due Mon  2h  Septic\n" +
+		"deadbeef  captured  kevin  due 2027-01-05  2h  Septic\n" +
+		"deadbeef  captured  kevin  maybe  2h  Septic\n" +
+		"deadbeef  captured  kevin  maybe  2h  Septic\n"
+	if out != want {
+		t.Fatalf("out=%q\nwant=%q", out, want)
+	}
+}
+
+func TestStatusAsksLine(t *testing.T) {
+	status := `{"ok":true,"result":{"agents":{"running":2,"blocked":1},"needs_attention":3,"inflight":4,"asks":{"surfaced":3,"staged":2},"jots":{"open":5,"stale":1}}}` + "\n"
+	_, out, _ := runWithSocket(t, []string{"attn", "status"}, "", status, nil)
+	if out != "agents: 2 running, 1 blocked  asks: 3 surfaced, 2 staged  jots: 5 open, 1 stale\n" {
+		t.Errorf("out=%q", out)
+	}
+}
+
+func TestAskHelp(t *testing.T) {
+	var out bytes.Buffer
+	if Main([]string{"attn", "ask", "add", "--help"}, strings.NewReader(""), &out, &out, func(string) string { return "" }) != 0 || !strings.Contains(out.String(), "--json-in") || !strings.Contains(out.String(), "--stage") {
+		t.Fatalf("help: %q", out.String())
+	}
+	for _, key := range []string{"jot.add", "card.set", "jot.list"} {
+		if u := attnUsage[key]; !strings.Contains(u, "DATE") && key != "jot.list" || (key == "jot.list" && !strings.Contains(u, "--all")) {
+			t.Errorf("usage %s lacks new flags: %q", key, u)
+		}
 	}
 }

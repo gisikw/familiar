@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	_ "time/tzdata" // DATE resolution must work in a minimal Nix closure
 )
 
 // maxAttnRows bounds every human list rendering by construction; the resident
@@ -27,9 +28,76 @@ var attnValueFlags = map[string]bool{
 	"owner": true, "edge": true, "q": true, "title": true, "summary": true, "policy": true,
 	"reason": true, "text": true, "detail": true, "kind": true, "ref": true, "meta": true,
 	"name": true, "model": true, "host": true, "harness": true, "state": true, "question": true,
-	"hold-until": true,
+	"hold-until": true, "due": true, "maybe-on": true,
 }
-var attnBoolFlags = map[string]bool{"hidden": true, "undo": true}
+var attnBoolFlags = map[string]bool{"hidden": true, "undo": true, "all": true, "stage": true, "json-in": true}
+
+// attnNow is the clock for DATE flags and date-relative rendering; tests
+// replace it.
+var attnNow = time.Now
+
+const attnTZ = "America/Chicago"
+
+func attnLocation() *time.Location {
+	loc, err := time.LoadLocation(attnTZ)
+	if err != nil {
+		return time.UTC
+	}
+	return loc
+}
+
+var attnWeekdays = map[string]time.Weekday{
+	"sun": time.Sunday, "sunday": time.Sunday,
+	"mon": time.Monday, "monday": time.Monday,
+	"tue": time.Tuesday, "tues": time.Tuesday, "tuesday": time.Tuesday,
+	"wed": time.Wednesday, "weds": time.Wednesday, "wednesday": time.Wednesday,
+	"thu": time.Thursday, "thur": time.Thursday, "thurs": time.Thursday, "thursday": time.Thursday,
+	"fri": time.Friday, "friday": time.Friday,
+	"sat": time.Saturday, "saturday": time.Saturday,
+}
+
+// parseAttnDate resolves YYYY-MM-DD, today, tomorrow, or a weekday name/abbrev
+// (next occurrence; today counts if it is that weekday) to YYYY-MM-DD in
+// America/Chicago.
+func parseAttnDate(v string, now time.Time) (string, error) {
+	now = now.In(attnLocation())
+	v = strings.ToLower(strings.TrimSpace(v))
+	switch v {
+	case "today":
+		return now.Format("2006-01-02"), nil
+	case "tomorrow":
+		return now.AddDate(0, 0, 1).Format("2006-01-02"), nil
+	}
+	if wd, ok := attnWeekdays[v]; ok {
+		days := (int(wd) - int(now.Weekday()) + 7) % 7
+		return now.AddDate(0, 0, days).Format("2006-01-02"), nil
+	}
+	if len(v) == 10 {
+		if t, err := time.Parse("2006-01-02", v); err == nil {
+			return t.Format("2006-01-02"), nil
+		}
+	}
+	return "", fmt.Errorf("date must be YYYY-MM-DD, today, tomorrow, or a weekday name like fri")
+}
+
+// attnDueLabel renders a due date relative to today in America/Chicago:
+// "today", a weekday abbreviation within six days either side, else the date.
+func attnDueLabel(due string, now time.Time) string {
+	d, err := time.Parse("2006-01-02", due)
+	if err != nil {
+		return due
+	}
+	n := now.In(attnLocation())
+	today := time.Date(n.Year(), n.Month(), n.Day(), 0, 0, 0, 0, time.UTC)
+	days := int(d.Sub(today).Hours() / 24)
+	switch {
+	case days == 0:
+		return "today"
+	case days >= -6 && days <= 6:
+		return d.Format("Mon")
+	}
+	return due
+}
 
 // attnVerbs enumerates the exact noun/verb table; the wire operation is noun.verb.
 var attnVerbs = map[string][]string{
@@ -39,8 +107,9 @@ var attnVerbs = map[string][]string{
 	"evidence": {"add"},
 	"agent":    {"start", "set"},
 	"jot":      {"add", "list", "clear-done"},
+	"ask":      {"add", "list", "resolve", "more", "drop", "surface", "talk"},
 }
-var attnNouns = []string{"project", "card", "note", "evidence", "agent", "jot", "status"}
+var attnNouns = []string{"project", "card", "note", "evidence", "agent", "jot", "ask", "status"}
 
 func attnVerb(noun, verb string) bool { return inSet(attnVerbs[noun], verb) }
 
@@ -184,6 +253,35 @@ func parseAttn(argv []string, stdin io.Reader) (invocation, error) {
 		out.args[wire] = v
 		return nil
 	}
+	// putDate resolves a DATE flag; allowNone lets "none" send JSON null.
+	putDate := func(flag, wire string, allowNone bool) error {
+		v, ok := flags.take(flag)
+		if !ok {
+			return nil
+		}
+		if allowNone && strings.EqualFold(strings.TrimSpace(v), "none") {
+			out.args[wire] = nil
+			return nil
+		}
+		d, err := parseAttnDate(v, attnNow())
+		if err != nil {
+			return fmt.Errorf("--%s: %v", flag, err)
+		}
+		out.args[wire] = d
+		return nil
+	}
+	takeAskID := func() error {
+		raw, err := takePositional("ask id")
+		if err != nil {
+			return err
+		}
+		n, err := strconv.Atoi(strings.TrimPrefix(raw, "#"))
+		if err != nil || n <= 0 {
+			return fmt.Errorf("ask id must be a positive integer (got %q)", raw)
+		}
+		out.args["id"] = n
+		return nil
+	}
 	steps := func(fns ...func() error) error {
 		for _, fn := range fns {
 			if err := fn(); err != nil {
@@ -259,6 +357,8 @@ func parseAttn(argv []string, stdin io.Reader) (invocation, error) {
 			func() error { return putProse("title", "title", false) },
 			func() error { return putProse("summary", "summary", false) },
 			func() error { return putEnum("owner", "owner", attnOwners, false) },
+			func() error { return putDate("due", "due", true) },
+			func() error { return putDate("maybe-on", "maybe_on", true) },
 		); err != nil {
 			return out, err
 		}
@@ -273,7 +373,7 @@ func parseAttn(argv []string, stdin io.Reader) (invocation, error) {
 			}
 		}
 		if len(out.args) == 1 {
-			return out, fmt.Errorf("card set requires at least one of --title, --summary, --owner, --policy")
+			return out, fmt.Errorf("card set requires at least one of --title, --summary, --owner, --policy, --due, --maybe-on")
 		}
 	case "card.move":
 		id, err := takePositional("card id")
@@ -378,10 +478,49 @@ func parseAttn(argv []string, stdin io.Reader) (invocation, error) {
 		if err := steps(
 			func() error { return putProse("title", "title", true) },
 			func() error { return putEnum("owner", "owner", attnOwners, false) },
+			func() error { return putDate("due", "due", false) },
 		); err != nil {
 			return out, err
 		}
-	case "jot.list", "jot.clear-done", "status":
+	case "jot.list", "ask.list":
+		if flags.takeBool("all") {
+			out.args["all"] = true
+		}
+	case "ask.add":
+		if !flags.takeBool("json-in") {
+			return out, fmt.Errorf("ask add requires --json-in (the ask JSON object is read from stdin)")
+		}
+		body, err := readProse(stdin)
+		if err != nil {
+			return out, err
+		}
+		dec := json.NewDecoder(strings.NewReader(body))
+		dec.UseNumber()
+		var obj map[string]any
+		if err := dec.Decode(&obj); err != nil || obj == nil {
+			return out, fmt.Errorf("ask add: stdin must be a JSON object")
+		}
+		if dec.More() {
+			return out, fmt.Errorf("ask add: unexpected data after the JSON object")
+		}
+		out.args = obj
+		if flags.takeBool("stage") {
+			out.args["stage"] = true
+		}
+	case "ask.resolve":
+		if err := takeAskID(); err != nil {
+			return out, err
+		}
+		choice, err := takePositional("choice (an action key or not-now)")
+		if err != nil {
+			return out, err
+		}
+		out.args["choice"] = choice
+	case "ask.drop", "ask.surface", "ask.talk":
+		if err := takeAskID(); err != nil {
+			return out, err
+		}
+	case "jot.clear-done", "ask.more", "status":
 	}
 	if len(positional) != 0 {
 		return out, fmt.Errorf("%s has unexpected arguments", op)
@@ -408,6 +547,8 @@ type attnCard struct {
 	Blocked         *string `json:"blocked"`
 	Edge            *string `json:"edge"`
 	Done            bool    `json:"done"`
+	Due             *string `json:"due"`
+	MaybeOn         *string `json:"maybe_on"`
 	Stale           bool    `json:"stale"`
 	Fading          bool    `json:"fading"`
 	AgeS            float64 `json:"age_s"`
@@ -581,6 +722,11 @@ func attnRow(c attnCard) string {
 	if c.Blocked != nil || c.Agents.Blocked > 0 {
 		fields = append(fields, "!blocked")
 	}
+	if c.Due != nil && *c.Due != "" {
+		fields = append(fields, "due "+attnDueLabel(*c.Due, attnNow()))
+	} else if (c.MaybeOn != nil && *c.MaybeOn != "") || c.Project == "_today" {
+		fields = append(fields, "maybe")
+	}
 	fields = append(fields, attnAge(c.AgeS), strings.ReplaceAll(c.Title, "\n", " "))
 	return strings.Join(fields, "  ")
 }
@@ -748,6 +894,71 @@ func attnProjectLine(p attnProject) string {
 	return line
 }
 
+type attnAsk struct {
+	ID   int `json:"id"`
+	Card struct {
+		ID      string `json:"id"`
+		Project string `json:"project"`
+	} `json:"card"`
+	Question   string  `json:"question"`
+	State      string  `json:"state"`
+	Resolution *string `json:"resolution"`
+	Actions    []struct {
+		Key string `json:"key"`
+	} `json:"actions"`
+}
+
+func attnAskLine(a attnAsk) string {
+	project := a.Card.Project
+	if project == "" {
+		project = a.Card.ID
+		if len(project) > 8 {
+			project = project[:8]
+		}
+	}
+	keys := make([]string, 0, len(a.Actions))
+	for _, act := range a.Actions {
+		keys = append(keys, act.Key)
+	}
+	line := fmt.Sprintf("#%d [%s] %s · %s", a.ID, a.State, project, strings.Join(strings.Fields(a.Question), " "))
+	if len(keys) > 0 {
+		line += " — " + strings.Join(keys, "|")
+	}
+	return line
+}
+
+// writeAttnAsks renders ask.list grouped surfaced, staged, then resolved
+// (--all), clipped to maxAttnRows overall.
+func writeAttnAsks(w io.Writer, raw json.RawMessage) error {
+	var r struct {
+		Surfaced []attnAsk `json:"surfaced"`
+		Staged   []attnAsk `json:"staged"`
+		Resolved []attnAsk `json:"resolved"`
+	}
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return err
+	}
+	total := len(r.Surfaced) + len(r.Staged) + len(r.Resolved)
+	if total == 0 {
+		_, err := io.WriteString(w, "No asks.\n")
+		return err
+	}
+	shown := 0
+	for _, group := range [][]attnAsk{r.Surfaced, r.Staged, r.Resolved} {
+		for _, a := range group {
+			if shown == maxAttnRows {
+				break
+			}
+			fmt.Fprintln(w, attnAskLine(a))
+			shown++
+		}
+	}
+	if total > shown {
+		fmt.Fprintf(w, "… and %d more\n", total-shown)
+	}
+	return nil
+}
+
 func writeAttnHuman(w io.Writer, operation string, raw json.RawMessage) error {
 	switch operation {
 	case "project.list":
@@ -795,6 +1006,47 @@ func writeAttnHuman(w io.Writer, operation string, raw json.RawMessage) error {
 		}
 		fmt.Fprintf(w, "archived %d\n", r.Archived)
 		return nil
+	case "ask.add", "ask.surface", "ask.drop", "ask.talk":
+		var a attnAsk
+		if err := json.Unmarshal(raw, &a); err != nil || a.ID == 0 {
+			return fmt.Errorf("result is not an ask")
+		}
+		switch operation {
+		case "ask.add":
+			fmt.Fprintf(w, "asked #%d [%s]\n", a.ID, a.State)
+		case "ask.surface":
+			fmt.Fprintf(w, "surfaced #%d\n", a.ID)
+		case "ask.drop":
+			fmt.Fprintf(w, "dropped #%d\n", a.ID)
+		default:
+			fmt.Fprintf(w, "noted conversation about #%d\n", a.ID)
+		}
+		return nil
+	case "ask.resolve":
+		var r struct {
+			Resolved attnAsk `json:"resolved"`
+		}
+		if err := json.Unmarshal(raw, &r); err != nil || r.Resolved.ID == 0 {
+			return fmt.Errorf("result is not a resolved ask")
+		}
+		res := ""
+		if r.Resolved.Resolution != nil {
+			res = " (" + *r.Resolved.Resolution + ")"
+		}
+		fmt.Fprintf(w, "resolved #%d%s\n", r.Resolved.ID, res)
+		return nil
+	case "ask.more":
+		var r struct {
+			Surfaced   int `json:"surfaced"`
+			StagedLeft int `json:"staged_left"`
+		}
+		if err := json.Unmarshal(raw, &r); err != nil {
+			return err
+		}
+		fmt.Fprintf(w, "surfaced %d more; %d staged left\n", r.Surfaced, r.StagedLeft)
+		return nil
+	case "ask.list":
+		return writeAttnAsks(w, raw)
 	case "status":
 		var s struct {
 			Agents struct {
@@ -803,13 +1055,22 @@ func writeAttnHuman(w io.Writer, operation string, raw json.RawMessage) error {
 			} `json:"agents"`
 			NeedsAttention int `json:"needs_attention"`
 			Inflight       int `json:"inflight"`
-			Jots           struct {
+			Asks           *struct {
+				Surfaced int `json:"surfaced"`
+				Staged   int `json:"staged"`
+			} `json:"asks"`
+			Jots struct {
 				Open  int `json:"open"`
 				Stale int `json:"stale"`
 			} `json:"jots"`
 		}
 		if err := json.Unmarshal(raw, &s); err != nil {
 			return err
+		}
+		if s.Asks != nil {
+			fmt.Fprintf(w, "agents: %d running, %d blocked  asks: %d surfaced, %d staged  jots: %d open, %d stale\n",
+				s.Agents.Running, s.Agents.Blocked, s.Asks.Surfaced, s.Asks.Staged, s.Jots.Open, s.Jots.Stale)
+			return nil
 		}
 		fmt.Fprintf(w, "agents: %d running, %d blocked  needs attention: %d  in flight: %d  jots: %d open, %d stale\n",
 			s.Agents.Running, s.Agents.Blocked, s.NeedsAttention, s.Inflight, s.Jots.Open, s.Jots.Stale)
@@ -830,12 +1091,15 @@ Nouns:
   note      Append a note to a card (authored as Kes)
   evidence  Attach evidence (pr, commit, shot, run, link) to a card
   agent     Record an agent starting on, or changing state on, a card
-  jot       Today's jots: add, list, clear-done
-  status    One-line glance: agents, needs attention, in flight, jots
+  jot       Today's jots: add, list, clear-done (due dates; Maybe today)
+  ask       Asks: bounded decisions for Kev about one card (max 3 surfaced)
+  status    One-line glance: agents, asks (surfaced/staged), jots
 
 Run 'imp attn <noun> --help' to discover commands.
 All commands accept --json. Prose flags (--title, --summary, --text, --detail)
 accept a lone '-' to read stdin (up to 64 KiB).
+DATE flags (--due, --maybe-on) take YYYY-MM-DD, today, tomorrow, or a weekday
+name (mon, tue, ... next occurrence; today counts), in America/Chicago.
 `
 
 var attnUsage = map[string]string{
@@ -846,7 +1110,7 @@ var attnUsage = map[string]string{
 	"card.list":      "Usage: imp attn card list (--project SLUG | --lane LANE) [--owner kevin|kes] [--edge blocked|review|live] [--q TEXT] [--json]\n\nAt least one of --project or --lane is required. Prints at most 64 rows:\n  id-prefix  lane  owner  [policy if diverges]  [!blocked]  age  title\n",
 	"card.get":       "Usage: imp attn card get ID [--json]\n\nPrints title, project/lane/owner/policy, summary, evidence, the short timeline, and notes.\nThe raw event log is available only with --json.\n",
 	"card.add":       "Usage: imp attn card add --project SLUG (--title TEXT | --title -) [--lane LANE] [--summary TEXT|-] [--owner kevin|kes] [--policy POLICY] [--json]\n",
-	"card.set":       "Usage: imp attn card set ID [--title TEXT|-] [--summary TEXT|-] [--owner kevin|kes] [--policy POLICY|default] [--json]\n\n--policy default clears the card's policy back to the project default.\n",
+	"card.set":       "Usage: imp attn card set ID [--title TEXT|-] [--summary TEXT|-] [--owner kevin|kes] [--policy POLICY|default] [--due DATE|none] [--maybe-on DATE|none] [--json]\n\n--policy default clears the card's policy back to the project default.\n--due and --maybe-on apply to jots (_today) only; DATE is YYYY-MM-DD, today, tomorrow, or a\nweekday (next occurrence; today counts) in America/Chicago. 'none' clears the date.\nSetting --due promotes a Maybe-today jot to Today.\n",
 	"card.move":      "Usage: imp attn card move ID <captured|icebox|clarified|inflight|review|settling|archived> [--hold-until TIME] [--json]\n\nSettling means \"Kev, this is probably done; close it when you're satisfied\", so a card\nmoved to settling becomes Kevin's. To keep it in settling yourself, pass --hold-until TIME\n(RFC3339, HH:MM, or a duration like 90m, 36h, 2d): the card stays yours until then and a\nwake is scheduled for that time to archive it or hand it to Kevin.\n",
 	"card.block":     "Usage: imp attn card block ID --reason TEXT [--json]\n",
 	"card.unblock":   "Usage: imp attn card unblock ID [--json]\n",
@@ -855,8 +1119,15 @@ var attnUsage = map[string]string{
 	"evidence.add":   "Usage: imp attn evidence add CARD_ID --kind <pr|commit|shot|run|link> (--title TEXT | --title -) [--ref URL_SHA_OR_PATH] [--meta JSON_OBJECT] [--json]\n",
 	"agent.start":    "Usage: imp attn agent start CARD_ID --name NAME [--model MODEL] [--host HOST] [--harness HARNESS] [--json]\n",
 	"agent.set":      "Usage: imp attn agent set CARD_ID --name NAME --state <running|blocked|done|failed|cancelled> [--question TEXT] [--json]\n",
-	"jot.add":        "Usage: imp attn jot add (--title TEXT | --title -) [--owner kevin|kes] [--json]\n",
-	"jot.list":       "Usage: imp attn jot list [--json]\n",
+	"jot.add":        "Usage: imp attn jot add (--title TEXT | --title -) [--owner kevin|kes] [--due DATE] [--json]\n\nWith --due the jot is a Today task; without it, a Maybe-today intention.\nDATE: YYYY-MM-DD, today, tomorrow, or a weekday (next occurrence; today counts), America/Chicago.\n",
+	"jot.list":       "Usage: imp attn jot list [--all] [--json]\n\nDefault view: jots due today or earlier, plus today's maybes. --all lists every non-archived jot.\nRows show 'due Fri' / 'due today' or 'maybe' before the age.\n",
+	"ask.add":        "Usage: imp attn ask add --json-in [--stage] [--json]\n\nReads the ask JSON object from stdin (up to 64 KiB) and forwards it as-is:\n  {\"card\":\"6c5e0e39\",\"question\":\"Close M4?\",\"steps\":\"...\",\"link\":\"...\",\"link_label\":\"...\",\n   \"actions\":[{\"key\":\"close\",\"label\":\"Close it\",\"primary\":true,\"ops\":[...]}]}\n--stage keeps the ask invisible until Kev asks for more. At most 3 asks are surfaced.\n",
+	"ask.list":       "Usage: imp attn ask list [--all] [--json]\n\nPrints surfaced, then staged (then resolved with --all):\n  #7 [surfaced] project · question — key1|key2\n",
+	"ask.resolve":    "Usage: imp attn ask resolve ID CHOICE [--json]\n\nCHOICE is an action key or not-now.\n",
+	"ask.more":       "Usage: imp attn ask more [--json]\n\nSurfaces staged asks until 3 are surfaced.\n",
+	"ask.drop":       "Usage: imp attn ask drop ID [--json]\n\nWithdraws an ask.\n",
+	"ask.surface":    "Usage: imp attn ask surface ID [--json]\n\nSurfaces a staged ask if fewer than 3 are surfaced.\n",
+	"ask.talk":       "Usage: imp attn ask talk ID [--json]\n\nRecords that Kev opened a conversation about the ask; does not resolve it.\n",
 	"jot.clear-done": "Usage: imp attn jot clear-done [--json]\n",
 	"status":         "Usage: imp attn status [--json]\n",
 }
