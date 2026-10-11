@@ -39,6 +39,12 @@ skip_version_check = 1
 # history and by agent-visible local paths. Keep it private and back it up with
 # the session archive. See familiar-ui's docs/ATTACHMENTS.md.
 # ui_attachment_dir = "./state/familiar-ui/attachments"
+# Quiet fork returns normally wait for the next message. If the primary sits
+# idle this long with returns pending, they're delivered in one self-wake turn
+# so the prompt cache stays warm (never mid-turn, never during DND, never once
+# idle reaches the cache TTL). 0 disables.
+# warm_wake_minutes = 55
+# warm_wake_ttl_minutes = 60
 # ui_attachment_max_bytes = 16777216 # per attachment; 64 MiB hard maximum
 # subscriber_port = 1692
 # tz = "America/Chicago"

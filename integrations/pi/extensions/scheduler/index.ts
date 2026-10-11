@@ -30,22 +30,64 @@ let bootNoticePending = process.env.FAMILIAR_PI_FORK !== "1" && process.env.NODE
 /** The Pi is only a scheduler transport endpoint: connect, inject, acknowledge.
  * The one exception is a `fork` event: it spawns a background fork of this
  * instance and takes no model turn here. */
-export default function (pi: ExtensionAPI) {
+export default function (pi: ExtensionAPI, options: { warmWake?: Partial<WarmWakeConfig> & { dndOn?: () => Promise<boolean>; intervalMs?: number; primary?: boolean } } = {}) {
   let client: SchedulerClient | undefined;
   let exportedInstance: string | undefined;
   let seen = new Set<string>();
-  // Soft events queued in Pi's nextTurn buffer, awaiting persistence. A
-  // redelivery (scheduler reconnect) of an ID already here adds a resolver
-  // rather than a second queued copy.
+  // Soft events awaiting persistence. A redelivery (scheduler reconnect) of an
+  // ID already here adds a resolver rather than a second queued copy.
   const waiting = new Map<string, Array<() => void>>();
+  // Soft messages not yet handed to Pi. They stay here, not in Pi's nextTurn
+  // buffer, until a real prompt is about to drain that buffer (`input`), so a
+  // warm wake can still deliver them itself without leaving a duplicate behind.
+  const held = new Map<string, ReturnType<typeof renderScheduledEvent>>();
   const idleWaiters: Array<() => void> = [];
   let isIdle: () => boolean = () => true;
   // Set when a redelivered wake event has already started a turn since boot.
   let wokeSinceBoot = false;
+  // Last time the primary did anything: a prompt arrived or a run settled.
+  let lastActivity = Date.now();
+  let warmTimer: ReturnType<typeof setInterval> | undefined;
+  let warming = false;
+  const warm = warmWakeConfig(options.warmWake);
+  const dndOn = options.warmWake?.dndOn ?? dndActive;
 
   // Branch from a settled turn, never from the middle of one.
   const whenIdle = () => isIdle() ? Promise.resolve() : new Promise<void>((resolve) => idleWaiters.push(resolve));
-  pi.on("agent_settled", () => { for (const resolve of idleWaiters.splice(0)) resolve(); });
+  pi.on("agent_settled", () => { lastActivity = Date.now(); for (const resolve of idleWaiters.splice(0)) resolve(); });
+  pi.on("agent_end", () => { lastActivity = Date.now(); });
+  // A prompt is about to build its turn: hand held soft messages to Pi's
+  // nextTurn buffer so they ride with his words, exactly as before. While a
+  // run is streaming the input becomes a steer and nothing drains, so they
+  // stay held (and warm-wakeable) until a prompt that will drain them.
+  pi.on("input", (_event, ctx) => {
+    lastActivity = Date.now();
+    if (!isIdle()) return;
+    for (const [id, message] of held) { held.delete(id); pi.sendMessage(message, { deliverAs: "nextTurn" }); }
+  });
+
+  /** Deliver every held soft message now, as one self-wake turn, so the
+   * prompt cache (1h TTL) stays warm instead of going cold before Kev is
+   * back. Only from a settled primary, inside the warm window, outside DND. */
+  async function maybeWarmWake(now = Date.now()) {
+    if (warming || !held.size || !isIdle()) return;
+    const idleMs = now - lastActivity;
+    if (!warmWakeDue(warm, idleMs)) return;
+    warming = true;
+    try {
+      if (await dndOn().catch(() => true)) return;
+      if (!held.size || !isIdle()) return;
+      const batch = [...held];
+      held.clear();
+      // Not streaming and no trigger: each is appended and persisted now,
+      // with its event id, so the ack path sees it at turn_start.
+      for (const [, message] of batch) pi.sendMessage(message);
+      lastActivity = Date.now();
+      pi.sendMessage(renderWarmWake(batch.length, idleMs), { deliverAs: "steer", triggerTurn: true });
+    } catch (error) {
+      errorLog("scheduler", { warmWakeError: String(error) });
+    } finally { warming = false; }
+  }
 
   async function spawnFork(event: ScheduledEvent) {
     const { task: rawTask, label, fresh, model, runner, taskFile, hidden } = forkRequest(event);
@@ -103,7 +145,7 @@ export default function (pi: ExtensionAPI) {
             const resolvers = waiting.get(event.id);
             if (resolvers) { resolvers.push(resolve); return; }
             waiting.set(event.id, [resolve]);
-            pi.sendMessage(message, { deliverAs: "nextTurn" });
+            held.set(event.id, message);
           });
         }
         pi.sendMessage(message, { deliverAs: "steer", triggerTurn: true });
@@ -113,6 +155,10 @@ export default function (pi: ExtensionAPI) {
       error(error) { errorLog("scheduler", { error: error.message }); },
     });
     client.start();
+    if (warm.thresholdMs > 0 && (options.warmWake?.primary ?? process.env.FAMILIAR_PI_FORK !== "1") && !warmTimer) {
+      warmTimer = setInterval(() => { void maybeWarmWake(); }, options.warmWake?.intervalMs ?? 60_000);
+      warmTimer.unref?.();
+    }
     if (bootNoticePending) {
       bootNoticePending = false;
       const deliveredBefore = seen.size;
@@ -147,6 +193,8 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_end", (_event, ctx) => settlePersisted(ctx));
   pi.on("session_shutdown", async () => {
     client?.stop(); client = undefined;
+    if (warmTimer) { clearInterval(warmTimer); warmTimer = undefined; }
+    held.clear();
     if (process.env.FAMILIAR_INSTANCE_ID === exportedInstance) delete process.env.FAMILIAR_INSTANCE_ID;
     exportedInstance = undefined;
     waiting.clear();
@@ -165,6 +213,50 @@ export default function (pi: ExtensionAPI) {
  * started a turn does the notice ride along without asking for another. */
 export function restartNoticeDelivery(wokeSinceBoot: boolean): { deliverAs: "steer"; triggerTurn: boolean } {
   return { deliverAs: "steer", triggerTurn: !wokeSinceBoot };
+}
+
+export const WARM_WAKE = "familiar.warm-wake.v1";
+export interface WarmWakeConfig { thresholdMs: number; ttlMs: number }
+
+/** `[familiar] warm_wake_minutes` (default 55; 0 disables) and
+ * `warm_wake_ttl_minutes` (default 60, the prompt-cache TTL). Past the TTL the
+ * cache is already cold, so a wake would cost a full reload for nothing: the
+ * held merges wait for Kev's next message as before. */
+export function warmWakeConfig(override: Partial<WarmWakeConfig> = {}, env: NodeJS.ProcessEnv = process.env): WarmWakeConfig {
+  const minutes = (raw: string | undefined, fallback: number) => {
+    const n = raw === undefined || raw.trim() === "" ? NaN : Number(raw);
+    return Number.isFinite(n) && n >= 0 ? n : fallback;
+  };
+  return {
+    thresholdMs: override.thresholdMs ?? minutes(env.FAMILIAR_WARM_WAKE_MINUTES, 55) * 60_000,
+    ttlMs: override.ttlMs ?? minutes(env.FAMILIAR_WARM_WAKE_TTL_MINUTES, 60) * 60_000,
+  };
+}
+
+export function warmWakeDue(config: WarmWakeConfig, idleMs: number): boolean {
+  return config.thresholdMs > 0 && idleMs >= config.thresholdMs && idleMs < config.ttlMs;
+}
+
+export function renderWarmWake(count: number, idleMs: number) {
+  const idle = `${Math.round(idleMs / 60_000)}m`;
+  return {
+    customType: WARM_WAKE,
+    content: `<familiar-warm-wake idle="${idle}" delivered="${count}">\nQuiet return${count === 1 ? "" : "s"} delivered while Kev is away (idle ${idle}), so the prompt cache stays warm. He is not here and is not waiting. Read and absorb; act only if something truly can't wait. Reply with a word or nothing. Do not push, notify, or message him about this.\n</familiar-warm-wake>`,
+    display: false,
+    details: { count, idleMs },
+  };
+}
+
+/** DND is owned by familiar-services; `imp dnd status --json` prints null
+ * when off. Any failure counts as on: never wake on a guess. */
+async function dndActive(): Promise<boolean> {
+  const { stdout } = await execFileAsync("imp", ["dnd", "status", "--json"], { env: process.env, timeout: 10_000, maxBuffer: 16 * 1024 });
+  const text = String(stdout).trim();
+  if (text === "null") return false;
+  try {
+    const d = JSON.parse(text) as { expiresAt?: number } | null;
+    return !!d && (typeof d.expiresAt !== "number" || d.expiresAt > Date.now());
+  } catch { return true; }
 }
 
 /** Every primary boot gets a turn, so a self-restart needs no hand-set wake. */

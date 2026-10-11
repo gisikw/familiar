@@ -59,16 +59,18 @@ test("a soft event redelivered on reconnect is queued once, and a single-turn re
   const tick = (ms = 120) => new Promise((r) => setTimeout(r, ms));
   await emit("session_start");
   await tick();
-  expect(queued).toHaveLength(1);
+  expect(queued).toHaveLength(0); // held until a prompt is about to drain nextTurn
 
   // familiar-services restarts while the notice waits for Kev: reconnect, redeliver.
   for (const s of sockets.splice(0)) s.destroy();
   await tick(600);
   expect(hellos).toBe(2);
-  expect(queued).toHaveLength(1); // no second copy in Pi's nextTurn buffer
   expect(acks).toEqual([]);
 
-  // Kev replies; a single-turn reply. turn_start fires before persistence.
+  // Kev replies; input hands the held copy to Pi exactly once.
+  await emit("input");
+  expect(queued).toHaveLength(1); // no second copy in Pi's nextTurn buffer
+  // A single-turn reply: turn_start fires before persistence.
   await emit("turn_start");
   await tick();
   expect(acks).toEqual([]);
