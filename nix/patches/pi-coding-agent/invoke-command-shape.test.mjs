@@ -51,7 +51,7 @@ assert.match(
   session,
   /runner\.bindCommandAdmission\(\(\) => this\.isIdle && this\._agentSettledDispatchDepth === 0\)/,
 );
-// Pi 0.87+ runs deferred settled actions inside _emitAgentSettled. The depth wraps
+// Pi 0.87+ runs deferred settled actions inside _emitAgentSettled (1.1.0 adds `aborted` to agent_settled; body re-pinned after review). The depth wraps
 // the complete pristine upstream body (handlers, listeners, deferred runs, idle
 // resolution); only one indentation level may differ.
 {
@@ -65,10 +65,10 @@ assert.match(
   const body = wrapper[1].replace(/^\t/gm, "");
   assert.equal(
     createHash("sha256").update(body).digest("hex"),
-    "ad220e2271015ddf6e7720bceedda5ece79dff2a9976e6c9039037fc92ca791f",
+    "8ef403a6c13e2b86613c580a2e1d4a90577f645317753eecfccdc607d634ceb2",
     "_emitAgentSettled: upstream settled/deferred behavior must remain unchanged",
   );
-  assert(body.indexOf("this._isAgentRunActive = false") < body.indexOf('emit({ type: "agent_settled" })'));
+  assert(body.indexOf("this._isAgentRunActive = false") < body.indexOf('emit({ type: "agent_settled", aborted })'));
   assert.match(body, /this\._deferredSettledActions\.splice\(0\)/);
   assert.equal((session.match(/_agentSettledDispatchDepth\+\+/g) ?? []).length, 1);
   assert.equal((session.match(/_agentSettledDispatchDepth--/g) ?? []).length, 1);
