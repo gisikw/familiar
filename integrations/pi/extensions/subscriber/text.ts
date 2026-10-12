@@ -36,11 +36,26 @@ export function messageParts(message: any): MessagePart[] {
   return parts;
 }
 
+// Inline default chips ("Want it carded? [yes]") are UI affordances, not
+// speech: the web renders them as tappable buttons, and Kes must never be
+// heard saying "bracket yes". Mirrors CHIP_RE/chipText in familiar-ui
+// packages/web/src/ui/markdown.ts — change both together.
+const CHIP_LINE_END = /[ \t]*\[([A-Za-z][^\[\]\n()`*_<>|]{0,31})\](?![(\[:])(?=[ \t]*$)/gm;
+
+export function stripChips(text: string): string {
+  return text.replace(CHIP_LINE_END, (all, inner: string) => {
+    const t = inner.trim();
+    if (!t || t.length > 32 || t.split(/\s+/).length > 4) return all;
+    if (/^x$/i.test(t) || /https?:|\//.test(t)) return all;
+    return "";
+  });
+}
+
 // Reduce markdown to speakable text for synthesis. Code block fences are
 // stripped but contents are spoken — airpod-driven development needs the
 // code, tedious as Kokoro reading it may occasionally be.
 export function speakable(text: string): string {
-  return text
+  return stripChips(text)
     .replace(/^```[^\n]*$/gm, " ")
     .replace(/`([^`]*)`/g, "$1")
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
