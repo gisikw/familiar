@@ -65,6 +65,9 @@ func TestOpenPushListCloseRoundTrip(t *testing.T) {
 	if code, _, _ = runOpen(getenv, "close", id); code != ExitUsage {
 		t.Fatalf("second close should say nothing matches")
 	}
+	if hist, _ := os.ReadFile(filepath.Join(state, "open-closed.jsonl")); strings.Count(string(hist), "\n") != 2 || !strings.Contains(string(hist), `"slug":"mail"`) || !strings.Contains(string(hist), `"reason":"manual"`) {
+		t.Fatalf("history: %s", hist)
+	}
 }
 
 func TestOpenRefusesWhatTheReaderCannotShow(t *testing.T) {

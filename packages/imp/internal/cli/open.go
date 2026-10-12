@@ -159,8 +159,41 @@ func openClose(file, which string, out, errw io.Writer, getenv func(string) stri
 	if e := writeOpenFile(file, kept); e != nil {
 		return branchError(errw, e)
 	}
+	// Recently closed (familiar-ui): nothing leaves Open without a trace.
+	appendOpenClosed(file, gone)
 	fmt.Fprintf(out, "closed: %s\n", str(gone, "title"))
 	return 0
+}
+
+// appendOpenClosed records a close in open-closed.jsonl beside open.json, the
+// history the Reader's "Recently closed" view lists. Best effort: a failure
+// here never undoes the close.
+func appendOpenClosed(file string, it map[string]any) {
+	entry := map[string]any{
+		"kind":     str(it, "kind"),
+		"title":    str(it, "title"),
+		"closedAt": time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
+		"reason":   "manual",
+	}
+	if p := str(it, "path"); p != "" {
+		entry["path"] = p
+	}
+	if s := str(it, "slug"); s != "" {
+		entry["slug"] = s
+	}
+	if a := str(it, "addedAt"); a != "" {
+		entry["openedAt"] = a
+	}
+	line, e := json.Marshal(entry)
+	if e != nil {
+		return
+	}
+	f, e := os.OpenFile(filepath.Join(filepath.Dir(file), "open-closed.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if e != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.Write(append(line, '\n'))
 }
 
 func str(m map[string]any, k string) string { s, _ := m[k].(string); return s }
