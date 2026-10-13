@@ -26,6 +26,7 @@ added unless the flattened name already starts with it. Examples:
 | `api-key = "x"` under `[brave]` | `FAMILIAR_BRAVE_API_KEY=x` |
 | `debug_level = "off"` under `[familiar]` | `FAMILIAR_DEBUG_LEVEL=off` |
 | `use_stuff = true` under `[familiar]` | `FAMILIAR_USE_STUFF=true` |
+| `l1_enabled = true` under `[familiar]` | `FAMILIAR_L1_ENABLED=true` (L1 fast memory; see `packages/l1/README.md`) |
 | `name = "x"` under `[user]` | `FAMILIAR_USER_NAME=x` |
 | `pronoun_subject = "she"` under `[familiar.identity]` | `FAMILIAR_IDENTITY_PRONOUN_SUBJECT=she` |
 

@@ -50,6 +50,14 @@ skip_version_check = 1
 # tz = "America/Chicago"
 # debug_level = "debug"
 # use_stuff: retired (Stuff is end-of-life); accepted but ignored
+# L1 fast memory (packages/l1): first-mention gloss + decider-gated fact revision.
+# Off by default. The decider must be fleet-local; it defaults to [llama] base_url.
+# l1_enabled = false
+# l1_db = "/abs/path/state/l1/l1.db"          # default $FAMILIAR_STATE_DIR/l1/l1.db
+# l1_decider_url = "https://llama.example.invalid"
+# l1_decider_model = "qwen3.8-27b"
+# l1_threshold = 0.9                          # auto-apply at or above; below → staged ask
+# l1_target = 150                             # edges kept after decay (pinned exempt)
 
 # Familiar's own private identity is nested here to avoid colliding with
 # identity_path. It maps to FAMILIAR_IDENTITY_* (not FAMILIAR_FAMILIAR_*).

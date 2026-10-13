@@ -90,14 +90,30 @@
             platforms = platforms.unix;
           };
         };
+        # L1 fast memory (packages/l1): typed fact cache + local decider.
+        l1Package = pkgs.buildGoModule {
+          pname = "familiar-l1";
+          version = "0.1.0";
+          src = ./packages/l1;
+          vendorHash = "sha256-WA7PLEaT7lpBkIQHXbRSrQO7mfip4mRS7xMck6lVAFs=";
+          subPackages = [ "cmd/l1" ];
+          doCheck = true;
+          meta = with pkgs.lib; {
+            description = "Kes's L1 fast memory: bounded typed facts, first-mention gloss, decider-gated revision";
+            license = licenses.mit;
+            mainProgram = "l1";
+            platforms = platforms.unix;
+          };
+        };
         # Small CLI surface available both to resident Pi tool execution and to
         # foreground development shells. Keep language runtimes out of this set.
-        residentCliTools = [ impPackage ] ++ (with pkgs; [ jq ripgrep fd netcat-openbsd ]);
+        residentCliTools = [ impPackage l1Package ] ++ (with pkgs; [ jq ripgrep fd netcat-openbsd ]);
         piShell = pkgs.mkShell (modelEnv // {
           FAMILIAR_SHELL = "pi";
           # familiar.sh still adds this immediately before launching resident
           # Pi so deployed/stale shells retain the existing confined path.
           FAMILIAR_IMP_BIN = "${impPackage}/bin";
+          FAMILIAR_L1_BIN = "${l1Package}/bin";
           FAMILIAR_INTERACTIVE_SHELL = "${pkgs.bashInteractive}/bin/bash";
           PI_PACKAGE_DIR = "${patchedPi}/lib/node_modules/pi-monorepo";
           packages = [ patchedPi ] ++ residentCliTools ++ (with pkgs; [ age curl sqlite librsvg ffmpeg tmux util-linux git openssh ]);
@@ -107,6 +123,7 @@
         packages = rec {
           pi-coding-agent = patchedPi;
           imp = impPackage;
+          l1 = l1Package;
           familiar-server = server.packages.${system}.default;
           familiar-llm = llm.packages.${system}.default;
           familiar-stt = stt.packages.${system}.default;
