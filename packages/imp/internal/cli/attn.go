@@ -1121,7 +1121,7 @@ var attnUsage = map[string]string{
 	"agent.set":      "Usage: imp attn agent set CARD_ID --name NAME --state <running|blocked|done|failed|cancelled> [--question TEXT] [--json]\n",
 	"jot.add":        "Usage: imp attn jot add (--title TEXT | --title -) [--owner kevin|kes] [--due DATE] [--json]\n\nWith --due the jot is a Today task; without it, a Maybe-today intention.\nDATE: YYYY-MM-DD, today, tomorrow, or a weekday (next occurrence; today counts), America/Chicago.\n",
 	"jot.list":       "Usage: imp attn jot list [--all] [--json]\n\nDefault view: jots due today or earlier, plus today's maybes. --all lists every non-archived jot.\nRows show 'due Fri' / 'due today' or 'maybe' before the age.\n",
-	"ask.add":        "Usage: imp attn ask add --json-in [--stage] [--json]\n\nReads the ask JSON object from stdin (up to 64 KiB) and forwards it as-is:\n  {\"card\":\"6c5e0e39\",\"question\":\"Close M4?\",\"steps\":\"...\",\"link\":\"...\",\"link_label\":\"...\",\n   \"actions\":[{\"key\":\"close\",\"label\":\"Close it\",\"primary\":true,\"ops\":[...]}]}\n--stage keeps the ask invisible until Kev asks for more. At most 3 asks are surfaced.\n",
+	"ask.add":        "Usage: imp attn ask add --json-in [--stage] [--json]\n\nReads the ask JSON object from stdin (up to 64 KiB) and forwards it as-is:\n  {\"card\":\"6c5e0e39\",\"question\":\"Close M4?\",\"steps\":\"...\",\"link\":\"...\",\"link_label\":\"...\",\n   \"actions\":[{\"key\":\"close\",\"label\":\"Close it\",\"primary\":true,\"ops\":[...]},\n               {\"key\":\"go\",\"label\":\"Do it\",\"done\":\"Started\",\"fork\":{\"task\":\"...\",\"label\":\"...\",\"fresh\":true}}]}\nAn action's \"fork\" starts a fork with that task when Kev picks it (no undo); its target\ndefaults to this lineage's primary.\n--stage keeps the ask invisible until Kev asks for more. At most 3 asks are surfaced.\n",
 	"ask.list":       "Usage: imp attn ask list [--all] [--json]\n\nPrints surfaced, then staged (then resolved with --all):\n  #7 [surfaced] project · question — key1|key2\n",
 	"ask.resolve":    "Usage: imp attn ask resolve ID CHOICE [--json]\n\nCHOICE is an action key or not-now.\n",
 	"ask.more":       "Usage: imp attn ask more [--json]\n\nSurfaces staged asks until 3 are surfaced.\n",
@@ -1130,4 +1130,27 @@ var attnUsage = map[string]string{
 	"ask.talk":       "Usage: imp attn ask talk ID [--json]\n\nRecords that Kev opened a conversation about the ask; does not resolve it.\n",
 	"jot.clear-done": "Usage: imp attn jot clear-done [--json]\n",
 	"status":         "Usage: imp attn status [--json]\n",
+}
+
+// fillAskForkTargets points each one-click fork action at the primary this
+// lineage roots in, like a scheduled fork: the fork starts whenever Kev
+// clicks, long after the fork that wrote the ask may have merged.
+func fillAskForkTargets(args map[string]any, getenv func(string) string) error {
+	actions, _ := args["actions"].([]any)
+	for _, a := range actions {
+		act, _ := a.(map[string]any)
+		fork, ok := act["fork"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if t, _ := fork["target"].(string); t != "" {
+			continue
+		}
+		root := rootInstance(getenv)
+		if root == "" {
+			return fmt.Errorf("ask add: a fork action needs a target instance, and FAMILIAR_INSTANCE_ID is not set")
+		}
+		fork["target"] = "instance:" + root
+	}
+	return nil
 }

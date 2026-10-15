@@ -80,6 +80,12 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(
 		fmt.Fprintln(stderr, "imp: FAMILIAR_IMP_SOCKET is not set; this command is available only inside an owning Familiar resident")
 		return ExitUnavailable
 	}
+	if inv.operation == "ask.add" {
+		if err := fillAskForkTargets(inv.args, getenv); err != nil {
+			fmt.Fprintf(stderr, "imp: %v\n", err)
+			return ExitUsage
+		}
+	}
 	result, remote, err := call(path, Request{Version: WireVersion, Area: "attn", Operation: inv.operation, Args: inv.args})
 	if err != nil {
 		fmt.Fprintf(stderr, "imp: %v\n", err)
