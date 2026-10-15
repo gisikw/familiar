@@ -55,6 +55,7 @@ skip_version_check = 1
 # l1_enabled = false
 # l1_db = "/abs/path/state/l1/l1.db"          # default $FAMILIAR_STATE_DIR/l1/l1.db
 # l1_decider_url = "https://llama.example.invalid"
+# l1_systemone_url = "https://decider.example.invalid" # native decision model for L1 choices
 # l1_decider_model = "qwen3.8-27b"
 # l1_threshold = 0.9                          # auto-apply at or above; below → staged ask
 # l1_target = 150                             # edges kept after decay (pinned exempt)

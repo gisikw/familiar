@@ -38,7 +38,7 @@ applied and logged. 0.6–0.9 → staged ask. Below 0.6 → treated as keep.
 ## Config
 
 `[familiar] l1_enabled = true` turns on the Pi extension
-(`integrations/pi/extensions/l1`). Optional: `l1_db`, `l1_decider_url`,
+(`integrations/pi/extensions/l1`). Optional: `l1_db`, `l1_decider_url`, `l1_systemone_url` (native `/v1/systemone` decision model for choices),
 `l1_decider_model`, `l1_threshold`, `l1_target`.
 
 ## CLI
