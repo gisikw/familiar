@@ -104,3 +104,9 @@ test("a task file is read at fire time; unreadable files still start the fork, t
   expect(resolveTask("plain", "")).toBe("plain");
   rmSync(dir, { recursive: true, force: true });
 });
+
+test("an Attention ask fork says Kev started it, not a schedule", async () => {
+  const { forkPreamble } = await import("./index.ts");
+  expect(forkPreamble({ ...forkEvent, source: "attn.ask", rule: "" })).toContain("Kev picked this on an Attention ask");
+  expect(forkPreamble(forkEvent)).toContain("Scheduled every day 06:00");
+});

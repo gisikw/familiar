@@ -98,8 +98,7 @@ export default function (pi: ExtensionAPI, options: { warmWake?: Partial<WarmWak
     if (fresh) args.push("--fresh");
     if (model) args.push("--model", model);
     if (runner) args.push("--runner");
-    const stamp = new Date(event.due_at).toLocaleString("en-US", { timeZone: process.env.FAMILIAR_TZ || "America/Chicago", weekday: "short", hour: "numeric", minute: "2-digit" });
-    args.push(`(Scheduled${event.rule ? ` every ${event.rule}` : ""}, due ${stamp}. Nobody is waiting on you live; do the work, then imp merge.)\n\n${task}`);
+    args.push(`${forkPreamble(event)}\n\n${task}`);
     const { stdout } = await execFileAsync("imp", args, { env: process.env, timeout: 60_000, maxBuffer: 64 * 1024 });
     const forkId = String(stdout).trim().split("\n").pop() ?? "";
     // Durable before ack: a redelivery after a crash sees this and skips.
@@ -108,7 +107,7 @@ export default function (pi: ExtensionAPI, options: { warmWake?: Partial<WarmWak
     seen.add(event.id);
     pi.sendMessage({
       customType: "familiar.fork-dispatched.v1",
-      content: `\n\nscheduled fork ${forkId || "(unknown id)"} started${event.rule ? ` (every ${event.rule})` : ""}: ${label || task.slice(0, 80)}\n(no action needed)`,
+      content: `\n\n${event.source === "attn.ask" ? "ask fork" : "scheduled fork"} ${forkId || "(unknown id)"} started${event.source === "attn.ask" ? " (Kev clicked it)" : event.rule ? ` (every ${event.rule})` : ""}: ${label || task.slice(0, 80)}\n(no action needed)`,
       display: !hidden,
       details: { forkId, task, source: "schedule", eventId: event.id, series: event.series, hidden },
     }, { deliverAs: "nextTurn" });
@@ -300,6 +299,15 @@ export function renderScheduledEvent(event: ScheduledEvent) {
     display: true,
     details: { id: event.id, event },
   };
+}
+
+/** The line a spawned fork reads before its task: who started it and when. */
+export function forkPreamble(event: ScheduledEvent): string {
+  if (event.source === "attn.ask") {
+    return "(Kev picked this on an Attention ask; it started the moment he clicked. Nobody is waiting on you live; do the work, then imp merge.)";
+  }
+  const stamp = new Date(event.due_at).toLocaleString("en-US", { timeZone: process.env.FAMILIAR_TZ || "America/Chicago", weekday: "short", hour: "numeric", minute: "2-digit" });
+  return `(Scheduled${event.rule ? ` every ${event.rule}` : ""}, due ${stamp}. Nobody is waiting on you live; do the work, then imp merge.)`;
 }
 
 export function forkRequest(event: ScheduledEvent): { task: string; label: string; fresh: boolean; model: string; runner: boolean; taskFile: string; hidden: boolean } {
