@@ -23,6 +23,10 @@ type Client struct {
 	BaseURL string // e.g. https://llama.gisi.network
 	Model   string
 	HTTP    *http.Client
+	// SystemOneURL, when set, routes Choice to a native decision model's
+	// /v1/systemone endpoint (e.g. https://decider.gisi.network). Extract and
+	// Object still generate text, so they stay on BaseURL.
+	SystemOneURL string
 	// Calls counts round trips, for replay reports.
 	Calls int
 }
@@ -42,7 +46,62 @@ func FromEnv() (*Client, error) {
 	if model == "" {
 		model = "qwen3.8-27b"
 	}
-	return &Client{BaseURL: strings.TrimRight(base, "/"), Model: model, HTTP: &http.Client{Timeout: 60 * time.Second}}, nil
+	return &Client{
+		BaseURL:      strings.TrimRight(base, "/"),
+		Model:        model,
+		HTTP:         &http.Client{Timeout: 60 * time.Second},
+		SystemOneURL: strings.TrimRight(os.Getenv("FAMILIAR_L1_SYSTEMONE_URL"), "/"),
+	}, nil
+}
+
+// choiceSystemOne asks a native decision model. Options are keyed by letter
+// with the option text as the description, so long option strings stay
+// descriptions rather than labels. The system prompt is prepended to the
+// state: /v1/systemone has no system role.
+func (c *Client) choiceSystemOne(ctx context.Context, system, state, question string, options []string) (int, []float64, error) {
+	criteria := map[string]string{}
+	for i, o := range options {
+		criteria[string(letters[i])] = o
+	}
+	body, _ := json.Marshal(map[string]any{
+		"state": system + "\n\n" + state,
+		"questions": map[string]any{
+			"q": map[string]any{"type": "choice", "instructions": question, "criteria": criteria},
+		},
+	})
+	hr, err := http.NewRequestWithContext(ctx, "POST", c.SystemOneURL+"/v1/systemone", bytes.NewReader(body))
+	if err != nil {
+		return 0, nil, err
+	}
+	hr.Header.Set("content-type", "application/json")
+	c.Calls++
+	res, err := c.HTTP.Do(hr)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer res.Body.Close()
+	var out struct {
+		Answers map[string]struct {
+			Probabilities map[string]float64 `json:"probabilities"`
+		} `json:"answers"`
+		Error any `json:"error"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		return 0, nil, fmt.Errorf("systemone: %s: %w", res.Status, err)
+	}
+	a, ok := out.Answers["q"]
+	if res.StatusCode != 200 || !ok {
+		return 0, nil, fmt.Errorf("systemone: %s %v", res.Status, out.Error)
+	}
+	probs := make([]float64, len(options))
+	best := 0
+	for i := range options {
+		probs[i] = a.Probabilities[string(letters[i])]
+		if probs[i] > probs[best] {
+			best = i
+		}
+	}
+	return best, probs, nil
 }
 
 type msg struct {
@@ -111,6 +170,9 @@ const letters = "ABCDEFGHIJKLMNOP"
 func (c *Client) Choice(ctx context.Context, system, state, question string, options []string) (int, []float64, error) {
 	if len(options) < 2 || len(options) > len(letters) {
 		return 0, nil, errors.New("decide: 2..16 options")
+	}
+	if c.SystemOneURL != "" {
+		return c.choiceSystemOne(ctx, system, state, question, options)
 	}
 	var b strings.Builder
 	b.WriteString(state)

@@ -33,3 +33,30 @@ func TestChoiceSoftmaxOverOptionLogprobs(t *testing.T) {
 }
 
 func f(v float64) string { b, _ := json.Marshal(v); return string(b) }
+
+func TestChoiceSystemOne(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/systemone" {
+			t.Errorf("path %s", r.URL.Path)
+		}
+		var body struct {
+			State     string `json:"state"`
+			Questions map[string]struct {
+				Type     string            `json:"type"`
+				Criteria map[string]string `json:"criteria"`
+			} `json:"questions"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		q := body.Questions["q"]
+		if q.Type != "choice" || q.Criteria["B"] != "b" || len(q.Criteria) != 3 || body.State != "sys\n\nstate" {
+			t.Errorf("bad request: %+v", body)
+		}
+		w.Write([]byte(`{"answers":{"q":{"type":"choice","choice":"C","probabilities":{"A":0.1,"B":0.2,"C":0.7}}}}`))
+	}))
+	defer srv.Close()
+	c := &Client{BaseURL: "http://unused.invalid", SystemOneURL: srv.URL, HTTP: srv.Client()}
+	i, p, err := c.Choice(context.Background(), "sys", "state", "q?", []string{"a", "b", "c"})
+	if err != nil || i != 2 || math.Abs(p[2]-0.7) > 1e-9 || c.Calls != 1 {
+		t.Fatalf("i=%d p=%v err=%v calls=%d", i, p, err, c.Calls)
+	}
+}
