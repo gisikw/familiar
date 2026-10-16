@@ -411,9 +411,11 @@ func systemctlCommand(g func(string) string, args ...string) (string, []string) 
 
 const branchHelp = `Usage:
   imp fork [--label L] [--origin O] [--fresh] [--model P/M [--runner]] "task text"
-      The fork inherits this whole conversation (unless --fresh), so the task
-      text only needs to say which piece is hers, e.g. "Voice research; see
-      Kev's last message." Write a full brief only for --fresh forks.
+      The fork is you: it inherits this whole conversation (unless --fresh),
+      including everything Kev just said. So the task text is one line naming
+      which piece is hers, e.g. "Build what Kev described above." Don't recap,
+      don't restate the spec, and don't write a brief file to hand it off;
+      she already read it all. A full brief is only for --fresh forks.
   imp merge [--quiet]
   imp label "short name" [--status "doing what"]   (forks: your name in the Open list)
   imp status ["what you're doing now" | --clear]   (forks: one-line status under your name)
