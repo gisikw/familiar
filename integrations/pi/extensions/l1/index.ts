@@ -96,6 +96,23 @@ export function parseNominations(text: string): unknown[] | null {
   }
 }
 
+/**
+ * The cue scope: "first mention" means first since my context last started
+ * over. Presence keeps one session ID forever and compacts in place, so the
+ * session ID alone would mean "first mention ever". Scope it to the latest
+ * compaction on the current branch (handoff clears and zips both write one);
+ * derived from the session file, so it survives restarts.
+ */
+export function cueScope(session: string, branch: readonly any[] | undefined): string {
+  if (branch) {
+    for (let i = branch.length - 1; i >= 0; i--) {
+      const e = branch[i];
+      if (e?.type === "compaction" && typeof e.id === "string" && e.id) return `${session}@${e.id}`;
+    }
+  }
+  return session;
+}
+
 export default function(pi: ExtensionAPI) {
   if (!l1Enabled()) return;
   let pendingText: string | null = null;
@@ -111,7 +128,9 @@ export default function(pi: ExtensionAPI) {
     if (!text) return;
     const session = ctx.sessionManager.getSessionId();
     if (!session) return;
-    const out = await runL1(["cue", "--session", session], text, CUE_TIMEOUT_MS);
+    let branch: readonly any[] | undefined;
+    try { branch = ctx.sessionManager.getBranch?.() as any[]; } catch { branch = undefined; }
+    const out = await runL1(["cue", "--session", cueScope(session, branch)], text, CUE_TIMEOUT_MS);
     const lines = out.split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 3);
     if (!lines.length) return;
     return { message: { customType: L1_MESSAGE, content: renderGloss(lines), display: false } };

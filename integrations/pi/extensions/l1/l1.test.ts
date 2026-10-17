@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import l1, { l1Enabled, parseNominations, renderGloss, runL1, L1_MESSAGE } from "./index.ts";
+import l1, { cueScope, l1Enabled, parseNominations, renderGloss, runL1, L1_MESSAGE } from "./index.ts";
 
 function fakeBin(script: string): string {
   const dir = mkdtempSync(join(tmpdir(), "l1-bin-"));
@@ -58,5 +58,33 @@ describe("l1 extension", () => {
     const many = JSON.stringify({ nominations: Array.from({ length: 9 }, (_, i) => ({ entity: `e${i}` })) });
     expect(parseNominations("```json\n" + many + "\n```")!.length).toBe(5);
     expect(renderGloss(["a"])).toContain("- a");
+  });
+});
+
+describe("l1 cue scope", () => {
+  test("scopes first-mention to the latest compaction, so a clear re-glosses", () => {
+    expect(cueScope("s1", undefined)).toBe("s1");
+    expect(cueScope("s1", [{ type: "message", id: "m1" }])).toBe("s1");
+    const branch = [
+      { type: "compaction", id: "c1" },
+      { type: "message", id: "m1" },
+      { type: "compaction", id: "c2" },
+      { type: "message", id: "m2" },
+    ];
+    expect(cueScope("s1", branch)).toBe("s1@c2");
+  });
+
+  test("cue passes the scoped session to l1", async () => {
+    const dir = fakeBin(`cat >/dev/null; echo "$@"`);
+    const prev = { ...process.env };
+    process.env.FAMILIAR_L1_ENABLED = "true";
+    process.env.FAMILIAR_L1_BIN = dir;
+    const h: Record<string, Function> = {};
+    l1({ on: (name: string, fn: Function) => { h[name] = fn; } } as any);
+    await h.input({ text: "cian at the piano" });
+    const ctx = { sessionManager: { getSessionId: () => "s1", getBranch: () => [{ type: "compaction", id: "h9" }] } };
+    const r = await h.before_agent_start({}, ctx);
+    expect(r.message.content).toContain("--session s1@h9");
+    process.env = prev;
   });
 });
