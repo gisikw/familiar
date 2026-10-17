@@ -390,9 +390,9 @@ run_pi() {
         themes: [ ($dir + "/themes") ],
         compaction: { enabled: true, reserveTokens: 4096 },
         # Keep the live extension set explicit. Imp owns the sole private
-        # resident socket used by Attention.
+        # resident socket used by Attention. l1 self-gates on l1_enabled.
         extensions: (([
-          "footer", "handoff", "identity", "imp", "subscriber",
+          "footer", "handoff", "identity", "imp", "l1", "subscriber",
           "tiamat", "web", "scheduler", "zip"
         ] | map($ext + "/" + .)) + $pluginExts + $extraExts | unique)
       }
