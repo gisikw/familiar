@@ -28,9 +28,10 @@ const openHelp = `Usage:
   imp open list                          what's pushed and still open
   imp open close <id|path|#project>      take it back out
 
-A path is a document the Reader can show (md, html, pdf, audio, image) under
-its roots (~/Projects/{hoard/primers,wireframes,opcos,holdco,podcasts/episodes});
-a directory means its index.md/index.html/README.md. #project opens that
+A path is any document the Reader can show (md, html, pdf, audio, image),
+anywhere on this host: pushing it is what lets the Reader serve it. (The
+shelves ~/Projects/{hoard/primers,wireframes,opcos,holdco,podcasts/episodes}
+are only what the Reader lists on its own.) A directory means its index.md/index.html/README.md. #project opens that
 Attention board. Rows wait in Open; they don't take over his screen. URLs and
 single cards can't go in Open: link those in chat.
 `
@@ -125,11 +126,54 @@ func openMain(args []string, out, errw io.Writer, getenv func(string) string) in
 	if len(items) > maxOpenItems {
 		items = items[len(items)-maxOpenItems:]
 	}
+	if str(item, "kind") == "doc" && !underDocRoots(str(item, "path"), getenv) {
+		if e := grantReaderPath(state, str(item, "path")); e != nil {
+			return branchError(errw, e)
+		}
+	}
 	if e := writeOpenFile(file, items); e != nil {
 		return branchError(errw, e)
 	}
 	fmt.Fprintf(out, "%s: %s (%s) · id %s\n", msg, str(item, "title"), key, str(item, "id"))
 	return 0
+}
+
+// reader-grants: one resolved path per line, appended only by imp open. The
+// bridge serves these files (and sibling page assets) even outside the
+// shelves, so the grant outlives the Open row: Recently closed still opens.
+func grantReaderPath(state, path string) error {
+	file := filepath.Join(state, "reader-grants")
+	if raw, e := os.ReadFile(file); e == nil {
+		for _, line := range strings.Split(string(raw), "\n") {
+			if line == path {
+				return nil
+			}
+		}
+	}
+	f, e := os.OpenFile(file, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if e != nil {
+		return e
+	}
+	defer f.Close()
+	_, e = f.WriteString(path + "\n")
+	return e
+}
+
+func underDocRoots(path string, getenv func(string) string) bool {
+	real, e := filepath.EvalSymlinks(path)
+	if e != nil {
+		real = path
+	}
+	for _, root := range docRoots(getenv) {
+		r, e := filepath.EvalSymlinks(root)
+		if e != nil {
+			r = root
+		}
+		if strings.HasPrefix(real, r+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 func openClose(file, which string, out, errw io.Writer, getenv func(string) string) int {
@@ -234,8 +278,8 @@ func openItemFor(target, title string, getenv func(string) string) (map[string]a
 }
 
 // docRoots mirrors familiar-ui's documentRoots(): FAMILIAR_UI_DOC_ROOTS, else
-// the default shelves under $HOME/Projects. A path outside them would be a
-// row the Reader refuses to open, so it is refused here instead.
+// the default shelves under $HOME/Projects. Paths under them are stored as
+// given; paths outside are stored resolved (see openDocPath).
 func docRoots(getenv func(string) string) []string {
 	if raw := getenv("FAMILIAR_UI_DOC_ROOTS"); raw != "" {
 		var roots []string
@@ -305,7 +349,10 @@ func openDocPath(target string, getenv func(string) string) (string, error) {
 			return path, nil
 		}
 	}
-	return "", fmt.Errorf("%s is outside the Reader's roots (%s); move or copy it under one", target, strings.Join(docRoots(getenv), ", "))
+	// Outside the shelves: the push itself is the grant. The roots bound only
+	// the Reader's browsable index; the bridge also serves any file named in
+	// open.json (or Recently closed), so store the resolved path it will match.
+	return real, nil
 }
 
 var htmlTitleRe = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
