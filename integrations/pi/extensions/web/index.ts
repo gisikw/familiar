@@ -1,6 +1,7 @@
 import { getMarkdownTheme, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Markdown } from "@earendil-works/pi-tui";
 import { searchResultsMarkdown } from "./render.ts";
+import { youtubeTranscript, youtubeVideoId } from "./youtube.ts";
 import { Type } from "typebox";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
@@ -377,12 +378,24 @@ export default function (pi: ExtensionAPI) {
     label: "Web Fetch",
     description:
       "Fetch a web page and return its content as markdown. Direct request, HTML converted locally — " +
-      "JavaScript-rendered content (SPAs) yields only server-rendered markup. Output capped at 50KB.",
+      "JavaScript-rendered content (SPAs) yields only server-rendered markup. Output capped at 50KB. " +
+      "YouTube video links return the video's metadata and caption transcript instead of the page; " +
+      "the full transcript is saved to a file whose path is given, for reading past the cap.",
     promptSnippet: "Fetch a URL and return page content converted to markdown",
     parameters: Type.Object({
       url: Type.String({ description: "The URL to fetch" }),
     }),
     async execute(_toolCallId, params: { url: string }, signal) {
+      const videoId = youtubeVideoId(params.url);
+      if (videoId) {
+        const { path, markdown } = await youtubeTranscript(videoId, signal);
+        const [bounded, truncated] = truncateChars(markdown, FETCH_MAX_CHARS);
+        const where = path ? `(full transcript: ${path})\n\n` : "";
+        const footer = truncated
+          ? `\n\n[transcript truncated at 50KB; the rest is in ${path} — use read with an offset to continue]`
+          : "";
+        return { content: [{ type: "text", text: `${where}${bounded}${footer}` }], details: { youtube: videoId, path } };
+      }
       const { url, content, truncated } = await localFetch(params.url, signal);
       const header = url === params.url ? "" : `(resolved: ${url})\n\n`;
       const footer = truncated ? "\n\n[content truncated at 50KB]" : "";

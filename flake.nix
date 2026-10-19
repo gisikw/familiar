@@ -114,6 +114,11 @@
           # Pi so deployed/stale shells retain the existing confined path.
           FAMILIAR_IMP_BIN = "${impPackage}/bin";
           FAMILIAR_L1_BIN = "${l1Package}/bin";
+          # fetch's YouTube caption path (integrations/pi/extensions/web/youtube.ts).
+          # An absolute binary, not a PATH entry: yt-dlp is Python and goes
+          # stale fast, so it stays out of the resident shell and tracks this
+          # flake's nixos-unstable pin.
+          FAMILIAR_YTDLP_BIN = "${pkgs.yt-dlp}/bin/yt-dlp";
           FAMILIAR_INTERACTIVE_SHELL = "${pkgs.bashInteractive}/bin/bash";
           PI_PACKAGE_DIR = "${patchedPi}/lib/node_modules/pi-monorepo";
           packages = [ patchedPi ] ++ residentCliTools ++ (with pkgs; [ age curl sqlite librsvg ffmpeg tmux util-linux git openssh ]);
