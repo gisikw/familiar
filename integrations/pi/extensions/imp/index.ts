@@ -3,6 +3,8 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { serviceCall } from "../lib/familiar-services.ts";
 import { ImpIngress, IMP_BRANCH_HANDLER } from "./ingress.mjs";
+import { readCanary, recordCanary } from "./canary.ts";
+import { errorLog } from "../lib/debug.ts";
 
 const PENDING = "familiar.merge-pending.v1";
 const RETURN_REQUESTED = "familiar.merge-return-requested.v1";
@@ -185,6 +187,25 @@ export default function (pi: ExtensionAPI) {
       flowing = false;
     }
   }
+
+  // Fork-cache canary: one reading per fork, at its first reply.
+  let canaryDone = false;
+  pi.on("message_end", async (event, ctx) => {
+    if (canaryDone) return;
+    const message = (event as any).message;
+    if (message?.role !== "assistant" || !message.usage) return;
+    try {
+      const branch = (ctx.sessionManager.getBranch() as Entry[]).filter((e) => e.message !== message
+        && !(e.type === "message" && e.message?.role === "assistant" && e.message?.timestamp === message.timestamp));
+      branch.push({ type: "message", message });
+      if (!branch.some((e) => e.type === "custom" && e.customType === "familiar.fork.v1")) { canaryDone = true; return; }
+      const reading = readCanary(branch);
+      canaryDone = true;
+      if (!reading) return;
+      recordCanary(process.env.FAMILIAR_STATE_DIR, process.env.FAMILIAR_INSTANCE_ID, reading);
+      if (reading.miss) errorLog("fork-cache-canary", { miss: true, ...reading });
+    } catch (err) { canaryDone = true; errorLog("fork-cache-canary", { error: String(err) }); }
+  });
 
   pi.on("session_shutdown", async () => {
     const old = ingress;

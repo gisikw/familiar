@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { promisify } from "node:util";
 import { errorLog } from "../lib/debug.ts";
 import { SchedulerClient, type ScheduledEvent } from "./client.ts";
-import { stampDeliveries } from "./stamp.ts";
+import { stampDeliveries, withSentAt } from "./stamp.ts";
 
 const execFileAsync = promisify(execFile);
 export const SCHEDULED_FORK = "familiar.scheduled-fork.v1";
@@ -63,7 +63,7 @@ export default function (pi: ExtensionAPI, options: { warmWake?: Partial<WarmWak
   pi.on("input", (_event, ctx) => {
     lastActivity = Date.now();
     if (!isIdle()) return;
-    for (const [id, message] of held) { held.delete(id); pi.sendMessage(message, { deliverAs: "nextTurn" }); }
+    for (const [id, message] of held) { held.delete(id); pi.sendMessage(withSentAt(message), { deliverAs: "nextTurn" }); }
   });
 
   /** Deliver every held soft message now, as one self-wake turn, so the
@@ -81,7 +81,7 @@ export default function (pi: ExtensionAPI, options: { warmWake?: Partial<WarmWak
       held.clear();
       // Not streaming and no trigger: each is appended and persisted now,
       // with its event id, so the ack path sees it at turn_start.
-      for (const [, message] of batch) pi.sendMessage(message);
+      for (const [, message] of batch) pi.sendMessage(withSentAt(message));
       lastActivity = Date.now();
       pi.sendMessage(renderWarmWake(batch.length, idleMs), { deliverAs: "steer", triggerTurn: true });
     } catch (error) {
@@ -105,12 +105,12 @@ export default function (pi: ExtensionAPI, options: { warmWake?: Partial<WarmWak
     pi.appendEntry(SCHEDULED_FORK, { id: event.id, forkId, series: event.series ?? "", task, ...(hidden ? { hidden: true } : {}) });
     if (hidden && forkId) hiddenForks.add(forkId);
     seen.add(event.id);
-    pi.sendMessage({
+    pi.sendMessage(withSentAt({
       customType: "familiar.fork-dispatched.v1",
       content: `\n\n${event.source === "attn.ask" ? "ask fork" : "scheduled fork"} ${forkId || "(unknown id)"} started${event.source === "attn.ask" ? " (Kev clicked it)" : event.rule ? ` (every ${event.rule})` : ""}: ${label || task.slice(0, 80)}\n(no action needed)`,
       display: !hidden,
       details: { forkId, task, source: "schedule", eventId: event.id, series: event.series, hidden },
-    }, { deliverAs: "nextTurn" });
+    }), { deliverAs: "nextTurn" });
   }
 
   pi.on("session_start", async (_event, ctx) => {
@@ -147,7 +147,7 @@ export default function (pi: ExtensionAPI, options: { warmWake?: Partial<WarmWak
             held.set(event.id, message);
           });
         }
-        pi.sendMessage(message, { deliverAs: "steer", triggerTurn: true });
+        pi.sendMessage(withSentAt(message), { deliverAs: "steer", triggerTurn: true });
         wokeSinceBoot = true;
         seen.add(event.id);
       },
