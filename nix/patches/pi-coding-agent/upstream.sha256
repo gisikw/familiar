@@ -14,3 +14,4 @@ f1738e4b42203e5f22bcb513f13fb2fb224f1e98d1f129ff042f87048665a94c  packages/codin
 bb0aa846d5976671bfdcdd81ffc1180653c7099bdc42f80945175a7d704ab6b9  packages/coding-agent/src/main.ts
 d3f639c21c4b91ebbe9d5716914636c3eb37a19d434e11bd6653fef8050f1357  packages/coding-agent/src/core/compaction/compaction.ts
 1e16404a231912fbd7643d8317b15ec4cc6245ed8cedc37582a31d430a1cc6ac  packages/agent/src/agent-loop.ts
+9abf35ebe5dbe3a9d7a621c420aa0cbf474eb2ec7c79e1bea8e28966c564b7ab  packages/ai/src/api/anthropic-messages.ts

@@ -66,7 +66,8 @@ assert pkgs.lib.assertMsg ((old.patches or []) == [] && (old.prePatch or "") == 
   '';
   # Order is contractual: command fencing, then the provider-only
   # pre-resolution bootstrap (which relies on loader queuing).
-  patches = [ ./invoke-command.patch ./model-bootstrap.patch ];
+  # cache-write-1h-delta touches pi-ai only and is order-independent.
+  patches = [ ./invoke-command.patch ./model-bootstrap.patch ./cache-write-1h-delta.patch ];
 
   postPatch = ''
     node ${./invoke-command-shape.test.mjs}
@@ -116,6 +117,7 @@ assert pkgs.lib.assertMsg ((old.patches or []) == [] && (old.prePatch or "") == 
     node ${./model-bootstrap.test.mjs} "$piRoot"
     node ${./model-bootstrap-cli.test.mjs} "$piRoot"
     node ${./mid-turn-compaction.test.mjs} "$piRoot"
+    node ${./cache-write-1h-delta.test.mjs} "$piRoot"
     grep -F 'invokeExtensionCommand(name: string, args?: string): Promise<void>;' \
       "$piRoot/dist/core/extensions/types.d.ts"
     grep -F 'registerModelBootstrap(handler: ModelBootstrapHandler): void;' \

@@ -148,6 +148,13 @@ Upstream tag `v0.85.1` is the lightweight tag at
    invocation and complete event/settled admission fences.
 2. `model-bootstrap.patch` — awaited provider-only materialization from the exact
    effective CLI/restored/default request before any initial model resolution.
+3. `cache-write-1h-delta.patch` — pi-ai's Anthropic stream also takes
+   `usage.cache_creation.ephemeral_1h_input_tokens` from `message_delta`. Upstream
+   reads it only from `message_start`. tiamat's facade combines several upstream
+   calls, so its `message_start` carries zero usage and the split arrives at the
+   end. Without this, every 1h write logs `cacheWrite1h: 0` and is priced at the
+   5m rate. The message_start value is kept when the delta omits it. Behavior test:
+   `cache-write-1h-delta.test.mjs` (injected fetch, installed output).
 
 Neither facility exists upstream in 0.85.1, so no downstream portion was
 superseded. The rebase preserves the changed upstream loader factory/runtime
