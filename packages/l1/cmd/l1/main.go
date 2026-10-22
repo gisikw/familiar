@@ -29,7 +29,8 @@ const usage = `usage: l1 <command> [flags]
   revise   --session-file F [--since 72h|RFC3339] [--dry-run]
   nominate --session-file F [--since 72h] [--dry-run]   stdin JSON nominations
   decay    [--target 150]
-  asks                            post open pending items as staged Attention asks; apply resolutions
+  asks     [--post [--ids 3,5]]   apply Kev's answers to pending items; --post stages asks
+                                  (all open, or just --ids) only when the curator chooses
   seed     --glossary DIR         one-time import of hoard glossary macros
   set      ENTITY ATTR VALUE [--kind K] [--pin] [--alias a,b]
   show     [ENTITY]
@@ -662,7 +663,22 @@ func ensureCard(s *store.Store) (string, error) {
 func cmdAsks(args []string) error {
 	fs := flag.NewFlagSet("asks", flag.ExitOnError)
 	db := dbFlag(fs)
+	post := fs.Bool("post", false, "stage open, unasked pending items as Attention asks (the curator's call)")
+	ids := fs.String("ids", "", "with --post: comma-separated pending ids to stage (default: all open)")
 	fs.Parse(args)
+	pick := map[int64]bool{}
+	for _, x := range strings.Split(*ids, ",") {
+		if x = strings.TrimSpace(x); x != "" {
+			n, err := strconv.ParseInt(x, 10, 64)
+			if err != nil {
+				return fmt.Errorf("bad --ids entry %q", x)
+			}
+			pick[n] = true
+		}
+	}
+	if len(pick) > 0 && !*post {
+		return errors.New("--ids needs --post")
+	}
 	s, err := store.Open(*db)
 	if err != nil {
 		return err
@@ -712,6 +728,11 @@ func cmdAsks(args []string) error {
 			default: // not-now: leave open, re-ask later
 				s.SetPendingAsk(p.ID, 0)
 			}
+			continue
+		}
+		if !*post || (len(pick) > 0 && !pick[p.ID]) {
+			// Posting is the curator's choice (Kev, Oct 22); the session-end
+			// hook only applies answers. Unposted items stay open.
 			continue
 		}
 		card, err := ensureCard(s)

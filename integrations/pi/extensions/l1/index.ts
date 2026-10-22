@@ -15,7 +15,8 @@ import { completeHandoff, handoffMaxTokens } from "../handoff/request.ts";
 //            decider before admission. Not coupled to the subconscious seeds.
 //   revise   after the handoff lands: l1 revises facts for entities Kev
 //            mentioned, using only his words; then decays to target; then
-//            posts unsure changes as staged Attention asks.
+//            applies Kev's answers to earlier asks. Unsure changes wait in
+//            l1's pending table; the curator stages them (`l1 asks --post`).
 //
 // Nothing here can block a turn or a handoff: every l1 call is bounded or
 // detached, and failures are logged and dropped.
