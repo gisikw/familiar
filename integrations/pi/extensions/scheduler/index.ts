@@ -282,13 +282,17 @@ function trackedSha(read: (p: string) => string = (p) => readFileSync(p, "utf8")
 // notice never runs into his words.
 export const SOFT_SEPARATOR = "\n\n";
 
+// Kev doesn't read merge returns; say so in-line so the primary never treats
+// fork content as ground they share (Oct 22, the "chicken shed" slip).
+export const MERGE_UNSEEN = "(Kev hasn't seen this, so it isn't shared context. Relaying it is optional; a bare 'noted' is fine.)";
+
 export function renderScheduledEvent(event: ScheduledEvent) {
   const lead = event.urgency === "soft" ? SOFT_SEPARATOR : "";
   if (event.type === "merge") {
     const merge = JSON.parse(event.body) as { summary: string; forkSessionId: string; forkSessionFile: string; branchEntryId: string; firstEntryId: string; lastEntryId: string; turnCount: number; forkedFurther: boolean; mergedAt: string };
     return {
       customType: "familiar.merge.v1",
-      content: event.urgency === "soft" ? `${lead}fork ${merge.forkSessionId} merged: ${merge.summary}` : `<familiar-merge fork="${escapeAttr(merge.forkSessionId)}" branch="${escapeAttr(merge.branchEntryId)}" divergence="${merge.turnCount}" forked-further="${merge.forkedFurther}">\n${merge.summary}\nfull record: ${merge.forkSessionFile} entries ${merge.firstEntryId}..${merge.lastEntryId}\n</familiar-merge>`,
+      content: event.urgency === "soft" ? `${lead}fork ${merge.forkSessionId} merged: ${merge.summary}\n${MERGE_UNSEEN}` : `<familiar-merge fork="${escapeAttr(merge.forkSessionId)}" branch="${escapeAttr(merge.branchEntryId)}" divergence="${merge.turnCount}" forked-further="${merge.forkedFurther}">\n${MERGE_UNSEEN}\n${merge.summary}\nfull record: ${merge.forkSessionFile} entries ${merge.firstEntryId}..${merge.lastEntryId}\n</familiar-merge>`,
       display: !isHiddenFork(merge.forkSessionId),
       details: { id: event.id, event, ...merge },
     };
