@@ -71,3 +71,47 @@ export function keepTake(data: string, text: string, take: number, seq: number) 
     /* retention is best-effort; it must never cost a voice turn */
   }
 }
+
+/* --- Decoder repetition guard ----------------------------------------------
+ *
+ * Parakeet occasionally loops on a pause and emits the same short phrase
+ * hundreds of times ("a little bit of a little bit of ..." x500, Oct 23).
+ * Collapse any 1..6-word sequence repeated MIN_REPEATS+ times back-to-back to a
+ * single occurrence. Kev stutters and restates, so fewer than 5 repeats are
+ * left alone. Comparison ignores case and punctuation; the kept copy is the
+ * first, verbatim. Smallest n first, so a period-2 loop isn't mistaken for
+ * three copies of a 6-gram.
+ */
+const MIN_REPEATS = 5;
+const MAX_NGRAM = 6;
+
+export function collapseRepeats(text: string, minRepeats = MIN_REPEATS, maxN = MAX_NGRAM): string {
+  let tokens = text.split(/\s+/).filter(Boolean);
+  if (tokens.length < minRepeats) return text;
+  const norm = (t: string) => t.toLowerCase().replace(/[^\p{L}\p{N}']/gu, "");
+  let changed = false;
+  for (let n = 1; n <= maxN; n++) {
+    const out: string[] = [];
+    let i = 0;
+    while (i < tokens.length) {
+      if (i + n * minRepeats <= tokens.length) {
+        const key = tokens.slice(i, i + n).map(norm);
+        if (key.some((k) => k)) {
+          let reps = 1;
+          while (i + (reps + 1) * n <= tokens.length
+            && tokens.slice(i + reps * n, i + (reps + 1) * n).every((t, j) => norm(t) === key[j])) reps++;
+          if (reps >= minRepeats) {
+            out.push(...tokens.slice(i, i + n));
+            i += reps * n;
+            changed = true;
+            continue;
+          }
+        }
+      }
+      out.push(tokens[i]);
+      i++;
+    }
+    tokens = out;
+  }
+  return changed ? tokens.join(" ") : text;
+}

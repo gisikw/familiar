@@ -2,7 +2,7 @@ import type http from "http";
 import { errorLog } from "./debug.ts";
 import type { RelayBus } from "./relay.ts";
 import type { SubmitPayload, VoiceStatusPayload } from "./protocol.ts";
-import { correctTranscript, keepTake } from "./stt-lexicon.ts";
+import { collapseRepeats, correctTranscript, keepTake } from "./stt-lexicon.ts";
 
 function chunkLog(obj: Record<string, unknown>) {
   process.stderr.write(`[stt-chunk] ${JSON.stringify(obj)}\n`);
@@ -163,7 +163,7 @@ export class Ingress {
             .then((transcriptions) => {
               // 🗣 marks transcribed speech so the model prices in STT errors;
               // payload.text is typed by the client and left unmarked.
-              this.dispatch(id, `🗣 ${transcriptions.join(" ")}`, payload.text ?? "");
+              this.dispatch(id, `🗣 ${collapseRepeats(transcriptions.join(" "))}`, payload.text ?? "");
             })
             .catch((err) => {
               errorLog("subscriber", { dispatchError: String(err), id });
