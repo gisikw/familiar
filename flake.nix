@@ -17,7 +17,17 @@
     flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ] (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-        patchedPi = import ./nix/patches/pi-coding-agent { inherit pkgs; };
+        # Node2Shell (CVE-2026-111497): graft brotli 1.2.1 into anything that
+        # runs Node from this pin. Self-disabling; see the file.
+        brotliFix = import ./nix/brotli-cve-2026-111497.nix { inherit pkgs; };
+        patchedPiBuild = import ./nix/patches/pi-coding-agent { inherit pkgs; };
+        # Keep the build's metadata (version, src, patches) visible to the
+        # worker runtime manifest; the graft only rewrites runtime references.
+        patchedPi = brotliFix.graft patchedPiBuild // {
+          inherit (patchedPiBuild) version src;
+          patches = patchedPiBuild.patches or [ ];
+        };
+        gatewayPackage = brotliFix.graft gateway-module.packages.${system}.default;
         # Keep the release package and the herdr-nix packaging revision pinned
         # together; an accidental lock/input update fails evaluation.
         herdrNixRev = "2bcfa02424385730d0c65cfa8cd355bb3afecef8";
@@ -121,7 +131,7 @@
           FAMILIAR_YTDLP_BIN = "${pkgs.yt-dlp}/bin/yt-dlp";
           FAMILIAR_INTERACTIVE_SHELL = "${pkgs.bashInteractive}/bin/bash";
           PI_PACKAGE_DIR = "${patchedPi}/lib/node_modules/pi-monorepo";
-          packages = [ patchedPi ] ++ residentCliTools ++ (with pkgs; [ age curl sqlite librsvg ffmpeg tmux util-linux git openssh ]);
+          packages = [ patchedPi (brotliFix.graft pkgs.curl) ] ++ residentCliTools ++ (with pkgs; [ age sqlite librsvg ffmpeg tmux util-linux git openssh ]);
         });
       in
       {
@@ -132,7 +142,7 @@
           familiar-server = server.packages.${system}.default;
           familiar-llm = llm.packages.${system}.default;
           familiar-stt = stt.packages.${system}.default;
-          familiar-gateway = gateway-module.packages.${system}.default;
+          familiar-gateway = gatewayPackage;
           herdr = herdrPackage;
           familiar-worker-runtime = workerRuntime;
           golem-familiar-render = pkgs.buildGoModule {
@@ -201,7 +211,7 @@
         apps = {
           default = flake-utils.lib.mkApp { drv = server.packages.${system}.default; };
           familiar-server = flake-utils.lib.mkApp { drv = server.packages.${system}.default; };
-          familiar-gateway = flake-utils.lib.mkApp { drv = gateway-module.packages.${system}.default; };
+          familiar-gateway = flake-utils.lib.mkApp { drv = gatewayPackage; name = "familiar-gateway"; };
           golem-familiar-render = flake-utils.lib.mkApp { drv = self.packages.${system}.golem-familiar-render; };
         } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           familiar-viewer = flake-utils.lib.mkApp { drv = viewer.packages.${system}.default; };
@@ -260,7 +270,7 @@
             packages = with pkgs; [
               nodejs_22 playwright-test playwright-driver
               tmux util-linux curl kitty imagemagick
-              gateway-module.packages.${system}.default
+              gatewayPackage
             ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
               viewer.packages.${system}.default
             ];

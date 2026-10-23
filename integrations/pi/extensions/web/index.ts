@@ -5,6 +5,7 @@ import { youtubeTranscript, youtubeVideoId } from "./youtube.ts";
 import { Type } from "typebox";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import { safeFetch } from "./safe-fetch.ts";
 
 // Web tools: search + fetch, ported from muse (~/Projects/muse/web.go).
 //
@@ -176,7 +177,7 @@ const safeCodePoint = (n: number, original: string): string => {
 async function braveSearch(query: string, count: number, signal?: AbortSignal): Promise<SearchOutput> {
   const base = (process.env.FAMILIAR_BRAVE_URL || "https://api.search.brave.com").replace(/\/+$/, "");
   const url = `${base}/res/v1/llm/context?${new URLSearchParams({ q: query, count: String(count) })}`;
-  const resp = await fetch(url, {
+  const resp = await safeFetch(url, {
     headers: {
       Accept: "application/json",
       "X-Subscription-Token": process.env.FAMILIAR_BRAVE_API_KEY!,
@@ -199,7 +200,7 @@ async function braveSearch(query: string, count: number, signal?: AbortSignal): 
 async function searxngSearch(query: string, count: number, signal?: AbortSignal): Promise<SearchOutput> {
   const base = process.env.FAMILIAR_SEARXNG_URL!.replace(/\/+$/, "");
   const url = `${base}/search?${new URLSearchParams({ q: query, format: "json" })}`;
-  const resp = await fetch(url, { headers: { Accept: "application/json" }, signal: withTimeout(signal) });
+  const resp = await safeFetch(url, { headers: { Accept: "application/json" }, signal: withTimeout(signal) });
   if (!resp.ok) throw new Error(`searxng returned ${resp.status}: ${await errorBody(resp)}`);
   const body = JSON.parse(await readBounded(resp)) as { results?: { url: string; title: string; content?: string }[] };
   const results: SearchResult[] = (body.results ?? []).slice(0, count).map((r) => ({
@@ -215,7 +216,7 @@ async function searxngSearch(query: string, count: number, signal?: AbortSignal)
 // rot, rate limits apply — good enough for a floor, not a foundation.
 async function ddgSearch(query: string, count: number, signal?: AbortSignal): Promise<SearchOutput> {
   const url = `https://html.duckduckgo.com/html/?${new URLSearchParams({ q: query })}`;
-  const resp = await fetch(url, {
+  const resp = await safeFetch(url, {
     headers: {
       "User-Agent": "Mozilla/5.0 (X11; Linux x86_64)",
       Accept: "text/html",
@@ -317,13 +318,13 @@ async function localFetch(rawURL: string, signal?: AbortSignal): Promise<{ url: 
   let target = await assertFetchable(rawURL);
   let resp: Response;
   for (let hop = 0; ; hop++) {
-    resp = await fetch(target, {
+    resp = await safeFetch(target, {
       headers: {
         "User-Agent": "familiar/1.0",
         Accept: "text/html,application/xhtml+xml,text/plain,text/markdown,*/*",
       },
       signal: deadline,
-      redirect: "manual",
+      // safeFetch never follows redirects; each hop is validated below.
     });
     if (resp.status < 300 || resp.status > 399) break;
     const location = resp.headers.get("location");
