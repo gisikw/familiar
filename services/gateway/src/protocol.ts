@@ -21,6 +21,10 @@
  *   POST /voice-status              Browser capture lifecycle before audio exists.
  *   POST /cancel                    Abort the in-flight turn. Idempotent,
  *                                   fire-and-forget, 204 always.
+ *   POST /play                      imp play: body = audio/* bytes (X-Clip-Title).
+ *                                   Queued inline after current speech as a
+ *                                   segment (index >= 10000); {played:false}
+ *                                   when nobody has the speaker on.
  *   POST /merge?session=ID          Ask a fork to enter its prompted return flow.
  *   GET  /relay?session=ID          SSE command bus, server → extension
  *                                   (RelayCommand: submit / cancel / merge / voice-status). The

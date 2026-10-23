@@ -8,6 +8,9 @@ import type { IngestEnvelope, SessionIdentity } from "./protocol.ts";
 
 export type SessionRole = "primary" | "fork";
 
+/** imp play clips live at index >= this within a message (speech never gets near it). */
+export const CLIP_INDEX_BASE = 10_000;
+
 export class Channel {
   readonly hub = new StreamHub();
   readonly relay: RelayBus;
@@ -32,15 +35,46 @@ export class Channel {
     this.parentSessionId = identity.parentSessionId;
   }
 
+  // imp play: where the next clip goes. The newest transcript message id seen
+  // (a tool call that runs `imp play` lives in the current assistant message,
+  // whose speech is already segmented by then), and clip indices start at
+  // CLIP_INDEX_BASE so they sort after that message's speech and can never
+  // collide with a firehose segment index.
+  private lastMessageId = 0;
+  private clipMessageId = -1;
+  private clipNext = CLIP_INDEX_BASE;
+
+  private see(id: unknown) {
+    if (typeof id === "number" && Number.isFinite(id) && id > this.lastMessageId) this.lastMessageId = id;
+  }
+
+  /** Queue a clip inline in the voice stream. Not played (and not queued) when
+   * nobody has the speaker on: a later listener skips replayed segments, so it
+   * would never be heard; the caller decides what to do instead. */
+  playClip(audio: Buffer, type: string, label: string): { played: boolean; message_id?: number; index?: number } {
+    if (!this.hub.anyAudioListener()) return { played: false };
+    const messageId = this.lastMessageId;
+    if (this.clipMessageId !== messageId) { this.clipMessageId = messageId; this.clipNext = CLIP_INDEX_BASE; }
+    const index = this.clipNext++;
+    this.audio.registerClip(messageId, index, label, audio, type);
+    this.hub.publish({ event: "segment", message_id: messageId, index, text: label, synthesizing: true });
+    return { played: true, message_id: messageId, index };
+  }
+
   apply(env: IngestEnvelope) {
     this.lastEventAt = new Date().toISOString();
     switch (env.kind) {
-      case "session": this.hub.newSession(); this.audio.reset(); return;
+      case "session":
+        this.hub.newSession(); this.audio.reset();
+        this.lastMessageId = 0; this.clipMessageId = -1; this.clipNext = CLIP_INDEX_BASE;
+        return;
       case "lock": this.hub.lockInflight(); return;
-      case "revise": this.hub.revise(env.event); return;
+      case "revise": this.see(env.event.id); this.hub.revise(env.event); return;
       case "publish": {
         const event = env.event;
+        if (event.event === "message") this.see(event.id);
         if (event.event === "segment") {
+          this.see(event.message_id);
           const synth = this.hub.anyAudioListener();
           this.audio.register(event.message_id, event.index, event.text, synth);
           this.hub.publish({ ...event, synthesizing: synth });

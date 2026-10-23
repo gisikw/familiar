@@ -12,7 +12,7 @@ import type { StreamHub } from "./hub.ts";
  * registry via the hub).
  */
 
-type AudioEntry = { text: string; status: "pending" | "ready" | "failed"; wav?: Buffer };
+type AudioEntry = { text: string; status: "pending" | "ready" | "failed"; wav?: Buffer; type?: string };
 
 export class AudioCache {
   private entries = new Map<string, AudioEntry>();
@@ -47,6 +47,20 @@ export class AudioCache {
     if (synthesize) this.enqueue(messageId, index);
   }
 
+  /** imp play: ready-made clip bytes, served as-is with their own type. No
+   * synthesis; the caller picks a key that can never collide with speech. */
+  registerClip(messageId: number, index: number, label: string, audio: Buffer, type: string) {
+    const key = `${messageId}:${index}`;
+    this.entries.delete(key);
+    this.synthesizing.delete(key);
+    this.entries.set(key, { text: label, status: "ready", wav: audio, type });
+    while (this.entries.size > AUDIO_CACHE_MAX) {
+      const oldest = this.entries.keys().next().value;
+      if (oldest === undefined) break;
+      this.entries.delete(oldest);
+    }
+  }
+
   // 200 ready / 202 synthesizing (kicks synthesis if idle; retry) /
   // 404 unknown-or-evicted (terminal) / 503 synthesis failed.
   serve(messageId: number, index: number, res: http.ServerResponse) {
@@ -57,7 +71,7 @@ export class AudioCache {
       return res.end();
     }
     if (entry.status === "ready" && entry.wav) {
-      res.writeHead(200, { "Content-Type": "audio/wav", "Content-Length": entry.wav.length });
+      res.writeHead(200, { "Content-Type": entry.type ?? "audio/wav", "Content-Length": entry.wav.length });
       return res.end(entry.wav);
     }
     if (entry.status === "failed") {

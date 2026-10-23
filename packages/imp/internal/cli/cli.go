@@ -67,6 +67,8 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(
 			return openMain(args[1:], stdout, stderr, getenv)
 		case "write":
 			return writeMain(args[1:], stdout, stderr, getenv)
+		case "play":
+			return playMain(args[1:], stdout, stderr, getenv)
 		case "agent":
 			return agentMain(args[1:], stdout, stderr, getenv)
 		default:
@@ -350,10 +352,10 @@ func safeErrorCode(s string) string {
 	return s
 }
 
-const rootHelp = `Usage: imp <attn|schedule|notify|dnd|fork|merge|label|forks|open|write|agent> ...
+const rootHelp = `Usage: imp <attn|schedule|notify|dnd|fork|merge|label|forks|open|write|play|agent> ...
 
 A private CLI-shaped model tool for Attention, scheduled events, forks, and
 fleet agents.
 
-Run 'imp attn --help', 'imp schedule --help', 'imp open --help', 'imp write --help', or 'imp agent --help' for command discovery.
+Run 'imp attn --help', 'imp schedule --help', 'imp open --help', 'imp write --help', 'imp play --help', or 'imp agent --help' for command discovery.
 `
