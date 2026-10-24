@@ -20,6 +20,13 @@ Without it, the first request single-flight initializes the local toolchain. Eac
 request is written to a private temporary directory, normalized by ffmpeg to
 16 kHz mono WAV, and passed to `transcribe-cli`; all files are removed afterward.
 
+Pause compression: Parakeet drops or invents the rest of a take after a long
+silence. With `STT_VAD_MODEL` set (the Nix package sets it), raw (non-multipart)
+takes are decoded and run through a Silero VAD first; pauses of
+`STT_PAUSE_GAP_MS` or more are cut down to `2 x STT_PAUSE_PAD_MS` and the
+shortened take is transcribed whole. Takes without such a pause, and any VAD
+failure, go through untouched. See `internal/stt/pauses.go` for the tuning.
+
 ## Run
 
 ```sh
@@ -48,6 +55,10 @@ service does not download models or log request headers/bodies/upstream URLs.
 | `STT_MAX_AUDIO_BYTES` | 25165824 | decoded file/raw audio limit |
 | `STT_CONCURRENCY` | 2 | in-flight request slots; excess gets 429 |
 | `STT_DEADLINE_SECONDS` | 120 | end-to-end request deadline |
+| `STT_VAD_MODEL` | packaged Silero model | Silero ggml VAD model; empty disables pause compression |
+| `STT_VAD` | `whisper-vad-speech-segments` | whisper.cpp VAD executable |
+| `STT_PAUSE_GAP_MS` | 5000 | pauses this long or longer are cut short before transcribing |
+| `STT_PAUSE_PAD_MS` | 800 | audio kept either side of each speech span |
 
 `GET /healthz` (`/health`) is process liveness and `GET /readyz` (`/ready`) says
 the stable proxy can accept demand. Lazy local validation happens on first

@@ -37,6 +37,11 @@ type Config struct {
 	// hung GPU box leaves enough of Deadline for the local path. Zero means
 	// half of Deadline.
 	UpstreamTimeout time.Duration
+	// Pause compression (pauses.go): VAD is the whisper-vad-speech-segments
+	// binary, VADModel its Silero ggml model. An empty VADModel disables it.
+	VAD, VADModel string
+	PauseGap      time.Duration
+	PausePad      time.Duration // audio kept either side of each speech span; zero means 800 ms
 }
 
 type Server struct {
@@ -74,6 +79,20 @@ func New(c Config) (*Server, error) {
 	if c.Logger == nil {
 		c.Logger = slog.Default()
 	}
+	if c.PausePad <= 0 {
+		c.PausePad = defaultPausePad
+	}
+	if c.VADModel != "" {
+		if c.VAD == "" {
+			c.VAD = "whisper-vad-speech-segments"
+		}
+		_, e1 := exec.LookPath(c.VAD)
+		_, e2 := os.Stat(c.VADModel)
+		if e1 != nil || e2 != nil || c.PauseGap <= 0 {
+			c.Logger.Warn("pause compression disabled", "vad_found", e1 == nil, "model_found", e2 == nil, "gap", c.PauseGap.String())
+			c.VADModel = ""
+		}
+	}
 	return &Server{c: c, client: &http.Client{}, sem: make(chan struct{}, c.Concurrency)}, nil
 }
 
@@ -110,6 +129,28 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.c.Deadline)
 	defer cancel()
 	start := time.Now()
+	if s.c.VADModel != "" && !strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "multipart/") {
+		// Buffer the raw take so long pauses can be compressed before any
+		// backend sees it. Oversized or unreadable bodies fail exactly as before.
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.c.MaxBody))
+		if err != nil {
+			status := 400
+			var mb *http.MaxBytesError
+			if errors.As(err, &mb) {
+				status = 413
+			}
+			reply(w, status, map[string]string{"error": publicError(status)})
+			return
+		}
+		if int64(len(body)) <= s.c.MaxAudio {
+			if c := s.compressPauses(ctx, body); c != nil {
+				body = c
+				r.Header.Set("Content-Type", "audio/wav")
+			}
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		r.ContentLength = int64(len(body))
+	}
 	if s.c.Upstream != nil && !s.c.Fallback {
 		s.proxy(w, r.WithContext(ctx))
 		s.c.Logger.Info("transcribed", "mode", "upstream", "bytes", r.ContentLength, "ms", time.Since(start).Milliseconds())

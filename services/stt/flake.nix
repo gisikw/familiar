@@ -31,6 +31,12 @@
             mainProgram = "transcribe-cli";
           };
         };
+        # Silero VAD (ggml) for pause compression: familiar-stt cuts long
+        # silences out of a take before transcribing (see internal/stt/pauses.go).
+        sileroVad = pkgs.fetchurl {
+          url = "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin";
+          hash = "sha256-KZQNmNQrkfvQXOSJ8+z3xy8KQvAn5IdZGaKPtMBOos8=";
+        };
         familiar-stt-unwrapped = pkgs.buildGoModule {
           pname = "familiar-stt";
           version = "0.1.0";
@@ -50,7 +56,7 @@
           name = "familiar-stt-0.1.0";
           paths = [ familiar-stt-unwrapped ];
           nativeBuildInputs = [ pkgs.makeWrapper ];
-          postBuild = ''wrapProgram $out/bin/familiar-stt --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.ffmpeg transcribe-cpp pkgs.coreutils ]}'';
+          postBuild = ''wrapProgram $out/bin/familiar-stt --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.ffmpeg transcribe-cpp pkgs.whisper-cpp pkgs.coreutils ]} --set-default STT_VAD_MODEL ${sileroVad}'';
         };
       in {
         packages = { default = familiar-stt; inherit familiar-stt transcribe-cpp; };
@@ -58,12 +64,14 @@
         checks = {
           unit = familiar-stt-unwrapped;
           package = familiar-stt;
-          runtime-tools = pkgs.runCommand "stt-runtime-tools" { nativeBuildInputs = [ pkgs.ffmpeg transcribe-cpp ]; } ''
+          runtime-tools = pkgs.runCommand "stt-runtime-tools" { nativeBuildInputs = [ pkgs.ffmpeg transcribe-cpp pkgs.whisper-cpp ]; } ''
             ffmpeg -version >/dev/null
             transcribe-cli --help >/dev/null 2>&1 || test $? -le 1
+            whisper-vad-speech-segments --help >/dev/null 2>&1 || test $? -le 1
+            test -s ${sileroVad}
             touch $out
           '';
         };
-        devShells.default = pkgs.mkShell { packages = [ pkgs.go pkgs.ffmpeg transcribe-cpp ]; };
+        devShells.default = pkgs.mkShell { packages = [ pkgs.go pkgs.ffmpeg transcribe-cpp pkgs.whisper-cpp ]; STT_VAD_MODEL = sileroVad; };
       });
 }

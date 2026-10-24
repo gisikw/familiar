@@ -29,6 +29,12 @@ func main() {
 		cfg.Fallback = os.Getenv("STT_FALLBACK") != "0"
 		cfg.UpstreamTimeout = time.Duration(num("STT_UPSTREAM_TIMEOUT_SECONDS", 20)) * time.Second
 	}
+	// Pause compression: on when STT_VAD_MODEL names a Silero ggml model (the
+	// package wrapper sets it). Pauses of STT_PAUSE_GAP_MS or more get cut short.
+	cfg.VAD = env("STT_VAD", "whisper-vad-speech-segments")
+	cfg.VADModel = os.Getenv("STT_VAD_MODEL")
+	cfg.PauseGap = time.Duration(num("STT_PAUSE_GAP_MS", 5000)) * time.Millisecond
+	cfg.PausePad = time.Duration(num("STT_PAUSE_PAD_MS", 800)) * time.Millisecond
 	s, e := stt.New(cfg)
 	if e != nil {
 		log.Error("invalid configuration", "error", e.Error())
@@ -47,7 +53,7 @@ func main() {
 		defer cancel()
 		_ = h.Shutdown(c)
 	}()
-	log.Info("listening", "address", addr, "mode", map[bool]string{true: "upstream", false: "local"}[cfg.Upstream != nil], "fallback", cfg.Fallback && cfg.Model != "")
+	log.Info("listening", "address", addr, "mode", map[bool]string{true: "upstream", false: "local"}[cfg.Upstream != nil], "fallback", cfg.Fallback && cfg.Model != "", "pause_compression", cfg.VADModel != "")
 	if e = h.ListenAndServe(); e != nil && !errors.Is(e, http.ErrServerClosed) {
 		log.Error("server failed", "error", e.Error())
 		os.Exit(1)
