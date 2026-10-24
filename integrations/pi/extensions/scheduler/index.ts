@@ -30,7 +30,7 @@ let bootNoticePending = process.env.FAMILIAR_PI_FORK !== "1" && process.env.NODE
 /** The Pi is only a scheduler transport endpoint: connect, inject, acknowledge.
  * The one exception is a `fork` event: it spawns a background fork of this
  * instance and takes no model turn here. */
-export default function (pi: ExtensionAPI, options: { warmWake?: Partial<WarmWakeConfig> & { dndOn?: () => Promise<boolean>; disturbOn?: () => Promise<boolean>; intervalMs?: number; primary?: boolean } } = {}) {
+export default function (pi: ExtensionAPI, options: { fork?: boolean; warmWake?: Partial<WarmWakeConfig> & { dndOn?: () => Promise<boolean>; disturbOn?: () => Promise<boolean>; intervalMs?: number; primary?: boolean } } = {}) {
   let client: SchedulerClient | undefined;
   let exportedInstance: string | undefined;
   let seen = new Set<string>();
@@ -43,6 +43,7 @@ export default function (pi: ExtensionAPI, options: { warmWake?: Partial<WarmWak
   const held = new Map<string, ReturnType<typeof renderScheduledEvent>>();
   const idleWaiters: Array<() => void> = [];
   let isIdle: () => boolean = () => true;
+  const isFork = () => options.fork ?? process.env.FAMILIAR_PI_FORK === "1";
   // Set when a redelivered wake event has already started a turn since boot.
   let wokeSinceBoot = false;
   // Last time the primary did anything: a prompt arrived or a run settled.
@@ -167,6 +168,11 @@ export default function (pi: ExtensionAPI, options: { warmWake?: Partial<WarmWak
             const resolvers = waiting.get(event.id);
             if (resolvers) { resolvers.push(resolve); return; }
             waiting.set(event.id, [resolve]);
+            // A fork works in one long run and never gets the idle prompt that
+            // drains `held`, so a sibling's soft note would sit unread until the
+            // fork merged (then land on the parent). Mid-run, a fork takes it
+            // as a steer between tool calls instead: no new turn, just read.
+            if (isFork() && !isIdle()) { pi.sendMessage(withSentAt(message), { deliverAs: "steer" }); return; }
             held.set(event.id, message);
           });
         }

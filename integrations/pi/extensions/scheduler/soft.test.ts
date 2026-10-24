@@ -82,3 +82,51 @@ test("a soft event redelivered on reconnect is queued once, and a single-turn re
   await emit("session_shutdown");
   await new Promise<void>((r) => server.close(() => r()));
 });
+
+// Regression (Oct 24): forks never get the idle prompt that drains held soft
+// messages, so every soft sibling note (deploy locks) sat unread until the
+// fork merged and was then rerouted to the primary. A busy fork now takes a
+// soft note as a steer (no new turn) and acks it once persisted.
+test("a busy fork reads a soft note as a steer and acks it", async () => {
+  const root = mkdtempSync(join(tmpdir(), "sched-soft-fork-"));
+  roots.push(root);
+  const socketPath = join(root, "svc.sock");
+  process.env.FAMILIAR_SERVICES_SOCKET = socketPath;
+  const note = { id: "note-sib-1", due_at: 0, target: "instance:f", origin: "sib", source: "unknown", priority: 2, type: "notify", summary: "deploy lock released", body: "", urgency: "soft" as const, state: "delivered", created_at: 0 };
+  const acks: string[] = [];
+  const server = createServer((socket: Socket) => {
+    let buf = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      buf += chunk;
+      for (let i = buf.indexOf("\n"); i >= 0; i = buf.indexOf("\n")) {
+        const msg = JSON.parse(buf.slice(0, i)); buf = buf.slice(i + 1);
+        if (msg.op === "hello") { socket.write(`${JSON.stringify({ ok: true, result: {} })}\n`); socket.write(`${JSON.stringify({ event: note })}\n`); }
+        if (msg.op === "schedule.ack") acks.push(msg.args.id);
+      }
+    });
+  });
+  await new Promise<void>((r) => server.listen(socketPath, r));
+  const handlers = new Map<string, Array<(e: any, ctx: any) => any>>();
+  const entries: any[] = [];
+  const sent: Array<{ message: any; options: any }> = [];
+  const pi = {
+    on(name: string, h: any) { handlers.set(name, [...(handlers.get(name) ?? []), h]); },
+    appendEntry() {},
+    sendMessage(message: any, options: any) { sent.push({ message, options }); },
+  };
+  scheduler(pi as any, { fork: true });
+  const ctx = { sessionManager: { getSessionId: () => "f", getBranch: () => entries }, isIdle: () => false };
+  const emit = async (name: string) => { for (const h of handlers.get(name) ?? []) await h({}, ctx); };
+  const tick = (ms = 120) => new Promise((r) => setTimeout(r, ms));
+  await emit("session_start");
+  await tick();
+  expect(sent).toHaveLength(1);
+  expect(sent[0].options).toEqual({ deliverAs: "steer" }); // read mid-run, no new turn
+  entries.push({ type: "custom_message", customType: sent[0].message.customType, details: sent[0].message.details });
+  await emit("turn_end");
+  await tick();
+  expect(acks).toEqual([note.id]);
+  await emit("session_shutdown");
+  await new Promise<void>((r) => server.close(() => r()));
+});
