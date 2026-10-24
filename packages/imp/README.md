@@ -65,6 +65,7 @@ imp schedule list
 imp schedule cancel EVENT_ID
 imp notify --id stable-settlement-id --soft 'job finished'
 imp dnd on 30m
+imp dnd disturb        # Do Disturb: quiet fork returns wake me; until local midnight (or `disturb 4h`)
 imp dnd status
 imp dnd off
 ```

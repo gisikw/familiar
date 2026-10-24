@@ -30,7 +30,7 @@ let bootNoticePending = process.env.FAMILIAR_PI_FORK !== "1" && process.env.NODE
 /** The Pi is only a scheduler transport endpoint: connect, inject, acknowledge.
  * The one exception is a `fork` event: it spawns a background fork of this
  * instance and takes no model turn here. */
-export default function (pi: ExtensionAPI, options: { warmWake?: Partial<WarmWakeConfig> & { dndOn?: () => Promise<boolean>; intervalMs?: number; primary?: boolean } } = {}) {
+export default function (pi: ExtensionAPI, options: { warmWake?: Partial<WarmWakeConfig> & { dndOn?: () => Promise<boolean>; disturbOn?: () => Promise<boolean>; intervalMs?: number; primary?: boolean } } = {}) {
   let client: SchedulerClient | undefined;
   let exportedInstance: string | undefined;
   let seen = new Set<string>();
@@ -51,6 +51,7 @@ export default function (pi: ExtensionAPI, options: { warmWake?: Partial<WarmWak
   let warming = false;
   const warm = warmWakeConfig(options.warmWake);
   const dndOn = options.warmWake?.dndOn ?? dndActive;
+  const disturbOn = options.warmWake?.disturbOn ?? (async () => (await dndMode()) === "disturb");
 
   // Branch from a settled turn, never from the middle of one.
   const whenIdle = () => isIdle() ? Promise.resolve() : new Promise<void>((resolve) => idleWaiters.push(resolve));
@@ -71,6 +72,7 @@ export default function (pi: ExtensionAPI, options: { warmWake?: Partial<WarmWak
    * back. Only from a settled primary, inside the warm window, outside DND. */
   async function maybeWarmWake(now = Date.now()) {
     if (warming || !held.size || !isIdle()) return;
+    if (await flushHeldMerges()) return;
     const idleMs = now - lastActivity;
     if (!warmWakeDue(warm, idleMs)) return;
     warming = true;
@@ -86,6 +88,27 @@ export default function (pi: ExtensionAPI, options: { warmWake?: Partial<WarmWak
       pi.sendMessage(renderWarmWake(batch.length, idleMs), { deliverAs: "steer", triggerTurn: true });
     } catch (error) {
       errorLog("scheduler", { warmWakeError: String(error) });
+    } finally { warming = false; }
+  }
+
+  /** Do Disturb: familiar-services claims new quiet merges as wakes; this
+   * catches ones already held from before it was switched on. */
+  async function flushHeldMerges(): Promise<boolean> {
+    const merges = [...held].filter(([, m]) => m.customType === "familiar.merge.v1");
+    if (!merges.length) return false;
+    warming = true;
+    try {
+      if (!(await disturbOn().catch(() => false))) return false;
+      const ready = merges.filter(([id]) => held.has(id));
+      if (!ready.length || !isIdle()) return false;
+      for (const [id] of ready) held.delete(id);
+      for (const [, message] of ready) pi.sendMessage(withSentAt(message));
+      lastActivity = Date.now();
+      pi.sendMessage({ customType: DISTURB_WAKE, content: `<familiar-do-disturb delivered="${ready.length}">\nDo Disturb is on: the fork return${ready.length === 1 ? "" : "s"} above waited from before it was switched on. Act on ${ready.length === 1 ? "it" : "them"} now.\n</familiar-do-disturb>`, display: false, details: { count: ready.length } }, { deliverAs: "steer", triggerTurn: true });
+      return true;
+    } catch (error) {
+      errorLog("scheduler", { disturbFlushError: String(error) });
+      return false;
     } finally { warming = false; }
   }
 
@@ -215,6 +238,7 @@ export function restartNoticeDelivery(wokeSinceBoot: boolean): { deliverAs: "ste
 }
 
 export const WARM_WAKE = "familiar.warm-wake.v1";
+export const DISTURB_WAKE = "familiar.do-disturb.v1";
 export interface WarmWakeConfig { thresholdMs: number; ttlMs: number }
 
 /** `[familiar] warm_wake_minutes` (default 55; 0 disables) and
@@ -247,15 +271,24 @@ export function renderWarmWake(count: number, idleMs: number) {
 }
 
 /** DND is owned by familiar-services; `imp dnd status --json` prints null
- * when off. Any failure counts as on: never wake on a guess. */
-async function dndActive(): Promise<boolean> {
+ * when off. The same row in `mode: "disturb"` is Do Disturb, the opposite of
+ * a hold. Any failure counts as plain DND: never wake on a guess. */
+export async function dndMode(): Promise<"off" | "quiet" | "disturb"> {
   const { stdout } = await execFileAsync("imp", ["dnd", "status", "--json"], { env: process.env, timeout: 10_000, maxBuffer: 16 * 1024 });
-  const text = String(stdout).trim();
-  if (text === "null") return false;
+  return parseDndMode(String(stdout));
+}
+export function parseDndMode(stdout: string, now = Date.now()): "off" | "quiet" | "disturb" {
+  const text = stdout.trim();
+  if (text === "null") return "off";
   try {
-    const d = JSON.parse(text) as { expiresAt?: number } | null;
-    return !!d && (typeof d.expiresAt !== "number" || d.expiresAt > Date.now());
-  } catch { return true; }
+    const d = JSON.parse(text) as { expiresAt?: number; mode?: string } | null;
+    if (!d) return "off";
+    if (typeof d.expiresAt === "number" && d.expiresAt <= now) return "off";
+    return d.mode === "disturb" ? "disturb" : "quiet";
+  } catch { return "quiet"; }
+}
+async function dndActive(): Promise<boolean> {
+  return (await dndMode()) === "quiet";
 }
 
 /** Every primary boot gets a turn, so a self-restart needs no hand-set wake. */

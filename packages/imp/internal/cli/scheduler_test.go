@@ -68,6 +68,15 @@ func TestSchedulerParsing(t *testing.T) {
 	if err != nil || inv.op != "dnd.set" || inv.args["duration_ms"] != int64(10800000) {
 		t.Fatalf("dnd: %#v %v", inv, err)
 	}
+	t.Setenv("FAMILIAR_TZ", "America/Chicago")
+	inv, _, err = parseScheduler([]string{"dnd", "disturb"}, now) // 06:00 CST: 18h to midnight
+	if err != nil || inv.op != "dnd.set" || inv.args["mode"] != "disturb" || inv.args["duration_ms"] != int64(18*3600000) {
+		t.Fatalf("disturb: %#v %v", inv, err)
+	}
+	inv, _, err = parseScheduler([]string{"dnd", "disturb", "2h"}, now)
+	if err != nil || inv.args["duration_ms"] != int64(7200000) {
+		t.Fatalf("disturb 2h: %#v %v", inv, err)
+	}
 	inv, _, err = parseScheduler([]string{"schedule", "--at", "11:00", "tomorrow"}, now)
 	if err != nil || inv.args["due_at"] != mustTime(t, "2026-01-02T11:00:00Z").UnixMilli() {
 		t.Fatalf("at: %#v %v", inv, err)

@@ -3,7 +3,7 @@ import { createServer, type Socket } from "node:net";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import scheduler, { renderWarmWake, warmWakeConfig, warmWakeDue, WARM_WAKE } from "./index.ts";
+import scheduler, { DISTURB_WAKE, parseDndMode, renderWarmWake, warmWakeConfig, warmWakeDue, WARM_WAKE } from "./index.ts";
 
 // Kev, Oct 11: quiet merges used to wait for his next message. If the primary
 // has sat idle ~55 min with returns pending, deliver them in one self-wake turn
@@ -32,7 +32,7 @@ test("config: default 55/60, env overrides, 0 disables, garbage falls back", () 
   expect(renderWarmWake(2, 56 * 60_000).content).toContain("Do not push");
 });
 
-async function harness(opts: { dnd?: boolean; idle?: () => boolean; ttlMs?: number } = {}) {
+async function harness(opts: { dnd?: boolean; disturb?: boolean; idle?: () => boolean; ttlMs?: number } = {}) {
   const root = mkdtempSync(join(tmpdir(), "sched-warm-"));
   roots.push(root);
   const socketPath = join(root, "svc.sock");
@@ -64,7 +64,7 @@ async function harness(opts: { dnd?: boolean; idle?: () => boolean; ttlMs?: numb
       if (!options) entries.push({ type: "custom_message", customType: message.customType, details: message.details });
     },
   };
-  scheduler(pi as any, { warmWake: { thresholdMs: 40, ttlMs: opts.ttlMs ?? 5_000, intervalMs: 15, primary: true, dndOn: async () => opts.dnd ?? false } });
+  scheduler(pi as any, { warmWake: { thresholdMs: 40, ttlMs: opts.ttlMs ?? 5_000, intervalMs: 15, primary: true, dndOn: async () => opts.dnd ?? false, disturbOn: async () => opts.disturb ?? false } });
   const ctx = { sessionManager: { getSessionId: () => "p", getBranch: () => entries }, isIdle: opts.idle ?? (() => true) };
   const emit = async (name: string) => { for (const h of handlers.get(name) ?? []) await h({}, ctx); };
   const tick = (ms = 120) => new Promise((r) => setTimeout(r, ms));
@@ -116,4 +116,31 @@ test("cache already cold (past TTL): no wake", async () => {
   await h.tick(250);
   expect(h.sent.filter((s) => s.message.customType === WARM_WAKE)).toHaveLength(0);
   await h.close();
+});
+
+// Kev, Oct 24: on busy Saturdays, "do disturb" means quiet returns wake me.
+// familiar-services claims new ones as wakes; merges already held from before
+// it was switched on are delivered as soon as the primary is idle, no 55m wait.
+test("Do Disturb: held merges wake the primary at once, without the warm-wake note", async () => {
+  const h = await harness({ disturb: true });
+  await h.emit("session_start");
+  await h.tick(100);
+  expect(h.sent.filter((s) => s.message.customType === WARM_WAKE)).toHaveLength(0);
+  const merges = h.sent.filter((s) => s.message.customType === "familiar.merge.v1");
+  expect(merges.map((s) => s.options)).toEqual([undefined, undefined]);
+  const nudge = h.sent.filter((s) => s.message.customType === DISTURB_WAKE);
+  expect(nudge.map((s) => s.options)).toEqual([{ deliverAs: "steer", triggerTurn: true }]);
+  await h.emit("turn_start");
+  await h.tick();
+  expect(h.acks.sort()).toEqual(["m-a", "m-b"]);
+  await h.close();
+});
+
+test("parseDndMode: off, quiet, disturb, expired, garbage counts as quiet", () => {
+  expect(parseDndMode("null")).toBe("off");
+  expect(parseDndMode(JSON.stringify({ enabled: true, expiresAt: 2_000, mode: "quiet" }), 1_000)).toBe("quiet");
+  expect(parseDndMode(JSON.stringify({ enabled: true, expiresAt: 2_000 }), 1_000)).toBe("quiet");
+  expect(parseDndMode(JSON.stringify({ enabled: true, expiresAt: 2_000, mode: "disturb" }), 1_000)).toBe("disturb");
+  expect(parseDndMode(JSON.stringify({ enabled: true, expiresAt: 500, mode: "disturb" }), 1_000)).toBe("off");
+  expect(parseDndMode("{oops")).toBe("quiet");
 });

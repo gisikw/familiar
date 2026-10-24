@@ -340,6 +340,31 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 			m["duration_ms"] = d.Milliseconds()
 			return schedulerInvocation{"dnd.set", m}, jsonMode, nil
 		}
+		if pos[0] == "disturb" {
+			// Do Disturb: quiet fork returns wake me instead of waiting for
+			// Kev's next message. Default: until local midnight, so it can't
+			// get stuck on. `imp dnd off` clears it.
+			if len(pos) > 2 {
+				return schedulerInvocation{}, false, errors.New("usage: imp dnd disturb [DURATION]")
+			}
+			var d time.Duration
+			if len(pos) == 2 {
+				x, e := time.ParseDuration(pos[1])
+				if e != nil || x <= 0 {
+					return schedulerInvocation{}, false, errors.New("invalid duration")
+				}
+				d = x
+			} else {
+				local := now.In(listZone())
+				d = time.Date(local.Year(), local.Month(), local.Day()+1, 0, 0, 0, 0, local.Location()).Sub(now)
+			}
+			m := originArgs()
+			m["enabled"] = true
+			m["mode"] = "disturb"
+			m["set_by"] = "familiar"
+			m["duration_ms"] = d.Milliseconds()
+			return schedulerInvocation{"dnd.set", m}, jsonMode, nil
+		}
 	}
 	return schedulerInvocation{}, false, fmt.Errorf("unknown command %q", cmd)
 }
@@ -451,12 +476,17 @@ func writeSchedulerHuman(out io.Writer, op string, result json.RawMessage, stder
 			fmt.Fprintln(out, "off")
 		} else {
 			var d struct {
-				ExpiresAt int64 `json:"expiresAt"`
+				ExpiresAt int64  `json:"expiresAt"`
+				Mode      string `json:"mode"`
 			}
 			if json.Unmarshal(result, &d) != nil {
 				return ExitProtocol
 			}
-			fmt.Fprintf(out, "on until %s\n", time.UnixMilli(d.ExpiresAt).Format(time.RFC3339))
+			state := "on"
+			if d.Mode == "disturb" {
+				state = "do-disturb (quiet returns wake you)"
+			}
+			fmt.Fprintf(out, "%s until %s\n", state, time.UnixMilli(d.ExpiresAt).In(listZone()).Format("Mon 15:04 MST"))
 		}
 	}
 	return 0
@@ -477,7 +507,8 @@ const schedulerHelp = `Usage:
   imp schedule list [--all] [--json]
   imp schedule cancel ID       (a recurring ID cancels the whole series)
   imp notify [--target TARGET] [--id ID] [--soft] "reason"
-  imp dnd [on DURATION|off|status]
+  imp dnd [on DURATION|disturb [DURATION]|off|status]
+                              (disturb: quiet fork returns wake you; default until midnight)
   imp push [--title TITLE] "message"   (to Kevin's phone)
 
 RULE: an interval (90m, 2h, 1d) or DAYS HH:MM, where DAYS is day, weekday,
