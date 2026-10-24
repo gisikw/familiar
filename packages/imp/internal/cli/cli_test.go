@@ -218,8 +218,9 @@ func TestAttnRequestSpelling(t *testing.T) {
 		{"project.get", []string{"attn", "project", "get", "familiar", "--json"}, "", "project.get", map[string]any{"slug": "familiar"}},
 		{"project.add", []string{"attn", "project", "add", "familiar", "--label", "Familiar", "--default-policy", "ship-tell", "--repo", "/srv/familiar", "--json"}, "", "project.add", map[string]any{"slug": "familiar", "label": "Familiar", "default_policy": "ship-tell", "repo": "/srv/familiar"}},
 		{"project.set", []string{"attn", "project", "set", "familiar", "--default-policy", "pr-evidence", "--json"}, "", "project.set", map[string]any{"slug": "familiar", "default_policy": "pr-evidence"}},
-		{"card.list-project", []string{"attn", "card", "list", "--project", "familiar", "--owner", "kes", "--edge", "blocked", "--q", "imp", "--json"}, "", "card.list", map[string]any{"project": "familiar", "owner": "kes", "edge": "blocked", "q": "imp"}},
-		{"card.list-lane", []string{"attn", "card", "list", "--lane", "review", "--json"}, "", "card.list", map[string]any{"lane": "review"}},
+		{"card.list-project", []string{"attn", "card", "list", "--project", "familiar", "--owner", "kes", "--edge", "blocked", "--q", "imp", "--json"}, "", "card.list", map[string]any{"project": "familiar", "owner": "kes", "edge": "blocked", "q": "imp", "order": "updated", "offset": float64(0), "limit": float64(64)}},
+		{"card.list-paged", []string{"attn", "card", "list", "--project", "actabl", "--order", "created", "--offset", "64", "--limit", "10", "--since", "6h", "--created-since", "2026-10-14", "--json"}, "", "card.list", map[string]any{"project": "actabl", "order": "created", "offset": float64(64), "limit": float64(10), "since": "2026-10-14T22:30:00Z", "created_since": "2026-10-14T05:00:00Z"}},
+		{"card.list-lane", []string{"attn", "card", "list", "--lane", "review", "--json"}, "", "card.list", map[string]any{"lane": "review", "order": "updated", "offset": float64(0), "limit": float64(64)}},
 		{"card.get", []string{"attn", "card", "get", "c1", "--json"}, "", "card.get", map[string]any{"id": "c1"}},
 		{"card.add", []string{"attn", "card", "add", "--project", "familiar", "--title", "Build imp attn", "--lane", "clarified", "--summary", "-", "--owner", "kes", "--policy", "ship-quiet", "--json"}, "shape requests\n", "card.add", map[string]any{"project": "familiar", "title": "Build imp attn", "lane": "clarified", "summary": "shape requests", "owner": "kes", "policy": "ship-quiet"}},
 		{"card.add-title-stdin", []string{"attn", "card", "add", "--project", "familiar", "--title", "-", "--json"}, "From stdin\n", "card.add", map[string]any{"project": "familiar", "title": "From stdin"}},
@@ -296,6 +297,11 @@ func TestAttnLocalValidation(t *testing.T) {
 	bad := [][]string{
 		{"attn", "card", "list", "--owner", "kes"},
 		{"attn", "card", "list", "--lane", "somewhere"},
+		{"attn", "card", "list", "--project", "p", "--order", "oldest"},
+		{"attn", "card", "list", "--project", "p", "--limit", "65"},
+		{"attn", "card", "list", "--project", "p", "--limit", "0"},
+		{"attn", "card", "list", "--project", "p", "--offset", "-1"},
+		{"attn", "card", "list", "--project", "p", "--since", "last week"},
 		{"attn", "card", "add", "--title", "no project"},
 		{"attn", "card", "add", "--project", "p"},
 		{"attn", "card", "add", "--project", "p", "--title", "-", "--summary", "-"},
@@ -347,7 +353,7 @@ func TestAttnBoundedListRendering(t *testing.T) {
 	if lines[0] != "00000000  inflight  kes  1h  Card 0" {
 		t.Errorf("row=%q", lines[0])
 	}
-	if lines[64] != "… and 6 more" {
+	if lines[64] != "… and 6 more (next: --offset 64)" {
 		t.Errorf("footer=%q", lines[64])
 	}
 
@@ -356,7 +362,7 @@ func TestAttnBoundedListRendering(t *testing.T) {
 	result = `{"ok":true,"result":[` + strings.Join(extra, ",") + `]}` + "\n"
 	_, out, _ = runWithSocket(t, []string{"attn", "card", "list", "--lane", "review"}, "", result, nil)
 	lines = strings.Split(strings.TrimSuffix(out, "\n"), "\n")
-	if len(lines) != 65 || lines[64] != "… and 1 more" {
+	if len(lines) != 65 || lines[64] != "… and 1 more (next: --offset 64)" {
 		t.Fatalf("bare array clip: %d lines, last=%q", len(lines), lines[len(lines)-1])
 	}
 
@@ -584,5 +590,47 @@ func TestAskHelp(t *testing.T) {
 		if u := attnUsage[key]; !strings.Contains(u, "DATE") && key != "jot.list" || (key == "jot.list" && !strings.Contains(u, "--all")) {
 			t.Errorf("usage %s lacks new flags: %q", key, u)
 		}
+	}
+}
+
+func TestParseAttnSince(t *testing.T) {
+	now := time.Date(2026, 10, 15, 4, 30, 0, 0, time.UTC) // Wed 23:30 Chicago (CDT)
+	for in, want := range map[string]string{
+		"90m":                  "2026-10-15T03:00:00Z",
+		"6h":                   "2026-10-14T22:30:00Z",
+		"2d":                   "2026-10-13T04:30:00Z",
+		"today":                "2026-10-14T05:00:00Z",
+		"yesterday":            "2026-10-13T05:00:00Z",
+		"2026-10-01":           "2026-10-01T05:00:00Z",
+		"2026-10-14T19:23:00Z": "2026-10-14T19:23:00Z",
+	} {
+		got, err := parseAttnSince(in, now)
+		if err != nil || got != want {
+			t.Errorf("%s: got %q %v, want %q", in, got, err, want)
+		}
+	}
+	for _, bad := range []string{"", "-2h", "-1d", "last week", "2026-13-01"} {
+		if _, err := parseAttnSince(bad, now); err == nil {
+			t.Errorf("accepted %q", bad)
+		}
+	}
+}
+
+func TestAttnPagedFooter(t *testing.T) {
+	row := `{"id":"%08d-aaaa","project":"actabl","lane":"captured","title":"C%d","owner":"kevin","policy":null,"effective_policy":"ship-tell","diverges":false,"blocked":null,"edge":null,"age_s":60,"moved_s":60,"agents":{"running":0,"blocked":0}}`
+	var items []string
+	for i := 0; i < 10; i++ {
+		items = append(items, fmt.Sprintf(row, i, i))
+	}
+	result := `{"ok":true,"result":{"items":[` + strings.Join(items, ",") + `],"total":151,"offset":64,"truncated":true}}` + "\n"
+	_, out, _ := runWithSocket(t, []string{"attn", "card", "list", "--project", "actabl", "--offset", "64", "--limit", "10"}, "", result, nil)
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	if len(lines) != 11 || lines[10] != "… and 77 more (next: --offset 74)" {
+		t.Fatalf("%d lines, footer %q", len(lines), lines[len(lines)-1])
+	}
+	result = `{"ok":true,"result":{"items":[` + strings.Join(items[:5], ",") + `],"total":69,"offset":64,"truncated":false}}` + "\n"
+	_, out, _ = runWithSocket(t, []string{"attn", "card", "list", "--project", "actabl", "--offset", "64"}, "", result, nil)
+	if strings.Contains(out, "more") {
+		t.Fatalf("last page has a footer:\n%s", out)
 	}
 }

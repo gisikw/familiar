@@ -42,9 +42,14 @@ imp attn jot clear-done
 ```
 
 `card list` requires `--project` and/or `--lane` and fails locally without one.
+It lists newest first (`--order updated`, the default; `created` for newest
+capture first, `lane` for the board's order) and one page at a time:
+`--offset N`, `--limit N` (1-64, default 64), and `--since TIME` /
+`--created-since TIME` to keep only cards touched or created since then (a
+duration back like `6h` or `2d`, `today`, `yesterday`, `YYYY-MM-DD`, or RFC3339).
 Human output is one line per card — `id-prefix  lane  owner  [policy if
-diverges]  [!blocked]  age  title` — clipped to 64 rows followed by `… and N
-more`. `card get` prints the title, project/lane/owner/policy, summary,
+diverges]  [!blocked]  age  title` — followed by `… and N more (next:
+--offset M)` when another page exists. `card get` prints the title, project/lane/owner/policy, summary,
 evidence, the short timeline and notes; the raw event log is `--json` only.
 Prose flags (`--title`, `--summary`, `--text`, `--detail`) accept a lone `-` to
 read stdin (≤ 64 KiB). `note add` carries no author; the resident records it as
@@ -107,7 +112,7 @@ only when given):
 | `project.list` | optional `hidden` |
 | `project.get` | `slug` |
 | `project.add`, `project.set` | `slug`, optional `label`, `default_policy`, `repo` |
-| `card.list` | `project` and/or `lane` (one required), optional `owner`, `edge`, `q` |
+| `card.list` | `project` and/or `lane` (one required), optional `owner`, `edge`, `q`, `order` (`lane` default on the wire; the CLI sends `updated`), `offset`, `limit` (1-64), `since`, `created_since` (RFC3339) |
 | `card.get`, `card.unblock` | `id` |
 | `card.add` | `project`, `title`, optional `lane`, `summary`, `owner`, `policy` |
 | `card.set` | `id`, optional `title`, `summary`, `owner`, `policy` (`null` from `--policy default`) |
@@ -122,7 +127,7 @@ only when given):
 | `jot.list`, `jot.clear-done`, `status` | none |
 
 The resident may answer a list with a bare array or `{items|cards, total,
-truncated}`; the CLI honours `total`/`truncated` in its `… and N more` footer and
+truncated}` (paged `card.list` adds `offset`); the CLI honours `total`/`truncated` in its `… and N more` footer and
 never prints more than 64 rows either way.
 
 Exit statuses are 0 success, 2 usage, 3 missing resident capability, 4 a

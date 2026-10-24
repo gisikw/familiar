@@ -29,6 +29,7 @@ var attnValueFlags = map[string]bool{
 	"reason": true, "text": true, "detail": true, "kind": true, "ref": true, "meta": true,
 	"name": true, "model": true, "host": true, "harness": true, "state": true, "question": true,
 	"hold-until": true, "due": true, "maybe-on": true,
+	"order": true, "offset": true, "limit": true, "since": true, "created-since": true,
 }
 var attnBoolFlags = map[string]bool{"hidden": true, "undo": true, "all": true, "stage": true, "json-in": true}
 
@@ -78,6 +79,40 @@ func parseAttnDate(v string, now time.Time) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("date must be YYYY-MM-DD, today, tomorrow, or a weekday name like fri")
+}
+
+// parseAttnSince resolves a --since TIME to an RFC3339 UTC instant: a
+// duration back from now (90m, 6h, 2d), today/yesterday or YYYY-MM-DD
+// (local midnight), or an RFC3339 timestamp.
+func parseAttnSince(v string, now time.Time) (string, error) {
+	v = strings.TrimSpace(v)
+	l := strings.ToLower(v)
+	loc := attnLocation()
+	midnight := func(t time.Time) string {
+		t = t.In(loc)
+		return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc).UTC().Format(time.RFC3339)
+	}
+	switch l {
+	case "today":
+		return midnight(now), nil
+	case "yesterday":
+		return midnight(now.AddDate(0, 0, -1)), nil
+	}
+	if n, ok := strings.CutSuffix(l, "d"); ok {
+		if days, err := strconv.Atoi(n); err == nil && days >= 0 {
+			return now.Add(-time.Duration(days) * 24 * time.Hour).UTC().Format(time.RFC3339), nil
+		}
+	}
+	if d, err := time.ParseDuration(l); err == nil && d >= 0 {
+		return now.Add(-d).UTC().Format(time.RFC3339), nil
+	}
+	if t, err := time.ParseInLocation("2006-01-02", v, loc); err == nil {
+		return t.UTC().Format(time.RFC3339), nil
+	}
+	if t, err := time.Parse(time.RFC3339, v); err == nil {
+		return t.UTC().Format(time.RFC3339), nil
+	}
+	return "", fmt.Errorf("time must be a duration back (90m, 6h, 2d), today, yesterday, YYYY-MM-DD, or RFC3339")
 }
 
 // attnDueLabel renders a due date relative to today in America/Chicago:
@@ -324,6 +359,35 @@ func parseAttn(argv []string, stdin io.Reader) (invocation, error) {
 			func() error { return putShort("q", "q", 200, false) },
 		); err != nil {
 			return out, err
+		}
+		// Newest first and paged by default: the board runs past 64 cards,
+		// and lane order buried everything recent past the clip.
+		out.args["order"] = "updated"
+		if err := putEnum("order", "order", []string{"updated", "created", "lane"}, false); err != nil {
+			return out, err
+		}
+		for _, p := range []struct {
+			flag    string
+			lo, def int
+			hi      int
+		}{{"offset", 0, 0, 1 << 30}, {"limit", 1, maxAttnRows, maxAttnRows}} {
+			out.args[p.flag] = p.def
+			if v, ok := flags.take(p.flag); ok {
+				n, err := strconv.Atoi(v)
+				if err != nil || n < p.lo || n > p.hi {
+					return out, fmt.Errorf("--%s must be a whole number from %d to %d", p.flag, p.lo, p.hi)
+				}
+				out.args[p.flag] = n
+			}
+		}
+		for flag, wire := range map[string]string{"since": "since", "created-since": "created_since"} {
+			if v, ok := flags.take(flag); ok {
+				t, err := parseAttnSince(v, attnNow())
+				if err != nil {
+					return out, fmt.Errorf("--%s: %v", flag, err)
+				}
+				out.args[wire] = t
+			}
 		}
 		if _, hasProject := out.args["project"]; !hasProject {
 			if _, hasLane := out.args["lane"]; !hasLane {
@@ -731,7 +795,7 @@ func attnRow(c attnCard) string {
 	return strings.Join(fields, "  ")
 }
 
-func writeAttnCards(w io.Writer, raw json.RawMessage, empty string) error {
+func writeAttnCards(w io.Writer, raw json.RawMessage, empty string, pageable bool) error {
 	items, total, truncated, err := attnList(raw)
 	if err != nil {
 		return err
@@ -753,7 +817,17 @@ func writeAttnCards(w io.Writer, raw json.RawMessage, empty string) error {
 		shown++
 	}
 	if truncated || total > shown {
-		fmt.Fprintf(w, "… and %d more\n", total-shown)
+		var page struct {
+			Offset int `json:"offset"`
+		}
+		_ = json.Unmarshal(raw, &page) // a bare array has no offset
+		if more := total - page.Offset - shown; more > 0 {
+			if pageable {
+				fmt.Fprintf(w, "… and %d more (next: --offset %d)\n", more, page.Offset+shown)
+			} else {
+				fmt.Fprintf(w, "… and %d more\n", more)
+			}
+		}
 	}
 	return nil
 }
@@ -994,9 +1068,9 @@ func writeAttnHuman(w io.Writer, operation string, raw json.RawMessage) error {
 		fmt.Fprintln(w, attnProjectLine(p))
 		return nil
 	case "card.list":
-		return writeAttnCards(w, raw, "No cards.")
+		return writeAttnCards(w, raw, "No cards.", true)
 	case "jot.list":
-		return writeAttnCards(w, raw, "No jots.")
+		return writeAttnCards(w, raw, "No jots.", false)
 	case "jot.clear-done":
 		var r struct {
 			Archived int `json:"archived"`
@@ -1107,7 +1181,7 @@ var attnUsage = map[string]string{
 	"project.get":    "Usage: imp attn project get SLUG [--json]\n",
 	"project.add":    "Usage: imp attn project add SLUG [--label TEXT] [--default-policy POLICY] [--repo PATH_OR_URL] [--json]\n",
 	"project.set":    "Usage: imp attn project set SLUG [--label TEXT] [--default-policy POLICY] [--repo PATH_OR_URL] [--json]\n",
-	"card.list":      "Usage: imp attn card list (--project SLUG | --lane LANE) [--owner kevin|kes] [--edge blocked|review|live] [--q TEXT] [--json]\n\nAt least one of --project or --lane is required. Prints at most 64 rows:\n  id-prefix  lane  owner  [policy if diverges]  [!blocked]  age  title\n",
+	"card.list":      "Usage: imp attn card list (--project SLUG | --lane LANE) [--owner kevin|kes] [--edge blocked|review|live] [--q TEXT]\n                          [--order updated|created|lane] [--since TIME] [--created-since TIME]\n                          [--offset N] [--limit N] [--json]\n\nAt least one of --project or --lane is required. Prints one page (at most 64 rows):\n  id-prefix  lane  owner  [policy if diverges]  [!blocked]  age  title\nfollowed by '… and N more (next: --offset M)' when there is another page.\n\n--order    updated (default: most recently touched first), created (newest\n           capture first), or lane (the board's order: lane, then oldest move).\n--since    only cards touched (created, edited, moved) at or after TIME.\n--created-since  only cards created at or after TIME.\n           TIME: a duration back from now (90m, 6h, 2d), today, yesterday,\n           YYYY-MM-DD (local midnight, America/Chicago), or RFC3339.\n--offset   skip N cards (default 0). --limit  page size, 1-64 (default 64).\n\nage is time since capture, whatever the order.\n",
 	"card.get":       "Usage: imp attn card get ID [--json]\n\nPrints title, project/lane/owner/policy, summary, evidence, the short timeline, and notes.\nThe raw event log is available only with --json.\n",
 	"card.add":       "Usage: imp attn card add --project SLUG (--title TEXT | --title -) [--lane LANE] [--summary TEXT|-] [--owner kevin|kes] [--policy POLICY] [--json]\n",
 	"card.set":       "Usage: imp attn card set ID [--title TEXT|-] [--summary TEXT|-] [--owner kevin|kes] [--policy POLICY|default] [--due DATE|none] [--maybe-on DATE|none] [--json]\n\n--policy default clears the card's policy back to the project default.\n--due and --maybe-on apply to jots (_today) only; DATE is YYYY-MM-DD, today, tomorrow, or a\nweekday (next occurrence; today counts) in America/Chicago. 'none' clears the date.\nSetting --due promotes a Maybe-today jot to Today.\n",
