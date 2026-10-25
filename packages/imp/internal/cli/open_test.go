@@ -74,13 +74,13 @@ func TestOpenRefusesWhatTheReaderCannotShow(t *testing.T) {
 	home, _, getenv := openEnv(t)
 	inside := filepath.Join(home, "Projects", "wireframes")
 	os.MkdirAll(inside, 0o755)
-	os.WriteFile(filepath.Join(inside, "notes.txt"), []byte("x"), 0o644)
+	os.WriteFile(filepath.Join(inside, "archive.zip"), []byte("x"), 0o644)
 	os.WriteFile(filepath.Join(home, "outside.md"), []byte("# x"), 0o644)
 	cases := map[string]string{
 		"https://example.com":                    "URLs",
 		"card:abc":                               "single cards",
 		"#Not_A_Slug":                            "slug",
-		filepath.Join(inside, "notes.txt"):       "can't show",
+		filepath.Join(inside, "archive.zip"):     "can't show",
 		filepath.Join(home, "missing.md"):        "can't open",
 		filepath.Join(home, "Projects", "opcos"): "can't open",
 	}
@@ -142,5 +142,66 @@ func TestOutsidePushesAreGrantedOnce(t *testing.T) {
 	raw, _ := os.ReadFile(filepath.Join(state, "reader-grants"))
 	if string(raw) != real+"\n" {
 		t.Fatalf("grants: %q", raw)
+	}
+}
+
+func TestOpenFoldersAndPlainText(t *testing.T) {
+	home, state, getenv := openEnv(t)
+	data := filepath.Join(home, "Projects", "opcos", "actabl", "testdata")
+	os.MkdirAll(filepath.Join(data, "hilton"), 0o755)
+	os.WriteFile(filepath.Join(data, "README.md"), []byte("# Test data"), 0o644)
+	os.WriteFile(filepath.Join(data, "hilton", "rows.csv"), []byte("a,b\n"), 0o644)
+	os.WriteFile(filepath.Join(data, ".env"), []byte("X=1"), 0o644)
+	os.WriteFile(filepath.Join(data, "proto.tfvars"), []byte("x"), 0o644)
+
+	// A folder with only a README opens as a folder (trailing slash), not the README.
+	if code, out, errs := runOpen(getenv, data); code != 0 || !strings.Contains(out, "testdata") {
+		t.Fatalf("%d %q %q", code, out, errs)
+	}
+	// Plain text opens; secrets-shaped and hidden names don't.
+	if code, _, errs := runOpen(getenv, filepath.Join(data, "hilton", "rows.csv")); code != 0 {
+		t.Fatalf("csv: %s", errs)
+	}
+	for _, bad := range []string{".env", "proto.tfvars"} {
+		if code, _, _ := runOpen(getenv, filepath.Join(data, bad)); code == 0 {
+			t.Fatalf("%s should be refused", bad)
+		}
+	}
+	raw, _ := os.ReadFile(filepath.Join(state, "open.json"))
+	if !strings.Contains(string(raw), `"path": "`+data+`/"`) || !strings.Contains(string(raw), "rows.csv") {
+		t.Fatalf("folder stored with a trailing slash, csv stored: %s", raw)
+	}
+	// Inside the shelves: no grant needed.
+	if g, _ := os.ReadFile(filepath.Join(state, "reader-grants")); len(g) != 0 {
+		t.Fatalf("no grants inside the shelves: %q", g)
+	}
+	// Closing by the folder's plain path finds the slash-stored row.
+	if code, out, errs := runOpen(getenv, "close", data); code != 0 || !strings.Contains(out, "closed") {
+		t.Fatalf("%d %q %q", code, out, errs)
+	}
+
+	// Outside the shelves, a folder push grants the resolved folder (with its slash).
+	notes := filepath.Join(home, "notes")
+	os.MkdirAll(notes, 0o755)
+	if code, _, errs := runOpen(getenv, notes); code != 0 {
+		t.Fatalf("outside folder: %s", errs)
+	}
+	real, _ := filepath.EvalSymlinks(notes)
+	g, _ := os.ReadFile(filepath.Join(state, "reader-grants"))
+	if !strings.Contains(string(g), real+"/\n") {
+		t.Fatalf("folder grant: %q", g)
+	}
+
+	// Page folders still open their page.
+	primer := filepath.Join(home, "Projects", "hoard", "primers", "p")
+	os.MkdirAll(primer, 0o755)
+	os.WriteFile(filepath.Join(primer, "index.md"), []byte("# P"), 0o644)
+	os.WriteFile(filepath.Join(primer, "README.md"), []byte("# R"), 0o644)
+	if code, _, _ := runOpen(getenv, primer); code != 0 {
+		t.Fatal("primer")
+	}
+	raw, _ = os.ReadFile(filepath.Join(state, "open.json"))
+	if !strings.Contains(string(raw), filepath.Join(primer, "index.md")) {
+		t.Fatalf("primer opens index.md: %s", raw)
 	}
 }

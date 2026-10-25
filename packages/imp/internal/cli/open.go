@@ -28,10 +28,14 @@ const openHelp = `Usage:
   imp open list                          what's pushed and still open
   imp open close <id|path|#project>      take it back out
 
-A path is any document the Reader can show (md, html, pdf, audio, image),
-anywhere on this host: pushing it is what lets the Reader serve it. (The
-shelves ~/Projects/{hoard/primers,wireframes,opcos,holdco,podcasts/episodes}
-are only what the Reader lists on its own.) A directory means its index.md/index.html/README.md. #project opens that
+A path is any file the Reader can show (md, html, pdf, audio, image, or plain
+text like csv/json/txt/source), anywhere on this host: pushing it is what
+lets the Reader serve it. (The shelves
+~/Projects/{hoard/primers,wireframes,opcos,holdco,podcasts/episodes} are only
+what the Reader lists on its own.) A directory with an index.md or index.html
+opens that page; any other directory opens as a folder (its README.md above a
+listing Kev can click through; pushing one outside the shelves grants the
+folder and everything visible beneath it). #project opens that
 Attention board. Rows wait in Open; they don't take over his screen. URLs and
 single cards can't go in Open: link those in chat.
 `
@@ -46,6 +50,19 @@ var openKinds = map[string]bool{
 	".md": true, ".markdown": true, ".pdf": true, ".html": true, ".htm": true,
 	".mp3": true, ".m4a": true, ".wav": true, ".ogg": true,
 	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".webp": true, ".svg": true,
+}
+
+// openTextKinds mirrors familiar-ui's DOC_TEXT_EXTENSIONS: plain text the
+// Reader shows as text (test data, configs, source). Secrets-shaped names
+// (.env, keys, tfvars, tfstate) are deliberately absent.
+var openTextKinds = map[string]bool{
+	".txt": true, ".text": true, ".csv": true, ".tsv": true, ".psv": true, ".json": true, ".jsonl": true, ".ndjson": true, ".xml": true,
+	".yaml": true, ".yml": true, ".toml": true, ".ini": true, ".cfg": true, ".conf": true, ".log": true, ".pfs": true, ".dat": true,
+	".edi": true, ".diff": true, ".patch": true, ".cs": true, ".csproj": true, ".sln": true, ".fs": true, ".vb": true, ".ts": true,
+	".tsx": true, ".js": true, ".mjs": true, ".cjs": true, ".jsx": true, ".go": true, ".mod": true, ".nix": true, ".sh": true, ".bash": true,
+	".sql": true, ".py": true, ".rb": true, ".rs": true, ".java": true, ".kt": true, ".swift": true, ".c": true, ".h": true, ".cpp": true,
+	".hpp": true, ".css": true, ".scss": true, ".d2": true, ".mmd": true, ".proto": true, ".graphql": true, ".tf": true, ".hcl": true,
+	".lua": true, ".el": true, ".ex": true, ".exs": true, ".erl": true, ".zig": true, ".dockerfile": true, ".http": true,
 }
 
 func openMain(args []string, out, errw io.Writer, getenv func(string) string) int {
@@ -169,7 +186,7 @@ func underDocRoots(path string, getenv func(string) string) bool {
 		if e != nil {
 			r = root
 		}
-		if strings.HasPrefix(real, r+string(filepath.Separator)) {
+		if real == r || strings.HasPrefix(real, r+string(filepath.Separator)) {
 			return true
 		}
 	}
@@ -320,21 +337,33 @@ func openDocPath(target string, getenv func(string) string) (string, error) {
 	if e != nil {
 		return "", fmt.Errorf("can't open %s: %v", target, e)
 	}
+	folder := false
 	if info.IsDir() {
+		// A page folder (primer, wireframe) opens its page; anything else
+		// opens as a folder listing, its README.md shown above.
 		found := ""
-		for _, name := range []string{"index.md", "index.html", "README.md"} {
+		for _, name := range []string{"index.md", "index.html"} {
 			if s, e := os.Stat(filepath.Join(path, name)); e == nil && !s.IsDir() {
 				found = filepath.Join(path, name)
 				break
 			}
 		}
-		if found == "" {
-			return "", fmt.Errorf("%s is a directory with no index.md, index.html or README.md", target)
+		if found != "" {
+			path = found
+		} else {
+			folder = true
 		}
-		path = found
 	}
-	if !openKinds[strings.ToLower(filepath.Ext(path))] {
-		return "", fmt.Errorf("the Reader can't show %s (md, html, pdf, audio or image only)", filepath.Base(path))
+	ext := strings.ToLower(filepath.Ext(path))
+	if !folder && (!(openKinds[ext] || openTextKinds[ext]) || strings.HasPrefix(filepath.Base(path), ".")) {
+		return "", fmt.Errorf("the Reader can't show %s (md, html, pdf, audio, image, plain text, or a folder)", filepath.Base(path))
+	}
+	// Folders are stored with a trailing slash: that's how the Reader knows one.
+	slash := func(p string) string {
+		if folder && !strings.HasSuffix(p, "/") {
+			return p + "/"
+		}
+		return p
 	}
 	real, e := filepath.EvalSymlinks(path)
 	if e != nil {
@@ -345,14 +374,14 @@ func openDocPath(target string, getenv func(string) string) (string, error) {
 		if e != nil {
 			r = root
 		}
-		if strings.HasPrefix(real, r+string(filepath.Separator)) {
-			return path, nil
+		if real == r || strings.HasPrefix(real, r+string(filepath.Separator)) {
+			return slash(path), nil
 		}
 	}
 	// Outside the shelves: the push itself is the grant. The roots bound only
 	// the Reader's browsable index; the bridge also serves any file named in
 	// open.json (or Recently closed), so store the resolved path it will match.
-	return real, nil
+	return slash(real), nil
 }
 
 var htmlTitleRe = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
