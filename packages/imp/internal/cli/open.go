@@ -43,6 +43,7 @@ single cards can't go in Open: link those in chat.
 const maxOpenItems = 24
 const maxOpenTitleRunes = 200
 
+var openSecretRe = regexp.MustCompile(`(?i)token|secret|cred|passw|api[-_]?key|private[-_]?key|id_rsa|id_ed25519|kubeconfig|vpn|(?:^|[-_])sp\.json$|\.(?:pem|key|p12|pfx|env)$`)
 var openSlugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 var openIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
@@ -357,6 +358,11 @@ func openDocPath(target string, getenv func(string) string) (string, error) {
 	ext := strings.ToLower(filepath.Ext(path))
 	if !folder && (!(openKinds[ext] || openTextKinds[ext]) || strings.HasPrefix(filepath.Base(path), ".")) {
 		return "", fmt.Errorf("the Reader can't show %s (md, html, pdf, audio, image, plain text, or a folder)", filepath.Base(path))
+	}
+	// Mirrors familiar-ui's privateText(): credentials sit beside documents,
+	// so plain text shaped like a secret, or private by mode, stays out.
+	if !folder && !openKinds[ext] && (openSecretRe.MatchString(filepath.Base(path)) || info.Mode().Perm()&0o044 == 0) {
+		return "", fmt.Errorf("%s looks like a credential (by name or chmod 600); the Reader won't show it", filepath.Base(path))
 	}
 	// Folders are stored with a trailing slash: that's how the Reader knows one.
 	slash := func(p string) string {

@@ -162,7 +162,9 @@ func TestOpenFoldersAndPlainText(t *testing.T) {
 	if code, _, errs := runOpen(getenv, filepath.Join(data, "hilton", "rows.csv")); code != 0 {
 		t.Fatalf("csv: %s", errs)
 	}
-	for _, bad := range []string{".env", "proto.tfvars"} {
+	os.WriteFile(filepath.Join(data, "bitbucket-token.txt"), []byte("t"), 0o644)
+	os.WriteFile(filepath.Join(data, "private.csv"), []byte("a"), 0o600)
+	for _, bad := range []string{".env", "proto.tfvars", "bitbucket-token.txt", "private.csv"} {
 		if code, _, _ := runOpen(getenv, filepath.Join(data, bad)); code == 0 {
 			t.Fatalf("%s should be refused", bad)
 		}
