@@ -75,6 +75,22 @@ imp dnd status
 imp dnd off
 ```
 
+## Host runs
+
+`imp host run <host> <script> "reason"` asks a host's page
+(`https://<host>.fort.<domain>/runs/<id>`) to run a script as root once Kev
+approves it with his passkey. It prints the run's URL, pushes a doc for it
+into Kev's Open list, starts a watcher (a transient systemd unit, so it
+outlives a merging fork), then blocks: up to 5 minutes for approval, then
+through the run, and prints the result. On timeout it returns "still
+pending" and the watcher hard-notifies the asking instance when the run is
+done, failed, rejected or expired, carrying exit code, trimmed output and the
+folder with the full output. `--async` skips the blocking. A `delivered`
+marker (O_EXCL) in `$FAMILIAR_STATE_DIR/host-runs/<host>-<id>/` makes sure only
+one of them hands the result over; the watcher defers while the blocking
+call's `blocking` lease is fresh. The client is `$FAMILIAR_HOST_CLIENT` (default
+`$FAMILIAR_STATE_DIR/bin/fortress-keeper`, which signs with Kes's key).
+
 ## Private Attention resident contract
 
 `imp` connects only to the absolute Unix socket named by `FAMILIAR_IMP_SOCKET`; there is no
