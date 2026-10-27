@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-// imp open: put a document or an Attention board in Kev's Open list.
+// imp open: put a document, an Attention board, or one card in Kev's Open list.
 //
 // The list of pushes is one file, $FAMILIAR_STATE_DIR/open.json, read by the
 // primary familiar-ui bridge (GET /v1/open) and polled by every client, which
@@ -24,9 +24,9 @@ import (
 // and this writer preserves items it does not understand.
 
 const openHelp = `Usage:
-  imp open <path|#project> [--title T]   put it in Kev's Open list (every device)
-  imp open list                          what's pushed and still open
-  imp open close <id|path|#project>      take it back out
+  imp open <path|#project|card:ID> [--title T]   put it in Kev's Open list (every device)
+  imp open list                                  what's pushed and still open
+  imp open close <id|path|#project|card:ID>      take it back out
 
 A path is any file the Reader can show (md, html, pdf, audio, image, or plain
 text like csv/json/txt/source), anywhere on this host: pushing it is what
@@ -36,8 +36,11 @@ what the Reader lists on its own.) A directory with an index.md or index.html
 opens that page; any other directory opens as a folder (its README.md above a
 listing Kev can click through; pushing one outside the shelves grants the
 folder and everything visible beneath it). #project opens that
-Attention board. Rows wait in Open; they don't take over his screen. URLs and
-single cards can't go in Open: link those in chat.
+Attention board. card:ID (or #project/ID; an 8+ character prefix is enough)
+opens one card on its own in the Reader: its summary, notes, evidence and
+timeline, live from the store, titled with the card's title unless --title.
+Rows wait in Open; they don't take over his screen. URLs can't go in Open:
+link those in chat.
 `
 
 const maxOpenItems = 24
@@ -46,6 +49,8 @@ const maxOpenTitleRunes = 200
 var openSecretRe = regexp.MustCompile(`(?i)token|secret|cred|passw|api[-_]?key|private[-_]?key|id_rsa|id_ed25519|kubeconfig|vpn|(?:^|[-_])sp\.json$|\.(?:pem|key|p12|pfx|env)$`)
 var openSlugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 var openIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+var openCardRefRe = regexp.MustCompile(`^[0-9a-fA-F-]{8,36}$`)
+var openCardUUIDRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 var openKinds = map[string]bool{
 	".md": true, ".markdown": true, ".pdf": true, ".html": true, ".htm": true,
@@ -95,7 +100,7 @@ func openMain(args []string, out, errw io.Writer, getenv func(string) string) in
 		return 0
 	case "close", "rm":
 		if len(args) != 2 {
-			return usageError(errw, "usage: imp open close <id|path|#project>")
+			return usageError(errw, "usage: imp open close <id|path|#project|card:ID>")
 		}
 		return openClose(file, args[1], out, errw, getenv)
 	}
@@ -115,11 +120,11 @@ func openMain(args []string, out, errw io.Writer, getenv func(string) string) in
 		case target == "":
 			target = a
 		default:
-			return usageError(errw, "one thing at a time: imp open <path|#project> [--title T]")
+			return usageError(errw, "one thing at a time: imp open <path|#project|card:ID> [--title T]")
 		}
 	}
 	if target == "" {
-		return usageError(errw, "usage: imp open <path|#project> [--title T]")
+		return usageError(errw, "usage: imp open <path|#project|card:ID> [--title T]")
 	}
 	item, e := openItemFor(target, title, getenv)
 	if e != nil {
@@ -243,6 +248,9 @@ func appendOpenClosed(file string, it map[string]any) {
 	if s := str(it, "slug"); s != "" {
 		entry["slug"] = s
 	}
+	if c := str(it, "card"); c != "" {
+		entry["card"] = c
+	}
 	if a := str(it, "addedAt"); a != "" {
 		entry["openedAt"] = a
 	}
@@ -260,12 +268,55 @@ func appendOpenClosed(file string, it map[string]any) {
 
 func str(m map[string]any, k string) string { s, _ := m[k].(string); return s }
 
-// openTarget is an item's identity for dedupe: its path, or #slug for a board.
+// openTarget is an item's identity for dedupe: its path, #slug for a board,
+// card:<id> for a card.
 func openTarget(it map[string]any) string {
-	if str(it, "kind") == "board" {
+	switch str(it, "kind") {
+	case "board":
 		return "#" + str(it, "slug")
+	case "card":
+		return "card:" + str(it, "card")
 	}
 	return str(it, "path")
+}
+
+// openCardLookup resolves a card id or prefix through the Attention store
+// (card.get over the imp socket): its full id, project and title. A variable
+// so tests can stand in for the store.
+var openCardLookup = func(ref string, getenv func(string) string) (id, project, title string, err error) {
+	path := getenv("FAMILIAR_IMP_SOCKET")
+	if path == "" {
+		return "", "", "", errors.New("FAMILIAR_IMP_SOCKET is not set; opening a card needs the Attention store")
+	}
+	result, remote, e := call(path, Request{Version: WireVersion, Area: "attn", Operation: "card.get", Args: map[string]any{"id": ref}})
+	if e != nil {
+		return "", "", "", e
+	}
+	if remote != nil {
+		return "", "", "", fmt.Errorf("no card %s: %s", ref, remote.Message)
+	}
+	var card attnCard
+	if e := json.Unmarshal(result, &card); e != nil || card.ID == "" {
+		return "", "", "", fmt.Errorf("no card %s", ref)
+	}
+	return card.ID, card.Project, card.Title, nil
+}
+
+// openCardRef splits card:ID, #project/ID or project/ID; ok is false when the
+// target isn't card-shaped at all (so it can still be a path).
+func openCardRef(target string) (ref, project string, ok bool) {
+	switch {
+	case strings.HasPrefix(target, "card:"):
+		ref = strings.TrimPrefix(target, "card:")
+		if i := strings.LastIndex(ref, "/"); i >= 0 {
+			project, ref = ref[:i], ref[i+1:]
+		}
+		return ref, project, true
+	case strings.HasPrefix(target, "#") && strings.Contains(target, "/"):
+		i := strings.Index(target, "/")
+		return target[i+1:], target[1:i], true
+	}
+	return "", "", false
 }
 
 func openItemFor(target, title string, getenv func(string) string) (map[string]any, error) {
@@ -273,8 +324,32 @@ func openItemFor(target, title string, getenv func(string) string) (map[string]a
 	switch {
 	case strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://"):
 		return nil, errors.New("URLs can't go in Open (the Reader shows files); link it in chat instead")
-	case strings.HasPrefix(target, "card:"):
-		return nil, errors.New("single cards can't go in Open; open the card's board with #project")
+	}
+	if ref, project, ok := openCardRef(target); ok {
+		if !openCardRefRe.MatchString(ref) {
+			return nil, fmt.Errorf("%q isn't a card id (8+ hex characters, or the full id)", ref)
+		}
+		if project != "" && !openSlugRe.MatchString(project) && project != "_today" {
+			return nil, fmt.Errorf("%q isn't a project slug", project)
+		}
+		id, slug, cardTitle, e := openCardLookup(strings.ToLower(ref), getenv)
+		if e != nil {
+			return nil, e
+		}
+		if !openCardUUIDRe.MatchString(id) || (!openSlugRe.MatchString(slug) && slug != "_today") {
+			return nil, fmt.Errorf("the store returned an unusable card (%q in %q)", id, slug)
+		}
+		if project != "" && project != slug {
+			return nil, fmt.Errorf("card %s is on #%s, not #%s", id[:8], slug, project)
+		}
+		if title = clip(title, maxOpenTitleRunes); title == "" {
+			if title = clip(cardTitle, maxOpenTitleRunes); title == "" {
+				title = "card " + id[:8]
+			}
+		}
+		return map[string]any{"id": newOpenID(), "kind": "card", "slug": slug, "card": id, "title": title, "addedAt": now}, nil
+	}
+	switch {
 	case strings.HasPrefix(target, "#") || strings.HasPrefix(target, "board:"):
 		slug := strings.TrimPrefix(strings.TrimPrefix(target, "#"), "board:")
 		if !openSlugRe.MatchString(slug) {

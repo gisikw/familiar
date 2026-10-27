@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,7 +79,7 @@ func TestOpenRefusesWhatTheReaderCannotShow(t *testing.T) {
 	os.WriteFile(filepath.Join(home, "outside.md"), []byte("# x"), 0o644)
 	cases := map[string]string{
 		"https://example.com":                    "URLs",
-		"card:abc":                               "single cards",
+		"card:abc":                               "isn't a card id",
 		"#Not_A_Slug":                            "slug",
 		filepath.Join(inside, "archive.zip"):     "can't show",
 		filepath.Join(home, "missing.md"):        "can't open",
@@ -89,7 +90,7 @@ func TestOpenRefusesWhatTheReaderCannotShow(t *testing.T) {
 			t.Errorf("%s: %d %q (want %q)", target, code, errs, want)
 		}
 	}
-	if code, out, _ := runOpen(getenv, "--help"); code != 0 || !strings.Contains(out, "imp open <path|#project>") {
+	if code, out, _ := runOpen(getenv, "--help"); code != 0 || !strings.Contains(out, "imp open <path|#project|card:ID>") {
 		t.Fatalf("help")
 	}
 }
@@ -205,5 +206,58 @@ func TestOpenFoldersAndPlainText(t *testing.T) {
 	raw, _ = os.ReadFile(filepath.Join(state, "open.json"))
 	if !strings.Contains(string(raw), filepath.Join(primer, "index.md")) {
 		t.Fatalf("primer opens index.md: %s", raw)
+	}
+}
+
+func TestOpenCard(t *testing.T) {
+	_, state, getenv := openEnv(t)
+	const full = "a47b193a-fd43-4351-afd4-e7f8b50890ec"
+	var asked []string
+	prev := openCardLookup
+	openCardLookup = func(ref string, _ func(string) string) (string, string, string, error) {
+		asked = append(asked, ref)
+		if !strings.HasPrefix(full, ref) {
+			return "", "", "", errors.New("no card " + ref + ": not found")
+		}
+		return full, "homelab-rack", "Deploy smaug with the keeper", nil
+	}
+	t.Cleanup(func() { openCardLookup = prev })
+
+	code, out, errs := runOpen(getenv, "card:A47B193A")
+	if code != 0 || !strings.Contains(out, "opened: Deploy smaug with the keeper (card:"+full+")") {
+		t.Fatalf("open card: %d %q %q", code, out, errs)
+	}
+	if asked[0] != "a47b193a" {
+		t.Fatalf("lookup got %q", asked[0])
+	}
+	raw, _ := os.ReadFile(filepath.Join(state, "open.json"))
+	var file struct {
+		Items []map[string]any `json:"items"`
+	}
+	json.Unmarshal(raw, &file)
+	if len(file.Items) != 1 || file.Items[0]["kind"] != "card" || file.Items[0]["slug"] != "homelab-rack" || file.Items[0]["card"] != full || file.Items[0]["path"] != nil {
+		t.Fatalf("item: %v", file.Items)
+	}
+	// The same card by #project/prefix dedupes onto the same row.
+	if code, out, _ := runOpen(getenv, "#homelab-rack/a47b193a", "--title", "Your steps"); code != 0 || !strings.Contains(out, "already open") {
+		t.Fatalf("dedupe: %d %q", code, out)
+	}
+	// Wrong project, unknown card, and a non-hex ref are refused.
+	if code, _, errs := runOpen(getenv, "#mail/a47b193a"); code != ExitUsage || !strings.Contains(errs, "is on #homelab-rack") {
+		t.Fatalf("wrong project: %d %q", code, errs)
+	}
+	if code, _, errs := runOpen(getenv, "card:deadbeef"); code != ExitUsage || !strings.Contains(errs, "no card deadbeef") {
+		t.Fatalf("unknown: %d %q", code, errs)
+	}
+	if code, _, errs := runOpen(getenv, "card:a47b"); code != ExitUsage || !strings.Contains(errs, "isn't a card id") {
+		t.Fatalf("short: %d %q", code, errs)
+	}
+	// Closing by card ref removes it and records the card in Recently closed.
+	if code, out, errs := runOpen(getenv, "close", "card:a47b193a"); code != 0 || !strings.Contains(out, "closed: Your steps") {
+		t.Fatalf("close: %d %q %q", code, out, errs)
+	}
+	hist, _ := os.ReadFile(filepath.Join(state, "open-closed.jsonl"))
+	if !strings.Contains(string(hist), `"card":"`+full+`"`) || !strings.Contains(string(hist), `"kind":"card"`) {
+		t.Fatalf("history: %s", hist)
 	}
 }
