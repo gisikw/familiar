@@ -120,7 +120,7 @@ func TestHostRunAsyncPushesPhoneAndStartsWatcher(t *testing.T) {
 	if items, _ := readOpenFile(filepath.Join(r.state, "open.json")); len(items) != 0 {
 		t.Fatalf("no Open doc wanted: %v", items)
 	}
-	if p := r.ops(true); len(p) != 1 || !strings.Contains(p[0].Args["body"].(string), "https://smaug.fort.example/runs/aaaaaaaaaaaa") || !strings.Contains(p[0].Args["body"].(string), "ABC-DEF") {
+	if p := r.ops(true); len(p) != 1 || !strings.Contains(p[0].Args["body"].(string), "https://smaug.fort.example/runs/aaaaaaaaaaaa") || !strings.Contains(p[0].Args["body"].(string), "ABC-DEF") || p[0].Args["url"] != "https://smaug.fort.example/runs/aaaaaaaaaaaa" {
 		t.Fatalf("phone push %v", p)
 	}
 	run := filepath.Join(r.state, "host-runs", "smaug-aaaaaaaaaaaa")

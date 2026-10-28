@@ -253,7 +253,13 @@ func (h hostCtx) run(host, script, reason string, async bool) int {
 	// Kev's phone gets the request (he asked for a push, not an Open doc).
 	var discard bytes.Buffer
 	push := fmt.Sprintf("%s · code %s\n%s", clip(reason, 160), sub.Code, url)
-	if code := Main([]string{"push", "--title", host + " run request", push}, strings.NewReader(""), &discard, &discard, h.getenv); code != 0 {
+	pushArgs := []string{"push", "--title", host + " run request", "--url", url, push}
+	code := Main(pushArgs, strings.NewReader(""), &discard, &discard, h.getenv)
+	if code != 0 { // a services build without push --url refuses it; the body still carries the link
+		discard.Reset()
+		code = Main(append(pushArgs[:3:3], push), strings.NewReader(""), &discard, &discard, h.getenv)
+	}
+	if code != 0 {
 		fmt.Fprintf(h.errw, "imp: phone push failed: %s", discard.String())
 	} else {
 		fmt.Fprintln(h.out, "pushed to Kev's phone")

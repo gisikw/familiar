@@ -109,7 +109,7 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 	jsonMode, soft, fork, all, fresh, runner, hidden := false, false, false, false, false, false, false
 	vals := map[string]string{}
 	pos := []string{}
-	value := map[string]bool{"in": true, "at": true, "every": true, "label": true, "target": true, "id": true, "priority": true, "type": true, "source": true, "body": true, "title": true, "model": true, "task-file": true}
+	value := map[string]bool{"in": true, "at": true, "every": true, "label": true, "target": true, "id": true, "priority": true, "type": true, "source": true, "body": true, "title": true, "model": true, "task-file": true, "url": true}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--json" {
@@ -286,6 +286,9 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 		m := map[string]any{"body": pos[0]}
 		if x := vals["title"]; x != "" {
 			m["title"] = x
+		}
+		if x := vals["url"]; x != "" { // tap opens this (https on gisi.network) instead of the sending fork
+			m["url"] = x
 		}
 		return schedulerInvocation{"push.send", m}, jsonMode, nil
 	case "notify":
@@ -509,7 +512,8 @@ const schedulerHelp = `Usage:
   imp notify [--target TARGET] [--id ID] [--soft] "reason"
   imp dnd [on DURATION|disturb [DURATION]|off|status]
                               (disturb: quiet fork returns wake you; default until midnight)
-  imp push [--title TITLE] "message"   (to Kevin's phone)
+  imp push [--title TITLE] [--url URL] "message"   (to Kevin's phone; tap opens URL
+                              in his browser instead of the sending session)
 
 RULE: an interval (90m, 2h, 1d) or DAYS HH:MM, where DAYS is day, weekday,
 weekend, or a list like mon,wed,fri. Local time (America/Chicago), DST-correct.

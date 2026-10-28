@@ -322,3 +322,10 @@ func TestScheduleForkHidden(t *testing.T) {
 		t.Fatal("expected --hidden without --fork to be refused")
 	}
 }
+
+func TestParsePushURL(t *testing.T) {
+	inv, _, err := parseScheduler([]string{"push", "--url", "https://smaug.fort.gisi.network/runs/x", "approve?"}, time.Now())
+	if err != nil || inv.args["url"] != "https://smaug.fort.gisi.network/runs/x" || inv.args["body"] != "approve?" {
+		t.Fatalf("push --url: %+v %v", inv, err)
+	}
+}
