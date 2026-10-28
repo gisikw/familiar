@@ -89,7 +89,21 @@ func (r *hostRig) script() string {
 	os.WriteFile(p, []byte("smartctl -a /dev/sda\n"), 0o644)
 	return p
 }
-func (r *hostRig) noteCount() int { r.mu.Lock(); defer r.mu.Unlock(); return len(r.notes) }
+func (r *hostRig) noteCount() int { return len(r.ops(false)) }
+func (r *hostRig) pushCount() int { return len(r.ops(true)) }
+
+// ops returns the service calls that are (or are not) phone pushes.
+func (r *hostRig) ops(push bool) []serviceRequest {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []serviceRequest
+	for _, n := range r.notes {
+		if (n.Op == "push.send") == push {
+			out = append(out, n)
+		}
+	}
+	return out
+}
 func (r *hostRig) watch() string {
 	var out, errw bytes.Buffer
 	h := hostCtx{state: r.state, getenv: r.getenv, out: &out, errw: &errw}
@@ -97,19 +111,24 @@ func (r *hostRig) watch() string {
 	return errw.String()
 }
 
-func TestHostRunAsyncPushesOpenAndStartsWatcher(t *testing.T) {
+func TestHostRunAsyncPushesPhoneAndStartsWatcher(t *testing.T) {
 	r := newHostRig(t)
 	code, out, errs := r.imp("run", "smaug", r.script(), "SSD health", "--async")
 	if code != 0 || !strings.HasPrefix(out, "https://smaug.fort.example/runs/aaaaaaaaaaaa\n") || !strings.Contains(out, "ABC-DEF") {
 		t.Fatalf("run: %d %q %q", code, out, errs)
 	}
-	items, _ := readOpenFile(filepath.Join(r.state, "open.json"))
-	if len(items) != 1 || !strings.Contains(str(items[0], "title"), "SSD health") || !strings.HasSuffix(str(items[0], "path"), "smaug-aaaaaaaaaaaa/index.md") {
-		t.Fatalf("open %v", items)
+	if items, _ := readOpenFile(filepath.Join(r.state, "open.json")); len(items) != 0 {
+		t.Fatalf("no Open doc wanted: %v", items)
 	}
-	doc, _ := os.ReadFile(filepath.Join(r.state, "host-runs", "smaug-aaaaaaaaaaaa", "index.md"))
-	if !strings.Contains(string(doc), "(https://smaug.fort.example/runs/aaaaaaaaaaaa)") || !strings.Contains(string(doc), "smartctl -a /dev/sda") {
-		t.Fatalf("doc %s", doc)
+	if p := r.ops(true); len(p) != 1 || !strings.Contains(p[0].Args["body"].(string), "https://smaug.fort.example/runs/aaaaaaaaaaaa") || !strings.Contains(p[0].Args["body"].(string), "ABC-DEF") {
+		t.Fatalf("phone push %v", p)
+	}
+	run := filepath.Join(r.state, "host-runs", "smaug-aaaaaaaaaaaa")
+	if _, e := os.Stat(filepath.Join(run, "index.md")); e == nil {
+		t.Fatal("no markdown doc wanted")
+	}
+	if b, _ := os.ReadFile(filepath.Join(run, "script.sh")); string(b) != "smartctl -a /dev/sda\n" {
+		t.Fatalf("script.sh %q", b)
 	}
 	started, _ := os.ReadFile(r.started)
 	if !strings.Contains(string(started), "familiar-host-watch-smaug-aaaaaaaaaaaa") || !strings.Contains(string(started), "host _watch smaug aaaaaaaaaaaa") || !strings.Contains(string(started), "--target instance:session-a") {
@@ -121,12 +140,9 @@ func TestHostRunAsyncPushesOpenAndStartsWatcher(t *testing.T) {
 	if r.noteCount() != 1 {
 		t.Fatalf("notes %d", r.noteCount())
 	}
-	n := r.notes[0].Args
+	n := r.ops(false)[0].Args
 	if n["target"] != "instance:session-a" || n["origin"] != nil || n["urgency"] != nil || !strings.Contains(n["body"].(string), "SMART overall-health: PASSED") || !strings.Contains(n["body"].(string), "full output:") {
 		t.Fatalf("note %v", n)
-	}
-	if items, _ := readOpenFile(filepath.Join(r.state, "open.json")); len(items) != 0 {
-		t.Fatalf("open row not closed: %v", items)
 	}
 }
 

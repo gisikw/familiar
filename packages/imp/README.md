@@ -79,8 +79,8 @@ imp dnd off
 
 `imp host run <host> <script> "reason"` asks a host's page
 (`https://<host>.fort.<domain>/runs/<id>`) to run a script as root once Kev
-approves it with his passkey. It prints the run's URL, pushes a doc for it
-into Kev's Open list, starts a watcher (a transient systemd unit, so it
+approves it with his passkey. It prints the run's URL, pushes it to Kev's
+phone (reason, check code, URL), starts a watcher (a transient systemd unit, so it
 outlives a merging fork), then blocks: up to 5 minutes for approval, then
 through the run, and prints the result. On timeout it returns "still
 pending" and the watcher hard-notifies the asking instance when the run is

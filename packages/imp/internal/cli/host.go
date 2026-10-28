@@ -20,7 +20,7 @@ import (
 // The backend is the host page (fortress-approve) and its signed client
 // (fortress-keeper, with Kes's key): a request waits on
 // https://<host>.fort.<domain>/runs/<id> for Kev's passkey or his Reject. This
-// wrapper submits it, puts a doc for it in Kev's Open list, and starts a
+// wrapper submits it, pushes it to Kev's phone (reason, code, URL), and starts a
 // watcher outside this Pi's cgroup (a transient systemd unit) that notifies
 // the instance that asked once the run is done, failed, rejected or expired,
 // with the result already fetched. Nothing here is fortress-specific beyond
@@ -33,8 +33,8 @@ const hostHelp = `Usage:
   imp host result <host> <id>             a run's state and output, now (saved to disk)
   imp host watch <host> <id> [--url U]    (re)start the watcher for a run
 
-run prints the run's page first (paste it to Kev; it's also in his Open
-list), then BLOCKS: up to 5 minutes for his passkey, then through the run
+run prints the run's page first (paste it to Kev; his phone also gets a
+push), then BLOCKS: up to 5 minutes for his passkey, then through the run
 (the host caps a run at 5 minutes), and prints the result: exit code,
 trimmed stdout/stderr, and the folder with the full output. Give the shell
 call a timeout of at least 13 minutes. Rejected or expired returns at once.
@@ -225,10 +225,6 @@ func (h hostCtx) dir(host, id string) string {
 	return filepath.Join(h.state, "host-runs", host+"-"+id)
 }
 
-func (h hostCtx) docPath(host, id string) string {
-	return filepath.Join(h.dir(host, id), "index.md")
-}
-
 func (h hostCtx) run(host, script, reason string, async bool) int {
 	if _, e := os.Stat(script); e != nil {
 		return usageError(h.errw, "can't read %s: %v", script, e)
@@ -254,12 +250,13 @@ func (h hostCtx) run(host, script, reason string, async bool) int {
 	}
 	fmt.Fprintln(h.out, url)
 	fmt.Fprintf(h.out, "%s run %s · check code %s\n", host, sub.ID, sub.Code)
+	// Kev's phone gets the request (he asked for a push, not an Open doc).
 	var discard bytes.Buffer
-	title := fmt.Sprintf("%s run: %s (%s)", host, clip(reason, 120), sub.Code)
-	if code := openMain([]string{h.docPath(host, sub.ID), "--title", title}, &discard, &discard, h.getenv); code != 0 {
-		fmt.Fprintf(h.errw, "imp: not pushed to Open: %s", discard.String())
+	push := fmt.Sprintf("%s · code %s\n%s", clip(reason, 160), sub.Code, url)
+	if code := Main([]string{"push", "--title", host + " run request", push}, strings.NewReader(""), &discard, &discard, h.getenv); code != 0 {
+		fmt.Fprintf(h.errw, "imp: phone push failed: %s", discard.String())
 	} else {
-		fmt.Fprintln(h.out, "in Kev's Open list")
+		fmt.Fprintln(h.out, "pushed to Kev's phone")
 	}
 	if !async {
 		h.touchLease(host, sub.ID) // before the watcher starts, so it never races us to the result
@@ -303,7 +300,6 @@ func (h hostCtx) block(host, id, url string) int {
 			}
 			if hostSettled(v.Run.State) {
 				dir := h.dir(host, id)
-				h.closeOpen(host, id)
 				if !h.claim(host, id) {
 					fmt.Fprintf(h.out, "%s (the watcher already delivered it)\n", h.summary(host, v))
 					return 0
@@ -462,7 +458,6 @@ func (h hostCtx) watch(host, id, url, target string) int {
 				}
 				switch {
 				case hostSettled(v.Run.State) && !blocked:
-					h.closeOpen(host, id)
 					if h.claim(host, id) { // else the blocking call already handed it over
 						h.notify(target, host, id, h.summary(host, v), h.report(host, v, url, dir))
 					}
@@ -547,8 +542,8 @@ func trimOutput(s string, maxLines, maxBytes int) string {
 	return label + out + "\n"
 }
 
-// save writes the run's folder: index.md (the doc in Kev's Open list) and,
-// once it ran, the full output.
+// save writes the run's folder: the URL, the script, and, once it ran, the
+// full output. No markdown doc: Kev doesn't want one in Open.
 func (h hostCtx) save(host string, v hostRunView, url string) (string, error) {
 	dir := h.dir(host, v.Run.ID)
 	if e := os.MkdirAll(dir, 0o755); e != nil {
@@ -568,80 +563,10 @@ func (h hostCtx) save(host string, v hostRunView, url string) (string, error) {
 			_ = os.WriteFile(filepath.Join(dir, "result.json"), append(b, '\n'), 0o600)
 		}
 	}
-	return dir, os.WriteFile(h.docPath(host, v.Run.ID), []byte(h.doc(host, v, url)), 0o644)
-}
-
-var hostStateWords = map[string]string{
-	"pending": "waiting for your passkey (or Reject)", "approved": "approved, about to run", "running": "running",
-	"done": "done", "failed": "failed", "refused": "refused by the host (Try again on the page)",
-	"rejected": "rejected", "expired": "expired (nobody approved it in 24h)",
-}
-
-func (h hostCtx) doc(host string, v hostRunView, url string) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "# %s run %s\n\n", host, v.Run.ID)
-	if v.Run.Reason != "" {
-		fmt.Fprintf(&b, "%s\n\n", v.Run.Reason)
+	if v.Run.Script != "" {
+		_ = os.WriteFile(filepath.Join(dir, "script.sh"), []byte(v.Run.Script), 0o600)
 	}
-	st := hostStateWords[v.Run.State]
-	if st == "" {
-		st = v.Run.State
-	}
-	if v.Run.Exit != nil {
-		st += fmt.Sprintf(", exit %d", *v.Run.Exit)
-	}
-	fmt.Fprintf(&b, "**State:** %s  \n**Check code:** `%s`  \n**Updated:** %s\n\n", st, v.Run.Code, hostNow().Local().Format("Mon Jan 2 15:04"))
-	if v.Run.Note != "" {
-		fmt.Fprintf(&b, "**Note:** %s\n\n", v.Run.Note)
-	}
-	if url != "" {
-		fmt.Fprintf(&b, "**[Open it on %s's page →](%s)**\n\n", host, url)
-	}
-	fence := "```"
-	for strings.Contains(v.Run.Script, fence) {
-		fence += "`"
-	}
-	fmt.Fprintf(&b, "## Script\n\n%sbash\n%s\n%s\n", fence, strings.TrimRight(v.Run.Script, "\n"), fence)
-	if r := v.Result; r != nil {
-		for _, part := range []struct{ name, text string }{{"stdout", r.Stdout}, {"stderr", r.Stderr}} {
-			t := trimOutput(part.text, 200, 32000)
-			f := "```"
-			for strings.Contains(t, f) {
-				f += "`"
-			}
-			head, body, _ := strings.Cut(t, "\n")
-			fmt.Fprintf(&b, "\n## %s%s\n\n%s\n%s%s\n", part.name, strings.TrimSuffix(head, ":"), f, body, f)
-		}
-		fmt.Fprintf(&b, "\nFull output: `%s/`\n", h.dir(host, v.Run.ID))
-	}
-	return b.String()
-}
-
-func (h hostCtx) closeOpen(host, id string) {
-	file := filepath.Join(h.state, "open.json")
-	items, e := readOpenFile(file)
-	if e != nil {
-		return
-	}
-	path := h.docPath(host, id)
-	if r, e := filepath.EvalSymlinks(path); e == nil {
-		path = r
-	}
-	kept := items[:0]
-	var gone []map[string]any
-	for _, it := range items {
-		if str(it, "kind") == "doc" && str(it, "path") == path {
-			gone = append(gone, it)
-			continue
-		}
-		kept = append(kept, it)
-	}
-	if len(gone) == 0 || writeOpenFile(file, kept) != nil {
-		return
-	}
-	for _, it := range gone {
-		appendOpenClosed(file, it)
-	}
+	return dir, nil
 }
 
 // notify is a hard notification to target (the instance that asked; a merged
