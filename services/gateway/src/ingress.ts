@@ -20,6 +20,21 @@ function chunkLog(obj: Record<string, unknown>) {
 export class Ingress {
   private audioSegmentBuffer: Record<number, Record<number, { data: string; transcription: Promise<string> }>> = {};
   private voiceSeq = 0;
+  // Takes whose full set has been accepted (dispatch is underway or done).
+  // A client that lost the response to its sealing chunk (bad network) will
+  // re-send; answering 200 here instead of re-buffering keeps retry from ever
+  // producing a duplicate turn. Insertion-ordered, capped.
+  private sealedTakes = new Map<number, number>();
+  private static sealedCap = 512;
+  private markSealed(id: number) {
+    this.sealedTakes.delete(id);
+    this.sealedTakes.set(id, Date.now());
+    while (this.sealedTakes.size > Ingress.sealedCap) {
+      const oldest = this.sealedTakes.keys().next().value;
+      if (oldest === undefined) break;
+      this.sealedTakes.delete(oldest);
+    }
+  }
 
   constructor(private relay: RelayBus) { }
 
@@ -144,6 +159,11 @@ export class Ingress {
       this.dispatch(payload.id, payload.content);
     } else {
       const { id, seq, data, segments } = payload;
+      if (this.sealedTakes.has(id)) {
+        // Already complete: idempotent success, nothing re-dispatched.
+        chunkLog({ take: id, seq, duplicateOfSealed: true });
+        return void res.end();
+      }
       this.emitVoice("transcribing", id);
       const take = this.audioSegmentBuffer[id] = this.audioSegmentBuffer[id] || {};
       if (take[seq] === undefined) {
@@ -158,6 +178,7 @@ export class Ingress {
           res.statusCode = 409;
           res.write(JSON.stringify({ missing: missingSegments }));
         } else {
+          this.markSealed(id);
           const ordered = Array.from({ length: segments }, (_, i) => take[i]);
           Promise.all(ordered.map((seg) => seg.transcription))
             .then((transcriptions) => {

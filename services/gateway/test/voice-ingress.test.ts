@@ -210,6 +210,22 @@ describe("voice /submit → /relay protocol", () => {
     close();
   });
 
+  test("a re-sent sealing chunk (lost response, client retry) never dispatches twice", async () => {
+    const cmds: any[] = [];
+    const close = await openRelay((c) => cmds.push(c));
+    await new Promise((r) => setTimeout(r, 100));
+    const data = Buffer.from("RIFFretry").toString("base64");
+    const take = { type: "audio", id: 55503, data };
+    expect((await postSubmit({ ...take, seq: 0, segments: 0 })).status).toBe(200);
+    expect((await postSubmit({ ...take, seq: 1, segments: 2 })).status).toBe(200);
+    // The response was "lost": the client re-sends both chunks and the seal.
+    expect((await postSubmit({ ...take, seq: 0, segments: 2 })).status).toBe(200);
+    expect((await postSubmit({ ...take, seq: 1, segments: 2 })).status).toBe(200);
+    await new Promise((r) => setTimeout(r, 400));
+    expect(cmds.filter((c) => c.type === "submit" && c.correlationId === 55503).length).toBe(1);
+    close();
+  });
+
   test("text submit path still works (regression: shared /submit endpoint)", async () => {
     const cmds: any[] = [];
     const close = await openRelay((c) => cmds.push(c));
