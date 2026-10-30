@@ -110,6 +110,19 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(
 			return ExitProtocol
 		}
 	}
+	if inv.operation == "note.add" && !inv.json {
+		// The result is the whole card; confirm our note is on it before
+		// claiming success, and print only that note. (--json passes the
+		// card through unchanged, like every other operation.)
+		text, _ := inv.args["text"].(string)
+		line, err := attnAddedNote(result, text)
+		if err != nil {
+			fmt.Fprintf(stderr, "imp: note add: %v\n", err)
+			return ExitProtocol
+		}
+		io.WriteString(stdout, line)
+		return 0
+	}
 	if inv.json {
 		stdout.Write(result)
 		io.WriteString(stdout, "\n")

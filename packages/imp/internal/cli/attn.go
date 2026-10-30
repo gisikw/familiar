@@ -1228,3 +1228,52 @@ func fillAskForkTargets(args map[string]any, getenv func(string) string) error {
 	}
 	return nil
 }
+
+// attnAddedNote finds the note note.add just created on the returned card:
+// the newest note (highest id) whose text matches what was sent. The card's
+// notes are newest-first, so rendering the whole card made the last line the
+// oldest note, which read as "my note didn't save". Errors if it isn't there.
+func attnAddedNote(raw json.RawMessage, text string) (string, error) {
+	var card struct {
+		ID    string `json:"id"`
+		Notes []struct {
+			ID     int64   `json:"id"`
+			At     string  `json:"at"`
+			By     string  `json:"by"`
+			Text   string  `json:"text"`
+			Detail *string `json:"detail"`
+		} `json:"notes"`
+	}
+	if err := json.Unmarshal(raw, &card); err != nil {
+		return "", fmt.Errorf("invalid result: %v", err)
+	}
+	want := strings.TrimSpace(text)
+	best := -1
+	for i, n := range card.Notes {
+		if strings.TrimSpace(n.Text) != want {
+			continue
+		}
+		if best < 0 || n.ID > card.Notes[best].ID {
+			best = i
+		}
+	}
+	if best < 0 {
+		return "", fmt.Errorf("card %s came back without the new note; it may not have been saved (check: imp attn card get %s)", shortAttnID(card.ID), shortAttnID(card.ID))
+	}
+	n := card.Notes[best]
+	var b strings.Builder
+	fmt.Fprintf(&b, "noted on %s (note %d, %s): %s\n", shortAttnID(card.ID), n.ID, n.At, n.Text)
+	if n.Detail != nil && strings.TrimSpace(*n.Detail) != "" {
+		for _, l := range strings.Split(*n.Detail, "\n") {
+			b.WriteString("    " + l + "\n")
+		}
+	}
+	return b.String(), nil
+}
+
+func shortAttnID(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
+}
