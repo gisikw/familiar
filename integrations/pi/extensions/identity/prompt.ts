@@ -55,6 +55,8 @@ export function familiarGuidelines(tools: readonly string[]): string[] {
   const lines = [
     "Message text beginning with 🗣 was transcribed from audio: expect transcription errors, and weigh odd words or homophones accordingly rather than taking them literally",
     "Use `imp schedule` for future wakes.",
+    // Consider removing when https://github.com/anthropics/claude-code/issues/95764 is resolved
+    "Due to a bug, prose sent before or between tool calls may not be visible to the user. Messages following the final tool call of an assistant turn always are.",
   ];
   if (tools.includes("mark")) {
     lines.push(
