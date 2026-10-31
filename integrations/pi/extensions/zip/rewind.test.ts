@@ -22,10 +22,10 @@ describe("rewindKind", () => {
 });
 
 describe("planRewind", () => {
-  test("assistant target keeps the reply and drops what follows", () => {
+  test("assistant target keeps the reply and branches off what follows", () => {
     expect(planRewind(branch, "a3")).toEqual({ ok: true, targetId: "a3", kind: "assistant", dropped: 3 });
   });
-  test("user target drops the message itself and hands its text back", () => {
+  test("user target branches off the message itself and hands its text back", () => {
     expect(planRewind(branch, "u3")).toEqual({ ok: true, targetId: "u3", kind: "user", dropped: 2, editorText: "classifier bait" });
   });
   test("accepts a #-prefixed id", () => {

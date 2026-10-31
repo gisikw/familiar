@@ -758,7 +758,7 @@ Return JSON only: {"candidates":[{"id":"<user entry id>","label":"<short name>",
    * Pi hands its text back to the *TUI* editor; the browser restores its own
    * composer, so clear the TUI copy rather than leave text an Enter could send. */
   pi.registerCommand("rewind", {
-    description: "/rewind <entryId> — set aside everything after a checkpoint (no summary; the branch stays in the file)",
+    description: "/rewind <entryId> — move everything after a checkpoint onto an inactive branch (no summary; nothing deleted)",
     handler: async (args, ctx) => {
       ctxRef = ctx;
       await ctx.waitForIdle();
@@ -768,14 +768,18 @@ Return JSON only: {"candidates":[{"id":"<user entry id>","label":"<short name>",
         return;
       }
       try {
-        const result = await ctx.navigateTree(plan.targetId, { summarize: false });
+        // The label is load-bearing: branch() only moves the in-memory leaf, and
+        // Pi re-derives the leaf from the last entry on reopen. Pi appends a
+        // label entry on the new branch, so a restart before the next message
+        // still lands here instead of snapping back to the abandoned branch.
+        const result = await ctx.navigateTree(plan.targetId, { summarize: false, label: "rewind" });
         if (result.cancelled) {
           ctx.ui.notify("Rewind cancelled", "warning");
           return;
         }
         if (plan.editorText && ctx.hasUI && ctx.ui.getEditorText().trim() === plan.editorText.trim()) ctx.ui.setEditorText("");
         debugLog("zip", { event: "rewind", target: plan.targetId, kind: plan.kind, dropped: plan.dropped });
-        ctx.ui.notify(`Rewound: ${plan.dropped} ${plan.dropped === 1 ? "entry" : "entries"} set aside (still in the session file)`, "info");
+        ctx.ui.notify(`Rewound: ${plan.dropped} ${plan.dropped === 1 ? "entry" : "entries"} moved to an inactive branch (still in the session file)`, "info");
       } catch (error) {
         errorLog("zip", { event: "rewind", error: error instanceof Error ? error.message : String(error) });
         ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
