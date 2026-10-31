@@ -13,6 +13,7 @@ import { Loader, Text, type AutocompleteItem } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { debugLog, errorLog } from "../lib/debug.ts";
 import { resolveSummarizerModel } from "./model.ts";
+import { planRewind, type BranchEntry } from "./rewind.ts";
 
 /*
  * Zip — editorial branch compression.
@@ -746,6 +747,37 @@ Return JSON only: {"candidates":[{"id":"<user entry id>","label":"<short name>",
         ));
         if (!result.cancelled) ctx.ui.notify("Branch zipped; source remains in the session tree", "info");
       } catch (error) {
+        ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+      }
+    },
+  });
+
+  /* The one /tree move Kev uses, reachable from familiar-ui: move the leaf to a
+   * checkpoint with no summary. Validation lives in rewind.ts so a mid-turn or
+   * off-branch id is refused before anything moves. For a user-message target
+   * Pi hands its text back to the *TUI* editor; the browser restores its own
+   * composer, so clear the TUI copy rather than leave text an Enter could send. */
+  pi.registerCommand("rewind", {
+    description: "/rewind <entryId> — set aside everything after a checkpoint (no summary; the branch stays in the file)",
+    handler: async (args, ctx) => {
+      ctxRef = ctx;
+      await ctx.waitForIdle();
+      const plan = planRewind(ctx.sessionManager.getBranch() as unknown as BranchEntry[], args);
+      if (!plan.ok) {
+        ctx.ui.notify(plan.error, "warning");
+        return;
+      }
+      try {
+        const result = await ctx.navigateTree(plan.targetId, { summarize: false });
+        if (result.cancelled) {
+          ctx.ui.notify("Rewind cancelled", "warning");
+          return;
+        }
+        if (plan.editorText && ctx.hasUI && ctx.ui.getEditorText().trim() === plan.editorText.trim()) ctx.ui.setEditorText("");
+        debugLog("zip", { event: "rewind", target: plan.targetId, kind: plan.kind, dropped: plan.dropped });
+        ctx.ui.notify(`Rewound: ${plan.dropped} ${plan.dropped === 1 ? "entry" : "entries"} set aside (still in the session file)`, "info");
+      } catch (error) {
+        errorLog("zip", { event: "rewind", error: error instanceof Error ? error.message : String(error) });
         ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
       }
     },
