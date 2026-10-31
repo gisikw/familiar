@@ -53,17 +53,36 @@ func TestQuietMergeQueuesResidentIntent(t *testing.T) {
 	writeForkSession(t, session)
 	imp := jsonServer(t, func(r map[string]any) {
 		args := r["args"].(map[string]any)
-		if r["area"] != "branch" || r["operation"] != "merge" || args["text"] != nil || args["quiet"] != true {
+		if r["area"] != "branch" || r["operation"] != "merge" || args["text"] != nil || args["quiet"] != true || args["status"] != "partial" || args["headline"] != "half of it" {
 			t.Errorf("request=%#v", r)
 		}
 	})
 	env := map[string]string{"FAMILIAR_SESSION_FILE": session, "FAMILIAR_IMP_SOCKET": imp}
 	var out, er bytes.Buffer
-	if code := branchMain([]string{"merge", "--quiet"}, &out, &er, branchEnv(env)); code != 0 {
+	if code := branchMain([]string{"merge", "--quiet", "--status", "partial", "--headline", "half of it"}, &out, &er, branchEnv(env)); code != 0 {
 		t.Fatalf("code=%d out=%s err=%s", code, out.String(), er.String())
 	}
 	if strings.TrimSpace(out.String()) != "merge queued; when this turn settles you'll be asked for your return" {
 		t.Fatalf("out=%q", out.String())
+	}
+}
+func TestMergeRequiresStatusAndHeadline(t *testing.T) {
+	dir := t.TempDir()
+	session := filepath.Join(dir, "fork.jsonl")
+	writeForkSession(t, session)
+	env := branchEnv(map[string]string{"FAMILIAR_SESSION_FILE": session, "FAMILIAR_IMP_SOCKET": "/unused"})
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"merge"}, "needs --status"},
+		{[]string{"merge", "--status", "fine"}, "must be done, failed, partial or blocked"},
+		{[]string{"merge", "--status", "done"}, "needs --headline"},
+	} {
+		var out, er bytes.Buffer
+		if code := branchMain(c.args, &out, &er, env); code != ExitUsage || !strings.Contains(er.String(), c.want) {
+			t.Errorf("%v: code=%d err=%q", c.args, code, er.String())
+		}
 	}
 }
 func TestMergeRejectsPositionalSummary(t *testing.T) {

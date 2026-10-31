@@ -367,7 +367,7 @@ func safeErrorCode(s string) string {
 	return s
 }
 
-const rootHelp = `Usage: imp <attn|schedule|notify|dnd|fork|merge|label|forks|open|write|play|agent|host> ...
+const rootHelp = `Usage: imp <attn|schedule|notify|dnd|pull|fork|merge|label|forks|open|write|play|agent|host> ...
 
 A private CLI-shaped model tool for Attention, scheduled events, forks,
 fleet agents, and root runs on hosts (Kev approves each with his passkey).

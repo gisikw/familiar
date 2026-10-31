@@ -315,11 +315,36 @@ func TestScheduleForkHidden(t *testing.T) {
 	if err := json.Unmarshal([]byte(inv.args["body"].(string)), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body["hidden"] != true || body["label"] != "presence" {
+	if body["hidden"] != true || body["label"] != "presence" || body["ambient"] != true {
 		t.Fatalf("body = %v", body)
 	}
 	if _, _, err := parseScheduler([]string{"schedule", "--in", "1h", "--hidden", "not a fork"}, now); err == nil {
 		t.Fatal("expected --hidden without --fork to be refused")
+	}
+}
+func TestScheduleForkAmbientAndSoftDNDAndPull(t *testing.T) {
+	now := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	inv, _, err := parseScheduler([]string{"schedule", "--every", "day 13:00", "--fork", "--ambient", "free time"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	_ = json.Unmarshal([]byte(inv.args["body"].(string)), &body)
+	if body["ambient"] != true || body["hidden"] != nil {
+		t.Fatalf("body = %v", body)
+	}
+	if _, _, err := parseScheduler([]string{"schedule", "--in", "1h", "--ambient", "x"}, now); err == nil {
+		t.Fatal("--ambient without --fork accepted")
+	}
+	inv, _, err = parseScheduler([]string{"dnd", "soft", "2h"}, now)
+	if err != nil || inv.op != "dnd.set" || inv.args["mode"] != "soft" || inv.args["duration_ms"] != int64(2*time.Hour/time.Millisecond) {
+		t.Fatalf("dnd soft: %#v %v", inv, err)
+	}
+	if inv, _, err = parseScheduler([]string{"pull"}, now); err != nil || inv.op != "inbox.list" {
+		t.Fatalf("pull: %#v %v", inv, err)
+	}
+	if inv, _, err = parseScheduler([]string{"pull", "01a1921e"}, now); err != nil || inv.op != "inbox.claim" || inv.args["ref"] != "01a1921e" {
+		t.Fatalf("pull id: %#v %v", inv, err)
 	}
 }
 

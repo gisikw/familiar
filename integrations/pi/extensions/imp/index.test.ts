@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { createServer } from "node:net";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import impExtension from "./index.ts";
@@ -181,4 +181,31 @@ test("a runner's return is flagged as not Kes", async () => {
   const wire = await service.request;
   await service.close();
   expect(wire.args.summary).toBe("[runner on p/light-model, not Kes]\n\nHere is the briefing.");
+});
+
+test("a return carries its status, headline, label and ambient class", async () => {
+  const service = await serviceServer();
+  process.env.FAMILIAR_SERVICES_SOCKET = service.path;
+  process.env.FAMILIAR_INSTANCE_ID = "fork-soft";
+  const state = mkdtempSync(join(tmpdir(), "familiar-merge-state-"));
+  roots.push(state);
+  mkdirSync(join(state, "forks", "fork-soft"), { recursive: true });
+  writeFileSync(join(state, "forks", "fork-soft", "fork.json"), JSON.stringify({ id: "fork-soft", label: "morning watch", ambient: true }));
+  const prevState = process.env.FAMILIAR_STATE_DIR;
+  process.env.FAMILIAR_STATE_DIR = state;
+  try {
+    const h = harness(forkPrefix());
+    await h.emit("session_start");
+    expect(() => (process as any)[IMP_BRANCH_HANDLER].handle({ operation: "merge", args: { quiet: true, status: "fine" } })).toThrow();
+    (process as any)[IMP_BRANCH_HANDLER].handle({ operation: "merge", args: { quiet: true, status: "blocked", headline: "needs your passkey" } });
+    h.entries.push({ type: "message", id: "work", message: { role: "assistant", content: [{ type: "text", text: "done" }] } });
+    await h.emit("agent_settled");
+    h.entries.push({ type: "message", id: "ret", message: { role: "assistant", content: [{ type: "text", text: "The long story." }] } });
+    await h.emit("agent_settled");
+    const wire = await service.request;
+    await service.close();
+    expect(JSON.parse(wire.args.body)).toMatchObject({ summary: "The long story.", status: "blocked", headline: "needs your passkey", label: "morning watch", ambient: true });
+  } finally {
+    if (prevState === undefined) delete process.env.FAMILIAR_STATE_DIR; else process.env.FAMILIAR_STATE_DIR = prevState;
+  }
 });

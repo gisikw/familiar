@@ -114,7 +114,7 @@ export default function (pi: ExtensionAPI, options: { fork?: boolean; warmWake?:
   }
 
   async function spawnFork(event: ScheduledEvent) {
-    const { task: rawTask, label, fresh, model, runner, taskFile, hidden } = forkRequest(event);
+    const { task: rawTask, label, fresh, model, runner, taskFile, hidden, ambient } = forkRequest(event);
     await whenIdle();
     const task = resolveTask(rawTask, taskFile);
     const args = ["fork", "--origin", `schedule:${event.series || event.id}`];
@@ -122,6 +122,7 @@ export default function (pi: ExtensionAPI, options: { fork?: boolean; warmWake?:
     if (fresh) args.push("--fresh");
     if (model) args.push("--model", model);
     if (runner) args.push("--runner");
+    if (ambient || hidden) args.push("--ambient");
     args.push(`${forkPreamble(event)}\n\n${task}`);
     const { stdout } = await execFileAsync("imp", args, { env: process.env, timeout: 60_000, maxBuffer: 64 * 1024 });
     const forkId = String(stdout).trim().split("\n").pop() ?? "";
@@ -279,18 +280,18 @@ export function renderWarmWake(count: number, idleMs: number) {
 /** DND is owned by familiar-services; `imp dnd status --json` prints null
  * when off. The same row in `mode: "disturb"` is Do Disturb, the opposite of
  * a hold. Any failure counts as plain DND: never wake on a guess. */
-export async function dndMode(): Promise<"off" | "quiet" | "disturb"> {
+export async function dndMode(): Promise<"off" | "quiet" | "disturb" | "soft"> {
   const { stdout } = await execFileAsync("imp", ["dnd", "status", "--json"], { env: process.env, timeout: 10_000, maxBuffer: 16 * 1024 });
   return parseDndMode(String(stdout));
 }
-export function parseDndMode(stdout: string, now = Date.now()): "off" | "quiet" | "disturb" {
+export function parseDndMode(stdout: string, now = Date.now()): "off" | "quiet" | "disturb" | "soft" {
   const text = stdout.trim();
   if (text === "null") return "off";
   try {
     const d = JSON.parse(text) as { expiresAt?: number; mode?: string } | null;
     if (!d) return "off";
     if (typeof d.expiresAt === "number" && d.expiresAt <= now) return "off";
-    return d.mode === "disturb" ? "disturb" : "quiet";
+    return d.mode === "disturb" ? "disturb" : d.mode === "soft" ? "soft" : "quiet";
   } catch { return "quiet"; }
 }
 async function dndActive(): Promise<boolean> {
@@ -324,14 +325,27 @@ export const SOFT_SEPARATOR = "\n\n";
 // Kev doesn't read merge returns; say so in-line so the primary never treats
 // fork content as ground they share (Oct 22, the "chicken shed" slip).
 export const MERGE_UNSEEN = "(Kev hasn't seen this, so it isn't shared context. Relaying it is optional; a bare 'noted' is fine.)";
+// Kev tapped a waiting return in Open: he wants it now, but still hasn't read it.
+export const PULLED_BY_KEV = "(Kev tapped this return in Open: he wants to take it up now. He hasn't read it, so bring him what matters, briefly.)";
 
 export function renderScheduledEvent(event: ScheduledEvent) {
   const lead = event.urgency === "soft" ? SOFT_SEPARATOR : "";
   if (event.type === "merge") {
-    const merge = JSON.parse(event.body) as { summary: string; forkSessionId: string; forkSessionFile: string; branchEntryId: string; firstEntryId: string; lastEntryId: string; turnCount: number; forkedFurther: boolean; mergedAt: string };
+    const merge = JSON.parse(event.body) as { summary: string; forkSessionId: string; forkSessionFile: string; branchEntryId: string; firstEntryId: string; lastEntryId: string; turnCount: number; forkedFurther: boolean; mergedAt: string; stub?: boolean; status?: string; headline?: string; label?: string };
+    if (merge.stub) {
+      // Soft Disturb: who, how it went, one line. The full return waits in
+      // the inbox (it survives /clear) until pulled or Kev taps it in Open.
+      const name = merge.label || merge.forkSessionId.slice(0, 13);
+      return {
+        customType: "familiar.merge.v1",
+        content: `${lead}<familiar-return fork="${escapeAttr(merge.forkSessionId)}" status="${escapeAttr(merge.status ?? "done")}">\n${name} returned ${merge.status ?? "done"}: ${merge.headline ?? merge.summary}\nSoft Disturb is on: the full return waits unclaimed (imp pull ${merge.forkSessionId.slice(0, 13)}). Give Kev a one-line roll call at most; pull it when you two get to it.\n</familiar-return>`,
+        display: !isHiddenFork(merge.forkSessionId),
+        details: { id: event.id, event, ...merge },
+      };
+    }
     return {
       customType: "familiar.merge.v1",
-      content: event.urgency === "soft" ? `${lead}fork ${merge.forkSessionId} merged: ${merge.summary}\n${MERGE_UNSEEN}` : `<familiar-merge fork="${escapeAttr(merge.forkSessionId)}" branch="${escapeAttr(merge.branchEntryId)}" divergence="${merge.turnCount}" forked-further="${merge.forkedFurther}">\n${MERGE_UNSEEN}\n${merge.summary}\nfull record: ${merge.forkSessionFile} entries ${merge.firstEntryId}..${merge.lastEntryId}\n</familiar-merge>`,
+      content: event.urgency === "soft" ? `${lead}fork ${merge.forkSessionId} merged: ${merge.summary}\n${MERGE_UNSEEN}` : `<familiar-merge fork="${escapeAttr(merge.forkSessionId)}" branch="${escapeAttr(merge.branchEntryId)}" divergence="${merge.turnCount}" forked-further="${merge.forkedFurther}">\n${(merge as { pulledBy?: string }).pulledBy === "kevin" ? PULLED_BY_KEV : MERGE_UNSEEN}\n${merge.summary}\nfull record: ${merge.forkSessionFile} entries ${merge.firstEntryId}..${merge.lastEntryId}\n</familiar-merge>`,
       display: !isHiddenFork(merge.forkSessionId),
       details: { id: event.id, event, ...merge },
     };
@@ -347,15 +361,15 @@ export function renderScheduledEvent(event: ScheduledEvent) {
 /** The line a spawned fork reads before its task: who started it and when. */
 export function forkPreamble(event: ScheduledEvent): string {
   if (event.source === "attn.ask") {
-    return "(Kev picked this on an Attention ask; it started the moment he clicked. Nobody is waiting on you live; do the work, then imp merge.)";
+    return "(Kev picked this on an Attention ask; it started the moment he clicked. Nobody is waiting on you live; do the work, then imp merge --status … --headline ….)";
   }
   const stamp = new Date(event.due_at).toLocaleString("en-US", { timeZone: process.env.FAMILIAR_TZ || "America/Chicago", weekday: "short", hour: "numeric", minute: "2-digit" });
-  return `(Scheduled${event.rule ? ` every ${event.rule}` : ""}, due ${stamp}. Nobody is waiting on you live; do the work, then imp merge.)`;
+  return `(Scheduled${event.rule ? ` every ${event.rule}` : ""}, due ${stamp}. Nobody is waiting on you live; do the work, then imp merge --status … --headline ….)`;
 }
 
-export function forkRequest(event: ScheduledEvent): { task: string; label: string; fresh: boolean; model: string; runner: boolean; taskFile: string; hidden: boolean } {
+export function forkRequest(event: ScheduledEvent): { task: string; label: string; fresh: boolean; model: string; runner: boolean; taskFile: string; hidden: boolean; ambient: boolean } {
   try {
-    const body = JSON.parse(event.body) as { task?: unknown; label?: unknown; fresh?: unknown; model?: unknown; runner?: unknown; taskFile?: unknown; hidden?: unknown };
+    const body = JSON.parse(event.body) as { task?: unknown; label?: unknown; fresh?: unknown; model?: unknown; runner?: unknown; taskFile?: unknown; hidden?: unknown; ambient?: unknown };
     const taskFile = typeof body.taskFile === "string" ? body.taskFile : "";
     if ((typeof body.task === "string" && body.task.trim()) || taskFile) return {
       task: typeof body.task === "string" ? body.task : "",
@@ -365,9 +379,10 @@ export function forkRequest(event: ScheduledEvent): { task: string; label: strin
       runner: body.runner === true,
       taskFile,
       hidden: body.hidden === true,
+      ambient: body.ambient === true || body.hidden === true,
     };
   } catch { /* plain-text body */ }
-  return { task: event.body || event.summary, label: "", fresh: false, model: "", runner: false, taskFile: "", hidden: false };
+  return { task: event.body || event.summary, label: "", fresh: false, model: "", runner: false, taskFile: "", hidden: false, ambient: false };
 }
 
 /** A hidden fork that found nothing to do merges into the record only. */
@@ -401,7 +416,7 @@ export function resolveTask(task: string, taskFile: string, read: (p: string) =>
     if (text) return text;
     throw new Error("file is empty");
   } catch (err) {
-    return `(Your task file ${taskFile} could not be read: ${(err as Error).message}. Say so plainly in your return, then imp merge.)${task ? `\n\n${task}` : ""}`;
+    return `(Your task file ${taskFile} could not be read: ${(err as Error).message}. Say so plainly in your return, then imp merge --status failed --headline ….)${task ? `\n\n${task}` : ""}`;
   }
 }
 

@@ -37,6 +37,21 @@ export function outstandingAgents(): string[] {
   return [];
 }
 
+export const RETURN_STATUSES = new Set(["done", "failed", "partial", "blocked"]);
+
+/** This fork's own fork.json facts: its current label (imp label rewrites it)
+ * and whether it was dispatched --ambient. Missing or unreadable: neither. */
+export function forkMeta(stateDir: string | undefined, sessionId: string): { label?: string; ambient?: boolean } {
+  if (!stateDir) return {};
+  try {
+    const meta = JSON.parse(readFileSync(join(stateDir, "forks", sessionId, "fork.json"), "utf8"));
+    return {
+      ...(typeof meta.label === "string" && meta.label.trim() ? { label: meta.label.trim().slice(0, 120) } : {}),
+      ...(meta.ambient === true ? { ambient: true } : {}),
+    };
+  } catch { return {}; }
+}
+
 /** Owns Familiar's one private, per-resident Imp socket. Area implementations
  * are fixed process Symbols so load order is irrelevant and absent areas fail
  * explicitly without affecting the socket or another area. */
@@ -47,9 +62,9 @@ export default function (pi: ExtensionAPI) {
   let returnDispatched = false;
   let terminal = false;
 
-  function queueMerge(quiet: boolean, requestedBy: "self" | "operator") {
+  function queueMerge(quiet: boolean, requestedBy: "self" | "operator", status?: string, headline?: string) {
     if (terminal) throw Object.assign(new Error("merge has already been sent"), { code: "conflict" });
-    pi.appendEntry(PENDING, { quiet, requestedBy });
+    pi.appendEntry(PENDING, { quiet, requestedBy, ...(status ? { status } : {}), ...(headline ? { headline } : {}) });
     if (requestedBy === "operator" && activeCtx?.isIdle()) {
       setTimeout(() => { void flush(activeCtx, false).catch(() => {}); }, 0);
     }
@@ -65,11 +80,14 @@ export default function (pi: ExtensionAPI) {
       (entry) => entry.type === "custom" && entry.customType === SENT,
     );
     (process as any)[IMP_BRANCH_HANDLER] = {
-      handle(request: { operation: string; args: { quiet?: unknown } }) {
-        if (request.operation !== "merge" || Object.keys(request.args).some((key) => key !== "quiet")
-          || typeof request.args.quiet !== "boolean")
+      handle(request: { operation: string; args: { quiet?: unknown; status?: unknown; headline?: unknown } }) {
+        const { quiet, status, headline } = request.args;
+        if (request.operation !== "merge" || Object.keys(request.args).some((key) => key !== "quiet" && key !== "status" && key !== "headline")
+          || typeof quiet !== "boolean"
+          || (status !== undefined && !(typeof status === "string" && RETURN_STATUSES.has(status)))
+          || (headline !== undefined && !(typeof headline === "string" && headline.trim() && headline.length <= 160 && !/[\n\r\0]/.test(headline))))
           throw Object.assign(new Error("invalid branch operation"), { code: "invalid_request" });
-        return queueMerge(request.args.quiet, "self");
+        return queueMerge(quiet, "self", status as string | undefined, (headline as string | undefined)?.trim());
       },
       operatorMerge(quiet = false) {
         if (typeof quiet !== "boolean")
@@ -155,6 +173,11 @@ export default function (pi: ExtensionAPI) {
     const summary = fork.role === "runner" ? `[runner on ${fork.model ?? "an undeclared model"}, not Kes]\n\n${written}` : written;
     const lastEntryId = finalAssistant?.id ?? entries.at(-1)?.id;
     if (!lastEntryId) return;
+    const meta = forkMeta(process.env.FAMILIAR_STATE_DIR, sessionId);
+    // Kev's merge button stops a fork mid-errand: say so rather than guess.
+    const status = typeof pending.status === "string" ? pending.status : pending.requestedBy === "operator" ? "partial" : undefined;
+    const headline = typeof pending.headline === "string" ? pending.headline
+      : pending.requestedBy === "operator" ? "merged early by Kev" : undefined;
     const body = {
       summary,
       forkSessionId: sessionId,
@@ -165,6 +188,10 @@ export default function (pi: ExtensionAPI) {
       turnCount: entries.slice(forkIndex).filter((entry) => entry.type === "message").length,
       forkedFurther: forkedFurther(process.env.FAMILIAR_STATE_DIR, sessionId),
       mergedAt: new Date().toISOString(),
+      ...(status ? { status } : {}),
+      ...(headline ? { headline } : {}),
+      ...(meta.label ? { label: meta.label } : {}),
+      ...(meta.ambient ? { ambient: true } : {}),
     };
     const request: Record<string, unknown> = {
       id: `merge-${sessionId}-${lastEntryId}`,

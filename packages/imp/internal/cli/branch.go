@@ -120,12 +120,14 @@ func forkMain(args []string, out, errw io.Writer, getenv func(string) string) in
 	// parent's conversation; --model PROVIDER/MODEL picks the fork's model
 	// (default: the parent's current model).
 	var label, origin, model string
-	fresh, runner := false, false
+	fresh, runner, ambient := false, false, false
 	var rest []string
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "--fresh":
 			fresh = true
+		case args[i] == "--ambient":
+			ambient = true
 		case args[i] == "--runner":
 			runner = true
 		case args[i] == "--model" && i+1 < len(args):
@@ -241,6 +243,11 @@ func forkMain(args []string, out, errw io.Writer, getenv func(string) string) in
 	if runner {
 		meta["role"] = "runner"
 	}
+	if ambient {
+		// Routine work (watch, free time, ask restocking): its return is never
+		// stubbed under Soft Disturb and never waits in Open.
+		meta["ambient"] = true
+	}
 	if made.Model != "" {
 		meta["model"] = made.Model
 	}
@@ -274,12 +281,21 @@ func mustCwd() string                      { p, _ := os.Getwd(); return p }
 func branchError(w io.Writer, e error) int { fmt.Fprintf(w, "imp: %v\n", e); return ExitProtocol }
 
 func finishBranch(args []string, out, errw io.Writer, getenv func(string) string) int {
-	quiet := len(args) > 0 && args[0] == "--quiet"
-	if quiet {
-		args = args[1:]
-	}
-	if len(args) != 0 {
-		return usageError(errw, "imp merge no longer takes a summary; run `imp merge [--quiet]`, then write your return when prompted")
+	quiet := false
+	status, headline := "", ""
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--quiet":
+			quiet = true
+		case args[i] == "--status" && i+1 < len(args):
+			status = strings.TrimSpace(args[i+1])
+			i++
+		case args[i] == "--headline" && i+1 < len(args):
+			headline = strings.TrimSpace(args[i+1])
+			i++
+		default:
+			return usageError(errw, "imp merge no longer takes a summary; run `imp merge --status done|failed|partial|blocked --headline \"one line\" [--quiet]`, then write your return when prompted")
+		}
 	}
 	env, e := envNeed(getenv, "FAMILIAR_SESSION_FILE", "FAMILIAR_IMP_SOCKET")
 	if e != nil {
@@ -290,7 +306,25 @@ func finishBranch(args []string, out, errw io.Writer, getenv func(string) string
 		fmt.Fprintln(errw, "imp: you're the top level; there's nothing to merge into")
 		return ExitUsage
 	}
-	_, remote, e := call(env["FAMILIAR_IMP_SOCKET"], Request{Version: 1, Area: "branch", Operation: "merge", Args: map[string]any{"quiet": quiet}})
+	switch status {
+	case "done", "failed", "partial", "blocked":
+	case "":
+		return usageError(errw, "imp merge needs --status done|failed|partial|blocked (and --headline \"one line\"): the stub Kes sees under Soft Disturb is just your name, status and headline")
+	default:
+		return usageError(errw, "imp merge --status must be done, failed, partial or blocked")
+	}
+	if headline == "" {
+		return usageError(errw, "imp merge needs --headline \"one line\" (about 15 words: what came of it)")
+	}
+	if len([]rune(headline)) > 160 || strings.ContainsAny(headline, "\x00\n\r") {
+		return usageError(errw, "imp merge --headline must be one short line (160 characters at most)")
+	}
+	_, remote, e := call(env["FAMILIAR_IMP_SOCKET"], Request{Version: 1, Area: "branch", Operation: "merge", Args: map[string]any{"quiet": quiet, "status": status, "headline": headline}})
+	if e == nil && remote != nil && remote.Code == "invalid_request" {
+		// A fork started before status/headline existed runs the older
+		// extension, which refuses the new keys: merge the old way.
+		_, remote, e = call(env["FAMILIAR_IMP_SOCKET"], Request{Version: 1, Area: "branch", Operation: "merge", Args: map[string]any{"quiet": quiet}})
+	}
 	if e != nil {
 		return branchError(errw, e)
 	}
@@ -410,13 +444,15 @@ func systemctlCommand(g func(string) string, args ...string) (string, []string) 
 }
 
 const branchHelp = `Usage:
-  imp fork [--label L] [--origin O] [--fresh] [--model P/M [--runner]] "task text"
+  imp fork [--label L] [--origin O] [--fresh] [--ambient] [--model P/M [--runner]] "task text"
       The fork is you: it inherits this whole conversation (unless --fresh),
       including everything Kev just said. So the task text is one line naming
       which piece is hers, e.g. "Build what Kev described above." Don't recap,
       don't restate the spec, and don't write a brief file to hand it off;
       she already read it all. A full brief is only for --fresh forks.
-  imp merge [--quiet]
+  imp merge --status done|failed|partial|blocked --headline "one line" [--quiet]
+      --quiet: don't wake the parent. --ambient (at fork time) marks routine
+      work whose return is never held in Open under Soft Disturb.
   imp label "short name" [--status "doing what"]   (forks: your name in the Open list)
   imp status ["what you're doing now" | --clear]   (forks: one-line status under your name)
   imp forks

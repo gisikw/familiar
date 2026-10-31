@@ -106,7 +106,7 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 	if len(args) == 1 && isHelp(args[0]) {
 		return schedulerInvocation{op: "help"}, false, nil
 	}
-	jsonMode, soft, fork, all, fresh, runner, hidden := false, false, false, false, false, false, false
+	jsonMode, soft, fork, all, fresh, runner, hidden, ambient := false, false, false, false, false, false, false, false
 	vals := map[string]string{}
 	pos := []string{}
 	value := map[string]bool{"in": true, "at": true, "every": true, "label": true, "target": true, "id": true, "priority": true, "type": true, "source": true, "body": true, "title": true, "model": true, "task-file": true, "url": true}
@@ -130,6 +130,10 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 		}
 		if a == "--hidden" {
 			hidden = true
+			continue
+		}
+		if a == "--ambient" {
+			ambient = true
 			continue
 		}
 		if a == "--fresh" {
@@ -159,6 +163,20 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 		return m
 	}
 	switch cmd {
+	case "pull":
+		// Soft Disturb's inbox: returns that arrived as stubs and wait here,
+		// unclaimed, until pulled (they survive a /clear).
+		if len(pos) == 0 || (len(pos) == 1 && pos[0] == "list") {
+			m := originArgs()
+			if all {
+				m["all"] = true
+			}
+			return schedulerInvocation{"inbox.list", m}, jsonMode, nil
+		}
+		if len(pos) != 1 {
+			return schedulerInvocation{}, false, errors.New("usage: imp pull [FORK-ID|INBOX-ID]")
+		}
+		return schedulerInvocation{"inbox.claim", map[string]any{"ref": pos[0]}}, jsonMode, nil
 	case "schedule":
 		if len(pos) > 0 && pos[0] == "list" {
 			if len(pos) != 1 {
@@ -220,6 +238,9 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 		if hidden && !fork {
 			return schedulerInvocation{}, false, errors.New("--hidden quiets a scheduled fork; use it with --fork")
 		}
+		if ambient && !fork {
+			return schedulerInvocation{}, false, errors.New("--ambient marks a scheduled fork as routine; use it with --fork")
+		}
 		if vals["label"] != "" && !fork {
 			return schedulerInvocation{}, false, errors.New("--label names a scheduled fork; use it with --fork")
 		}
@@ -268,6 +289,9 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 			}
 			if hidden {
 				req["hidden"] = true
+			}
+			if ambient || hidden {
+				req["ambient"] = true
 			}
 			b, _ := json.Marshal(req)
 			m["body"] = string(b)
@@ -343,12 +367,13 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 			m["duration_ms"] = d.Milliseconds()
 			return schedulerInvocation{"dnd.set", m}, jsonMode, nil
 		}
-		if pos[0] == "disturb" {
+		if pos[0] == "disturb" || pos[0] == "soft" {
 			// Do Disturb: quiet fork returns wake me instead of waiting for
-			// Kev's next message. Default: until local midnight, so it can't
-			// get stuck on. `imp dnd off` clears it.
+			// Kev's next message. Soft Disturb: tasked fork returns arrive as
+			// stubs (status, headline) and wait for `imp pull`. Default: until
+			// local midnight, so neither can get stuck on. `imp dnd off` clears.
 			if len(pos) > 2 {
-				return schedulerInvocation{}, false, errors.New("usage: imp dnd disturb [DURATION]")
+				return schedulerInvocation{}, false, fmt.Errorf("usage: imp dnd %s [DURATION]", pos[0])
 			}
 			var d time.Duration
 			if len(pos) == 2 {
@@ -363,7 +388,7 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 			}
 			m := originArgs()
 			m["enabled"] = true
-			m["mode"] = "disturb"
+			m["mode"] = pos[0]
 			m["set_by"] = "familiar"
 			m["duration_ms"] = d.Milliseconds()
 			return schedulerInvocation{"dnd.set", m}, jsonMode, nil
@@ -474,6 +499,45 @@ func writeSchedulerHuman(out io.Writer, op string, result json.RawMessage, stder
 		}
 	case "schedule.cancel":
 		fmt.Fprintln(out, "cancelled")
+	case "inbox.list":
+		var items []struct {
+			ID, Fork, Label, Status, Headline string
+			CreatedAt                         int64 `json:"createdAt"`
+		}
+		if json.Unmarshal(result, &items) != nil {
+			return ExitProtocol
+		}
+		if len(items) == 0 {
+			fmt.Fprintln(out, "no unclaimed returns")
+		}
+		for _, x := range items {
+			name := x.Label
+			if name == "" {
+				name = shortTarget("instance:" + x.Fork)
+			}
+			fmt.Fprintf(out, "%-8s %-13s %-24s %s\n", x.Status, shortID13(x.Fork), name, x.Headline)
+		}
+	case "inbox.claim":
+		var x struct {
+			Fork, Label, Status, Headline, Body string
+			ClaimedAt                           int64 `json:"claimedAt"`
+		}
+		if json.Unmarshal(result, &x) != nil {
+			return ExitProtocol
+		}
+		var m struct {
+			Summary         string `json:"summary"`
+			ForkSessionFile string `json:"forkSessionFile"`
+		}
+		_ = json.Unmarshal([]byte(x.Body), &m)
+		name := x.Label
+		if name == "" {
+			name = x.Fork
+		}
+		fmt.Fprintf(out, "%s (%s) returned %s: %s\n\n%s\n", name, x.Fork, x.Status, x.Headline, m.Summary)
+		if m.ForkSessionFile != "" {
+			fmt.Fprintf(out, "\nfull record: %s\n", m.ForkSessionFile)
+		}
 	case "dnd.get", "dnd.set":
 		if bytes.Equal(bytes.TrimSpace(result), []byte("null")) {
 			fmt.Fprintln(out, "off")
@@ -486,8 +550,11 @@ func writeSchedulerHuman(out io.Writer, op string, result json.RawMessage, stder
 				return ExitProtocol
 			}
 			state := "on"
-			if d.Mode == "disturb" {
+			switch d.Mode {
+			case "disturb":
 				state = "do-disturb (quiet returns wake you)"
+			case "soft":
+				state = "soft-disturb (tasked returns arrive as stubs; imp pull)"
 			}
 			fmt.Fprintf(out, "%s until %s\n", state, time.UnixMilli(d.ExpiresAt).In(listZone()).Format("Mon 15:04 MST"))
 		}
@@ -506,12 +573,20 @@ const schedulerHelp = `Usage:
   imp schedule ... --fork --hidden "task"
                               (quiet, not secret: the start notice and its merge
                                stay in the record but out of the display; a merge
-                               whose return is just "nothing" adds no context)
+                               whose return is just "nothing" adds no context;
+                               implies --ambient)
+  imp schedule ... --fork --ambient "task"
+                              (routine work: watch, free time, ask restocking.
+                               Its return is never stubbed or kept in Open)
   imp schedule list [--all] [--json]
   imp schedule cancel ID       (a recurring ID cancels the whole series)
   imp notify [--target TARGET] [--id ID] [--soft] "reason"
-  imp dnd [on DURATION|disturb [DURATION]|off|status]
-                              (disturb: quiet fork returns wake you; default until midnight)
+  imp dnd [on DURATION|disturb [DURATION]|soft [DURATION]|off|status]
+                              (disturb: quiet fork returns wake you; soft: tasked
+                               returns arrive as stubs and wait for imp pull;
+                               both default until midnight)
+  imp pull [list] [--all]      (Soft Disturb inbox: unclaimed fork returns)
+  imp pull FORK-ID             (claim one: prints the full return, clears it from Open)
   imp push [--title TITLE] [--url URL] "message"   (to Kevin's phone; tap opens URL
                               in his browser instead of the sending session)
 
@@ -550,4 +625,13 @@ func listZone() *time.Location {
 		return loc
 	}
 	return time.Local
+}
+
+// shortID13 keeps 13 characters: fork ids are UUIDv7 and forks started
+// together share the first 8.
+func shortID13(id string) string {
+	if len(id) > 13 {
+		return id[:13]
+	}
+	return id
 }
