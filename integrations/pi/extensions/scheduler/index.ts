@@ -118,7 +118,7 @@ export default function (pi: ExtensionAPI, options: { fork?: boolean; warmWake?:
     await whenIdle();
     const task = resolveTask(rawTask, taskFile);
     const args = ["fork", "--origin", `schedule:${event.series || event.id}`];
-    args.push("--label", label || `scheduled: ${task.slice(0, 60)}`);
+    args.push("--label", forkLabel(label, task));
     if (fresh) args.push("--fresh");
     if (model) args.push("--model", model);
     if (runner) args.push("--runner");
@@ -436,3 +436,14 @@ export function deliveredIds(entries: readonly unknown[]): Set<string> {
 }
 const escapeAttr = (value: string): string => value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
 export type { ScheduledEvent };
+
+/** imp refuses multi-line labels. A scheduled fork without its own label used
+ * the first 60 chars of its task, and a task file starting "# Free time\n\n…"
+ * failed every night, never acked, and was redelivered on every reconnect
+ * ahead of newer wakes (Nov 2). Use the first non-empty line, one line only. */
+export function forkLabel(label: string, task: string): string {
+  const one = (s: string) => s.replace(/\s+/g, " ").trim();
+  if (one(label)) return one(label).slice(0, 80);
+  const first = task.split("\n").map((l) => l.replace(/^#+\s*/, "").trim()).find(Boolean) ?? "";
+  return `scheduled: ${one(first).slice(0, 60)}`;
+}

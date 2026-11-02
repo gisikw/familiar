@@ -3,7 +3,7 @@ import { createServer, type Socket } from "node:net";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import scheduler, { deliveredIds, forkRequest, resolveTask, SCHEDULED_FORK } from "./index.ts";
+import scheduler, { deliveredIds, forkLabel, forkRequest, resolveTask, SCHEDULED_FORK } from "./index.ts";
 
 const roots: string[] = [];
 const savedPath = process.env.PATH;
@@ -109,4 +109,11 @@ test("an Attention ask fork says Kev started it, not a schedule", async () => {
   const { forkPreamble } = await import("./index.ts");
   expect(forkPreamble({ ...forkEvent, source: "attn.ask", rule: "" })).toContain("Kev picked this on an Attention ask");
   expect(forkPreamble(forkEvent)).toContain("Scheduled every day 06:00");
+});
+
+test("forkLabel is always one line (imp refuses multi-line labels)", () => {
+  expect(forkLabel("", "# Free time\n\nHey. This is yours.")).toBe("scheduled: Free time");
+  expect(forkLabel("", "\n\n  Read the paper\nthen more")).toBe("scheduled: Read the paper");
+  expect(forkLabel("daily\nbriefing", "x")).toBe("daily briefing");
+  expect(forkLabel("presence", "anything")).toBe("presence");
 });
