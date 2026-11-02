@@ -248,7 +248,7 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 		var err error
 		if in != "" {
 			var d time.Duration
-			d, err = time.ParseDuration(in)
+			d, err = parseIn(in)
 			due = now.Add(d)
 			if d <= 0 && err == nil {
 				err = errors.New("duration must be positive")
@@ -399,6 +399,18 @@ func parseScheduler(argv []string, now time.Time) (schedulerInvocation, bool, er
 func parseAt(value string, now time.Time) (time.Time, error) {
 	if t, e := time.Parse(time.RFC3339, value); e == nil {
 		return t, nil
+	}
+	// A calendar date, with or without a time, in local time. A bare date means 09:00.
+	for _, layout := range []string{"2006-01-02 15:04", "2006-01-02T15:04", "2006-01-02"} {
+		if t, e := time.ParseInLocation(layout, value, now.Location()); e == nil {
+			if layout == "2006-01-02" {
+				t = t.Add(9 * time.Hour)
+			}
+			if !t.After(now) {
+				return time.Time{}, errors.New("that time has already passed")
+			}
+			return t, nil
+		}
 	}
 	t, e := time.ParseInLocation("15:04", value, now.Location())
 	if e != nil {
@@ -593,6 +605,9 @@ const schedulerHelp = `Usage:
 RULE: an interval (90m, 2h, 1d) or DAYS HH:MM, where DAYS is day, weekday,
 weekend, or a list like mon,wed,fri. Local time (America/Chicago), DST-correct.
 A missed occurrence fires once on catch-up; nothing replays.
+WHEN (one-shot): --in takes a duration with an optional leading day count
+(30m, 11d, 2d3h); --at takes HH:MM (next occurrence), YYYY-MM-DD [HH:MM]
+(a bare date is 09:00), or RFC3339. A calendar time already past is refused.
 `
 
 type schedEvent struct {
@@ -634,4 +649,23 @@ func shortID13(id string) string {
 		return id[:13]
 	}
 	return id
+}
+
+// parseIn is time.ParseDuration plus a leading whole-day term ("11d", "2d3h"),
+// so a reminder a week or two out doesn't need hours arithmetic.
+func parseIn(value string) (time.Duration, error) {
+	if i := strings.IndexByte(value, 'd'); i > 0 {
+		days, err := strconv.Atoi(value[:i])
+		if err != nil {
+			return 0, fmt.Errorf("invalid duration %q", value)
+		}
+		rest := time.Duration(0)
+		if value[i+1:] != "" {
+			if rest, err = time.ParseDuration(value[i+1:]); err != nil {
+				return 0, err
+			}
+		}
+		return time.Duration(days)*24*time.Hour + rest, nil
+	}
+	return time.ParseDuration(value)
 }
