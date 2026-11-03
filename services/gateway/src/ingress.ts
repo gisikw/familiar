@@ -2,7 +2,7 @@ import type http from "http";
 import { errorLog } from "./debug.ts";
 import type { RelayBus } from "./relay.ts";
 import type { SubmitPayload, VoiceStatusPayload } from "./protocol.ts";
-import { collapseRepeats, correctTranscript, keepTake } from "./stt-lexicon.ts";
+import { collapseRepeats, correctTranscript, keepTake, lexiconNote } from "./stt-lexicon.ts";
 
 function chunkLog(obj: Record<string, unknown>) {
   process.stderr.write(`[stt-chunk] ${JSON.stringify(obj)}\n`);
@@ -95,7 +95,7 @@ export class Ingress {
         const text = await this.transcribe(data);
         chunkLog({ take, seq, bytes, receivedAt: receivedAt.toISOString(), sttMs: Date.now() - started, totalMs: Date.now() - receivedAt.getTime(), attempts, ok: true });
         keepTake(data, text, take, seq);
-        return correctTranscript(text);
+        return text;
       } catch (err) {
         lastErr = err;
       }
@@ -184,7 +184,10 @@ export class Ingress {
             .then((transcriptions) => {
               // 🗣 marks transcribed speech so the model prices in STT errors;
               // payload.text is typed by the client and left unmarked.
-              this.dispatch(id, `🗣 ${collapseRepeats(transcriptions.join(" "))}`, payload.text ?? "");
+              // The lexicon runs once per take and annotates what it rewrote.
+              const { text, fixes } = correctTranscript(collapseRepeats(transcriptions.join(" ")));
+              if (fixes.length) chunkLog({ take: id, lexicon: fixes });
+              this.dispatch(id, `🗣 ${text}${lexiconNote(fixes)}`, payload.text ?? "");
             })
             .catch((err) => {
               errorLog("subscriber", { dispatchError: String(err), id });

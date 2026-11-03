@@ -5,13 +5,18 @@ import path from "node:path";
  *
  * FAMILIAR_STT_LEXICON — path to a TSV of `heard<TAB>meant` lines. Each
  * `heard` is a whole-word, case-insensitive regex alternation (e.g.
- * `Kian|Kiyun|Akeen`); matches are replaced with `meant` verbatim. Blank lines
+ * `Kian|Kiyun|Akeen`); matches are replaced with `meant`, case-preserving
+ * (ALL-CAPS heard → ALL-CAPS meant, all-lower → lower, Capitalized →
+ * Capitalized; anything else → `meant` as written). Blank lines
  * and `#` comments are ignored. Unset (the default) = transcripts untouched.
  * The file is re-read when its mtime changes, so edits need no restart.
  *
  * Only put near-certain fixes here: names Parakeet never gets right and that
  * have no plausible literal reading in Kev's speech. A wrong entry silently
- * rewrites his words; the 🗣 marker still tells the model to doubt them.
+ * rewrites his words, so every rewrite is logged (`[stt-chunk] {lexicon}`) and
+ * annotated on the dispatched take — `(stt-lexicon: Kinect→Connect)` — so a
+ * bad one shows up in the conversation and can be caught. Applied once per
+ * take (after chunks are joined), never per chunk; kept takes stay raw.
  *
  * FAMILIAR_STT_KEEP_DIR — when set, every successfully transcribed chunk is
  * written there as `<iso>-t<take>-s<seq>.audio` plus a `.txt` holding the raw
@@ -36,8 +41,23 @@ export function parseLexicon(src: string): Rule[] {
   return rules;
 }
 
-export function applyLexicon(text: string, rules: Rule[]): string {
-  return rules.reduce((t, r) => t.replace(r.re, r.meant), text);
+export type Fix = { heard: string; meant: string };
+
+function matchCase(heard: string, meant: string): string {
+  if (heard.length > 1 && heard === heard.toUpperCase() && heard !== heard.toLowerCase()) return meant.toUpperCase();
+  if (heard === heard.toLowerCase()) return meant.toLowerCase();
+  if (heard[0] === heard[0].toUpperCase() && heard.slice(1) === heard.slice(1).toLowerCase()) {
+    return meant[0].toUpperCase() + meant.slice(1);
+  }
+  return meant;
+}
+
+export function applyLexicon(text: string, rules: Rule[], fixes: Fix[] = []): string {
+  return rules.reduce((t, r) => t.replace(r.re, (heard) => {
+    const meant = matchCase(heard, r.meant);
+    if (meant !== heard) fixes.push({ heard, meant });
+    return meant;
+  }), text);
 }
 
 function loadRules(): Rule[] {
@@ -54,9 +74,17 @@ function loadRules(): Rule[] {
   }
 }
 
-export function correctTranscript(text: string): string {
+export function correctTranscript(text: string): { text: string; fixes: Fix[] } {
   const rules = loadRules();
-  return rules.length ? applyLexicon(text, rules) : text;
+  const fixes: Fix[] = [];
+  return { text: rules.length ? applyLexicon(text, rules, fixes) : text, fixes };
+}
+
+/** Visible trailer for a corrected take, or "" when nothing was rewritten. */
+export function lexiconNote(fixes: Fix[]): string {
+  if (!fixes.length) return "";
+  const uniq = [...new Set(fixes.map((f) => `${f.heard}→${f.meant}`))];
+  return ` (stt-lexicon: ${uniq.join(", ")})`;
 }
 
 export function keepTake(data: string, text: string, take: number, seq: number) {

@@ -3,7 +3,7 @@ import { expect, test, afterEach } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { applyLexicon, parseLexicon, correctTranscript, keepTake } from "../src/stt-lexicon.ts";
+import { applyLexicon, parseLexicon, correctTranscript, keepTake, lexiconNote } from "../src/stt-lexicon.ts";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "stt-lexicon-"));
 afterEach(() => { delete process.env.FAMILIAR_STT_LEXICON; delete process.env.FAMILIAR_STT_KEEP_DIR; });
@@ -11,7 +11,7 @@ afterEach(() => { delete process.env.FAMILIAR_STT_LEXICON; delete process.env.FA
 const rules = parseLexicon("# names\nKian|Kiyun|Akeen\tCian\nKess\tKes\n\nbad(\tx\nnotab\n");
 
 test("whole-word, case-insensitive, keeps punctuation", () => {
-  expect(applyLexicon("Kian gets confused, kiyun. Hello there Kess!", rules)).toBe("Cian gets confused, Cian. Hello there Kes!");
+  expect(applyLexicon("Kian gets confused, Kiyun. Hello there Kess!", rules)).toBe("Cian gets confused, Cian. Hello there Kes!");
 });
 
 test("does not touch substrings or possessive-adjacent words", () => {
@@ -23,20 +23,20 @@ test("unparseable patterns and malformed lines are skipped, not fatal", () => {
 });
 
 test("unset lexicon env leaves transcripts untouched", () => {
-  expect(correctTranscript("Kian")).toBe("Kian");
+  expect(correctTranscript("Kian").text).toBe("Kian");
 });
 
 test("lexicon file is applied and re-read on change", async () => {
   const f = path.join(tmp, "lex.tsv");
   fs.writeFileSync(f, "Kian\tCian\n");
   process.env.FAMILIAR_STT_LEXICON = f;
-  expect(correctTranscript("Kian")).toBe("Cian");
+  expect(correctTranscript("Kian").text).toBe("Cian");
   await new Promise((r) => setTimeout(r, 20));
   fs.writeFileSync(f, "Kian\tKeean\n");
   fs.utimesSync(f, new Date(), new Date(Date.now() + 5000));
-  expect(correctTranscript("Kian")).toBe("Keean");
+  expect(correctTranscript("Kian").text).toBe("Keean");
   process.env.FAMILIAR_STT_LEXICON = path.join(tmp, "missing.tsv");
-  expect(correctTranscript("Kian")).toBe("Kian");
+  expect(correctTranscript("Kian").text).toBe("Kian");
 });
 
 test("keepTake writes private audio + raw transcript only when enabled", () => {
@@ -50,4 +50,22 @@ test("keepTake writes private audio + raw transcript only when enabled", () => {
   expect(fs.readFileSync(path.join(dir, files[1]), "utf8")).toBe("Kian said hi\n");
   expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
   expect(fs.statSync(path.join(dir, files[0])).mode & 0o777).toBe(0o600);
+});
+
+test("Kinect→Connect: whole-word, case-preserving, and every rewrite is reported", () => {
+  const kinect = parseLexicon("Kinect\tConnect\n");
+  const fixes: { heard: string; meant: string }[] = [];
+  expect(applyLexicon("Kinect, kinect and KINECT; not Kinects or kinected", kinect, fixes))
+    .toBe("Connect, connect and CONNECT; not Kinects or kinected");
+  expect(fixes.map((f) => f.heard)).toEqual(["Kinect", "kinect", "KINECT"]);
+  expect(lexiconNote(fixes)).toBe(" (stt-lexicon: Kinect→Connect, kinect→connect, KINECT→CONNECT)");
+  expect(lexiconNote([])).toBe("");
+});
+
+test("correctTranscript reports fixes so the take can be annotated", () => {
+  const f = path.join(tmp, "kinect.tsv");
+  fs.writeFileSync(f, "Kinect\tConnect\n");
+  process.env.FAMILIAR_STT_LEXICON = f;
+  expect(correctTranscript("the Kinect sync")).toEqual({ text: "the Connect sync", fixes: [{ heard: "Kinect", meant: "Connect" }] });
+  expect(correctTranscript("nothing here")).toEqual({ text: "nothing here", fixes: [] });
 });
