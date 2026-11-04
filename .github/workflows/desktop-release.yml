@@ -72,6 +72,15 @@ jobs:
         if: steps.gate.outputs.released != 'true'
         working-directory: apps/desktop
         run: npm run dist:mac
+      - name: Verify app signature and mic entitlement
+        if: steps.gate.outputs.released != 'true'
+        working-directory: apps/desktop
+        run: |
+          APP=$(ls -d dist/mac-universal/*.app | head -1)
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          codesign -d --entitlements :- "$APP" | tee /tmp/ent.plist
+          grep -q com.apple.security.device.audio-input /tmp/ent.plist
+          codesign -dv "$APP" 2>&1 | grep -E 'Identifier=|Signature=|flags='
       - name: Checksum DMG
         if: steps.gate.outputs.released != 'true'
         working-directory: apps/desktop
