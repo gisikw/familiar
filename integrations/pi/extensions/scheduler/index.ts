@@ -180,6 +180,12 @@ export default function (pi: ExtensionAPI, options: { fork?: boolean; warmWake?:
         pi.sendMessage(withSentAt(message), { deliverAs: "steer", triggerTurn: true });
         wokeSinceBoot = true;
         seen.add(event.id);
+        // A held quiet return requeued as a wake (Do Disturb switched on, or
+        // Kev tapped it in Open): the wake replaces the held copy, and the
+        // soft delivery's pending ack settles with it.
+        held.delete(event.id);
+        const resolvers = waiting.get(event.id);
+        if (resolvers) { waiting.delete(event.id); for (const resolve of resolvers) resolve(); }
       },
       error(error) { errorLog("scheduler", { error: error.message }); },
     });
