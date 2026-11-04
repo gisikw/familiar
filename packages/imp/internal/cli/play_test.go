@@ -70,3 +70,48 @@ func TestPlayRejectsBadTimes(t *testing.T) {
 		t.Fatalf("code=%d", code)
 	}
 }
+
+func TestPlayPrefersFamiliarUI(t *testing.T) {
+	dir := t.TempDir()
+	clip := filepath.Join(dir, "hi.mp3")
+	os.WriteFile(clip, []byte("ID3abc"), 0o644)
+	var auth, origin, title string
+	var body []byte
+	ui := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/voice/play" {
+			w.WriteHeader(404)
+			return
+		}
+		auth, origin, title = r.Header.Get("Authorization"), r.Header.Get("Origin"), r.Header.Get("X-Clip-Title")
+		body, _ = io.ReadAll(r.Body)
+		io.WriteString(w, `{"played":true,"message_id":3,"index":10000}`)
+	}))
+	t.Cleanup(ui.Close)
+	desc := filepath.Join(dir, "bridge.json")
+	os.WriteFile(desc, []byte(`{"url":"`+ui.URL+`","origin":"https://familiar.gisi.network","token":"tok"}`), 0o600)
+	gwPort, gwBody, _ := fakeGateway(t, true)
+	env := map[string]string{"FAMILIAR_STATE_DIR": dir, "FAMILIAR_SUBSCRIBER_PORT": gwPort, "FAMILIAR_UI_DESCRIPTOR": desc}
+	var out, errw bytes.Buffer
+	code := playMain([]string{clip, "--title", "Tom Lehrer"}, &out, &errw, func(k string) string { return env[k] })
+	if code != 0 || string(body) != "ID3abc" || auth != "Bearer tok" || origin != "https://familiar.gisi.network" || title != "Tom%20Lehrer" || len(*gwBody) != 0 {
+		t.Fatalf("code=%d err=%q auth=%q origin=%q title=%q gw=%q", code, errw.String(), auth, origin, title, *gwBody)
+	}
+}
+
+func TestPlayFallsBackToGatewayWhenUINotListening(t *testing.T) {
+	dir := t.TempDir()
+	clip := filepath.Join(dir, "hi.mp3")
+	os.WriteFile(clip, []byte("ID3abc"), 0o644)
+	ui := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"played":false,"reason":"no-listener"}`)
+	}))
+	t.Cleanup(ui.Close)
+	desc := filepath.Join(dir, "bridge.json")
+	os.WriteFile(desc, []byte(`{"url":"`+ui.URL+`","origin":"https://x","token":"tok"}`), 0o600)
+	gwPort, gwBody, _ := fakeGateway(t, true)
+	env := map[string]string{"FAMILIAR_STATE_DIR": dir, "FAMILIAR_SUBSCRIBER_PORT": gwPort, "FAMILIAR_UI_DESCRIPTOR": desc}
+	var out, errw bytes.Buffer
+	if code := playMain([]string{clip}, &out, &errw, func(k string) string { return env[k] }); code != 0 || string(*gwBody) != "ID3abc" {
+		t.Fatalf("code=%d err=%q", code, errw.String())
+	}
+}

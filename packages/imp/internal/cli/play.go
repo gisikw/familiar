@@ -19,7 +19,8 @@ import (
 // imp play: drop an audio clip into Kes's speech stream, so it plays inline
 // (after whatever Kes has already said) wherever Kev is listening. imp reads
 // and, when needed, cuts the audio (ffmpeg; yt-dlp for URLs) and POSTs the
-// bytes to the gateway's /play; the gateway never opens a path itself.
+// bytes to familiar-ui's /v1/voice/play (else the gateway's /play, for Hearth);
+// neither ever opens a path itself.
 
 const playHelp = `Usage:
   imp play <file|url> [--start T] [--end T] [--title T] [--else-open] [--cut-only]
@@ -178,6 +179,13 @@ func playMain(args []string, out, errw io.Writer, getenv func(string) string) in
 	if port == "" {
 		port = "1692"
 	}
+	// familiar-ui serves Kev's speaker itself now (web app and the iOS shell);
+	// the gateway still serves Hearth. Offer the clip to familiar-ui first and
+	// fall back to the gateway when nobody is listening there.
+	if uiPlayed(ctx, getenv, data, ctype, title) {
+		fmt.Fprintf(out, "queued %q after my current speech (%s)\n", title, path)
+		return 0
+	}
 	req, _ := http.NewRequestWithContext(ctx, "POST", "http://127.0.0.1:"+port+"/play", bytes.NewReader(data))
 	req.Header.Set("Content-Type", ctype)
 	req.Header.Set("X-Clip-Title", url.PathEscape(title))
@@ -211,6 +219,47 @@ func playMain(args []string, out, errw io.Writer, getenv func(string) string) in
 }
 
 var clipSlugRe = regexp.MustCompile(`[^a-z0-9]+`)
+
+// uiPlayed offers the clip to familiar-ui's primary bridge (POST
+// /v1/voice/play, its bearer and origin from the descriptor at
+// FAMILIAR_UI_DESCRIPTOR). true only when it was queued; any absence or
+// failure is false, so the caller falls back to the gateway.
+func uiPlayed(ctx context.Context, getenv func(string) string, data []byte, ctype, title string) bool {
+	file := getenv("FAMILIAR_UI_DESCRIPTOR")
+	if file == "" {
+		return false
+	}
+	raw, err := os.ReadFile(file)
+	if err != nil || len(raw) > 8192 {
+		return false
+	}
+	var d struct {
+		URL    string `json:"url"`
+		Origin string `json:"origin"`
+		Token  string `json:"token"`
+	}
+	if json.Unmarshal(raw, &d) != nil || d.Token == "" || !strings.HasPrefix(d.URL, "http://127.0.0.1:") {
+		return false
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(d.URL, "/")+"/v1/voice/play", bytes.NewReader(data))
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Content-Type", ctype)
+	req.Header.Set("X-Clip-Title", url.PathEscape(title))
+	req.Header.Set("Authorization", "Bearer "+d.Token)
+	req.Header.Set("Origin", d.Origin)
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	var r struct {
+		Played bool `json:"played"`
+	}
+	_ = json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&r)
+	return resp.StatusCode == 200 && r.Played
+}
 
 func clipSlug(s string) string {
 	s = strings.Trim(clipSlugRe.ReplaceAllString(strings.ToLower(s), "-"), "-")
