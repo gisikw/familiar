@@ -76,7 +76,7 @@ jobs:
         if: steps.gate.outputs.released != 'true'
         working-directory: apps/desktop
         run: |
-          APP=$(ls -d dist/mac-universal/*.app | head -1)
+          APP=$(ls -d dist/mac*/*.app | head -1); echo "app: $APP"
           codesign --verify --deep --strict --verbose=2 "$APP"
           codesign -d --entitlements :- "$APP" | tee /tmp/ent.plist
           grep -q com.apple.security.device.audio-input /tmp/ent.plist
