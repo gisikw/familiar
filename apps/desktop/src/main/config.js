@@ -20,6 +20,21 @@ const path = require("path");
 
 const DEFAULT_BASE_URL = "https://familiar.gisi.network";
 
+// Deployments that moved. familiar-ui.gisi.network now only 308-redirects to
+// familiar.gisi.network; a saved config (or 0.2.11's default) still naming it
+// would land the window on an origin the shell doesn't consider its own, and
+// microphone, clipboard and bearer grants are bound to the exact base origin.
+const MOVED_ORIGINS = { "https://familiar-ui.gisi.network": "https://familiar.gisi.network" };
+
+/** A normalized base URL with a moved origin swapped for where it lives now. */
+function migrateBaseUrl(url) {
+  if (!url) return url;
+  let u;
+  try { u = new URL(url); } catch (_) { return url; }
+  const moved = MOVED_ORIGINS[u.origin];
+  return moved ? normalizeBaseUrl(moved + u.pathname) : url;
+}
+
 // Normalize to an origin+path with no trailing slash noise. We keep whatever
 // path the user configured (in case the server ever lives under a sub-path),
 // but strip a bare trailing "/" so "https://host/" and "https://host" match.
@@ -67,10 +82,10 @@ function writeConfigFile(app, patch) {
 // Resolve the base URL. `app` may be null in a plain-node unit test, in which
 // case the JSON file is skipped (env + default only).
 function resolveBaseUrl(app, fileCfg) {
-  const fromEnv = normalizeBaseUrl(process.env.FAMILIAR_BASE_URL);
+  const fromEnv = migrateBaseUrl(normalizeBaseUrl(process.env.FAMILIAR_BASE_URL));
   if (fromEnv) return fromEnv;
   const cfg = fileCfg || (app ? readConfigFile(app) : {});
-  const fromFile = normalizeBaseUrl(cfg.baseUrl);
+  const fromFile = migrateBaseUrl(normalizeBaseUrl(cfg.baseUrl));
   if (fromFile) return fromFile;
   return DEFAULT_BASE_URL;
 }
@@ -78,6 +93,7 @@ function resolveBaseUrl(app, fileCfg) {
 module.exports = {
   DEFAULT_BASE_URL,
   normalizeBaseUrl,
+  migrateBaseUrl,
   resolveBaseUrl,
   configPath,
   readConfigFile,

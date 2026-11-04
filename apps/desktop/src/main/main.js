@@ -1,5 +1,6 @@
-const { app, BrowserWindow, ipcMain, session, Menu, nativeImage, shell } = require("electron");
+const { app, BrowserWindow, ipcMain, session, Menu, nativeImage, shell, systemPreferences } = require("electron");
 const { windowOpenTarget, navigationTarget } = require("./links.js");
+const { uniqueDownloadPath } = require("./downloads.js");
 const path = require("path");
 const fs = require("fs");
 
@@ -304,6 +305,14 @@ function installMenu() {
 
 app.whenReady().then(() => {
   baseUrl = resolveBaseUrl(app);
+  // A saved base URL on a moved origin (familiar-ui.gisi.network) resolves to
+  // where it lives now; write that back so Settings shows the real one.
+  {
+    const saved = readConfigFile(app).baseUrl;
+    if (saved && !process.env.FAMILIAR_BASE_URL && require("./config").normalizeBaseUrl(saved) !== baseUrl) {
+      writeConfigFile(app, { baseUrl });
+    }
+  }
   // eslint-disable-next-line no-console
   console.log("[familiar] base URL:", baseUrl, "partition:", PARTITION);
 
@@ -363,7 +372,14 @@ app.whenReady().then(() => {
     if (permission === "media") {
       const mediaTypes = (details && details.mediaTypes) || [];
       const audioOnly = mediaTypes.length === 0 || mediaTypes.every((t) => t === "audio");
-      return callback(audioOnly && isOwnOrigin(details && details.requestingUrl || ""));
+      if (!(audioOnly && isOwnOrigin(details && details.requestingUrl || ""))) return callback(false);
+      // macOS gates the microphone per app (TCC). Chromium's grant alone
+      // isn't enough: ask the OS first, so the system prompt appears once
+      // and a denial reads as a denial instead of a silent, empty stream.
+      if (process.platform === "darwin" && systemPreferences.getMediaAccessStatus("microphone") !== "granted") {
+        return systemPreferences.askForMediaAccess("microphone").then((ok) => callback(!!ok), () => callback(false));
+      }
+      return callback(true);
     }
     // Clipboard WRITES only: the gateway's OSC 52 bridge mirrors terminal
     // drag selections into the system clipboard via navigator.clipboard
@@ -379,6 +395,24 @@ app.whenReady().then(() => {
     if (permission === "media") return isOwnOrigin(requestingOrigin);
     if (permission === "clipboard-sanitized-write") return isOwnOrigin(requestingOrigin);
     return false;
+  });
+
+  // Downloads from Familiar's own page (the Reader's download links are blob
+  // downloads) go straight to ~/Downloads like a browser, never overwriting.
+  // Anything else keeps Electron's default (a save dialog).
+  part.on("will-download", (_event, item, wc) => {
+    const from = (wc && !wc.isDestroyed() && wc.getURL()) || "";
+    if (!isOwnOrigin(from)) return;
+    const dir = app.getPath("downloads");
+    const target = uniqueDownloadPath(dir, item.getFilename(), (p) => fs.existsSync(p));
+    item.setSavePath(target);
+    item.once("done", (_e, state) => {
+      if (state !== "completed") {
+        console.warn(`[familiar] download ${state}: ${path.basename(target)}`);
+        return;
+      }
+      if (process.platform === "darwin" && app.dock) app.dock.downloadFinished(target);
+    });
   });
 
   createWindow();

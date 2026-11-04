@@ -31,6 +31,19 @@ web deployment.
   error) the window swaps in a local `offline.html` with a **Retry** button; the
   main process also auto-retries with exponential backoff (1s → 30s). A
   successful load resets the backoff.
+- **Downloads:** files Familiar's own page downloads (the Reader's download
+  links) go straight to `~/Downloads`, never overwriting (`name (1).ext`), and
+  bounce the Dock's Downloads stack. Downloads from any other page keep
+  Electron's save dialog.
+- **Microphone:** granted to the exact base origin, audio only. On macOS the
+  shell asks the OS first (`systemPreferences.askForMediaAccess`), and the
+  bundle carries `NSMicrophoneUsageDescription`, so the system prompt appears
+  once instead of a silent empty stream. If you denied it once: System
+  Settings → Privacy & Security → Microphone → Familiar.
+- **Moved deployments:** a saved base URL of `https://familiar-ui.gisi.network`
+  (0.2.11's default) is rewritten to `https://familiar.gisi.network` at launch.
+  Grants are bound to the exact base origin, so landing on the redirect target
+  without this would silently drop the microphone and clipboard.
 
 ## Run it
 
