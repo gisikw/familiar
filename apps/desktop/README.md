@@ -2,7 +2,7 @@
 
 A **dumb client**: a thin, near-chromeless Electron window that **loads the
 configured Familiar web app** (default
-`https://familiar-ui.gisi.network`). The served app owns routing, rendering,
+`https://familiar.gisi.network`). The served app owns routing, rendering,
 API/stream connections, and uploads; this app contributes only native chrome.
 When configured for the local gateway (`http://localhost:1692`), that served
 page is the restty terminal and its same-origin `/pty` and `/upload` endpoints.
@@ -62,7 +62,7 @@ Resolution order (first hit wins):
 
 1. `FAMILIAR_BASE_URL` environment variable (development/terminal launches)
 2. `"baseUrl"` in `<userData>/config.json`
-3. Default: `https://familiar-ui.gisi.network`
+3. Default: `https://familiar.gisi.network`
 
 Packaged apps launched from Finder, Spotlight, or the Dock do not inherit a
 terminal environment. Use **Familiar → Configure Server URL…** in the menu at
@@ -76,7 +76,7 @@ Example:
 
 ```json
 {
-  "baseUrl": "https://familiar-ui.gisi.network",
+  "baseUrl": "https://familiar.gisi.network",
   "bounds": { "x": 100, "y": 100, "width": 1024, "height": 680 }
 }
 ```

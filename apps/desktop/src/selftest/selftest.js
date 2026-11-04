@@ -67,7 +67,7 @@ function checkConfig() {
   const savedEnv = process.env.FAMILIAR_BASE_URL;
   delete process.env.FAMILIAR_BASE_URL;
   const def = cfg.resolveBaseUrl(null, {});
-  const expectedDefault = "https://familiar-ui.gisi.network";
+  const expectedDefault = "https://familiar.gisi.network";
   if (def !== expectedDefault || cfg.DEFAULT_BASE_URL !== expectedDefault) {
     return `default base url = ${def}, want ${expectedDefault}`;
   }
@@ -91,10 +91,10 @@ function checkConfig() {
 
   // Origin checks must parse URLs rather than accept lookalike prefixes, and
   // preload IPC must recognize only exact bundled files.
-  if (!security.isSameOrigin("https://familiar-ui.gisi.network/stream", expectedDefault)) {
+  if (!security.isSameOrigin("https://familiar.gisi.network/stream", expectedDefault)) {
     return "same-origin URL rejected";
   }
-  if (security.isSameOrigin("https://familiar-ui.gisi.network.evil/", expectedDefault)) {
+  if (security.isSameOrigin("https://familiar.gisi.network.evil/", expectedDefault)) {
     return "lookalike origin accepted";
   }
   const offline = path.join(__dirname, "..", "main", "offline.html");

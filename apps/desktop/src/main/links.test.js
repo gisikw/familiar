@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { windowOpenTarget, navigationTarget } = require("./links.js");
 
-const base = "https://familiar-ui.gisi.network";
+const base = "https://familiar.gisi.network";
 const here = `${base}/?session=abc`;
 
 test("new windows always leave the app for http(s)/mailto", () => {
@@ -18,7 +18,7 @@ test("links followed from Familiar leave for the default browser", () => {
   assert.equal(navigationTarget(`${base}/?session=def`, base, here), "allow");
   assert.equal(navigationTarget("https://wireframes.gisi.network/reader-v2/", base, here), "external");
   assert.equal(navigationTarget("https://github.com/gisikw/familiar", base, here), "external");
-  assert.equal(navigationTarget("http://familiar-ui.gisi.network/", base, here), "external"); // other origin
+  assert.equal(navigationTarget("http://familiar.gisi.network/", base, here), "external"); // other origin
   assert.equal(navigationTarget("mailto:x@y.z", base, here), "external");
   assert.equal(navigationTarget("javascript:alert(1)", base, here), "deny");
 });

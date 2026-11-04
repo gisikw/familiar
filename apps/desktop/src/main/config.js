@@ -18,7 +18,7 @@ const path = require("path");
 // was left.
 // ---------------------------------------------------------------------------
 
-const DEFAULT_BASE_URL = "https://familiar-ui.gisi.network";
+const DEFAULT_BASE_URL = "https://familiar.gisi.network";
 
 // Normalize to an origin+path with no trailing slash noise. We keep whatever
 // path the user configured (in case the server ever lives under a sub-path),
