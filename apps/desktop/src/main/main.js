@@ -368,17 +368,35 @@ app.whenReady().then(() => {
     try { return !!baseUrl && new URL(url).origin === new URL(baseUrl).origin; }
     catch (_) { return false; }
   };
+  // Every microphone decision is written to <logs>/permissions.log
+  // (~/Library/Logs/Familiar on macOS) with the layer that made it, so a
+  // "permission denied" can be traced to origin, TCC or Chromium.
+  const permLog = (entry) => {
+    try {
+      const dir = app.getPath("logs");
+      fs.mkdirSync(dir, { recursive: true });
+      fs.appendFileSync(path.join(dir, "permissions.log"),
+        JSON.stringify({ t: new Date().toISOString(), v: app.getVersion(), baseUrl, ...entry }) + "\n");
+    } catch (_) { /* diagnostics are best-effort */ }
+  };
+  const tcc = () => (process.platform === "darwin" ? systemPreferences.getMediaAccessStatus("microphone") : "n/a");
   part.setPermissionRequestHandler((wc, permission, callback, details) => {
     if (permission === "media") {
       const mediaTypes = (details && details.mediaTypes) || [];
+      const requestingUrl = (details && details.requestingUrl) || "";
       const audioOnly = mediaTypes.length === 0 || mediaTypes.every((t) => t === "audio");
-      if (!(audioOnly && isOwnOrigin(details && details.requestingUrl || ""))) return callback(false);
+      const base = { permission, mediaTypes, requestingUrl, securityOrigin: details && details.securityOrigin, tccBefore: tcc() };
+      if (!audioOnly) { permLog({ ...base, decision: false, why: "not audio-only" }); return callback(false); }
+      if (!isOwnOrigin(requestingUrl)) { permLog({ ...base, decision: false, why: "origin is not the base URL" }); return callback(false); }
       // macOS gates the microphone per app (TCC). Chromium's grant alone
       // isn't enough: ask the OS first, so the system prompt appears once
       // and a denial reads as a denial instead of a silent, empty stream.
-      if (process.platform === "darwin" && systemPreferences.getMediaAccessStatus("microphone") !== "granted") {
-        return systemPreferences.askForMediaAccess("microphone").then((ok) => callback(!!ok), () => callback(false));
+      if (process.platform === "darwin" && base.tccBefore !== "granted") {
+        return systemPreferences.askForMediaAccess("microphone").then(
+          (ok) => { permLog({ ...base, asked: true, askResult: !!ok, tccAfter: tcc(), decision: !!ok, why: ok ? "TCC granted on ask" : "TCC refused" }); callback(!!ok); },
+          (e) => { permLog({ ...base, asked: true, askError: String(e), decision: false, why: "TCC ask threw" }); callback(false); });
       }
+      permLog({ ...base, decision: true, why: "own origin, TCC granted" });
       return callback(true);
     }
     // Clipboard WRITES only: the gateway's OSC 52 bridge mirrors terminal
@@ -391,8 +409,12 @@ app.whenReady().then(() => {
     }
     return callback(false);
   });
-  part.setPermissionCheckHandler((wc, permission, requestingOrigin) => {
-    if (permission === "media") return isOwnOrigin(requestingOrigin);
+  part.setPermissionCheckHandler((wc, permission, requestingOrigin, details) => {
+    if (permission === "media") {
+      const ok = isOwnOrigin(requestingOrigin);
+      if (!ok) permLog({ check: true, permission, requestingOrigin, mediaType: details && details.mediaType, decision: false, why: "check: origin is not the base URL" });
+      return ok;
+    }
     if (permission === "clipboard-sanitized-write") return isOwnOrigin(requestingOrigin);
     return false;
   });
