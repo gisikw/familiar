@@ -364,10 +364,9 @@ app.whenReady().then(() => {
   // the prompt is silently denied. We only allow audio media, and only for our
   // own base origin — everything else stays denied.
   const part = session.fromPartition(PARTITION);
-  const isOwnOrigin = (url) => {
-    try { return !!baseUrl && new URL(url).origin === new URL(baseUrl).origin; }
-    catch (_) { return false; }
-  };
+  const origins = require("./origins");
+  const isOwnOrigin = (url) => origins.isOwnOrigin(url, baseUrl);
+  const wcUrl = (wc) => { try { return (wc && !wc.isDestroyed() && wc.getURL()) || ""; } catch (_) { return ""; } };
   // Every microphone decision is written to <logs>/permissions.log
   // (~/Library/Logs/Familiar on macOS) with the layer that made it, so a
   // "permission denied" can be traced to origin, TCC or Chromium.
@@ -385,16 +384,22 @@ app.whenReady().then(() => {
       const mediaTypes = (details && details.mediaTypes) || [];
       const requestingUrl = (details && details.requestingUrl) || "";
       const audioOnly = mediaTypes.length === 0 || mediaTypes.every((t) => t === "audio");
-      const base = { permission, mediaTypes, requestingUrl, securityOrigin: details && details.securityOrigin, tccBefore: tcc() };
+      // Chromium may hand us an empty requestingUrl or only a security
+      // origin; fall back to what the window actually has loaded.
+      const origin = origins.pickRequestOrigin(requestingUrl, details && details.securityOrigin, wcUrl(wc));
+      const base = { permission, mediaTypes, requestingUrl, securityOrigin: details && details.securityOrigin, wcUrl: wcUrl(wc), origin, tccBefore: tcc() };
       if (!audioOnly) { permLog({ ...base, decision: false, why: "not audio-only" }); return callback(false); }
-      if (!isOwnOrigin(requestingUrl)) { permLog({ ...base, decision: false, why: "origin is not the base URL" }); return callback(false); }
-      // macOS gates the microphone per app (TCC). Chromium's grant alone
-      // isn't enough: ask the OS first, so the system prompt appears once
-      // and a denial reads as a denial instead of a silent, empty stream.
+      if (!isOwnOrigin(origin)) { permLog({ ...base, decision: false, why: "origin is not the base URL" }); return callback(false); }
+      // macOS gates the microphone per app (TCC). Ask the OS first so the
+      // system prompt appears when it's undetermined, but don't let this
+      // shell veto on the answer: askForMediaAccess can report false for an
+      // ad-hoc-signed build even after the user clicked Allow. The OS still
+      // enforces TCC on the actual capture, so a real denial surfaces as a
+      // capture error, not as a shell-made "Permission denied".
       if (process.platform === "darwin" && base.tccBefore !== "granted") {
         return systemPreferences.askForMediaAccess("microphone").then(
-          (ok) => { permLog({ ...base, asked: true, askResult: !!ok, tccAfter: tcc(), decision: !!ok, why: ok ? "TCC granted on ask" : "TCC refused" }); callback(!!ok); },
-          (e) => { permLog({ ...base, asked: true, askError: String(e), decision: false, why: "TCC ask threw" }); callback(false); });
+          (ok) => { permLog({ ...base, asked: true, askResult: !!ok, tccAfter: tcc(), decision: true, why: ok ? "TCC granted on ask" : "TCC ask said no; deferring to the OS at capture" }); callback(true); },
+          (e) => { permLog({ ...base, asked: true, askError: String(e), decision: true, why: "TCC ask threw; deferring to the OS at capture" }); callback(true); });
       }
       permLog({ ...base, decision: true, why: "own origin, TCC granted" });
       return callback(true);
@@ -405,17 +410,18 @@ app.whenReady().then(() => {
     // Reads stay denied — remote output must never be able to read the
     // browser clipboard (same security bound as the osc52.js bridge).
     if (permission === "clipboard-sanitized-write") {
-      return callback(isOwnOrigin(details && details.requestingUrl || ""));
+      return callback(isOwnOrigin(origins.pickRequestOrigin(details && details.requestingUrl, wcUrl(wc))));
     }
     return callback(false);
   });
   part.setPermissionCheckHandler((wc, permission, requestingOrigin, details) => {
+    const origin = origins.pickRequestOrigin(requestingOrigin, details && details.requestingUrl, details && details.securityOrigin, wcUrl(wc));
     if (permission === "media") {
-      const ok = isOwnOrigin(requestingOrigin);
-      if (!ok) permLog({ check: true, permission, requestingOrigin, mediaType: details && details.mediaType, decision: false, why: "check: origin is not the base URL" });
+      const ok = isOwnOrigin(origin);
+      if (!ok) permLog({ check: true, permission, requestingOrigin, origin, wcUrl: wcUrl(wc), mediaType: details && details.mediaType, decision: false, why: "check: origin is not the base URL" });
       return ok;
     }
-    if (permission === "clipboard-sanitized-write") return isOwnOrigin(requestingOrigin);
+    if (permission === "clipboard-sanitized-write") return isOwnOrigin(origin);
     return false;
   });
 
