@@ -22,8 +22,8 @@ request is written to a private temporary directory, normalized by ffmpeg to
 
 Pause compression: Parakeet drops or invents the rest of a take after a long
 silence. With `STT_VAD_MODEL` set (the Nix package sets it), raw (non-multipart)
-takes are decoded and run through a Silero VAD first; pauses of
-`STT_PAUSE_GAP_MS` or more are cut down to `2 x STT_PAUSE_PAD_MS` and the
+takes are decoded and run through a Silero VAD first; interior pauses of
+`STT_PAUSE_GAP_MS` or more are cut down to `2 x STT_PAUSE_PAD_MS` (the lead-in and tail are never trimmed) and the
 shortened take is transcribed whole. Takes without such a pause, and any VAD
 failure, go through untouched. See `internal/stt/pauses.go` for the tuning.
 

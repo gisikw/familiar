@@ -66,8 +66,9 @@ func TestWavRoundTripAndCut(t *testing.T) {
 }
 
 // End to end through the handler: a fake ffmpeg writes a 20 s WAV, a fake VAD
-// reports speech at 1-3 s and 15-17 s, and the backend must receive ~5.6 s
-// of audio (two 2 s spans + 0.4 s pad each side) instead of 20 s.
+// reports speech at 1-3 s and 15-17 s, and the backend must receive ~8.8 s
+// of audio instead of 20 s: the lead-in 0-3.4 s, then 14.6 s to the end
+// (only the interior pause shrinks; the tail is never trimmed).
 func TestCompressesLongPauseBeforeTranscribing(t *testing.T) {
 	c := config(t)
 	d := c.TempDir
@@ -102,8 +103,25 @@ cp "$in" `+seen+`; printf 'tail survived\n' > "$out"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := float64(len(pcm)/2) / vadRate; got < 5.5 || got > 5.7 {
-		t.Fatalf("backend got %.2f s of audio, want ~5.6", got)
+	if got := float64(len(pcm)/2) / vadRate; got < 8.7 || got > 8.9 {
+		t.Fatalf("backend got %.2f s of audio, want ~8.8", got)
+	}
+}
+
+// The "Nothing Twice" regression: the head and tail of a take are kept whole;
+// only pauses between spans are cut down to 2 x pad.
+func TestJoinSpansKeepsHeadAndTail(t *testing.T) {
+	pcm := pcmOf(30)
+	spans := []Span{{0.03, 13.31}, {20.19, 20.96}}
+	got := float64(len(joinSpans(pcm, spans, 0.8))/2) / vadRate
+	// 0-14.11 kept, 19.39-30 kept: 14.11 + 10.61 = 24.72 s
+	if got < 24.7 || got > 24.75 {
+		t.Fatalf("joined %.3f s, want 24.72", got)
+	}
+	three := []Span{{2, 4}, {10, 11}, {20, 21}}
+	// 0-4.8, 9.2-11.8, 19.2-30 = 4.8 + 2.6 + 10.8
+	if got := float64(len(joinSpans(pcm, three, 0.8))/2) / vadRate; got < 18.15 || got > 18.25 {
+		t.Fatalf("three spans joined %.3f s, want 18.2", got)
 	}
 }
 

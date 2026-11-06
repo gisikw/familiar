@@ -32,6 +32,14 @@ import (
 // A 3 s gap compressed 64% of ordinary takes and cost ~0.2 pt WER there.
 // Prep (decode + VAD) is ~90 ms per take. Every failure here degrades to
 // the untouched take: compression must never cost a take.
+//
+// Only interior pauses are cut. The audio before the first span and after
+// the last span is kept as received (Nov 6): trimming the trailing silence
+// too made Parakeet drop a whole middle stanza of a poem reading ("Nothing
+// Twice", 2026-11-06T04-57-51 s2). The same take with its tail intact, or
+// with >=3 s of tail, transcribes in full; with the tail clipped to the
+// 800 ms pad it lost 5-13 s deterministically, on both the GPU upstream and
+// the local CPU model.
 
 // Span is a [Start, End) range in seconds.
 type Span struct{ Start, End float64 }
@@ -117,22 +125,36 @@ func (s *Server) compressPauses(ctx context.Context, body []byte) []byte {
 	if err != nil {
 		return nil
 	}
-	pad := s.c.PausePad.Seconds()
-	var joined []byte
-	end := 0.0
-	for _, sp := range spans {
-		a := sp.Start - pad
-		if a < end {
-			a = end // never repeat audio when two padded spans would overlap
-		}
-		joined = append(joined, cut(pcm, a, sp.End+pad)...)
-		end = sp.End + pad
-	}
+	joined := joinSpans(pcm, spans, s.c.PausePad.Seconds())
 	if len(joined) == 0 {
 		return nil
 	}
 	s.c.Logger.Info("compressed pauses", "spans", len(spans), "from_s", len(pcm)/2/vadRate, "to_s", len(joined)/2/vadRate, "ms", time.Since(start).Milliseconds())
 	return wavBytes(joined)
+}
+
+// joinSpans keeps the take from its first sample to the end of the first
+// span (+pad), each interior span with pad either side, and the last span
+// (-pad) through the final sample: only the long pauses between spans shrink.
+func joinSpans(pcm []byte, spans []Span, pad float64) []byte {
+	var joined []byte
+	end := 0.0
+	total := float64(len(pcm)/2) / vadRate
+	for i, sp := range spans {
+		a, z := sp.Start-pad, sp.End+pad
+		if i == 0 {
+			a = 0
+		}
+		if i == len(spans)-1 {
+			z = total
+		}
+		if a < end {
+			a = end // never repeat audio when two padded spans would overlap
+		}
+		joined = append(joined, cut(pcm, a, z)...)
+		end = z
+	}
+	return joined
 }
 
 // readPCM returns the sample bytes of a 16-bit PCM WAV written by ffmpeg,
