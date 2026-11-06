@@ -18,6 +18,8 @@ const fs = require("fs");
 const path = require("path");
 const oidc = require("./oidc");
 const { isSameOrigin } = require("./security");
+const { isOwnOrigin } = require("./origins");
+const { shouldInjectBearer } = require("./bearer");
 
 const REFRESH_MARGIN_MS = 60_000; // refresh a minute before expiry
 const DANCE_THROTTLE_MS = 30_000;
@@ -192,12 +194,15 @@ function createAuthManager({ app, getBaseUrl, getConfig, openExternal, getWindow
 
   /** Header attachment: bearer on same-origin requests only, when logged in. */
   function attachHeaders(ses) {
+    const injected = new Set(); // request ids that carry the shell's bearer
+    const LOOP_GUARD_MS = 2 * 60_000;
+    let lastAuthOkAt = 0;
     const baseOrigin = () => {
       try { return new URL(getBaseUrl()).origin; } catch (_) { return null; }
     };
     const isLoginRedirect = (url) => {
       const origin = baseOrigin();
-      if (!origin || !isSameOrigin(url, origin)) return false;
+      if (!origin || !isOwnOrigin(url, origin)) return false;
       try { return new URL(url).pathname === "/_identity/login"; }
       catch (_) { return false; }
     };
@@ -258,6 +263,7 @@ function createAuthManager({ app, getBaseUrl, getConfig, openExternal, getWindow
         // races the redirect chain and loses; a BrowserWindow cannot.
         const hideOverlay = showOverlay ? showOverlay() : () => {};
         ensureAuthenticated({ forceDance: true }).then((ok) => {
+          if (ok) lastAuthOkAt = Date.now();
           log(ok ? "standard dance complete; reloading" : "dance unavailable; falling back to cookie login");
           hideOverlay();
           const w2 = getWindow && getWindow();
@@ -271,23 +277,37 @@ function createAuthManager({ app, getBaseUrl, getConfig, openExternal, getWindow
     ses.webRequest.onBeforeSendHeaders({ urls: ["*://*/*"] }, (details, callback) => {
       const requestHeaders = details.requestHeaders;
       const origin = baseOrigin();
-      const sameOrigin = origin && isSameOrigin(details.url, origin);
+      const sameOrigin = origin && isOwnOrigin(details.url, origin);
       // Main frame included: the served page load itself must pass the
       // resource's auth gate. Off-origin requests are never touched.
-      if (sameOrigin && tokens && tokens.accessToken) {
+      // Only where the page didn't send its own Authorization: familiar-ui's
+      // /v1 calls carry the bridge bearer, and replacing it 401s them.
+      if (shouldInjectBearer(requestHeaders, sameOrigin, tokens && tokens.accessToken)) {
         requestHeaders.Authorization = `Bearer ${tokens.accessToken}`;
+        injected.add(details.id);
       }
       callback({ requestHeaders });
     });
     // A 401/403 that still reaches the client (resource without nginx
     // interception) means the same thing: refresh silently, or dance.
     ses.webRequest.onCompleted({ urls: ["*://*/*"] }, (details) => {
+      const ours = injected.delete(details.id);
       const origin = baseOrigin();
-      if (!origin || !isSameOrigin(details.url, origin)) return;
+      if (!origin || !isOwnOrigin(details.url, origin)) return;
       if (details.statusCode !== 401 && details.statusCode !== 403) return;
+      // A 401 on a request that carried the page's own credentials (the
+      // bridge bearer) is the app's business, not a reason to log in again.
+      if (!ours && details.resourceType !== "mainFrame") return;
+      // Loop guard: a login that just completed and still 401s won't be
+      // fixed by another one. Stop and say so instead of bouncing to the IdP.
+      if (Date.now() - lastAuthOkAt < LOOP_GUARD_MS) {
+        log(`still ${details.statusCode} right after a login (${details.url}); not starting another`);
+        return;
+      }
       const force = !hasValidAccessToken();
       ensureAuthenticated({ forceDance: force }).then((ok) => {
         if (ok) {
+          lastAuthOkAt = Date.now();
           log("re-authenticated; reloading");
           const win = getWindow && getWindow();
           if (win && !win.isDestroyed()) win.webContents.loadURL(getBaseUrl()).catch(() => {});
