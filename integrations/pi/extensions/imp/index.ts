@@ -39,6 +39,13 @@ export function outstandingAgents(): string[] {
 
 export const RETURN_STATUSES = new Set(["done", "failed", "partial", "blocked"]);
 
+/** One line (≤160 chars) from a final reply, for an automatic merge. */
+export function autoHeadline(text: string): string {
+  const line = text.split("\n").map((l) => l.replace(/^[#>*\-\s]+/, "").replace(/\s+/g, " ").trim()).find(Boolean) ?? "";
+  if (!line) return "nothing";
+  return line.length <= 160 ? line : `${line.slice(0, 157).trimEnd()}…`;
+}
+
 /** This fork's own fork.json facts: its current label (imp label rewrites it)
  * and whether it was dispatched --ambient. Missing or unreadable: neither. */
 export function forkMeta(stateDir: string | undefined, sessionId: string): { label?: string; ambient?: boolean } {
@@ -109,7 +116,29 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  pi.on("agent_settled", async (_event, ctx) => flush(ctx, true));
+  pi.on("agent_settled", async (_event, ctx) => {
+    autoMerge(ctx);
+    return flush(ctx, true);
+  });
+
+  /** Routine (ambient) forks — free time, the watch, ask restocking — come
+   * home when their turn ends. One that settles with a final reply and no
+   * merge queued ("nothing", and stop) used to stay active forever. Its last
+   * reply is the return; no extra return turn. */
+  function autoMerge(ctx: any) {
+    if (terminal || flowing) return;
+    const sessionId = process.env.FAMILIAR_INSTANCE_ID;
+    if (!sessionId || !forkMeta(process.env.FAMILIAR_STATE_DIR, sessionId).ambient) return;
+    const entries = ctx.sessionManager.getBranch() as Entry[];
+    const pendingIndex = entries.findLastIndex((entry) => entry.type === "custom" && entry.customType === PENDING);
+    const sentIndex = entries.findLastIndex((entry) => entry.type === "custom" && entry.customType === SENT);
+    if (pendingIndex >= 0 && pendingIndex > sentIndex) return;
+    if (!entries.some((entry) => entry.type === "custom" && entry.customType === "familiar.fork.v1")) return;
+    const last = entries.findLast((entry) => entry.type === "message");
+    const message = last?.message;
+    if (message?.role !== "assistant" || message.stopReason === "error" || message.stopReason === "aborted" || message.stopReason === "toolUse") return;
+    pi.appendEntry(PENDING, { quiet: true, requestedBy: "auto", status: "done", headline: autoHeadline(textContent(message.content)) });
+  }
 
   // The return turn is tool-free, but the tool set itself must not change:
   // it lives in the cached prompt prefix, and swapping it would re-read the
@@ -140,14 +169,15 @@ export default function (pi: ExtensionAPI) {
 
     const pendingEntry = entries[pendingIndex];
     const pending = pendingEntry.data;
-    if ((pending?.requestedBy !== "self" && pending?.requestedBy !== "operator") || typeof pending?.quiet !== "boolean") return;
+    if ((pending?.requestedBy !== "self" && pending?.requestedBy !== "operator" && pending?.requestedBy !== "auto") || typeof pending?.quiet !== "boolean") return;
     const forkIndex = entries.findLastIndex((entry, index) => index < pendingIndex && entry.type === "custom" && entry.customType === "familiar.fork.v1");
     const fork = forkIndex < 0 ? undefined : entries[forkIndex].data;
     const sessionId = process.env.FAMILIAR_INSTANCE_ID;
     const sessionFile = ctx.sessionManager.getSessionFile();
     if (!fork?.parentSessionId || !fork?.branchEntryId || !sessionId || !sessionFile || !pendingEntry.id) return;
 
-    const requestedIndex = entries.findLastIndex((entry, index) => index > pendingIndex
+    const auto = pending.requestedBy === "auto";
+    const requestedIndex = auto ? pendingIndex : entries.findLastIndex((entry, index) => index > pendingIndex
       && entry.type === "custom" && entry.customType === RETURN_REQUESTED
       && entry.data?.pendingEntryId === pendingEntry.id);
     if (requestedIndex < 0) {
@@ -155,9 +185,10 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    const finalAssistant = entries.slice(requestedIndex + 1)
+    // An automatic merge's return is the reply the turn already ended on.
+    const finalAssistant = (auto ? entries.slice(forkIndex + 1, pendingIndex) : entries.slice(requestedIndex + 1))
       .findLast((entry) => entry.type === "message" && entry.message?.role === "assistant");
-    if (!finalAssistant) {
+    if (!finalAssistant && !auto) {
       if (!fromSettle) {
         if (!returnDispatched) await requestReturn(ctx, fork.parentSessionId, pendingEntry.id, false);
         return;

@@ -109,6 +109,16 @@ test("an Attention ask fork says Kev started it, not a schedule", async () => {
   const { forkPreamble } = await import("./index.ts");
   expect(forkPreamble({ ...forkEvent, source: "attn.ask", rule: "" })).toContain("Kev picked this on an Attention ask");
   expect(forkPreamble(forkEvent)).toContain("Scheduled every day 06:00");
+  expect(forkPreamble(forkEvent)).toContain("then imp merge");
+});
+
+test("a routine (ambient or hidden) scheduled fork is told ending its turn is enough", async () => {
+  const { forkPreamble } = await import("./index.ts");
+  for (const flag of [{ ambient: true }, { hidden: true }]) {
+    const p = forkPreamble({ ...forkEvent, body: JSON.stringify({ task: "free time", label: "free time", ...flag }) });
+    expect(p).toContain("just end your turn");
+    expect(p).not.toContain("then imp merge");
+  }
 });
 
 test("forkLabel is always one line (imp refuses multi-line labels)", () => {

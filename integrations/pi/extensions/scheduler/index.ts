@@ -370,6 +370,11 @@ export function forkPreamble(event: ScheduledEvent): string {
     return "(Kev picked this on an Attention ask; it started the moment he clicked. Nobody is waiting on you live; do the work, then imp merge --status … --headline ….)";
   }
   const stamp = new Date(event.due_at).toLocaleString("en-US", { timeZone: process.env.FAMILIAR_TZ || "America/Chicago", weekday: "short", hour: "numeric", minute: "2-digit" });
+  // Routine forks come home on their own when the turn ends (imp extension
+  // autoMerge): the final reply is the return, its first line the headline.
+  if (forkRequest(event).ambient) {
+    return `(Scheduled${event.rule ? ` every ${event.rule}` : ""}, due ${stamp}. Nobody is waiting on you live. When you're done, just end your turn: your final reply is your return and its first line the headline ("nothing" if nothing). No imp merge needed; use it only to set a status other than done.)`;
+  }
   return `(Scheduled${event.rule ? ` every ${event.rule}` : ""}, due ${stamp}. Nobody is waiting on you live; do the work, then imp merge --status … --headline ….)`;
 }
 

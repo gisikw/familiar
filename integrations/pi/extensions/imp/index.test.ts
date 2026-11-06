@@ -209,3 +209,89 @@ test("a return carries its status, headline, label and ambient class", async () 
     if (prevState === undefined) delete process.env.FAMILIAR_STATE_DIR; else process.env.FAMILIAR_STATE_DIR = prevState;
   }
 });
+
+function withAmbientState(id: string, ambient: boolean) {
+  const state = mkdtempSync(join(tmpdir(), "familiar-merge-state-"));
+  roots.push(state);
+  mkdirSync(join(state, "forks", id), { recursive: true });
+  writeFileSync(join(state, "forks", id, "fork.json"), JSON.stringify({ id, label: "free time", ...(ambient ? { ambient: true } : {}) }));
+  const prev = process.env.FAMILIAR_STATE_DIR;
+  process.env.FAMILIAR_STATE_DIR = state;
+  return () => { if (prev === undefined) delete process.env.FAMILIAR_STATE_DIR; else process.env.FAMILIAR_STATE_DIR = prev; };
+}
+
+test("an ambient fork that ends its turn without merging comes home on its final reply", async () => {
+  const service = await serviceServer();
+  process.env.FAMILIAR_SERVICES_SOCKET = service.path;
+  process.env.FAMILIAR_INSTANCE_ID = "free-1";
+  const restore = withAmbientState("free-1", true);
+  try {
+    const h = harness(forkPrefix());
+    await h.emit("session_start");
+    h.entries.push({ type: "message", id: "last", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "nothing" }] } });
+    await h.emit("agent_settled");
+    const wire = await service.request;
+    await service.close();
+    expect(h.sentMessages).toEqual([]); // no extra return turn
+    expect(wire.args.urgency).toBe("soft");
+    expect(wire.args.summary).toBe("nothing");
+    expect(JSON.parse(wire.args.body)).toMatchObject({ summary: "nothing", status: "done", headline: "nothing", lastEntryId: "last", ambient: true });
+    expect(h.shutdowns()).toBe(1);
+  } finally { restore(); }
+});
+
+test("an ambient fork's auto headline is the first line of its reply", async () => {
+  const service = await serviceServer();
+  process.env.FAMILIAR_SERVICES_SOCKET = service.path;
+  process.env.FAMILIAR_INSTANCE_ID = "free-2";
+  const restore = withAmbientState("free-2", true);
+  try {
+    const h = harness(forkPrefix());
+    await h.emit("session_start");
+    h.entries.push({ type: "message", id: "last", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Read about crown shyness, left a note in hoard.\n\nMore detail here." }] } });
+    await h.emit("agent_settled");
+    const wire = await service.request;
+    await service.close();
+    expect(JSON.parse(wire.args.body)).toMatchObject({ headline: "Read about crown shyness, left a note in hoard.", status: "done" });
+    expect(wire.args.summary).toBe("Read about crown shyness, left a note in hoard.\n\nMore detail here.");
+  } finally { restore(); }
+});
+
+test("a non-ambient fork that ends its turn without merging stays open", async () => {
+  process.env.FAMILIAR_INSTANCE_ID = "work-1";
+  const restore = withAmbientState("work-1", false);
+  try {
+    const h = harness(forkPrefix());
+    await h.emit("session_start");
+    h.entries.push({ type: "message", id: "last", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Waiting on Kev." }] } });
+    await h.emit("agent_settled");
+    expect(h.entries.some((e) => e.customType === "familiar.merge-pending.v1")).toBe(false);
+    expect(h.shutdowns()).toBe(0);
+  } finally { restore(); }
+});
+
+test("an ambient fork whose turn errored does not auto-merge", async () => {
+  process.env.FAMILIAR_INSTANCE_ID = "free-err";
+  const restore = withAmbientState("free-err", true);
+  try {
+    const h = harness(forkPrefix());
+    await h.emit("session_start");
+    h.entries.push({ type: "message", id: "last", message: { role: "assistant", stopReason: "error", content: [] } });
+    await h.emit("agent_settled");
+    expect(h.entries.some((e) => e.customType === "familiar.merge-pending.v1")).toBe(false);
+  } finally { restore(); }
+});
+
+test("an ambient fork that merged itself takes the normal prompted path", async () => {
+  process.env.FAMILIAR_INSTANCE_ID = "free-3";
+  const restore = withAmbientState("free-3", true);
+  try {
+    const h = harness(forkPrefix());
+    await h.emit("session_start");
+    (process as any)[IMP_BRANCH_HANDLER].handle({ operation: "merge", args: { quiet: true, status: "done", headline: "x" } });
+    h.entries.push({ type: "message", id: "work", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "done" }] } });
+    await h.emit("agent_settled");
+    expect(h.entries.filter((e) => e.customType === "familiar.merge-pending.v1")).toHaveLength(1);
+    expect(h.sentMessages[0]?.message.customType).toBe("familiar.merge-return-request.v1");
+  } finally { restore(); }
+});
