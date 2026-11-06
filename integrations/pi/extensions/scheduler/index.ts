@@ -328,11 +328,19 @@ function trackedSha(read: (p: string) => string = (p) => readFileSync(p, "utf8")
 // notice never runs into his words.
 export const SOFT_SEPARATOR = "\n\n";
 
+// Guidance meant for Kes only. familiar-ui hides <kes-note> blocks from Kev's
+// view of the stream; the model still receives them (Kev, Nov 6: "that's
+// guidance for you, it's not there for my purposes").
+export const kesNote = (text: string) => `<kes-note>${text}</kes-note>`;
+
 // Kev doesn't read merge returns; say so in-line so the primary never treats
 // fork content as ground they share (Oct 22, the "chicken shed" slip).
-export const MERGE_UNSEEN = "(Kev hasn't seen this, so it isn't shared context. Relaying it is optional; a bare 'noted' is fine.)";
-// Kev tapped a waiting return in Open: he wants it now, but still hasn't read it.
-export const PULLED_BY_KEV = "(Kev tapped this return in Open: he wants to take it up now. He hasn't read it, so bring him what matters, briefly.)";
+export const MERGE_UNSEEN = kesNote("Kev hasn't seen this, so it isn't shared context. Relaying it is optional; a bare 'noted' is fine.");
+// Kev delivered a waiting return from Open. He may want to discuss it, or he
+// may just be filing a finished one (Nov 6: tapping to flush != "wants it now").
+export const PULLED_BY_KEV = kesNote("Kev delivered this return from Open, either to discuss it or just to file it. He hasn't read it. If he raises it, bring him what matters, briefly; if he doesn't, a brief note or nothing is fine.");
+// Soft Disturb stub: a bookmark, not a prompt to report (Nov 6 blitz).
+export const softReturnNote = (pullId: string) => kesNote(`Summary of a return's status; the full return waits unclaimed (imp pull ${pullId}). No need to acknowledge it this turn unless it's urgent (a security issue, something broken). Kev will deliver it or ask. If the topic comes up, imp pull the full return before engaging: summaries oversimplify.`);
 
 export function renderScheduledEvent(event: ScheduledEvent) {
   const lead = event.urgency === "soft" ? SOFT_SEPARATOR : "";
@@ -344,7 +352,7 @@ export function renderScheduledEvent(event: ScheduledEvent) {
       const name = merge.label || merge.forkSessionId.slice(0, 13);
       return {
         customType: "familiar.merge.v1",
-        content: `${lead}<familiar-return fork="${escapeAttr(merge.forkSessionId)}" status="${escapeAttr(merge.status ?? "done")}">\n${name} returned ${merge.status ?? "done"}: ${merge.headline ?? merge.summary}\nSoft Disturb is on: the full return waits unclaimed (imp pull ${merge.forkSessionId.slice(0, 13)}). Give Kev a one-line roll call at most; pull it when you two get to it.\n</familiar-return>`,
+        content: `${lead}<familiar-return fork="${escapeAttr(merge.forkSessionId)}" status="${escapeAttr(merge.status ?? "done")}">\n${name} returned ${merge.status ?? "done"}: ${merge.headline ?? merge.summary}\n${softReturnNote(merge.forkSessionId.slice(0, 13))}\n</familiar-return>`,
         display: !isHiddenFork(merge.forkSessionId),
         details: { id: event.id, event, ...merge },
       };

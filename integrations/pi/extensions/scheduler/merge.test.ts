@@ -60,3 +60,15 @@ test("hidden scheduled forks are ambient; --ambient alone is too", () => {
 test("dnd soft parses", () => {
   expect(parseDndMode(JSON.stringify({ mode: "soft", expiresAt: Date.now() + 60_000 }))).toBe("soft");
 });
+
+test("Kes-facing guidance is wrapped in <kes-note> so the UI can hide it", () => {
+  expect(renderScheduledEvent(merge).content).toContain("<kes-note>Kev hasn't seen this");
+  const stub = renderScheduledEvent({ ...merge, body: stubBody() }).content;
+  expect(stub).toContain("<kes-note>Summary of a return's status");
+  expect(stub).toContain("No need to acknowledge it this turn unless it's urgent");
+  expect(stub).toContain("imp pull fork");
+  expect(stub).not.toContain("roll call");
+  expect(PULLED_BY_KEV).toMatch(/^<kes-note>.*<\/kes-note>$/);
+  expect(PULLED_BY_KEV).not.toContain("wants to take it up now");
+  expect(PULLED_BY_KEV).toContain("just to file it");
+});
