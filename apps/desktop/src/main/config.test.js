@@ -7,7 +7,7 @@ test("a saved familiar-ui.gisi.network moves to familiar.gisi.network", () => {
   assert.equal(migrateBaseUrl("https://familiar-ui.gisi.network/sub"), "https://familiar.gisi.network/sub");
   assert.equal(migrateBaseUrl("https://familiar.gisi.network"), "https://familiar.gisi.network");
   assert.equal(migrateBaseUrl("http://localhost:1692"), "http://localhost:1692");
-  assert.equal(migrateBaseUrl("http://familiar-ui.gisi.network"), "http://familiar-ui.gisi.network"); // not the moved origin
+  assert.equal(migrateBaseUrl("http://familiar-ui.gisi.network"), "https://familiar.gisi.network"); // http base: the server upgrades it anyway
 });
 
 test("resolveBaseUrl applies the move to config.json values", () => {
@@ -19,4 +19,10 @@ test("resolveBaseUrl applies the move to config.json values", () => {
   } finally {
     if (saved !== undefined) process.env.FAMILIAR_BASE_URL = saved;
   }
+});
+
+test("a base saved as http://familiar.gisi.network migrates to https", () => {
+  const { migrateBaseUrl, normalizeBaseUrl } = require("./config.js");
+  assert.equal(migrateBaseUrl(normalizeBaseUrl("http://familiar.gisi.network")), "https://familiar.gisi.network");
+  assert.equal(migrateBaseUrl(normalizeBaseUrl("http://familiar.gisi.network/")), "https://familiar.gisi.network");
 });

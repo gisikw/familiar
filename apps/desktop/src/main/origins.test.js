@@ -30,3 +30,14 @@ test("pickRequestOrigin skips empty/opaque candidates and falls back to the load
   assert.equal(pickRequestOrigin("", null, ""), null);
   assert.equal(originOf("about:blank"), null);
 });
+
+test("an http base on a real host also owns its https upgrade", () => {
+  const HTTP_BASE = "http://familiar.gisi.network";
+  assert.equal(isOwnOrigin("https://familiar.gisi.network/", HTTP_BASE), true);
+  assert.equal(isOwnOrigin("http://familiar.gisi.network/", HTTP_BASE), true);
+  assert.equal(isOwnOrigin("https://evil.example/", HTTP_BASE), false);
+  // with a port, the upgrade keeps it
+  assert.equal(isOwnOrigin("https://host.example:8443/", "http://host.example:8443"), true);
+  // loopback stays exact
+  assert.equal(isOwnOrigin("https://localhost:3000/", "http://localhost:3000"), false);
+});

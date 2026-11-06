@@ -24,7 +24,14 @@ const DEFAULT_BASE_URL = "https://familiar.gisi.network";
 // familiar.gisi.network; a saved config (or 0.2.11's default) still naming it
 // would land the window on an origin the shell doesn't consider its own, and
 // microphone, clipboard and bearer grants are bound to the exact base origin.
-const MOVED_ORIGINS = { "https://familiar-ui.gisi.network": "https://familiar.gisi.network" };
+// A base saved as plain http (the server upgrades every request to https) is
+// the same deployment; the window ends up on the https origin, so bind grants
+// there too.
+const MOVED_ORIGINS = {
+  "https://familiar-ui.gisi.network": "https://familiar.gisi.network",
+  "http://familiar-ui.gisi.network": "https://familiar.gisi.network",
+  "http://familiar.gisi.network": "https://familiar.gisi.network",
+};
 
 /** A normalized base URL with a moved origin swapped for where it lives now. */
 function migrateBaseUrl(url) {

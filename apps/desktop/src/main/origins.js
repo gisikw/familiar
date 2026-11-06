@@ -29,6 +29,16 @@ function ownOrigins(baseUrl) {
   const set = new Set();
   const base = originOf(baseUrl);
   if (base) set.add(base);
+  // An http base on a real host is upgraded to https by the server (HSTS or a
+  // redirect), so the page the window actually shows is the https origin of
+  // the same host. Count it as ours. The reverse (https base, http page) is a
+  // downgrade and stays foreign. Loopback hosts are left exact.
+  if (base && base.startsWith("http://")) {
+    const host = new URL(base).hostname;
+    if (host !== "localhost" && host !== "127.0.0.1" && host !== "[::1]") {
+      set.add("https://" + base.slice("http://".length));
+    }
+  }
   return set;
 }
 
@@ -38,9 +48,11 @@ function isOwnOrigin(url, baseUrl) {
   if (!o) return false;
   const own = ownOrigins(baseUrl);
   if (own.has(o)) return true;
-  // A moved origin counts when it migrates onto our base.
+  // A moved origin counts when it migrates onto our base, but only a move
+  // that keeps the scheme: an http page is never ours just because its saved
+  // base would be upgraded (that would accept a downgrade).
   const migrated = originOf(migrateBaseUrl(o));
-  return !!migrated && own.has(migrated);
+  return !!migrated && migrated.split(":")[0] === o.split(":")[0] && own.has(migrated);
 }
 
 /**
