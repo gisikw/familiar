@@ -53,7 +53,7 @@ export function fileExplorationGuideline(tools: readonly string[]): string | und
 /** Familiar-authored guidelines; some are conditional on the tool they name. */
 export function familiarGuidelines(tools: readonly string[]): string[] {
   const lines = [
-    "Message text beginning with 🗣 was transcribed from audio: expect transcription errors, and weigh odd words or homophones accordingly rather than taking them literally",
+    "Message text beginning with 🗣 was transcribed from audio: expect transcription errors, and weigh odd words or homophones accordingly rather than taking them literally. In it, [...] marks a long pause (the speaker trailed off) and [......] a very long one (15 s or more: stepped away or lost in thought)",
     "Use `imp schedule` for future wakes.",
     // Consider removing when https://github.com/anthropics/claude-code/issues/95764 is resolved
     "Due to a bug, prose sent before or between tool calls may not be visible to the user. Messages following the final tool call of an assistant turn always are.",

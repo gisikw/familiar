@@ -27,6 +27,12 @@ takes are decoded and run through a Silero VAD first; interior pauses of
 shortened take is transcribed whole. Takes without such a pause, and any VAD
 failure, go through untouched. See `internal/stt/pauses.go` for the tuning.
 
+Pause markers: the transcript of a compressed take says where each cut
+pause was, with ` [...] ` (under 15 s) or ` [......] ` (15 s or more). The
+words still come from the whole take; each speech span is also transcribed
+on its own, concurrently, only to locate the seams (`internal/stt/marks.go`).
+If any of that fails, the whole transcript is returned unmarked.
+
 ## Run
 
 ```sh

@@ -129,6 +129,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.c.Deadline)
 	defer cancel()
 	start := time.Now()
+	var comp *compressed
 	if s.c.VADModel != "" && !strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "multipart/") {
 		// Buffer the raw take so long pauses can be compressed before any
 		// backend sees it. Oversized or unreadable bodies fail exactly as before.
@@ -144,13 +145,24 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		if int64(len(body)) <= s.c.MaxAudio {
 			if c := s.compressPauses(ctx, body); c != nil {
-				body = c
+				comp = c
+				body = c.wav
 				r.Header.Set("Content-Type", "audio/wav")
 			}
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		r.ContentLength = int64(len(body))
 	}
+	if comp != nil {
+		s.serveMarked(ctx, w, r, comp, start)
+		return
+	}
+	s.dispatch(ctx, w, r, start)
+}
+
+// dispatch transcribes the request body with the configured backend(s) and
+// writes the response: upstream only, upstream with local fallback, or local.
+func (s *Server) dispatch(ctx context.Context, w http.ResponseWriter, r *http.Request, start time.Time) {
 	if s.c.Upstream != nil && !s.c.Fallback {
 		s.proxy(w, r.WithContext(ctx))
 		s.c.Logger.Info("transcribed", "mode", "upstream", "bytes", r.ContentLength, "ms", time.Since(start).Milliseconds())

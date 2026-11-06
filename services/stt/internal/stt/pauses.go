@@ -91,11 +91,20 @@ func mergeSpans(segs []Span, gap float64) []Span {
 	return out
 }
 
+// compressed is a take whose long interior pauses were cut: the joined WAV
+// that gets transcribed, plus each speech piece as its own WAV so the pauses
+// can be located in the transcript (see markPauses).
+type compressed struct {
+	wav    []byte
+	pieces [][]byte
+	gaps   []float64 // seconds of the original pause after each piece but the last
+}
+
 // compressPauses decodes the take to 16 kHz mono PCM, runs the VAD, and when
 // the take contains a pause of at least PauseGap returns a WAV of just the
 // speech spans (each with PausePad of surrounding audio). nil means
 // "transcribe the take as received".
-func (s *Server) compressPauses(ctx context.Context, body []byte) []byte {
+func (s *Server) compressPauses(ctx context.Context, body []byte) *compressed {
 	if s.c.VADModel == "" {
 		return nil
 	}
@@ -125,12 +134,22 @@ func (s *Server) compressPauses(ctx context.Context, body []byte) []byte {
 	if err != nil {
 		return nil
 	}
-	joined := joinSpans(pcm, spans, s.c.PausePad.Seconds())
+	pieces := spanPieces(pcm, spans, s.c.PausePad.Seconds())
+	var joined []byte
+	c := &compressed{}
+	for i, p := range pieces {
+		joined = append(joined, p...)
+		c.pieces = append(c.pieces, wavBytes(p))
+		if i+1 < len(spans) {
+			c.gaps = append(c.gaps, spans[i+1].Start-spans[i].End)
+		}
+	}
 	if len(joined) == 0 {
 		return nil
 	}
+	c.wav = wavBytes(joined)
 	s.c.Logger.Info("compressed pauses", "spans", len(spans), "from_s", len(pcm)/2/vadRate, "to_s", len(joined)/2/vadRate, "ms", time.Since(start).Milliseconds())
-	return wavBytes(joined)
+	return c
 }
 
 // joinSpans keeps the take from its first sample to the end of the first
@@ -138,6 +157,16 @@ func (s *Server) compressPauses(ctx context.Context, body []byte) []byte {
 // (-pad) through the final sample: only the long pauses between spans shrink.
 func joinSpans(pcm []byte, spans []Span, pad float64) []byte {
 	var joined []byte
+	for _, p := range spanPieces(pcm, spans, pad) {
+		joined = append(joined, p...)
+	}
+	return joined
+}
+
+// spanPieces is joinSpans before the join: one PCM slice per speech span,
+// in order, with the take's lead-in on the first and its tail on the last.
+func spanPieces(pcm []byte, spans []Span, pad float64) [][]byte {
+	var pieces [][]byte
 	end := 0.0
 	total := float64(len(pcm)/2) / vadRate
 	for i, sp := range spans {
@@ -151,10 +180,10 @@ func joinSpans(pcm []byte, spans []Span, pad float64) []byte {
 		if a < end {
 			a = end // never repeat audio when two padded spans would overlap
 		}
-		joined = append(joined, cut(pcm, a, z)...)
+		pieces = append(pieces, cut(pcm, a, z)) // one per span, even if empty, so pieces line up with spans
 		end = z
 	}
-	return joined
+	return pieces
 }
 
 // readPCM returns the sample bytes of a 16-bit PCM WAV written by ffmpeg,

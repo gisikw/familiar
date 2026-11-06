@@ -88,7 +88,7 @@ printf 'Speech segment 0: start = 100.00, end = 300.00\nSpeech segment 1: start 
 	seen := filepath.Join(d, "seen.wav")
 	c.Transcribe = script(t, d, "transcribe2", `#!/bin/sh
 out=""; in=""; while [ $# -gt 0 ]; do case "$1" in -o) shift; out="$1";; -m) shift;; -q|--timestamps) [ "$1" = "--timestamps" ] && shift;; *) in="$1";; esac; shift; done
-cp "$in" `+seen+`; printf 'tail survived\n' > "$out"
+[ "$(wc -c < "$in")" -gt 250000 ] && cp "$in" `+seen+`; printf 'tail survived\n' > "$out"
 `)
 	c.MaxAudio, c.MaxBody = 1<<20, 2<<20
 	s, err := New(c)

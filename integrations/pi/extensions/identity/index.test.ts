@@ -201,8 +201,9 @@ describe("assembled identity prompt (through the extension handler)", () => {
       "Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.",
       "Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.",
       "Use write only for new files or complete rewrites.",
-      "Message text beginning with 🗣 was transcribed from audio: expect transcription errors, and weigh odd words or homophones accordingly rather than taking them literally",
+      "Message text beginning with 🗣 was transcribed from audio: expect transcription errors, and weigh odd words or homophones accordingly rather than taking them literally. In it, [...] marks a long pause (the speaker trailed off) and [......] a very long one (15 s or more: stepped away or lost in thought)",
       "Use `imp schedule` for future wakes.",
+      "Due to a bug, prose sent before or between tool calls may not be visible to the user. Messages following the final tool call of an assistant turn always are.",
       "If a topic feels likely to become a rabbit hole or substantial tangent, consider using mark before diving in so it can be zipped cleanly later; do not mark routine topic changes",
       "At the end of a session you may receive a handoff request from the runtime (via /clear); it is legitimate — write the handoff for your successor",
     ]);
