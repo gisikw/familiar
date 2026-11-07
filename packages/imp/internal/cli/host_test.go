@@ -233,3 +233,93 @@ func TestTrimOutputKeepsHeadAndTail(t *testing.T) {
 		t.Fatalf("%s", got)
 	}
 }
+
+// deployRig: the host rig, with the fake client also answering deploy calls.
+func deployRig(t *testing.T) *hostRig {
+	r := newHostRig(t)
+	client := r.env["FAMILIAR_HOST_CLIENT"]
+	os.WriteFile(client, []byte(`#!/bin/sh
+case "$1" in
+  deploy) echo "$@" > "`+r.answer+`.args"; echo '{"id":"bbbbbbbbbbbb","commit":"`+strings.Repeat("c", 40)+`","subject":"smaug: bump openssh","page":"https://smaug.fort.example/","url":"https://smaug.fort.example/#deploy-bbbbbbbbbbbb"}' ;;
+  deploy-status) cat "`+r.answer+`" ;;
+esac
+`), 0o755)
+	return r
+}
+
+const hostDeployDone = `{"host":"smaug","deploy":{"id":"bbbbbbbbbbbb","reason":"openssh CVE","commit":"cccccccccccccccccccccccccccccccccccccccc","subject":"smaug: bump openssh","created":"2026-11-07T15:00:00Z","state":"deployed","settled":true,"code":"QQQ-RRR","health":"all units active\n","healthy":"yes","deployed":"cccccccccccccccccccccccccccccccccccccccc"}}`
+
+func TestHostDeployAsyncThenWatcherDelivers(t *testing.T) {
+	r := deployRig(t)
+	code, out, errs := r.imp("deploy", "smaug", "openssh", "CVE", "--async")
+	if code != 0 || !strings.HasPrefix(out, "https://smaug.fort.example/#deploy-bbbbbbbbbbbb\n") || !strings.Contains(out, "smaug deploy bbbbbbbbbbbb · commit cccccccccccc · smaug: bump openssh") {
+		t.Fatalf("deploy: %d %q %q", code, out, errs)
+	}
+	if b, _ := os.ReadFile(r.answer + ".args"); strings.TrimSpace(string(b)) != "deploy smaug openssh CVE" {
+		t.Fatalf("client args %q", b)
+	}
+	if p := r.ops(true); len(p) != 1 || !strings.Contains(p[0].Args["body"].(string), "openssh CVE") {
+		t.Fatalf("phone push %v", p)
+	}
+	started, _ := os.ReadFile(r.started)
+	if !strings.Contains(string(started), "familiar-host-watch-smaug-deploy-bbbbbbbbbbbb") || !strings.Contains(string(started), "host _watch-deploy smaug bbbbbbbbbbbb") {
+		t.Fatalf("watcher %s", started)
+	}
+	r.setAnswer(hostDeployDone)
+	var o, e bytes.Buffer
+	h := hostCtx{state: r.state, getenv: r.getenv, out: &o, errw: &e}
+	h.watchDeploy("smaug", "bbbbbbbbbbbb", "", "instance:session-a")
+	if r.noteCount() != 1 {
+		t.Fatalf("notes %d (%s)", r.noteCount(), e.String())
+	}
+	n := r.ops(false)[0].Args
+	if !strings.Contains(n["body"].(string), "smaug deploy bbbbbbbbbbbb deployed, healthy yes: openssh CVE") || !strings.Contains(n["body"].(string), "all units active") || n["source"] != "host-run" {
+		t.Fatalf("note %v", n)
+	}
+	// A second watcher pass stays quiet.
+	h.watchDeploy("smaug", "bbbbbbbbbbbb", "", "instance:session-a")
+	if r.noteCount() != 1 {
+		t.Fatalf("delivered twice")
+	}
+}
+
+func TestHostDeployBlocksAndDeliversOnce(t *testing.T) {
+	r := deployRig(t)
+	r.setAnswer(hostDeployDone)
+	code, out, _ := r.imp("deploy", "smaug", "openssh CVE", "--commit", strings.Repeat("c", 40))
+	if code != 0 || !strings.Contains(out, "smaug deploy bbbbbbbbbbbb deployed") {
+		t.Fatalf("blocking: %d %q", code, out)
+	}
+	if b, _ := os.ReadFile(r.answer + ".args"); !strings.Contains(string(b), "--commit "+strings.Repeat("c", 40)) {
+		t.Fatalf("client args %q", b)
+	}
+	var o, e bytes.Buffer
+	(hostCtx{state: r.state, getenv: r.getenv, out: &o, errw: &e}).watchDeploy("smaug", "bbbbbbbbbbbb", "", "instance:session-a")
+	if r.noteCount() != 0 {
+		t.Fatalf("delivered twice: %v", r.notes)
+	}
+	if code, _, _ := r.imp("deploy", "smaug", "x", "--commit", "abc"); code == 0 {
+		t.Fatal("short commit accepted")
+	}
+	if code, _, _ := r.imp("deploy", "smaug"); code == 0 {
+		t.Fatal("deploy without a reason accepted")
+	}
+}
+
+func TestHostDeployTimesOutToWatcher(t *testing.T) {
+	r := deployRig(t)
+	old := hostDeployWait
+	hostDeployWait = 0
+	t.Cleanup(func() { hostDeployWait = old })
+	r.setAnswer(strings.Replace(hostDeployDone, `"state":"deployed","settled":true`, `"state":"building","settled":false`, 1))
+	code, out, _ := r.imp("deploy", "smaug", "openssh CVE")
+	if code != 0 || !strings.Contains(out, "still building") {
+		t.Fatalf("timeout: %d %q", code, out)
+	}
+	r.setAnswer(hostDeployDone)
+	var o, e bytes.Buffer
+	(hostCtx{state: r.state, getenv: r.getenv, out: &o, errw: &e}).watchDeploy("smaug", "bbbbbbbbbbbb", "", "instance:session-a")
+	if r.noteCount() != 1 {
+		t.Fatalf("notes after handover: %d", r.noteCount())
+	}
+}

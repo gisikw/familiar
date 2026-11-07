@@ -32,6 +32,11 @@ const hostHelp = `Usage:
   imp host runs <host>                    my run requests there and their state
   imp host result <host> <id>             a run's state and output, now (saved to disk)
   imp host watch <host> <id> [--url U]    (re)start the watcher for a run
+  imp host deploy <host> "reason" [--commit SHA] [--async]
+                                          ask a fortress host to build main (or SHA) and
+                                          deploy it once Kev approves with his passkey
+  imp host deploy-result <host> <id>      where a deploy request stands, now
+  imp host watch-deploy <host> <id>       (re)start the watcher for a deploy
 
 run prints the run's page first (paste it to Kev; his phone also gets a
 push), then BLOCKS: up to 5 minutes for his passkey, then through the run
@@ -49,6 +54,14 @@ the watcher, never both. Don't poll or call result.
 
 Kev reads the exact script on the page before he taps; keep scripts
 read-only unless he asked for a change. The reason is one line for him.
+
+deploy builds on the host (main's head unless --commit) and prints the
+page plus "<host> deploy <id> · commit <sha>", which the chat turns into
+an approval card: Kev can approve while it still builds. It blocks like
+run (5 minutes for his passkey, then through the switch) and hands over
+to the watcher, which notifies once it's deployed, failed, refused or
+superseded. Asking deploys nothing; only push to main what you mean to
+offer him.
 
 Client: $FAMILIAR_HOST_CLIENT, else $FAMILIAR_STATE_DIR/bin/fortress-keeper.
 Output: $FAMILIAR_STATE_DIR/host-runs/<host>-<id>/.
@@ -82,7 +95,7 @@ func hostMain(args []string, out, errw io.Writer, getenv func(string) string) in
 			flags["async"] = "1"
 			continue
 		}
-		if strings.HasPrefix(a, "--") && (a == "--url" || a == "--target") {
+		if strings.HasPrefix(a, "--") && (a == "--url" || a == "--target" || a == "--commit") {
 			if i+1 >= len(rest) {
 				return usageError(errw, "%s needs a value", a)
 			}
@@ -98,7 +111,7 @@ func hostMain(args []string, out, errw io.Writer, getenv func(string) string) in
 	if len(pos) > 0 && !hostNameRe.MatchString(pos[0]) {
 		return usageError(errw, "%q isn't a host name", pos[0])
 	}
-	if len(pos) > 1 && cmd != "run" && !hostRunIDRe.MatchString(pos[1]) {
+	if len(pos) > 1 && cmd != "run" && cmd != "deploy" && !hostRunIDRe.MatchString(pos[1]) {
 		return usageError(errw, "%q isn't a run id (12 hex characters)", pos[1])
 	}
 	switch cmd {
@@ -107,6 +120,34 @@ func hostMain(args []string, out, errw io.Writer, getenv func(string) string) in
 			return usageError(errw, `usage: imp host run <host> <script> "reason" (the reason is for Kev; it's required)`)
 		}
 		return h.run(pos[0], pos[1], pos[2], flags["async"] != "")
+	case "deploy":
+		if len(pos) < 2 || strings.TrimSpace(strings.Join(pos[1:], " ")) == "" {
+			return usageError(errw, `usage: imp host deploy <host> "reason" [--commit SHA] [--async] (the reason is for Kev; it's required)`)
+		}
+		if c := flags["commit"]; c != "" && !hostCommitRe.MatchString(c) {
+			return usageError(errw, "--commit wants a full 40-character sha on main")
+		}
+		return h.deploy(pos[0], strings.Join(pos[1:], " "), flags["commit"], flags["async"] != "")
+	case "deploy-result":
+		if len(pos) != 2 {
+			return usageError(errw, "usage: imp host deploy-result <host> <id>")
+		}
+		v, e := h.fetchDeploy(pos[0], pos[1])
+		if e != nil {
+			return branchError(errw, e)
+		}
+		io.WriteString(out, h.deployReport(pos[0], v, ""))
+		return 0
+	case "watch-deploy":
+		if len(pos) != 2 {
+			return usageError(errw, "usage: imp host watch-deploy <host> <id> [--url U]")
+		}
+		return h.startWatchCmd("_watch-deploy", "deploy-"+pos[1], pos[0], pos[1], flags["url"], hostTarget(getenv, flags["target"]))
+	case "_watch-deploy":
+		if len(pos) != 2 {
+			return usageError(errw, "usage: imp host _watch-deploy <host> <id> [--url U] [--target T]")
+		}
+		return h.watchDeploy(pos[0], pos[1], flags["url"], flags["target"])
 	case "runs", "list", "ls":
 		if len(pos) != 1 {
 			return usageError(errw, "usage: imp host runs <host>")
@@ -386,11 +427,17 @@ func (h hostCtx) list(host string) int {
 // Pi (a fork's unit stops when it merges) and familiar restarts. A unit that
 // already exists means a watcher is already on it.
 func (h hostCtx) startWatch(host, id, url, target string) int {
+	return h.startWatchCmd("_watch", id, host, id, url, target)
+}
+
+// startWatchCmd: the watcher unit for sub (_watch, _watch-deploy), named by
+// unitID so a run and a deploy with the same id don't collide.
+func (h hostCtx) startWatchCmd(sub, unitID, host, id, url, target string) int {
 	self, e := os.Executable()
 	if e != nil {
 		return branchError(h.errw, e)
 	}
-	unit := "familiar-host-watch-" + host + "-" + id
+	unit := "familiar-host-watch-" + host + "-" + unitID
 	argv := []string{"systemd-run", "--quiet", "--collect", "--unit", unit,
 		"--uid", strconv.Itoa(os.Getuid()), "--gid", strconv.Itoa(os.Getgid()),
 		"-p", "RuntimeMaxSec=27h"}
@@ -408,7 +455,7 @@ func (h hostCtx) startWatch(host, id, url, target string) int {
 	for k, v := range env {
 		argv = append(argv, "--setenv", k+"="+v)
 	}
-	argv = append(argv, "--", self, "host", "_watch", host, id)
+	argv = append(argv, "--", self, "host", sub, host, id)
 	if url != "" {
 		argv = append(argv, "--url", url)
 	}
@@ -430,7 +477,7 @@ func (h hostCtx) startWatch(host, id, url, target string) int {
 		fmt.Fprintf(h.errw, "imp: starting the watcher: %v: %s\n", e, bytes.TrimSpace(raw))
 		return ExitRemote
 	}
-	fmt.Fprintf(h.out, "watching: you'll be notified when it's done, failed, rejected or expired (%s)\n", unit)
+	fmt.Fprintf(h.out, "watching: you'll be notified when it settles (%s)\n", unit)
 	return 0
 }
 
