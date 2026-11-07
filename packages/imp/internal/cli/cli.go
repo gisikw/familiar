@@ -86,13 +86,26 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(
 		fmt.Fprintln(stderr, "imp: FAMILIAR_IMP_SOCKET is not set; this command is available only inside an owning Familiar resident")
 		return ExitUnavailable
 	}
+	filledTarget := false
 	if inv.operation == "ask.add" {
 		if err := fillAskForkTargets(inv.args, getenv); err != nil {
 			fmt.Fprintf(stderr, "imp: %v\n", err)
 			return ExitUsage
 		}
+		// The ask's own target: where its built-in "Split this up" fork starts.
+		if _, has := inv.args["target"]; !has {
+			if root := rootInstance(getenv); root != "" {
+				inv.args["target"] = "instance:" + root
+				filledTarget = true
+			}
+		}
 	}
 	result, remote, err := call(path, Request{Version: WireVersion, Area: "attn", Operation: inv.operation, Args: inv.args})
+	// A store older than the ask's own target refuses the field: retry without it.
+	if err == nil && remote != nil && filledTarget && remote.Message == "invalid arguments" {
+		delete(inv.args, "target")
+		result, remote, err = call(path, Request{Version: WireVersion, Area: "attn", Operation: inv.operation, Args: inv.args})
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "imp: %v\n", err)
 		return ExitProtocol
