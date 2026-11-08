@@ -193,7 +193,7 @@ func TestAttnHelpEnumeratesNounsAndVerbs(t *testing.T) {
 		args []string
 		hint string
 	}{
-		{[]string{"attn", "board"}, "imp attn --help"},
+		{[]string{"attn", "boards"}, "imp attn --help"},
 		{[]string{"attn", "card", "archive", "x"}, "imp attn card --help"},
 		{[]string{"attn", "card", "list", "--bogus"}, "unknown option"},
 	} {
@@ -255,6 +255,20 @@ func TestAttnRequestSpelling(t *testing.T) {
 		{"ask.surface", []string{"attn", "ask", "surface", "7", "--json"}, "", "ask.surface", map[string]any{"id": 7}},
 		{"ask.talk", []string{"attn", "ask", "talk", "7", "--json"}, "", "ask.talk", map[string]any{"id": 7}},
 		{"status", []string{"attn", "status", "--json"}, "", "status", map[string]any{}},
+		{"card.add-queue", []string{"attn", "card", "add", "--project", "familiar", "--title", "GPU unlock", "--queue", "just-do-it", "--due", "fri", "--json"}, "", "card.add", map[string]any{"project": "familiar", "title": "GPU unlock", "queue": "just-do-it", "due": "2026-10-16"}},
+		{"card.add-snooze", []string{"attn", "card", "add", "--project", "familiar", "--title", "minecraft", "--snooze", "default", "--json"}, "", "card.add", map[string]any{"project": "familiar", "title": "minecraft", "snooze": true}},
+		{"card.set-v3", []string{"attn", "card", "set", "c1", "--queue", "none", "--revisit", "fri", "--confidence", "medium", "--exit", "7 days clean", "--reset-approval", "new rollback", "--json"}, "", "card.set", map[string]any{"id": "c1", "revisit": "2026-10-16", "confidence": "medium", "exit": "7 days clean", "queue": nil, "approved": false, "approval_reason": "new rollback"}},
+		{"card.set-actions", []string{"attn", "card", "set", "c1", "--actions", "-", "--json"}, `[{"key":"go","label":"Go","effects":[{"type":"fork"}]}]`, "card.set", map[string]any{"id": "c1", "actions": []any{map[string]any{"key": "go", "label": "Go", "effects": []any{map[string]any{"type": "fork"}}}}}},
+		{"card.move-done", []string{"attn", "card", "move", "c1", "done", "--confidence", "medium", "--exit", "no Xid", "--revisit", "2026-11-14", "--json"}, "", "card.move", map[string]any{"id": "c1", "lane": "done", "confidence": "medium", "exit": "no Xid", "revisit": "2026-11-14"}},
+		{"card.move-queue", []string{"attn", "card", "move", "c1", "queue", "--queue", "help-me-think", "--json"}, "", "card.move", map[string]any{"id": "c1", "lane": "queue", "queue": "help-me-think"}},
+		{"card.snooze", []string{"attn", "card", "snooze", "c1", "--for", "1mo", "--json"}, "", "card.snooze", map[string]any{"id": "c1", "for": "1mo"}},
+		{"card.act", []string{"attn", "card", "act", "c1", "still-someday", "--json"}, "", "card.act", map[string]any{"id": "c1", "key": "still-someday"}},
+		{"card.view", []string{"attn", "card", "view", "--view", "proving", "--project", "familiar", "--json"}, "", "card.view", map[string]any{"view": "proving", "project": "familiar"}},
+		{"board.view", []string{"attn", "board", "view", "familiar", "--json"}, "", "board.view", map[string]any{"project": "familiar"}},
+		{"todo.list", []string{"attn", "todo", "list", "--json"}, "", "todo.list", map[string]any{}},
+		{"migrate.lanes", []string{"attn", "migrate", "lanes", "--run", "--token", "abc", "--json"}, "", "migrate.lanes", map[string]any{"run": true, "token": "abc"}},
+		{"evidence.add-approval", []string{"attn", "evidence", "add", "c1", "--kind", "commit", "--title", "dst", "--approval", "keep", "--approval-reason", "DST-only", "--json"}, "", "evidence.add", map[string]any{"card": "c1", "kind": "commit", "title": "dst", "approval": "keep", "approval_reason": "DST-only"}},
+		{"jot.add-snooze", []string{"attn", "jot", "add", "--title", "someday", "--snooze", "6mo", "--json"}, "", "jot.add", map[string]any{"title": "someday", "snooze": "6mo"}},
 	}
 	seen := map[string]bool{}
 	for _, tc := range cases {

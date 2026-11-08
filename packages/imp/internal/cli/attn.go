@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -14,8 +15,13 @@ import (
 // clips list results to the same figure and reports total/truncated.
 const maxAttnRows = 64
 
+var snoozeDurRE = regexp.MustCompile(`^\d{1,3}(d|w|mo|y)$`)
+
 var (
-	attnLanes    = []string{"captured", "icebox", "clarified", "inflight", "review", "settling", "archived"}
+	attnLanes    = []string{"captured", "icebox", "clarified", "inflight", "review", "settling", "todo", "queue", "running", "done", "archived"}
+	attnQueues   = []string{"just-do-it", "build-but-wait", "help-me-think"}
+	attnConf     = []string{"low", "medium", "high"}
+	attnViews    = []string{"queue", "running", "proving", "review", "todo", "icebox", "archived", "captured", "clarified", "inflight", "settling"}
 	attnOwners   = []string{"kevin", "kes"}
 	attnPolicies = []string{"ship-quiet", "ship-tell", "pr-evidence", "talk-first"}
 	attnEdges    = []string{"blocked", "review", "live"}
@@ -30,8 +36,10 @@ var attnValueFlags = map[string]bool{
 	"name": true, "model": true, "host": true, "harness": true, "state": true, "question": true,
 	"hold-until": true, "due": true, "maybe-on": true,
 	"order": true, "offset": true, "limit": true, "since": true, "created-since": true,
+	"queue": true, "revisit": true, "confidence": true, "exit": true, "approval": true, "approval-reason": true,
+	"reset-approval": true, "for": true, "until": true, "snooze": true, "view": true, "actions": true, "token": true,
 }
-var attnBoolFlags = map[string]bool{"hidden": true, "undo": true, "all": true, "stage": true, "json-in": true}
+var attnBoolFlags = map[string]bool{"hidden": true, "undo": true, "all": true, "stage": true, "json-in": true, "run": true}
 
 // attnNow is the clock for DATE flags and date-relative rendering; tests
 // replace it.
@@ -137,14 +145,17 @@ func attnDueLabel(due string, now time.Time) string {
 // attnVerbs enumerates the exact noun/verb table; the wire operation is noun.verb.
 var attnVerbs = map[string][]string{
 	"project":  {"list", "get", "add", "set"},
-	"card":     {"list", "get", "add", "set", "move", "block", "unblock", "done"},
+	"card":     {"list", "get", "add", "set", "move", "snooze", "act", "view", "block", "unblock", "done"},
+	"board":    {"view"},
+	"todo":     {"list"},
+	"migrate":  {"lanes"},
 	"note":     {"add"},
 	"evidence": {"add"},
 	"agent":    {"start", "set"},
 	"jot":      {"add", "list", "clear-done"},
 	"ask":      {"add", "list", "resolve", "more", "drop", "surface", "talk"},
 }
-var attnNouns = []string{"project", "card", "note", "evidence", "agent", "jot", "ask", "status"}
+var attnNouns = []string{"project", "card", "board", "todo", "note", "evidence", "agent", "jot", "ask", "migrate", "status"}
 
 func attnVerb(noun, verb string) bool { return inSet(attnVerbs[noun], verb) }
 
@@ -305,6 +316,29 @@ func parseAttn(argv []string, stdin io.Reader) (invocation, error) {
 		out.args[wire] = d
 		return nil
 	}
+	// putSnooze reads --snooze: "default" (~6 months, jittered), a duration
+	// (2w, 6mo), or a DATE. Someday capture lands snoozed, in Icebox.
+	putSnooze := func() error {
+		v, ok := flags.take("snooze")
+		if !ok {
+			return nil
+		}
+		v = strings.ToLower(strings.TrimSpace(v))
+		if v == "default" || v == "true" || v == "someday" {
+			out.args["snooze"] = true
+			return nil
+		}
+		if snoozeDurRE.MatchString(v) {
+			out.args["snooze"] = v
+			return nil
+		}
+		d, err := parseAttnDate(v, attnNow())
+		if err != nil {
+			return fmt.Errorf("--snooze takes default, a duration (2w, 6mo), or a DATE")
+		}
+		out.args["snooze"] = d
+		return nil
+	}
 	takeAskID := func() error {
 		raw, err := takePositional("ask id")
 		if err != nil {
@@ -408,6 +442,9 @@ func parseAttn(argv []string, stdin io.Reader) (invocation, error) {
 			func() error { return putProse("summary", "summary", false) },
 			func() error { return putEnum("owner", "owner", attnOwners, false) },
 			func() error { return putEnum("policy", "policy", attnPolicies, false) },
+			func() error { return putEnum("queue", "queue", attnQueues, false) },
+			func() error { return putDate("due", "due", false) },
+			putSnooze,
 		); err != nil {
 			return out, err
 		}
@@ -423,8 +460,47 @@ func parseAttn(argv []string, stdin io.Reader) (invocation, error) {
 			func() error { return putEnum("owner", "owner", attnOwners, false) },
 			func() error { return putDate("due", "due", true) },
 			func() error { return putDate("maybe-on", "maybe_on", true) },
+			func() error { return putDate("revisit", "revisit", true) },
+			func() error { return putEnum("confidence", "confidence", attnConf, false) },
+			func() error { return putProse("exit", "exit", false) },
 		); err != nil {
 			return out, err
+		}
+		if v, ok := flags.take("queue"); ok {
+			switch {
+			case v == "none":
+				out.args["queue"] = nil
+			case inSet(attnQueues, v):
+				out.args["queue"] = v
+			default:
+				return out, fmt.Errorf("--queue must be one of %s, or none", strings.Join(attnQueues, ", "))
+			}
+		}
+		if v, ok := flags.take("reset-approval"); ok {
+			if strings.TrimSpace(v) == "" || len(v) > 300 {
+				return out, fmt.Errorf("--reset-approval needs a one-line reason: why Kev should look again")
+			}
+			out.args["approved"] = false
+			out.args["approval_reason"] = v
+		}
+		if v, ok := flags.take("actions"); ok {
+			if v == "-" {
+				var err error
+				if v, err = readProse(stdin); err != nil {
+					return out, err
+				}
+			}
+			if strings.TrimSpace(v) == "none" {
+				out.args["actions"] = nil
+			} else {
+				dec := json.NewDecoder(strings.NewReader(v))
+				dec.UseNumber()
+				var acts []any
+				if err := dec.Decode(&acts); err != nil {
+					return out, fmt.Errorf("--actions must be a JSON array (or none)")
+				}
+				out.args["actions"] = acts
+			}
 		}
 		if v, ok := flags.take("policy"); ok {
 			switch {
@@ -437,7 +513,7 @@ func parseAttn(argv []string, stdin io.Reader) (invocation, error) {
 			}
 		}
 		if len(out.args) == 1 {
-			return out, fmt.Errorf("card set requires at least one of --title, --summary, --owner, --policy, --due, --maybe-on")
+			return out, fmt.Errorf("card set requires at least one of --title, --summary, --owner, --policy, --due, --maybe-on, --queue, --revisit, --confidence, --exit, --reset-approval, --actions")
 		}
 	case "card.move":
 		id, err := takePositional("card id")
@@ -459,6 +535,72 @@ func parseAttn(argv []string, stdin io.Reader) (invocation, error) {
 				return out, err
 			}
 			out.args["hold_until"] = t.UTC().Format(time.RFC3339)
+		}
+		if err := steps(
+			func() error { return putEnum("queue", "queue", attnQueues, false) },
+			func() error { return putEnum("confidence", "confidence", attnConf, false) },
+			func() error { return putProse("exit", "exit", false) },
+			func() error { return putDate("revisit", "revisit", false) },
+		); err != nil {
+			return out, err
+		}
+	case "card.snooze":
+		id, err := takePositional("card id")
+		if err != nil {
+			return out, err
+		}
+		out.args["id"] = id
+		if v, ok := flags.take("for"); ok {
+			out.args["for"] = v
+		}
+		if err := putDate("until", "until", false); err != nil {
+			return out, err
+		}
+	case "card.act":
+		id, err := takePositional("card id")
+		if err != nil {
+			return out, err
+		}
+		out.args["id"] = id
+		key, err := takePositional("action key")
+		if err != nil {
+			return out, err
+		}
+		out.args["key"] = key
+		if err := putProse("text", "text", false); err != nil {
+			return out, err
+		}
+	case "card.view", "todo.list":
+		if op == "card.view" {
+			if err := steps(
+				func() error { return putEnum("view", "view", attnViews, true) },
+				func() error { return putShort("project", "project", 64, false) },
+				func() error { return putEnum("queue", "queue", attnQueues, false) },
+			); err != nil {
+				return out, err
+			}
+		}
+		for _, f := range []string{"offset", "limit"} {
+			if v, ok := flags.take(f); ok {
+				n, err := strconv.Atoi(v)
+				if err != nil || n < 0 {
+					return out, fmt.Errorf("--%s must be a whole number", f)
+				}
+				out.args[f] = n
+			}
+		}
+	case "board.view":
+		slug, err := takePositional("project slug")
+		if err != nil {
+			return out, err
+		}
+		out.args["project"] = slug
+	case "migrate.lanes":
+		if flags.takeBool("run") {
+			out.args["run"] = true
+		}
+		if v, ok := flags.take("token"); ok {
+			out.args["token"] = v
 		}
 	case "card.block":
 		id, err := takePositional("card id")
@@ -498,6 +640,8 @@ func parseAttn(argv []string, stdin io.Reader) (invocation, error) {
 			func() error { return putEnum("kind", "kind", attnKinds, true) },
 			func() error { return putProse("title", "title", true) },
 			func() error { return putShort("ref", "ref", 4096, false) },
+			func() error { return putEnum("approval", "approval", []string{"keep", "reset"}, false) },
+			func() error { return putShort("approval-reason", "approval_reason", 300, false) },
 		); err != nil {
 			return out, err
 		}
@@ -543,6 +687,7 @@ func parseAttn(argv []string, stdin io.Reader) (invocation, error) {
 			func() error { return putProse("title", "title", true) },
 			func() error { return putEnum("owner", "owner", attnOwners, false) },
 			func() error { return putDate("due", "due", false) },
+			putSnooze,
 		); err != nil {
 			return out, err
 		}
@@ -617,6 +762,14 @@ type attnCard struct {
 	Fading          bool    `json:"fading"`
 	AgeS            float64 `json:"age_s"`
 	MovedS          float64 `json:"moved_s"`
+	Queue           *string `json:"queue"`
+	Revisit         *string `json:"revisit"`
+	Snoozed         bool    `json:"snoozed"`
+	Confidence      *string `json:"confidence"`
+	Approved        bool    `json:"approved"`
+	Exit            *string `json:"exit"`
+	WokeAt          *string `json:"woke_at"`
+	Why             string  `json:"why"`
 	Agents          struct {
 		Running int `json:"running"`
 		Blocked int `json:"blocked"`
@@ -779,7 +932,28 @@ func attnRow(c attnCard) string {
 	if c.HoldUntil != nil {
 		owner += " (held)"
 	}
-	fields := []string{prefix, c.Lane, owner}
+	lane := c.Lane
+	switch {
+	case c.Lane == "queue" && c.Queue != nil:
+		lane = "queue:" + *c.Queue
+	case c.Lane == "done" && c.Confidence != nil:
+		lane = "done(" + *c.Confidence
+		if c.Approved {
+			lane += ",approved"
+		}
+		lane += ")"
+	}
+	if c.Snoozed && c.Revisit != nil {
+		lane += " snoozed→" + *c.Revisit
+	} else if c.WokeAt != nil {
+		lane += " (back from Icebox)"
+	} else if c.Revisit != nil {
+		lane += " revisit " + *c.Revisit
+	}
+	if c.Why != "" && c.Why != "todo" {
+		lane += " [" + c.Why + "]"
+	}
+	fields := []string{prefix, lane, owner}
 	if c.Diverges && c.Policy != nil {
 		fields = append(fields, *c.Policy)
 	}
@@ -1067,8 +1241,21 @@ func writeAttnHuman(w io.Writer, operation string, raw json.RawMessage) error {
 		}
 		fmt.Fprintln(w, attnProjectLine(p))
 		return nil
-	case "card.list":
+	case "card.list", "card.view", "todo.list":
 		return writeAttnCards(w, raw, "No cards.", true)
+	case "card.act":
+		var r struct {
+			Card json.RawMessage `json:"card"`
+			Talk bool            `json:"talk"`
+		}
+		if err := json.Unmarshal(raw, &r); err != nil {
+			return err
+		}
+		return writeAttnCard(w, r.Card)
+	case "board.view":
+		return writeAttnBoard(w, raw)
+	case "migrate.lanes":
+		return writeAttnMigration(w, raw)
 	case "jot.list":
 		return writeAttnCards(w, raw, "No jots.", false)
 	case "jot.clear-done":
@@ -1161,13 +1348,20 @@ glance at what is running.
 
 Nouns:
   project   Boards: list, get, add, set
-  card      Cards on a board: list, get, add, set, move, block, unblock, done
+  card      Cards: list, get, add, set, move, snooze, act, view, block, unblock, done
+  board     One board, every column: view
+  todo      Kev's Todo feed (uncapped): list
   note      Append a note to a card (authored as Kes)
   evidence  Attach evidence (pr, commit, shot, run, link) to a card
   agent     Record an agent starting on, or changing state on, a card
   jot       Today's jots: add, list, clear-done (due dates; Maybe today)
   ask       Asks: bounded decisions for Kev about one card (max 3 surfaced)
+  migrate   One-time migrations: lanes (boards rethink; dry run first)
   status    One-line glance: agents, asks (surfaced/staged), jots
+
+Lanes say who moves next: todo (Kev's), queue (Kes may pick up: just-do-it,
+build-but-wait, help-me-think), running, done (Proving = confidence below high;
+Review = above low and not approved), archived. Icebox = snoozed cards.
 
 Run 'imp attn <noun> --help' to discover commands.
 All commands accept --json. Prose flags (--title, --summary, --text, --detail)
@@ -1183,17 +1377,23 @@ var attnUsage = map[string]string{
 	"project.set":    "Usage: imp attn project set SLUG [--label TEXT] [--default-policy POLICY] [--repo PATH_OR_URL] [--json]\n",
 	"card.list":      "Usage: imp attn card list (--project SLUG | --lane LANE) [--owner kevin|kes] [--edge blocked|review|live] [--q TEXT]\n                          [--order updated|created|lane] [--since TIME] [--created-since TIME]\n                          [--offset N] [--limit N] [--json]\n\nAt least one of --project or --lane is required. Prints one page (at most 64 rows):\n  id-prefix  lane  owner  [policy if diverges]  [!blocked]  age  title\nfollowed by '… and N more (next: --offset M)' when there is another page.\n\n--order    updated (default: most recently touched first), created (newest\n           capture first), or lane (the board's order: lane, then oldest move).\n--since    only cards touched (created, edited, moved) at or after TIME.\n--created-since  only cards created at or after TIME.\n           TIME: a duration back from now (90m, 6h, 2d), today, yesterday,\n           YYYY-MM-DD (local midnight, America/Chicago), or RFC3339.\n--offset   skip N cards (default 0). --limit  page size, 1-64 (default 64).\n\nage is time since capture, whatever the order.\n",
 	"card.get":       "Usage: imp attn card get ID [--json]\n\nPrints title, project/lane/owner/policy, summary, evidence, the short timeline, and notes.\nThe raw event log is available only with --json.\n",
-	"card.add":       "Usage: imp attn card add --project SLUG (--title TEXT | --title -) [--lane LANE] [--summary TEXT|-] [--owner kevin|kes] [--policy POLICY] [--json]\n",
-	"card.set":       "Usage: imp attn card set ID [--title TEXT|-] [--summary TEXT|-] [--owner kevin|kes] [--policy POLICY|default] [--due DATE|none] [--maybe-on DATE|none] [--json]\n\n--policy default clears the card's policy back to the project default.\n--due and --maybe-on apply to jots (_today) only; DATE is YYYY-MM-DD, today, tomorrow, or a\nweekday (next occurrence; today counts) in America/Chicago. 'none' clears the date.\nSetting --due promotes a Maybe-today jot to Today.\n",
-	"card.move":      "Usage: imp attn card move ID <captured|icebox|clarified|inflight|review|settling|archived> [--hold-until TIME] [--json]\n\nSettling means \"Kev, this is probably done; close it when you're satisfied\", so a card\nmoved to settling becomes Kevin's. To keep it in settling yourself, pass --hold-until TIME\n(RFC3339, HH:MM, or a duration like 90m, 36h, 2d): the card stays yours until then and a\nwake is scheduled for that time to archive it or hand it to Kevin.\n",
+	"card.add":       "Usage: imp attn card add --project SLUG (--title TEXT | --title -) [--lane LANE] [--queue QUEUE] [--due DATE] [--snooze default|DUR|DATE]\n                         [--summary TEXT|-] [--owner kevin|kes] [--policy POLICY] [--json]\n\n--queue just-do-it|build-but-wait|help-me-think puts the card in Kes's queue (lane queue).\n--snooze captures a someday: the card lands snoozed, in Icebox.\n",
+	"card.set":       "Usage: imp attn card set ID [--title TEXT|-] [--summary TEXT|-] [--owner kevin|kes] [--policy POLICY|default] [--due DATE|none] [--maybe-on DATE|none]\n                        [--queue QUEUE|none] [--revisit DATE|none] [--confidence low|medium|high] [--exit TEXT]\n                        [--reset-approval REASON] [--actions JSON|-|none] [--json]\n\n--policy default clears the card's policy back to the project default.\n--due works on any card (it shows in Kev's Todo when due); --maybe-on is for jots (_today) only.\nDATE is YYYY-MM-DD, today, tomorrow, or a weekday (next occurrence; today counts) in America/Chicago.\n'none' clears the date. Setting --due promotes a Maybe-today jot to Today.\n--revisit is \"look again then\" (not a deadline); --confidence on a done card below high needs --exit.\n--reset-approval clears Kev's approval with a reason (a material change). Only Kev approves.\n--actions sets the card's one-click buttons: [{key,label,primary?,done?,effects:[{type:move|approve|set|done|snooze|choose|reply|fork,...}]}].\n",
+	"card.move":      "Usage: imp attn card move ID <todo|queue|running|done|archived|captured|icebox|clarified|inflight|review|settling>\n                         [--queue QUEUE] [--confidence low|medium|high] [--exit TEXT] [--revisit DATE] [--hold-until TIME] [--json]\n\nNew lanes: todo (Kev's), queue (Kes may pick up; needs --queue), running (an agent holds it),\ndone (work finished; needs --confidence; below high needs --exit and should set --revisit to\nwhen it can be judged). Done+high+approved archives. Moving a snoozed card wakes it.\nLegacy: settling means \"Kev, this is probably done; close it when you're satisfied\", so a\ncard moved to settling becomes Kevin's. --hold-until TIME (RFC3339, HH:MM, or 90m/36h/2d) keeps\nit yours until then, with a wake scheduled to archive it or hand it to Kevin.\n",
 	"card.block":     "Usage: imp attn card block ID --reason TEXT [--json]\n",
+	"card.snooze":    "Usage: imp attn card snooze ID [--for DUR | --until DATE] [--json]\n\nParks a card in Icebox until a date (snoozed + revisit). Default: ~6 months with ±3 weeks\nof jitter. DUR: 10d, 2w, 6mo, 1y. The card keeps its lane, which says who it wakes to:\nTodo cards wake to Kev (\"still care?\"); Kes-queue cards wake to Kes. Running/done cards go\nback to their queue (or Todo) first. Kes can snooze any card; by convention not Kev's\nunprompted (offer a snooze action instead).\n",
+	"card.act":       "Usage: imp attn card act ID KEY [--text TEXT] [--json]\n\nRuns one of the card's actions (or a woken card's still-someday | do-it | archive).\nA fork effect starts a fork told only which button was clicked on which card.\n",
+	"card.view":      "Usage: imp attn card view --view VIEW [--project SLUG] [--queue QUEUE] [--offset N] [--limit N] [--json]\n\nOne board column as a query. VIEW: queue, running, proving, review, todo, icebox, archived\n(or a legacy lane). proving = done with confidence below high; review = done, confidence\nabove low, not approved (a medium card is in both). Queue is oldest-first: what Kes pulls next.\n",
+	"board.view":     "Usage: imp attn board view SLUG [--json]\n\nEvery column of one board: Kes's queues (just-do-it, build-but-wait, help-me-think),\nRunning, Proving; Kev's Todo and Review; Icebox and Archived counts; legacy lanes until migrated.\n",
+	"todo.list":      "Usage: imp attn todo list [--offset N] [--limit N] [--json]\n\nKev's Todo feed, uncapped: unsnoozed Todo cards, anything due today or overdue, cards woken\nback to him from Icebox, and Review. Each row says why (overdue, due, woke, review).\n",
+	"migrate.lanes":  "Usage: imp attn migrate lanes [--run --token TOKEN] [--json]\n\nThe boards-rethink lane migration. Without --run: a dry run (counts, wake-week histogram,\nand a token). --run --token applies exactly that previewed plan. Kev sees the dry run first.\n",
 	"card.unblock":   "Usage: imp attn card unblock ID [--json]\n",
 	"card.done":      "Usage: imp attn card done ID [--undo] [--json]\n\nJots (_today) only. --undo marks the jot not done.\n",
 	"note.add":       "Usage: imp attn note add CARD_ID (--text TEXT | --text -) [--detail TEXT|-] [--json]\n\nThe resident records this note as authored by Kes.\n",
-	"evidence.add":   "Usage: imp attn evidence add CARD_ID --kind <pr|commit|shot|run|link> (--title TEXT | --title -) [--ref URL_SHA_OR_PATH] [--meta JSON_OBJECT] [--json]\n",
+	"evidence.add":   "Usage: imp attn evidence add CARD_ID --kind <pr|commit|shot|run|link> (--title TEXT | --title -) [--ref URL_SHA_OR_PATH] [--meta JSON_OBJECT]\n                             [--approval keep|reset --approval-reason TEXT] [--json]\n\nOn a card Kev has approved, a new pr/commit/run must say whether it's material:\n--approval reset (he looks again) or keep (\"DST-only fixes\"), with a one-line reason.\n",
 	"agent.start":    "Usage: imp attn agent start CARD_ID --name NAME [--model MODEL] [--host HOST] [--harness HARNESS] [--json]\n",
 	"agent.set":      "Usage: imp attn agent set CARD_ID --name NAME --state <running|blocked|done|failed|cancelled> [--question TEXT] [--json]\n",
-	"jot.add":        "Usage: imp attn jot add (--title TEXT | --title -) [--owner kevin|kes] [--due DATE] [--json]\n\nWith --due the jot is a Today task; without it, a Maybe-today intention.\nDATE: YYYY-MM-DD, today, tomorrow, or a weekday (next occurrence; today counts), America/Chicago.\n",
+	"jot.add":        "Usage: imp attn jot add (--title TEXT | --title -) [--owner kevin|kes] [--due DATE] [--snooze default|DUR|DATE] [--json]\n\nWith --due the jot is a Today task; without it, a Maybe-today intention. --snooze parks a someday.\nDATE: YYYY-MM-DD, today, tomorrow, or a weekday (next occurrence; today counts), America/Chicago.\n",
 	"jot.list":       "Usage: imp attn jot list [--all] [--json]\n\nDefault view: jots due today or earlier, plus today's maybes. --all lists every non-archived jot.\nRows show 'due Fri' / 'due today' or 'maybe' before the age.\n",
 	"ask.add":        "Usage: imp attn ask add --json-in [--stage] [--json]\n\nReads the ask JSON object from stdin (up to 64 KiB) and forwards it as-is:\n  {\"card\":\"6c5e0e39\",\"question\":\"Close M4?\",\"context\":\"What this is...\",\"steps\":\"...\",\"link\":\"...\",\"link_label\":\"...\",\n   \"actions\":[{\"key\":\"close\",\"label\":\"Close it\",\"primary\":true,\"ops\":[...]},\n               {\"key\":\"go\",\"label\":\"Do it\",\"done\":\"Started\",\"fork\":{\"task\":\"...\",\"label\":\"...\",\"fresh\":true}}]}\nAn action's \"fork\" starts a fork with that task when Kev picks it (no undo); its target\ndefaults to this lineage's primary.\n\"context\" renders as \"What this is\" (what the thing is, where it stands); \"steps\" as\n\"What I need from you\" (only when Kev must go do something). An ask covering more\nthan one card gets a built-in \"Split this up\" (key split, reserved).\n--stage keeps the ask invisible until Kev asks for more. At most 3 asks are surfaced.\n",
 	"ask.list":       "Usage: imp attn ask list [--all] [--json]\n\nPrints surfaced, then staged (then resolved with --all):\n  #7 [surfaced] project · question — key1|key2\n",
