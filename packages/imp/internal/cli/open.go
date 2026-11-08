@@ -29,7 +29,8 @@ const openHelp = `Usage:
   imp open close <id|path|#project|card:ID>      take it back out
 
 A path is any file the Reader can show (md, html, pdf, audio, image, or plain
-text like csv/json/txt/source), anywhere on this host: pushing it is what
+text like csv/json/txt/source) or an Excalidraw scene (.excalidraw: its row
+opens the canvas, not the Reader), anywhere on this host: pushing it is what
 lets the Reader serve it. (The shelves
 ~/Projects/{hoard/primers,wireframes,opcos,holdco,podcasts/episodes} are only
 what the Reader lists on its own.) A directory with an index.md or index.html
@@ -56,6 +57,9 @@ var openKinds = map[string]bool{
 	".md": true, ".markdown": true, ".pdf": true, ".html": true, ".htm": true,
 	".mp3": true, ".m4a": true, ".wav": true, ".ogg": true,
 	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".webp": true, ".svg": true,
+	// A scene: its Open row puts it on the canvas instead of the Reader. The
+	// bridge's canvas only opens a path the Reader may serve; the push is that grant.
+	".excalidraw": true,
 }
 
 // openTextKinds mirrors familiar-ui's DOC_TEXT_EXTENSIONS: plain text the
@@ -432,7 +436,7 @@ func openDocPath(target string, getenv func(string) string) (string, error) {
 	}
 	ext := strings.ToLower(filepath.Ext(path))
 	if !folder && (!(openKinds[ext] || openTextKinds[ext]) || strings.HasPrefix(filepath.Base(path), ".")) {
-		return "", fmt.Errorf("the Reader can't show %s (md, html, pdf, audio, image, plain text, or a folder)", filepath.Base(path))
+		return "", fmt.Errorf("the Reader can't show %s (md, html, pdf, audio, image, plain text, .excalidraw, or a folder)", filepath.Base(path))
 	}
 	// Mirrors familiar-ui's privateText(): credentials sit beside documents,
 	// so plain text shaped like a secret, or private by mode, stays out.

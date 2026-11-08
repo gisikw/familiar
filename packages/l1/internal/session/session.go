@@ -35,7 +35,9 @@ var (
 	tagBlock    = regexp.MustCompile(`(?s)<(familiar-[a-z-]+|system-reminder)[^>]*>.*?</(familiar-[a-z-]+|system-reminder)>`)
 	tagSelf     = regexp.MustCompile(`<familiar-[a-z-]+[^>]*/>`)
 	attachBlock = regexp.MustCompile(`(?s)\[familiar-ui:attachments[^\]]*\].*?\[/familiar-ui:attachments\]`)
-	readingLine = regexp.MustCompile(`(?m)^\[reading: [^\]]*\]\s*$`)
+	// What was on Kev's screen when he spoke (familiar-ui prefixes it): a doc,
+	// the canvas, a board or a card. Context, not his words.
+	readingLine = regexp.MustCompile(`(?m)^\[(reading|on canvas|viewing board|viewing card): [^\n]*\]\s*$`)
 	noticeLine  = regexp.MustCompile(`(?m)^\[(Mon|Tue|Wed|Thu|Fri|Sat|Sun) [^\]]*\].*$`)
 	forkBrief   = regexp.MustCompile(`(?s)^You are (a fork|fork) `)
 )

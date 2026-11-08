@@ -112,6 +112,26 @@ func TestOpenAcceptsExplicitPathsOutsideTheShelves(t *testing.T) {
 	}
 }
 
+func TestOpenAcceptsCanvasScenes(t *testing.T) {
+	home, state, getenv := openEnv(t)
+	scene := filepath.Join(home, "state", "canvas", "2026-11-08-board-lanes.excalidraw")
+	os.MkdirAll(filepath.Dir(scene), 0o700)
+	// Scenes are written 0600 (the scratchpad is): a scene is not a secret.
+	os.WriteFile(scene, []byte(`{"type":"excalidraw","elements":[]}`), 0o600)
+	code, out, errs := runOpen(getenv, scene)
+	if code != 0 || !strings.Contains(out, "opened: 2026 11 08 board lanes") {
+		t.Fatalf("%d %q %q", code, out, errs)
+	}
+	raw, _ := os.ReadFile(filepath.Join(state, "open.json"))
+	real, _ := filepath.EvalSymlinks(scene)
+	if !strings.Contains(string(raw), `"kind": "doc"`) || !strings.Contains(string(raw), `"path": "`+real+`"`) {
+		t.Fatalf("a scene is a doc row by path: %s", raw)
+	}
+	if grants, _ := os.ReadFile(filepath.Join(state, "reader-grants")); string(grants) != real+"\n" {
+		t.Fatalf("the push grants the scene (the canvas opens only what the Reader may serve): %q", grants)
+	}
+}
+
 func TestDocTitleFallsBackToFolderForIndex(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "my-cool_doc")
 	os.MkdirAll(dir, 0o755)

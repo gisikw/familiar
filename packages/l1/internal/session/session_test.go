@@ -33,3 +33,19 @@ func TestReadWindowAndDocs(t *testing.T) {
 		t.Fatalf("docs: %+v", all)
 	}
 }
+
+func TestCleanStripsWhatWasOnScreen(t *testing.T) {
+	for _, line := range []string{
+		"[reading: /var/lib/kestrel/state/canvas/]",
+		"[on canvas: /var/lib/kestrel/state/canvas/2026-11-08-board-lanes.excalidraw]",
+		"[viewing board: #homelab-rack]",
+		`[viewing card: 9e90c826 "volume [too] quiet" (#homelab-rack)]`,
+	} {
+		if got := Clean(line + "\n\nmove the lanes around"); got != "move the lanes around" {
+			t.Errorf("%s: got %q", line, got)
+		}
+	}
+	if got := Clean("[reading the room] is a phrase"); got != "[reading the room] is a phrase" {
+		t.Fatalf("Kev's own brackets stay: %q", got)
+	}
+}
