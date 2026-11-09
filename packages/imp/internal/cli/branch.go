@@ -20,10 +20,10 @@ import (
 var modelRef = regexp.MustCompile(`^[A-Za-z0-9._-]{1,80}/[A-Za-z0-9._:-]{1,120}$`)
 
 // kesCarriers are the engines Kev has seen realize Kes (by experience, not by
-// ranking): the bar is "sufficient to be her", not "the most capable yet".
+// ranking): the bar is "sufficient to be him", not "the most capable yet".
 // Patterns match Pi's PROVIDER/MODEL; Pi's provider id wraps the router
 // provider (e.g. tiamat-anthropic-tiamat), hence the leading "*". The two local
-// Qwens are carriers too: the versions of her not coupled to third parties.
+// Qwens are carriers too: the versions of him not coupled to third parties.
 var kesCarriers = []string{
 	"*tiamat/claude-opus-5-5-interactive",
 	"*tiamat/claude-fable-5-1-interactive",
@@ -156,7 +156,7 @@ func forkMain(args []string, out, errw io.Writer, getenv func(string) string) in
 		return usageError(errw, "fork --model must be PROVIDER/MODEL")
 	}
 	// A declared model must be able to carry Kes, or the fork must say plainly
-	// that it is a lighter runner (it will not wear her name).
+	// that it is a lighter runner (it will not wear his name).
 	if model != "" && !runner && !carriesKes(model, getenv("FAMILIAR_FORK_MODELS")) {
 		return usageError(errw, "fork --model %s is not on the list of models that carry Kes (FAMILIAR_FORK_MODELS); pass --runner to run it as a marked lighter runner", model)
 	}
@@ -447,9 +447,9 @@ const branchHelp = `Usage:
   imp fork [--label L] [--origin O] [--fresh] [--ambient] [--model P/M [--runner]] "task text"
       The fork is you: it inherits this whole conversation (unless --fresh),
       including everything Kev just said. So the task text is one line naming
-      which piece is hers, e.g. "Build what Kev described above." Don't recap,
+      which piece is his, e.g. "Build what Kev described above." Don't recap,
       don't restate the spec, and don't write a brief file to hand it off;
-      she already read it all. A full brief is only for --fresh forks.
+      he already read it all. A full brief is only for --fresh forks.
   imp merge --status done|failed|partial|blocked --headline "one line" [--quiet]
       --quiet: don't wake the parent. --ambient (at fork time) marks routine
       work whose return is never held in Open under Soft Disturb.
@@ -491,8 +491,8 @@ func labelMain(args []string, out, errw io.Writer, getenv func(string) string) i
 	})
 }
 
-// statusMain sets, prints, or clears the fork's one-line status: what she is
-// doing now, beneath her stable label. Words for what, never for state.
+// statusMain sets, prints, or clears the fork's one-line status: what he is
+// doing now, beneath his stable label. Words for what, never for state.
 func statusMain(args []string, out, errw io.Writer, getenv func(string) string) int {
 	switch {
 	case len(args) == 0:

@@ -62,9 +62,9 @@ tests and support modules outside runtime auto-discovery without a second manife
 
 ## Subconscious reminders
 
-At `/clear`, after the outgoing Familiar has written her handoff and before the
-compaction lands, she gets one ephemeral request to curate a small set of
-reminders for her next self — strict JSON, never persisted to the session. Each
+At `/clear`, after the outgoing Familiar has written his handoff and before the
+compaction lands, he gets one ephemeral request to curate a small set of
+reminders for his next self — strict JSON, never persisted to the session. Each
 later surfaces on its own, once, as a hidden system reminder during ordinary
 conversation. The store is one atomically replaced file beneath
 `FAMILIAR_SUBCONSCIOUS_DIR` (default private `state/subconscious`). See

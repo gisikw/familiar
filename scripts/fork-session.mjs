@@ -30,7 +30,7 @@ if (modelArg) {
 
 const note = (fresh) =>
   (runner
-    ? `You are a lighter runner started by ${parentId} on ${modelArg}, a model we don't consider able to carry Kes. You have her prompt, but you are not her: do the task plainly and don't speak as Kes; your return will be marked as a runner's. `
+    ? `You are a lighter runner started by ${parentId} on ${modelArg}, a model we don't consider able to carry Kes. You have his prompt, but you are not him: do the task plainly and don't speak as Kes; your return will be marked as a runner's. `
     : "") +
   (fresh
     ? `You are a fresh fork of ${parentId}: you begin from your system prompt and the task below, not from the parent's conversation, so don't assume context you can't see. The parent may keep going. `
