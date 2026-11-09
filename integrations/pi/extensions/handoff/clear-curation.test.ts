@@ -279,6 +279,81 @@ describe("orientation reads continuity from the current session branch", () => {
   });
 });
 
+describe("orientation timing", () => {
+  const handoff = { type: "compaction", id: "handoff-1", summary: "# Handoff", details: { kind: "familiar-handoff" } };
+  const forkMarker = { type: "custom", customType: "familiar.fork.v1", data: { parentSessionId: "parent" } };
+  const forkNote = { type: "custom_message", customType: "familiar.fork-note.v1", content: "You are a fork" };
+  const orientations = (h: any) => h.persisted.filter((p: any) => p.kind === "sendMessage"
+    && p.payload.message.customType === "handoff-orientation");
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  test("a fork branched after an un-oriented handoff runs its errand, not an orientation", async () => {
+    // Nov 9: the 06:30 brief fork branched from a primary that had cleared at
+    // 02:04 and not yet oriented. It oriented, settled, and auto-merged the
+    // journal entry; the brief task never ran.
+    const h = await harness({ entries: [handoff, forkMarker, forkNote] });
+    expect(await h.emit("input", { text: "write the brief" })).toEqual({ action: "continue" });
+    expect(orientations(h)).toEqual([]);
+  });
+
+  test("a fresh fork (no inherited history) does not orient either", async () => {
+    const h = await harness({ entries: [{ type: "model_change" }, forkMarker, forkNote] });
+    expect(await h.emit("input", { text: "morning watch" })).toEqual({ action: "continue" });
+    expect(orientations(h)).toEqual([]);
+  });
+
+  test("a fork's own later handoff still orients", async () => {
+    const h = await harness({ entries: [handoff, forkMarker, forkNote, { ...handoff, id: "handoff-2" }] });
+    expect(await h.emit("input", { text: "keep going" })).toEqual({ action: "handled" });
+    expect(orientations(h)).toHaveLength(1);
+  });
+
+  test("/clear orients as soon as the compaction completes, without waiting for a human turn", async () => {
+    const h = await harness();
+    await h.commands.get("clear")!.handler("", h.ctx);
+    const result = await h.beforeCompact();
+    await h.finishCompaction(result.compaction);
+    expect(orientations(h)).toEqual([]);
+    h.compactRequest()!.onComplete();
+    await tick();
+    expect(orientations(h)).toHaveLength(1);
+    expect(orientations(h)[0].payload.options).toEqual({ triggerTurn: true });
+
+    // A human message during the orientation is held, then released after it.
+    expect(await h.emit("input", { text: "morning" })).toEqual({ action: "handled" });
+    await h.emit("agent_settled");
+    expect(h.persisted.at(-1)).toEqual({ kind: "sendUserMessage", payload: "morning" });
+
+    // Oriented once: the next human turn goes straight through.
+    expect(await h.emit("input", { text: "hi again" })).toEqual({ action: "continue" });
+    expect(orientations(h)).toHaveLength(1);
+  });
+
+  test("an eager orientation with no human waiting releases nothing", async () => {
+    const h = await harness();
+    await h.commands.get("clear")!.handler("", h.ctx);
+    await h.finishCompaction((await h.beforeCompact()).compaction);
+    h.compactRequest()!.onComplete();
+    await tick();
+    await h.emit("agent_settled");
+    expect(h.persisted.some((p) => p.kind === "sendUserMessage")).toBe(false);
+    expect(await h.emit("input", { text: "hello" })).toEqual({ action: "continue" });
+  });
+
+  test("a continuation still orients first via the input hook, exactly once", async () => {
+    const h = await harness();
+    await h.commands.get("clear")!.handler("carry on", h.ctx);
+    await h.finishCompaction((await h.beforeCompact()).compaction);
+    h.compactRequest()!.onComplete();
+    await tick();
+    expect(orientations(h)).toEqual([]);
+    expect(h.persisted.at(-1)).toEqual({ kind: "sendUserMessage", payload: "carry on" });
+    // Pi routes that message through input.
+    expect(await h.emit("input", { text: "carry on" })).toEqual({ action: "handled" });
+    expect(orientations(h)).toHaveLength(1);
+  });
+});
+
 describe("delivery to the next Familiar", () => {
   test("a reminder arrives hidden on an ordinary human turn, once, and never during orientation", async () => {
     fs.writeFileSync(path.join(storeDir, "reminders.json"), JSON.stringify({
