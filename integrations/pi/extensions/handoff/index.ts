@@ -30,6 +30,8 @@ const MASK = "*⟨continuity — private⟩*";
 const KIND = "familiar-handoff";
 const SUBCONSCIOUS_MESSAGE = "subconscious-reminder";
 const ORIENTATION_ENTRY = "handoff-orientation-output";
+/** Written by scripts/fork-session.mjs as the first entry of every fork's own suffix. */
+const FORK_MARKER = "familiar.fork.v1";
 const TRANSCRIPT_VISIBILITY_ENTRY = "familiar-ui/transcript-visibility";
 const SATURATION_WARN = 70;
 const SATURATION_NEAR = 85;
@@ -180,12 +182,21 @@ export default function handoffExtension(pi: ExtensionAPI) {
         const queued = continuationAfterCompaction;
         continuationAfterCompaction = undefined;
         if (queued) {
+          // The continuation passes through the input hook, which orients first.
           queueMicrotask(() => pi.sendUserMessage(queued));
-        } else if (ctx.hasUI) {
+          return;
+        }
+        // Orient now rather than at the next human turn. Waiting left the
+        // primary un-oriented for hours, and anything branched from it in
+        // that window (scheduled forks) inherited the pending orientation.
+        queueMicrotask(() => {
+          beginOrientation(ctx).catch((err) => errorLog("handoff", { eagerOrientationError: String(err) }));
+        });
+        if (ctx.hasUI) {
           ctx.ui.notify(
             automatic
               ? "Context crossed 90%; handoff compacted before further work"
-              : "Handoff compacted; orientation will run before the next user turn",
+              : "Handoff compacted; orienting now",
             "info",
           );
         }
@@ -222,12 +233,14 @@ export default function handoffExtension(pi: ExtensionAPI) {
     const virginSession = branch.length === 0;
     let latestCompaction = -1;
     let latestOrientation = -1;
+    let latestForkMarker = -1;
 
     branch.forEach((entry, index) => {
       if (isOurCompaction(entry)) {
         latestCompaction = index;
         knownPrivateOutputs.add((entry as any).summary);
       }
+      if (entry.type === "custom" && entry.customType === FORK_MARKER) latestForkMarker = index;
       if (entry.type === "custom" && entry.customType === ORIENTATION_ENTRY) {
         latestOrientation = index;
         const data = entry.data as { text?: string; thinking?: string[] };
@@ -239,7 +252,12 @@ export default function handoffExtension(pi: ExtensionAPI) {
     const continuedAfterCompaction = latestCompaction >= 0 && branch
       .slice(latestCompaction + 1)
       .some((entry) => entry.type === "message" && (entry as any).message?.role === "assistant");
-    phase = virginSession || (latestCompaction > latestOrientation && !continuedAfterCompaction)
+    // A fork's first turn is its errand. Orientation belongs to whichever
+    // self continues past a handoff, so a compaction the fork merely inherited
+    // (before its marker) never orients it. A fork's own later handoff still does.
+    const forkedSinceCompaction = latestForkMarker >= 0 && latestForkMarker > latestCompaction;
+    phase = !forkedSinceCompaction
+      && (virginSession || (latestCompaction > latestOrientation && !continuedAfterCompaction))
       ? "pending"
       : "done";
   });
@@ -490,7 +508,7 @@ export default function handoffExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "clear",
     label: "Clear Context",
-    description: "Compact the current context after this turn settles. The active model writes its own continuity handoff, then privately orients before the next user turn. An optional continuation becomes that next user turn.",
+    description: "Compact the current context after this turn settles. The active model writes its own continuity handoff, then privately orients right away, before the next user turn. An optional continuation becomes that next user turn.",
     parameters: Type.Object({
       continuation: Type.Optional(Type.String({
         description: "Optional instruction delivered as the next user turn after compaction and private orientation; never used as summary guidance",
