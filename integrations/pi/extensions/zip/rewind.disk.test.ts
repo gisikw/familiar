@@ -57,6 +57,9 @@ const harness = async (root: string) => {
     agent: { state: { messages: [] } },
     model: undefined,
     isStreaming: false,
+    // Pi 1.x class fields that navigateTree touches (Object.create skips initializers).
+    _entryIdsByMessage: new WeakMap<object, string>(),
+    _pendingToolNames: new Set<string>(),
   };
   // Some of these are prototype getters; shadow them as own properties.
   for (const [key, value] of Object.entries(own)) Object.defineProperty(session, key, { value, writable: true, configurable: true });

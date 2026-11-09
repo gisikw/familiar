@@ -97,7 +97,7 @@ assert(!types.includes("invokeExtensionCommandFromPrompt"));
 assert(!types.includes("invokeCommand("));
 assert.equal(
   createHash("sha256").update(prompt).digest("hex"),
-  "131889da0caa28bc255886cbf633ff8b9e2b03b8bd79d4bf9825260cfbccc375",
+  "b9c18c3d8c8924bee4c0eb40f2205251b59154d5ae5b9b9fa450e829e9a96198",
 );
 // Exhaustive pinned runner audit. Verify both the wrapper and the unchanged body:
 // only one indentation level may differ. New async methods/dispatch sites fail loudly.
@@ -124,7 +124,7 @@ const emitterHashes = {
   emitBeforeProviderHeaders:
     "36e37d4a97bb09304f246f5679a797a5d7b8ab34bf9e61083dc001e234033bd6",
   emitBeforeAgentStart:
-    "ee0dd76e93a2b8d405367955623b181d0e14815d6c0ed7b1e4076ef6718c2cbc",
+    "bedb6850a19c1134447b56ddd218a9c7f9a231bf39c3645f22ba11bf5c8606ce",
   emitResourcesDiscover:
     "52222c54c1815ddedf0fe7de3db97adb02c1b44db6f55e1a6365f1664bbf061e",
   emitInput: "b1d2bb0cb0f50631b784af0a42590bc9d628b748ae82868ec7c1b3667472e35a",

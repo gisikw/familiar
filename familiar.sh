@@ -385,7 +385,7 @@ run_pi() {
       --arg dir "$PI_CODING_AGENT_DIR" \
       --arg ext "$REPO/integrations/pi/extensions" '
       $prev + {
-        lastChangelogVersion: "1.1.0",
+        lastChangelogVersion: "1.5.0",
         theme: "familiar",
         themes: [ ($dir + "/themes") ],
         # Pi 1.0 defaults to a fullscreen TUI. Presence runs Pi inside tmux
@@ -394,12 +394,11 @@ run_pi() {
         tuiMode: "regular",
         compaction: { enabled: true, reserveTokens: 4096 },
         # Keep the live extension set explicit. Imp owns the sole private
-        # resident socket used by Attention. l1 self-gates on l1_enabled. Pi 0.99
-        # added built-in mcp,
-        # codemode and tool-search extensions (enabled unless excluded with
-        # -builtin:<name>); exclude them so the resident tool surface stays
-        # exactly the one listed here. builtin:llama.cpp predates them and
-        # remains enabled.
+        # resident socket used by Attention. l1 self-gates on l1_enabled.
+        # Pi 0.99 added built-in mcp, codemode and tool-search extensions
+        # (enabled unless excluded with -builtin:<name>); exclude them so the
+        # resident tool surface stays exactly the one listed here.
+        # builtin:llama.cpp predates them and remains enabled.
         extensions: (([
           "footer", "handoff", "identity", "imp", "l1", "subscriber",
           "tiamat", "web", "scheduler", "zip"

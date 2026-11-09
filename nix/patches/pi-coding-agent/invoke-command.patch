@@ -1,10 +1,8 @@
-diff --git a/packages/coding-agent/docs/extensions.md b/packages/coding-agent/docs/extensions.md
-index c350e662..91074f5d 100644
 --- a/packages/coding-agent/docs/extensions.md
 +++ b/packages/coding-agent/docs/extensions.md
-@@ -216,6 +216,51 @@ These operations are command-only because calling them from lifecycle handlers c
+@@ -2119,6 +2119,51 @@
  
- Session replacement invalidates the old context. Capture only plain data before switching, then use the fresh context supplied to `withSession` for session-bound work.
+ Return a copy of the effective settings, with global and project settings merged and overrides applied.
  
 +### pi.invokeExtensionCommand(name, args?) (Familiar downstream)
 +
@@ -51,14 +49,12 @@ index c350e662..91074f5d 100644
 +opt-in is void, parses text, expands skills/templates, and dispatches commands before
 +streaming queueing. It does not replace this awaited idle-only API.
 +
- <a id="state-management"></a>
  <a id="persist-state"></a>
  
-diff --git a/packages/coding-agent/src/core/agent-session.ts b/packages/coding-agent/src/core/agent-session.ts
-index 5decccd8..e9fc7a51 100644
+ ## State Management
 --- a/packages/coding-agent/src/core/agent-session.ts
 +++ b/packages/coding-agent/src/core/agent-session.ts
-@@ -1075,28 +1075,37 @@ export class AgentSession {
+@@ -1091,28 +1091,37 @@
  		resolve();
  	}
  
@@ -112,7 +108,7 @@ index 5decccd8..e9fc7a51 100644
  	}
  
  	/** Internal handler for agent events - shared by subscribe and reconnect */
-@@ -3358,6 +3367,7 @@ export class AgentSession {
+@@ -3439,6 +3448,7 @@
  	}
  
  	private _bindExtensionCore(runner: ExtensionRunner): void {
@@ -120,11 +116,9 @@ index 5decccd8..e9fc7a51 100644
  		const getCommands = (): SlashCommandInfo[] => {
  			const extensionCommands: SlashCommandInfo[] = runner.getRegisteredCommands().map((command) => ({
  				name: command.invocationName,
-diff --git a/packages/coding-agent/src/core/extensions/loader.ts b/packages/coding-agent/src/core/extensions/loader.ts
-index bee134d3..e96eff01 100644
 --- a/packages/coding-agent/src/core/extensions/loader.ts
 +++ b/packages/coding-agent/src/core/extensions/loader.ts
-@@ -180,6 +180,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
+@@ -184,6 +184,7 @@
  		// registerTool() is valid during extension load; refresh is only needed post-bind.
  		refreshTools: () => {},
  		getCommands: notInitialized,
@@ -132,7 +126,7 @@ index bee134d3..e96eff01 100644
  		setModel: () => Promise.reject(new Error("Extension runtime not initialized")),
  		getThinkingLevel: notInitialized,
  		setThinkingLevel: notInitialized,
-@@ -433,6 +434,11 @@ function createExtensionAPI(
+@@ -437,6 +438,11 @@
  			runtime.setActiveTools(toolNames);
  		},
  
@@ -144,11 +138,9 @@ index bee134d3..e96eff01 100644
  		getCommands() {
  			assertActive();
  			return runtime.getCommands();
-diff --git a/packages/coding-agent/src/core/extensions/runner.ts b/packages/coding-agent/src/core/extensions/runner.ts
-index 11ffaca7..7a39d5ba 100644
 --- a/packages/coding-agent/src/core/extensions/runner.ts
 +++ b/packages/coding-agent/src/core/extensions/runner.ts
-@@ -391,6 +391,10 @@ export class ExtensionRunner {
+@@ -398,6 +398,10 @@
  	private staleMessage: string | undefined;
  	private uiPromptDepth = 0;
  	private activeUIPrompt: { kind: UIPromptKind; title?: string } | undefined;
@@ -159,7 +151,7 @@ index 11ffaca7..7a39d5ba 100644
  
  	constructor(
  		extensions: Extension[],
-@@ -431,6 +435,7 @@ export class ExtensionRunner {
+@@ -438,6 +442,7 @@
  		this.runtime.setActiveTools = actions.setActiveTools;
  		this.runtime.refreshTools = actions.refreshTools;
  		this.runtime.getCommands = actions.getCommands;
@@ -167,7 +159,7 @@ index 11ffaca7..7a39d5ba 100644
  		this.runtime.setModel = actions.setModel;
  		this.runtime.getThinkingLevel = actions.getThinkingLevel;
  		this.runtime.setThinkingLevel = actions.setThinkingLevel;
-@@ -857,6 +862,34 @@ export class ExtensionRunner {
+@@ -864,6 +869,34 @@
  		return this.resolveRegisteredCommands().find((command) => command.invocationName === name);
  	}
  
@@ -202,7 +194,7 @@ index 11ffaca7..7a39d5ba 100644
  	/**
  	 * Request a graceful shutdown. Called by extension tools and event handlers.
  	 * The actual shutdown behavior is provided by the mode via bindExtensions().
-@@ -1030,51 +1063,56 @@ export class ExtensionRunner {
+@@ -1037,51 +1070,56 @@
  		baseEvent: BoundaryBaseEvent,
  		buildContext: (entries: SessionBoundaryDraft[]) => BoundaryContextPreview | Promise<BoundaryContextPreview>,
  	): Promise<BoundaryDispatchResult> {
@@ -232,6 +224,18 @@ index 11ffaca7..7a39d5ba 100644
 -						stack: err instanceof Error ? err.stack : undefined,
 -					});
 -				}
+-
+-				try {
+-					context = await buildContext(entries);
+-					valid = true;
+-				} catch (err) {
+-					valid = false;
+-					this.emitError({
+-						extensionPath: ext.path,
+-						event: baseEvent.type,
+-						error: `Invalid boundary entries: ${err instanceof Error ? err.message : String(err)}`,
+-						stack: err instanceof Error ? err.stack : undefined,
+-					});
 +		this.eventDispatchDepth++;
 +		try {
 +			const ctx = this.createContext();
@@ -260,18 +264,7 @@ index 11ffaca7..7a39d5ba 100644
 +							stack: err instanceof Error ? err.stack : undefined,
 +						});
 +					}
- 
--				try {
--					context = await buildContext(entries);
--					valid = true;
--				} catch (err) {
--					valid = false;
--					this.emitError({
--						extensionPath: ext.path,
--						event: baseEvent.type,
--						error: `Invalid boundary entries: ${err instanceof Error ? err.message : String(err)}`,
--						stack: err instanceof Error ? err.stack : undefined,
--					});
++
 +					try {
 +						context = await buildContext(entries);
 +						valid = true;
@@ -300,7 +293,7 @@ index 11ffaca7..7a39d5ba 100644
  	}
  
  	private isSessionBeforeEvent(event: RunnerEmitEvent): event is SessionBeforeEvent {
-@@ -1087,207 +1125,237 @@ export class ExtensionRunner {
+@@ -1094,207 +1132,237 @@
  	}
  
  	async emit<TEvent extends RunnerEmitEvent>(event: TEvent): Promise<RunnerEmitResult<TEvent>> {
@@ -311,16 +304,15 @@ index 11ffaca7..7a39d5ba 100644
 -			for (const handler of handlers) {
 -				try {
 -					const handlerResult = await handler(event, ctx);
--
--					if (this.isSessionBeforeEvent(event) && handlerResult) {
--						result = handlerResult as SessionBeforeEventResult;
--						if (result.cancel) {
--							return result as RunnerEmitResult<TEvent>;
 +		this.eventDispatchDepth++;
 +		try {
 +			const ctx = this.createContext();
 +			let result: SessionBeforeEventResult | undefined;
-+
+ 
+-					if (this.isSessionBeforeEvent(event) && handlerResult) {
+-						result = handlerResult as SessionBeforeEventResult;
+-						if (result.cancel) {
+-							return result as RunnerEmitResult<TEvent>;
 +			for (const { ext, handlers } of snapshotEventHandlers(this.extensions, event.type)) {
 +				for (const handler of handlers) {
 +					try {
@@ -366,7 +358,11 @@ index 11ffaca7..7a39d5ba 100644
  	async emitCacheWarmingDecision(event: CacheWarmingDecisionEvent): Promise<CacheWarmingAction> {
 -		const ctx = this.createContext();
 -		let action = event.action;
--
++		this.eventDispatchDepth++;
++		try {
++			const ctx = this.createContext();
++			let action = event.action;
+ 
 -		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, event.type)) {
 -			for (const handler of handlers) {
 -				try {
@@ -379,11 +375,6 @@ index 11ffaca7..7a39d5ba 100644
 -						error: err instanceof Error ? err.message : String(err),
 -						stack: err instanceof Error ? err.stack : undefined,
 -					});
-+		this.eventDispatchDepth++;
-+		try {
-+			const ctx = this.createContext();
-+			let action = event.action;
-+
 +			for (const { ext, handlers } of snapshotEventHandlers(this.extensions, event.type)) {
 +				for (const handler of handlers) {
 +					try {
@@ -419,8 +410,6 @@ index 11ffaca7..7a39d5ba 100644
 -					const currentEvent: MessageEndEvent = { ...event, message: currentMessage };
 -					const handlerResult = (await handler(currentEvent, ctx)) as MessageEndEventResult | undefined;
 -					if (!handlerResult?.message) continue;
--
--					if (handlerResult.message.role !== currentMessage.role) {
 +		this.eventDispatchDepth++;
 +		try {
 +			const ctx = this.createContext();
@@ -442,7 +431,8 @@ index 11ffaca7..7a39d5ba 100644
 +							});
 +							continue;
 +						}
-+
+ 
+-					if (handlerResult.message.role !== currentMessage.role) {
 +						currentMessage = handlerResult.message;
 +						modified = true;
 +					} catch (err) {
@@ -606,14 +596,15 @@ index 11ffaca7..7a39d5ba 100644
 -		for (const { handlers } of snapshotEventHandlers(this.extensions, "tool_call")) {
 -			for (const handler of handlers) {
 -				const handlerResult = await handler(event, ctx);
-+			for (const { handlers } of snapshotEventHandlers(this.extensions, "tool_call")) {
-+				for (const handler of handlers) {
-+					const handlerResult = await handler(event, ctx);
- 
+-
 -				if (handlerResult) {
 -					result = handlerResult as ToolCallEventResult;
 -					if (result.block) {
 -						return result;
++			for (const { handlers } of snapshotEventHandlers(this.extensions, "tool_call")) {
++				for (const handler of handlers) {
++					const handlerResult = await handler(event, ctx);
++
 +					if (handlerResult) {
 +						result = handlerResult as ToolCallEventResult;
 +						if (result.block) {
@@ -633,7 +624,10 @@ index 11ffaca7..7a39d5ba 100644
  
  	async emitUserBash(event: UserBashEvent): Promise<UserBashEventResult | undefined> {
 -		const ctx = this.createContext();
--
++		this.eventDispatchDepth++;
++		try {
++			const ctx = this.createContext();
+ 
 -		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "user_bash")) {
 -			for (const handler of handlers) {
 -				try {
@@ -643,10 +637,6 @@ index 11ffaca7..7a39d5ba 100644
 -						throw new Error(
 -							"Invalid user_bash handler result: return undefined for local execution or exactly one valid { operations } or { result } object",
 -						);
-+		this.eventDispatchDepth++;
-+		try {
-+			const ctx = this.createContext();
-+
 +			for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "user_bash")) {
 +				for (const handler of handlers) {
 +					try {
@@ -692,13 +682,17 @@ index 11ffaca7..7a39d5ba 100644
  	}
  
  	/**
-@@ -1296,125 +1364,140 @@ export class ExtensionRunner {
+@@ -1303,177 +1371,197 @@
  	 * handlers then see the full transcript and their output is used as returned.
  	 */
  	async emitContext(messages: AgentMessage[]): Promise<AgentMessage[]> {
 -		const ctx = this.createContext();
 -		let currentMessages = structuredClone(messages);
--
++		this.eventDispatchDepth++;
++		try {
++			const ctx = this.createContext();
++			let currentMessages = structuredClone(messages);
+ 
 -		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "context")) {
 -			for (const handler of handlers) {
 -				try {
@@ -722,11 +716,6 @@ index 11ffaca7..7a39d5ba 100644
 -						error: message,
 -						stack,
 -					});
-+		this.eventDispatchDepth++;
-+		try {
-+			const ctx = this.createContext();
-+			let currentMessages = structuredClone(messages);
-+
 +			for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "context")) {
 +				for (const handler of handlers) {
 +					try {
@@ -815,7 +804,11 @@ index 11ffaca7..7a39d5ba 100644
  	async emitBeforeProviderRequest(payload: unknown): Promise<unknown> {
 -		const ctx = this.createContext();
 -		let currentPayload = payload;
--
++		this.eventDispatchDepth++;
++		try {
++			const ctx = this.createContext();
++			let currentPayload = payload;
+ 
 -		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "before_provider_request")) {
 -			for (const handler of handlers) {
 -				try {
@@ -826,11 +819,6 @@ index 11ffaca7..7a39d5ba 100644
 -					const handlerResult = await handler(event, ctx);
 -					if (handlerResult !== undefined) {
 -						currentPayload = handlerResult;
-+		this.eventDispatchDepth++;
-+		try {
-+			const ctx = this.createContext();
-+			let currentPayload = payload;
-+
 +			for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "before_provider_request")) {
 +				for (const handler of handlers) {
 +					try {
@@ -874,7 +862,10 @@ index 11ffaca7..7a39d5ba 100644
  
  	async emitBeforeProviderHeaders(headers: ProviderHeaders): Promise<ProviderHeaders> {
 -		const ctx = this.createContext();
--
++		this.eventDispatchDepth++;
++		try {
++			const ctx = this.createContext();
+ 
 -		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "before_provider_headers")) {
 -			for (const handler of handlers) {
 -				try {
@@ -893,10 +884,6 @@ index 11ffaca7..7a39d5ba 100644
 -						error: message,
 -						stack,
 -					});
-+		this.eventDispatchDepth++;
-+		try {
-+			const ctx = this.createContext();
-+
 +			for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "before_provider_headers")) {
 +				for (const handler of handlers) {
 +					try {
@@ -928,8 +915,7 @@ index 11ffaca7..7a39d5ba 100644
  	}
  
  	async emitBeforeAgentStart(
-@@ -1422,53 +1505,58 @@ export class ExtensionRunner {
- 		images: ImageContent[] | undefined,
+ 		trigger: BeforeAgentStartTrigger,
  		systemPromptOptions: BuildSystemPromptOptions,
  	): Promise<BeforeAgentStartCombinedResult> {
 -		const currentOptions = normalizeBuildSystemPromptOptions(systemPromptOptions);
@@ -943,26 +929,6 @@ index 11ffaca7..7a39d5ba 100644
 -			return renderCurrentSystemPrompt();
 -		};
 -		const messages: NonNullable<BeforeAgentStartEventResult["message"]>[] = [];
--
--		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "before_agent_start")) {
--			for (const handler of handlers) {
--				try {
--					const event: BeforeAgentStartEvent = {
--						type: "before_agent_start",
--						prompt,
--						images,
--						get systemPrompt() {
--							return renderCurrentSystemPrompt();
--						},
--						systemPromptOptions: currentOptions,
--					};
--					const handlerResult = await handler(event, ctx);
--
--					if (handlerResult) {
--						const result = handlerResult as BeforeAgentStartEventResult;
--						if (result.message) messages.push(result.message);
--						if (result.systemPrompt !== undefined) {
--							currentOptions.forceSystemPrompt = result.systemPrompt;
 +		this.eventDispatchDepth++;
 +		try {
 +			const currentOptions = normalizeBuildSystemPromptOptions(systemPromptOptions);
@@ -976,21 +942,37 @@ index 11ffaca7..7a39d5ba 100644
 +				return renderCurrentSystemPrompt();
 +			};
 +			const messages: NonNullable<BeforeAgentStartEventResult["message"]>[] = [];
-+
+ 
+-		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "before_agent_start")) {
+-			for (const handler of handlers) {
+-				try {
+-					const event: BeforeAgentStartEvent = {
+-						...trigger,
+-						type: "before_agent_start",
+-						get systemPrompt() {
+-							return renderCurrentSystemPrompt();
+-						},
+-						systemPromptOptions: currentOptions,
+-					};
+-					const handlerResult = await handler(event, ctx);
 +			for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "before_agent_start")) {
 +				for (const handler of handlers) {
 +					try {
 +						const event: BeforeAgentStartEvent = {
++							...trigger,
 +							type: "before_agent_start",
-+							prompt,
-+							images,
 +							get systemPrompt() {
 +								return renderCurrentSystemPrompt();
 +							},
 +							systemPromptOptions: currentOptions,
 +						};
 +						const handlerResult = await handler(event, ctx);
-+
+ 
+-					if (handlerResult) {
+-						const result = handlerResult as BeforeAgentStartEventResult;
+-						if (result.message) messages.push(result.message);
+-						if (result.systemPrompt !== undefined) {
+-							currentOptions.forceSystemPrompt = result.systemPrompt;
 +						if (handlerResult) {
 +							const result = handlerResult as BeforeAgentStartEventResult;
 +							if (result.message) messages.push(result.message);
@@ -1029,7 +1011,7 @@ index 11ffaca7..7a39d5ba 100644
  	}
  
  	async emitResourcesDiscover(
-@@ -1479,41 +1567,46 @@ export class ExtensionRunner {
+@@ -1484,41 +1572,46 @@
  		promptPaths: Array<{ path: string; extensionPath: string }>;
  		themePaths: Array<{ path: string; extensionPath: string }>;
  	}> {
@@ -1044,15 +1026,6 @@ index 11ffaca7..7a39d5ba 100644
 -					const event: ResourcesDiscoverEvent = { type: "resources_discover", cwd, reason };
 -					const handlerResult = await handler(event, ctx);
 -					const result = handlerResult as ResourcesDiscoverResult | undefined;
--
--					if (result?.skillPaths?.length) {
--						skillPaths.push(...result.skillPaths.map((path) => ({ path, extensionPath: ext.path })));
--					}
--					if (result?.promptPaths?.length) {
--						promptPaths.push(...result.promptPaths.map((path) => ({ path, extensionPath: ext.path })));
--					}
--					if (result?.themePaths?.length) {
--						themePaths.push(...result.themePaths.map((path) => ({ path, extensionPath: ext.path })));
 +		this.eventDispatchDepth++;
 +		try {
 +			const ctx = this.createContext();
@@ -1066,7 +1039,15 @@ index 11ffaca7..7a39d5ba 100644
 +						const event: ResourcesDiscoverEvent = { type: "resources_discover", cwd, reason };
 +						const handlerResult = await handler(event, ctx);
 +						const result = handlerResult as ResourcesDiscoverResult | undefined;
-+
+ 
+-					if (result?.skillPaths?.length) {
+-						skillPaths.push(...result.skillPaths.map((path) => ({ path, extensionPath: ext.path })));
+-					}
+-					if (result?.promptPaths?.length) {
+-						promptPaths.push(...result.promptPaths.map((path) => ({ path, extensionPath: ext.path })));
+-					}
+-					if (result?.themePaths?.length) {
+-						themePaths.push(...result.themePaths.map((path) => ({ path, extensionPath: ext.path })));
 +						if (result?.skillPaths?.length) {
 +							skillPaths.push(...result.skillPaths.map((path) => ({ path, extensionPath: ext.path })));
 +						}
@@ -1107,7 +1088,7 @@ index 11ffaca7..7a39d5ba 100644
  	}
  
  	/** Emit input event. Transforms chain, "handled" short-circuits. */
-@@ -1523,38 +1616,43 @@ export class ExtensionRunner {
+@@ -1528,38 +1621,43 @@
  		source: InputSource,
  		streamingBehavior?: "steer" | "followUp",
  	): Promise<InputEventResult> {
@@ -1180,11 +1161,9 @@ index 11ffaca7..7a39d5ba 100644
 -			: { action: "continue" };
  	}
  }
-diff --git a/packages/coding-agent/src/core/extensions/types.ts b/packages/coding-agent/src/core/extensions/types.ts
-index 5d65cce9..9aa74b51 100644
 --- a/packages/coding-agent/src/core/extensions/types.ts
 +++ b/packages/coding-agent/src/core/extensions/types.ts
-@@ -1752,6 +1752,22 @@ export interface ExtensionAPI {
+@@ -1804,6 +1804,22 @@
  	/** Get available slash commands in the current session. */
  	getCommands(): SlashCommandInfo[];
  
@@ -1207,7 +1186,7 @@ index 5d65cce9..9aa74b51 100644
  	// =========================================================================
  	// Model and Thinking Level
  	// =========================================================================
-@@ -2121,6 +2137,8 @@ export type SetLabelHandler = (entryId: string, label: string | undefined) => vo
+@@ -2176,6 +2192,8 @@
   * Contains flag values (defaults set during registration, CLI values set after).
   */
  export interface ExtensionRuntimeState {

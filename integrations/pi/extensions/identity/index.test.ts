@@ -399,7 +399,7 @@ describe("parity with pinned Pi buildSystemPrompt (structural affordances only)"
     return m[1].split("\n").map((l) => l.replace(/^- /, ""));
   };
   const piTools = (piPrompt: string): string[] => {
-    const m = piPrompt.match(/\n<tools>\n([\s\S]*?)\n\nIn addition to the tools above/);
+    const m = piPrompt.match(/\n<tools>\n([\s\S]*?)\n\n(?:In addition to the tools above|Additional tools may be available)/);
     if (!m) throw new Error("Pi default prompt shape changed: <tools> block not found");
     return m[1].split("\n");
   };
@@ -461,7 +461,7 @@ describe("parity with pinned Pi buildSystemPrompt (structural affordances only)"
       expect(familiarCwd).toBe(piCwd);
 
       // Identity-first; Pi's framing is what Pi emits, never what Familiar does.
-      expect(pi.startsWith("You are an expert coding assistant")).toBe(true);
+      expect(pi.startsWith("You are a coding assistant running inside pi")).toBe(true);
       expect(familiar.startsWith(IDENTITY)).toBe(true);
       expect(familiar).not.toContain("expert coding assistant");
       expect(familiar).not.toContain("Pi documentation");
@@ -496,7 +496,9 @@ describe("wire guard: identity on every provider request", () => {
     const text = out.system[0].text as string;
     expect(text.startsWith(IDENTITY)).toBe(true);
     expect(text).not.toContain("expert coding assistant");
-    expect(text).toContain("Current working directory: /srv/familiar/work");
+    expect(text).not.toContain("coding assistant running inside pi");
+    // Pi 1.x renders the working directory as a <cwd> section; the splice keeps it.
+    expect(text).toContain("<cwd>\n/srv/familiar/work\n</cwd>");
     expect(out.system).toHaveLength(1);
     expect(out.system[0].cache_control).toEqual({ type: "ephemeral" });
     expect(out.messages).toEqual([{ role: "user", content: "wake" }]);

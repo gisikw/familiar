@@ -1,18 +1,20 @@
 # Familiar's downstream Pi patch (no fork)
 
-This directory owns the Nix adaptation of **earendil-works/pi v1.1.0** used
+This directory owns the Nix adaptation of **earendil-works/pi v1.5.0** used
 by the top-level locked nixpkgs. It is not an extension and does not belong in
 `integrations/pi`. There is no replacement source checkout or maintained git fork.
 `default.nix` adapts the locked nixpkgs 0.84.1 recipe to immutable upstream commit
-`abe508e1b89912adde45528136c3221eb69acdd7` (tag `v1.1.0`), including the exact
-1.1.0 source, npm dependency, model-data, workspace-build and install metadata,
-taken from nixpkgs' own 1.0.0 recipe: `npm run build:offline` (upstream's root
-workspace order, now including codemode, mcp and durable plus the bundled CLI)
-and runtime copies of the codemode and mcp workspaces. The nixpkgs
-wrappers, install checks and platform cleanup remain in force. In particular,
-the 1.0.0 Darwin post-install step removes both foreign Linux seccomp vendor
-directories from `@anthropic-ai/sandbox-runtime`; Darwin derivation inspection
-is part of the release check.
+`f9a26365568127461c47a07a37dcb42c140a3ac5` (tag `v1.5.0`), including the exact
+1.5.0 source, npm dependency, model-data, workspace-build and install metadata,
+taken from nixpkgs' own 1.5.0 recipe: `npm run build:offline` (upstream's root
+workspace order: telemetry, schema, chord, tui, codemode, mcp, ai, durable, env,
+agent, coding-agent, plus the bundled CLI) and runtime copies of the codemode,
+durable, env and mcp workspaces. Familiar also copies `pi-schema`, which pi-ai
+imports at runtime and nixpkgs' list omits (its CLI bundle hides that; the
+installed-output tests load the unbundled packages). The nixpkgs
+wrappers, install checks and platform cleanup remain in force. The 1.0.0 Darwin
+seccomp cleanup is kept as a harmless no-op (1.5.0 dropped the sandbox
+dependency); Darwin derivation inspection is part of the release check.
 Both default/pi shells and `PI_PACKAGE_DIR` use this package. It is also exported
 as `packages.<system>.pi-coding-agent` and `checks.<system>.pi-invoke-command`.
 
@@ -69,7 +71,7 @@ this general API now enforces its own admission fence rather than trusting that
 frontend or documentation. The name `invokeExtensionCommand` deliberately excludes
 built-ins/templates/skills; there is no broad `invokeCommand` compatibility alias.
 
-We are pinned to verified **1.1.0**. Its owning-session `isIdle` is backed by
+We are pinned to verified **1.5.0**. Its owning-session `isIdle` is backed by
 `_isAgentRunActive` and `isCompacting`; the former spans the run and post-run
 retries/continuations, rather than only `agent.state.isStreaming`. This is the
 upstream lifecycle predicate, not a new quiescence implementation. Because `_emitAgentSettled` clears that flag before
@@ -156,23 +158,22 @@ bootstrap registration cannot leak into a replaced runtime.
 
 ## 1.0.0 rebase assumptions and patch order
 
-Upstream tag `v1.1.0` is the lightweight tag at
-`abe508e1b89912adde45528136c3221eb69acdd7`. Familiar applies exactly:
+Upstream tag `v1.5.0` is commit
+`f9a26365568127461c47a07a37dcb42c140a3ac5`. Familiar applies exactly:
 
 1. `invoke-command.patch` — awaited exact-name direct extension-command
    invocation and complete event/settled admission fences.
 2. `model-bootstrap.patch` — awaited provider-only materialization from the exact
    effective CLI/restored/default request before any initial model resolution.
-3. `cache-write-1h-delta.patch` — pi-ai's Anthropic stream also takes
-   `usage.cache_creation.ephemeral_1h_input_tokens` from `message_delta`. Upstream
-   reads it only from `message_start`. tiamat's facade combines several upstream
-   calls, so its `message_start` carries zero usage and the split arrives at the
-   end. Without this, every 1h write logs `cacheWrite1h: 0` and is priced at the
-   5m rate. The message_start value is kept when the delta omits it. Behavior test:
-   `cache-write-1h-delta.test.mjs` (injected fetch, installed output).
 
-Neither facility exists upstream in 1.0.0, so no downstream portion was
-superseded. The rebase preserves the changed upstream loader factory/runtime
+`cache-write-1h-delta.patch` (Oct 22) is retired: upstream pi-ai reads
+`usage.cache_creation.ephemeral_1h_input_tokens` from `message_delta` itself (it
+was already there by 1.1.0; added for Vercel AI Gateway), which is exactly what
+tiamat's facade needs. `cache-write-1h-delta.test.mjs` still runs against the
+installed output, so a regression upstream fails the build.
+
+Neither remaining facility exists upstream in 1.5.0, so no other downstream
+portion was superseded. The rebase preserves the changed upstream loader factory/runtime
 ownership, session-runtime replacement bodies, SDK construction, prompt body,
 SessionManager loading/appending and compaction flow. The command patch only
 wraps the 13 awaited runner emitter bodies and the `_emitAgentSettled` body and
@@ -200,7 +201,7 @@ upstream's `build:offline` script (TypeScript 7, formerly tsgo), restores the mo
 coding-agent output at `lib/node_modules/pi-monorepo`.
 
 Evaluation asserts the expected locked nixpkgs 0.84.1 base recipe and its source,
-then replaces it with exact **1.1.0** commit/source/vendor/model-data metadata.
+then replaces it with exact **1.5.0** commit/source/vendor/model-data metadata.
 It also asserts absence of nixpkgs patches or a prePatch hook. Before applying
 any downstream patch, SHA-256 checks cover whole `loader.ts`, `runner.ts`,
 `types.ts`, `agent-session.ts`, `session-manager.ts`, `agent-session-runtime.ts`,
@@ -331,3 +332,48 @@ pin `8ef403a6…`, re-reviewed). All 13 pinned runner emitters are unchanged in
 The nixpkgs base (0.84.1 recipe) is unchanged. Recipe notes above that say
 "1.0.0" about the build recipe still apply: the 1.0.0 recipe builds 1.1.0
 unchanged (new src/npmDeps/modelData hashes only; flake checks green).
+
+## 1.1.0 → 1.5.0 true-up (Nov 9, 2026)
+
+Rebased the branch onto main (which had added `cache-write-1h-delta.patch`, the
+mid-turn compaction check and the identity wire guard since Oct 3), then moved
+both patches from `v1.1.0` onto `v1.5.0` (`f9a26365`). Hashes for src, npmDeps
+and modelData are nixpkgs master's own 1.5.0 recipe; the build reproduced them.
+
+- **`model-bootstrap`** applied with offsets only.
+- **`invoke-command`** failed one hunk: 1.2 changed
+  `emitBeforeAgentStart(prompt, images, options)` to
+  `emitBeforeAgentStart(trigger, options)` (a `messageType: "user" | "custom"`
+  union). The depth fence was re-applied around the new pristine body; it is the
+  only one of the 13 pinned emitters whose body changed (diffed 1.1.0 vs 1.5.0;
+  the other 12 are byte-identical), re-pinned `bedb6850…`. The `prompt()` pin is
+  re-pinned `b9c18c3d…`: 1.2 moved the run setup out of `prompt()` into a shared
+  `_startRun(trigger)`, still after `_tryExecuteExtensionCommand` and before the
+  streaming check, which is what the fence relies on. `_tryExecuteExtensionCommand`
+  and `_emitAgentSettled` are byte-identical to 1.1.0 (pins unchanged). Since 1.2
+  a run counts as busy while it starts (including `before_agent_start`), which only
+  narrows command admission further. The extension-docs hunk moved below the
+  restructured docs ("Familiar downstream" section before *State Management*).
+- **`cache-write-1h-delta`** retired (see above).
+- Behavior change to know about: since 1.2, `before_agent_start` also fires for
+  `pi.sendMessage(..., { triggerTurn: true })` runs (`messageType: "custom"`).
+  Familiar's handlers: identity now covers woken runs natively (its
+  `context_with_system` projection and the 0.85.1 wire guard stay as fallbacks);
+  l1 and handoff key off their own input flags, so custom runs are no-ops for
+  them; timegap will now add its time-awareness reminder to woken runs too.
+- Pi's default prompt opening changed to "You are a coding assistant running
+  inside pi"; the wire guard recognizes both openings.
+- Workspaces: client, protocol and server are gone; durable, env and schema are
+  copied at install.
+- Test fixes: the invoke-command runtime test uses the trigger signature; the zip
+  rewind disk test's fake `AgentSession` gets the two class fields `navigateTree`
+  touches; identity parity/wire-guard tests accept the 1.5 wording and `<cwd>`.
+- Also fixed on the way (was broken on main): the worker runtime never shipped
+  `lib/system-payload.ts`, which `tiamat/system-prompt.ts` imports, and its check
+  still expected only two patches.
+
+Checks: `nix build .#pi-coding-agent` (shape, runtime and installed-output
+tests), all seven flake checks, and the extension suite (`bun test` in
+`integrations/pi/extensions`: 224/224 with `PI_PACKAGE_DIR`/`NODE_PATH` from the
+patched package). `test/pi-extra-extensions.test.sh` and
+`test/pi-model-store.test.sh` fail identically on main; not addressed here.

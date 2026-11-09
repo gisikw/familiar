@@ -15,7 +15,7 @@ let
   inherit (pkgs) lib;
   schema = 1;
   # Public extension material shipped with the runtime: the Tiamat provider
-  # extension and the one shared module it imports. Tests are excluded; the
+  # extension and the shared modules it imports. Tests are excluded; the
   # worker-runtime check proves the copied set loads on its own.
   extensions = pkgs.runCommand "familiar-worker-extensions" { src = extensionsSrc; } ''
     mkdir -p "$out/tiamat" "$out/lib"
@@ -23,7 +23,7 @@ let
       case "$f" in *.test.ts) ;; *) cp "$f" "$out/tiamat/" ;; esac
     done
     cp "$src/tiamat/README.md" "$out/tiamat/"
-    cp "$src/lib/debug.ts" "$out/lib/"
+    cp "$src/lib/debug.ts" "$src/lib/system-payload.ts" "$out/lib/"
   '';
   # Practical worker tools: what the resident `pi` shell and the isolated
   # `agents` shell already make explicit, minus resident-only media/secret

@@ -135,11 +135,20 @@ export default function(pi: ExtensionAPI) {
   };
 }
 
-/** Pi's built-in default prompt opens with this framing; Familiar's never does. */
-export const PI_DEFAULT_OPENING = "You are an expert coding assistant operating inside pi";
+/**
+ * Pi's built-in default prompt opens with one of these framings; Familiar's
+ * never does. 0.85.1 through 1.1.0 used the first; 1.5.0 reworded it.
+ */
+export const PI_DEFAULT_OPENINGS = [
+  "You are an expert coding assistant operating inside pi",
+  "You are a coding assistant running inside pi",
+] as const;
+/** The opening the pinned Pi emits today. */
+export const PI_DEFAULT_OPENING = PI_DEFAULT_OPENINGS[PI_DEFAULT_OPENINGS.length - 1];
 
 export function isPiDefaultPrompt(text: string): boolean {
-  return text.trimStart().startsWith(PI_DEFAULT_OPENING);
+  const head = text.trimStart();
+  return PI_DEFAULT_OPENINGS.some((opening) => head.startsWith(opening));
 }
 
 /**

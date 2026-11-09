@@ -2,17 +2,17 @@
 let
   base = pkgs.pi-coding-agent;
   lockedBaseVersion = "0.84.1";
-  targetVersion = "1.1.0";
-  targetCommit = "abe508e1b89912adde45528136c3221eb69acdd7";
+  targetVersion = "1.5.0";
+  targetCommit = "f9a26365568127461c47a07a37dcb42c140a3ac5";
   targetSrc = pkgs.fetchFromGitHub {
     owner = "earendil-works";
     repo = "pi";
     rev = targetCommit;
-    hash = "sha256-lwjspkMGrW+8Fl/yBEDEFsHZJA57OKOhmVQmi6zfej4=";
+    hash = "sha256-eH3RuypmXeayuZ9lEag6KW3m2LSM4bDc4ogyHxjZMNI=";
   };
   targetModelData = pkgs.fetchurl {
     url = "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-${targetVersion}.tgz";
-    hash = "sha256-bKqzPOxXSA7QLFf+N0KKAwp3zCoGYoFLQ1pc+JMq2Ck=";
+    hash = "sha256-4yD+e9K5J3grqaN9NW/lg38aqWpGQyYQ4bO5zLdI6lw=";
   };
 in
 assert pkgs.lib.assertMsg (base.version == lockedBaseVersion)
@@ -25,23 +25,21 @@ assert pkgs.lib.assertMsg ((old.patches or []) == [] && (old.prePatch or "") == 
 {
   version = targetVersion;
   src = targetSrc;
-  npmDepsHash = "sha256-GOh5WG+rRgzoy/yVHY5PoEKJZGQcEGhISrDDJxkP8W4=";
+  npmDepsHash = "sha256-koVd02HEhEAOkcvIuUg4X1A6P6P0B+wJp4DJLwkH62w=";
   # overrideAttrs runs after buildNpmPackage formed its fetched dependency tree,
   # so replace that derived input as well as documenting its vendor hash.
   npmDeps = pkgs.fetchNpmDeps {
     name = "pi-coding-agent-${targetVersion}-npm-deps";
     src = targetSrc;
-    hash = "sha256-GOh5WG+rRgzoy/yVHY5PoEKJZGQcEGhISrDDJxkP8W4=";
+    hash = "sha256-koVd02HEhEAOkcvIuUg4X1A6P6P0B+wJp4DJLwkH62w=";
   };
   modelData = targetModelData;
 
-  # Pi 1.0.0 added codemode, mcp and durable workspaces (plus a bundled
-  # coding-agent CLI built by scripts/build-coding-agent-bundle.mjs) and its
-  # TypeScript 7 devDependency is the native compiler. Upstream's root
-  # `build:offline` script owns the workspace order (chord, tui, telemetry,
-  # codemode, mcp, ai, durable, agent, protocol, client, server, coding-agent)
-  # and checks the restored model data instead of fetching it. This mirrors
-  # nixpkgs' exact 1.0.0 recipe while the locked nixpkgs still packages 0.84.1.
+  # Upstream's root `build:offline` script owns the workspace order (1.5.0:
+  # telemetry, schema, chord, tui, codemode, mcp, ai, durable, env, agent,
+  # coding-agent; protocol/client/server are gone since 1.2) and checks the
+  # restored model data instead of fetching it. This mirrors nixpkgs' exact
+  # 1.5.0 recipe while the locked nixpkgs still packages 0.84.1.
   buildPhase = ''
     runHook preBuild
 
@@ -62,8 +60,10 @@ assert pkgs.lib.assertMsg ((old.patches or []) == [] && (old.prePatch or "") == 
   '';
   # Order is contractual: command fencing, then the provider-only
   # pre-resolution bootstrap (which relies on loader queuing).
-  # cache-write-1h-delta touches pi-ai only and is order-independent.
-  patches = [ ./invoke-command.patch ./model-bootstrap.patch ./cache-write-1h-delta.patch ];
+  # cache-write-1h-delta.patch is retired: upstream pi-ai reads the
+  # message_delta cache_creation 1h split itself (present by 1.1.0). Its
+  # behavior test still runs against the installed output below.
+  patches = [ ./invoke-command.patch ./model-bootstrap.patch ];
 
   postPatch = ''
     node ${./invoke-command-shape.test.mjs}
@@ -80,7 +80,10 @@ assert pkgs.lib.assertMsg ((old.patches or []) == [] && (old.prePatch or "") == 
     runHook postCheck
   '';
 
-  # Pi 1.0.0's package recipe adds codemode and mcp to the copied runtime workspaces.
+  # nixpkgs' 1.5.0 recipe copies these runtime workspaces (durable and env added,
+  # client and protocol removed upstream). pi-schema is added here on top of
+  # nixpkgs: pi-ai's validation imports it at runtime, and the installed-output
+  # tests below load the unbundled packages (the CLI bundle alone would hide it).
   # Validate installed output unconditionally after reproducing that install step.
   postInstall = ''
     local nm="$out/lib/node_modules/pi-monorepo/node_modules"
@@ -88,10 +91,11 @@ assert pkgs.lib.assertMsg ((old.patches or []) == [] && (old.prePatch or "") == 
     for ws in @earendil-works/chord:packages/chord \
               @earendil-works/pi-ai:packages/ai \
               @earendil-works/pi-agent-core:packages/agent \
-              @earendil-works/pi-client:packages/client \
               @earendil-works/pi-codemode:packages/codemode \
+              @earendil-works/pi-durable:packages/durable \
+              @earendil-works/pi-env:packages/env \
               @earendil-works/pi-mcp:packages/mcp \
-              @earendil-works/pi-protocol:packages/protocol \
+              @earendil-works/pi-schema:packages/schema \
               @earendil-works/pi-telemetry:packages/telemetry \
               @earendil-works/pi-tui:packages/tui; do
       IFS=: read -r pkg src <<< "$ws"

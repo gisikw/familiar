@@ -16,12 +16,12 @@ Since 0.86 Pi renders its default prompt as XML-tagged transcript sections
 `<cwd>`, plus extension `sections`). Familiar keeps its own headings; the
 rows below note where 1.0.0 changed shape.
 
-| Section | Pi 1.0.0 | Familiar | Classification |
+| Section | Pi 1.5.0 | Familiar | Classification |
 |---|---|---|---|
-| Opening framing | "expert coding assistant operating inside pi…" | private identity markdown | identity divergence: preserve |
+| Opening framing | "a coding assistant running inside pi…" (≤1.1: "expert coding assistant operating inside pi…") | private identity markdown | identity divergence: preserve |
 | `customPrompt` (SYSTEM.md / `--system-prompt`) | replaces the default prompt | ignored | identity divergence: preserve (identity dir is the declared mechanism; pinned) |
 | `selectedTools` / `toolSnippets` | only snippet-bearing selected tools listed; default set `read,bash,edit,write` | same (heading `Available Tools:`) | parity: adopt (default set added) |
-| "In addition to the tools above…" | present | omitted | generic prose: reject |
+| "Additional tools may be available." (≤1.1: "In addition to the tools above…") | present | omitted | generic prose: reject |
 | Cross-tool file-exploration rule | bash/PowerShell variants, only when grep/find/ls absent | bash variant only | adopt (PowerShell is Windows-only, unavailable in the resident) |
 | Tool-owned guidelines | `toolGuidelines[name]` for each selected tool in tool order (0.86+; previously flattened into `promptGuidelines`), then extra `promptGuidelines`, exact-string dedupe | same order and dedupe; unselected tools' guidelines excluded | affordance: adopt (without the 1.0 `toolGuidelines` read, every tool-owned guideline would silently disappear) |
 | Hand-copied edit/read/write/bash bullets | n/a (tool-owned) | removed in favour of the dynamic tool-owned text | affordance: adopt (also makes the `PI_*` bullet follow `exposeSessionEnvironment`) |

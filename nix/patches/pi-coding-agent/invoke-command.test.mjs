@@ -443,7 +443,7 @@ const dispatchCases = [
   ["before_provider_headers", (r) => r.emitBeforeProviderHeaders({})],
   [
     "before_agent_start",
-    (r) => r.emitBeforeAgentStart("test", undefined, {}),
+    (r) => r.emitBeforeAgentStart({ messageType: "user", prompt: "test", images: undefined }, {}),
   ],
   [
     "resources_discover",
