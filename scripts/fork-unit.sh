@@ -15,8 +15,11 @@ task="${task%$'\001'}"
 export FAMILIAR_FORK_INITIAL_MESSAGE="$task"
 # The task is delivered once. A restarted fork resumes its own session; if any
 # message already follows the fork marker, the task was delivered, so re-sending
-# it would make the fork redo its work.
-if jq -se '(map(.customType == "familiar.fork.v1") | rindex(true)) as $m | $m != null and any(.[$m + 1:][]; .type == "message")' "$FAMILIAR_FORK_SESSION_FILE" >/dev/null 2>&1; then
+# it would make the fork redo its work. Only a lookback window is read: session
+# files carry the whole tree (hundreds of MB) and a fresh fork's marker is its
+# last entry. No marker in the window means the fork has run far past it, so the
+# task was delivered.
+if [ -s "$FAMILIAR_FORK_SESSION_FILE" ] && tail -n 2000 "$FAMILIAR_FORK_SESSION_FILE" 2>/dev/null | jq -se '(map(.customType == "familiar.fork.v1") | rindex(true)) as $m | $m == null or any(.[$m + 1:][]; .type == "message")' >/dev/null 2>&1; then
   unset FAMILIAR_FORK_INITIAL_MESSAGE
 fi
 export FAMILIAR_PRESENCE_STATE_DIR="$root/presence"
