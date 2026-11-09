@@ -154,7 +154,7 @@ export default function (pi: ExtensionAPI) {
     returnDispatched = true;
     pi.sendMessage({
       customType: RETURN_PROMPT,
-      content: `Write your return to ${parentSessionId}: what you're bringing home, in your own voice. This message is the merge; nothing follows it.${suffix}`,
+      content: `Write your return to ${parentSessionId}: what you're bringing home, in your own voice. Keep what you verified separate from what you only inferred, and if anything failed, name the dead ends so nobody retries them. This message is the merge; nothing follows it.${suffix}`,
       display: true,
       details: { parentSessionId, outstandingAgents: outstanding },
     }, { triggerTurn: true, deliverAs: "followUp" });

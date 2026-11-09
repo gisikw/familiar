@@ -106,7 +106,7 @@ test("the harness prompts a tool-free return turn and sends that turn as the mer
     message: { customType: "familiar.merge-return-request.v1" },
     options: { triggerTurn: true, deliverAs: "followUp" },
   });
-  expect(h.sentMessages[0].message.content).toBe("Write your return to parent: what you're bringing home, in your own voice. This message is the merge; nothing follows it.");
+  expect(h.sentMessages[0].message.content).toBe("Write your return to parent: what you're bringing home, in your own voice. Keep what you verified separate from what you only inferred, and if anything failed, name the dead ends so nobody retries them. This message is the merge; nothing follows it.");
 
   h.entries.push({ type: "message", id: "return-leaf", message: { role: "assistant", content: [{ type: "text", text: "I fixed the race and kept the tests green." }] } });
   await h.emit("agent_settled");
