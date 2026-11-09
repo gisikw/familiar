@@ -63,7 +63,7 @@ assert pkgs.lib.assertMsg ((old.patches or []) == [] && (old.prePatch or "") == 
   # cache-write-1h-delta.patch is retired: upstream pi-ai reads the
   # message_delta cache_creation 1h split itself (present by 1.1.0). Its
   # behavior test still runs against the installed output below.
-  patches = [ ./invoke-command.patch ./model-bootstrap.patch ];
+  patches = [ ./invoke-command.patch ./model-bootstrap.patch ./manual-short-compaction.patch ];
 
   postPatch = ''
     node ${./invoke-command-shape.test.mjs}
@@ -77,6 +77,7 @@ assert pkgs.lib.assertMsg ((old.patches or []) == [] && (old.prePatch or "") == 
     node ${./invoke-command.test.mjs} "$PWD/packages/coding-agent"
     node ${./model-bootstrap.test.mjs} "$PWD/packages/coding-agent"
     node ${./model-bootstrap-cli.test.mjs} "$PWD/packages/coding-agent"
+    node ${./manual-short-compaction.test.mjs} "$PWD/packages/coding-agent"
     runHook postCheck
   '';
 
@@ -119,6 +120,7 @@ assert pkgs.lib.assertMsg ((old.patches or []) == [] && (old.prePatch or "") == 
     node ${./model-bootstrap.test.mjs} "$piRoot"
     node ${./model-bootstrap-cli.test.mjs} "$piRoot"
     node ${./mid-turn-compaction.test.mjs} "$piRoot"
+    node ${./manual-short-compaction.test.mjs} "$piRoot"
     node ${./cache-write-1h-delta.test.mjs} "$piRoot"
     grep -F 'invokeExtensionCommand(name: string, args?: string): Promise<void>;' \
       "$piRoot/dist/core/extensions/types.d.ts"

@@ -1,0 +1,19 @@
+--- a/packages/coding-agent/src/core/agent-session.ts
++++ b/packages/coding-agent/src/core/agent-session.ts
+@@ -2862,7 +2862,15 @@
+ 			const settings = this.settingsManager.getCompactionSettings(model);
+ 			const pathEntries = this.sessionManager.getBranch();
+ 
+-			const preparation = prepareCompaction(pathEntries, settings);
++			let preparation = prepareCompaction(pathEntries, settings);
++			// Explicit extension handoffs must work even when the recent-history
++			// budget retains the entire session. Retry with the smallest retained
++			// tail, using Pi's normal safe cut points. Automatic compaction and
++			// sessions without a compaction handler keep upstream behavior.
++			if (!preparation && this._extensionRunner.hasHandlers("session_before_compact")) {
++				const fallback = prepareCompaction(pathEntries, { ...settings, keepRecentTokens: 0 });
++				if (fallback) preparation = { ...fallback, settings };
++			}
+ 			if (!preparation) {
+ 				// Check why we can't compact
+ 				const lastEntry = pathEntries[pathEntries.length - 1];

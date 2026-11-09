@@ -165,6 +165,14 @@ Upstream tag `v1.5.0` is commit
    invocation and complete event/settled admission fences.
 2. `model-bootstrap.patch` — awaited provider-only materialization from the exact
    effective CLI/restored/default request before any initial model resolution.
+3. `manual-short-compaction.patch` — when explicit manual compaction would retain
+   all history and an extension compaction handler exists, retry preparation with
+   `keepRecentTokens: 0`, using upstream safe cut points. The handler receives the
+   original settings; no persisted retention setting changes. Empty/already
+   compacted sessions still fail, and automatic compaction is unchanged.
+   `manual-short-compaction.test.mjs` exercises the compiled AgentSession paths,
+   including extension-provided summary persistence, normal retention, no-handler,
+   empty/already-compacted, and threshold/overflow automatic cases.
 
 `cache-write-1h-delta.patch` (Oct 22) is retired: upstream pi-ai reads
 `usage.cache_creation.ephemeral_1h_input_tokens` from `message_delta` itself (it
@@ -172,10 +180,11 @@ was already there by 1.1.0; added for Vercel AI Gateway), which is exactly what
 tiamat's facade needs. `cache-write-1h-delta.test.mjs` still runs against the
 installed output, so a regression upstream fails the build.
 
-Neither remaining facility exists upstream in 1.5.0, so no other downstream
+Neither command/bootstrap facility exists upstream in 1.5.0, so no other downstream
 portion was superseded. The rebase preserves the changed upstream loader factory/runtime
 ownership, session-runtime replacement bodies, SDK construction, prompt body,
-SessionManager loading/appending and compaction flow. The command patch only
+SessionManager loading/appending and automatic compaction flow. Manual short-session
+preparation has the bounded fallback described above. The command patch only
 wraps the 13 awaited runner emitter bodies and the `_emitAgentSettled` body and
 hash-checks each body after removing that one indentation level. The bootstrap
 patch's shared provider flush now also drains 0.99's queued virtual-model
