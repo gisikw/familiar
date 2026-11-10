@@ -40,7 +40,7 @@ try {
     "tiamat",
     "timegap",
     "web",
-    "zip",
+    "rewind",
   ]
     .map((name) =>
       join(repo, "integrations", "pi", "extensions", name, "index.ts"),

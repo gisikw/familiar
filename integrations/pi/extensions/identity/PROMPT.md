@@ -26,7 +26,7 @@ rows below note where 1.0.0 changed shape.
 | Tool-owned guidelines | `toolGuidelines[name]` for each selected tool in tool order (0.86+; previously flattened into `promptGuidelines`), then extra `promptGuidelines`, exact-string dedupe | same order and dedupe; unselected tools' guidelines excluded | affordance: adopt (without the 1.0 `toolGuidelines` read, every tool-owned guideline would silently disappear) |
 | Hand-copied edit/read/write/bash bullets | n/a (tool-owned) | removed in favour of the dynamic tool-owned text | affordance: adopt (also makes the `PI_*` bullet follow `exposeSessionEnvironment`) |
 | "Be concise" / "Show file paths clearly" | always appended | omitted | identity dilution: reject (register belongs to the authored identity; pinned) |
-| Familiar guidelines (🗣 transcription, mark, handoff) | n/a | kept; the `mark` bullet now only while `mark` is an active tool | Familiar-specific: preserve |
+| Familiar guidelines (🗣 transcription, handoff) | n/a | kept (the `mark` bullet went with the zip extension) | Familiar-specific: preserve |
 | Pi documentation section | present | omitted | reject (the repository `pi` skill covers it on demand) |
 | `appendSystemPrompt` (`APPEND_SYSTEM.md`, `--append-system-prompt`) | `<addendum>` after docs | raw bytes after guidelines | operator-authorized text: adopt; `<addendum>` wrapper not adopted (bytes unchanged by the 1.0 upgrade) |
 | `contextFiles` `<project_context>` | after append; 1.0 section bytes (`<project_context>\nProject-specific…` with no padding blank lines) | same bytes, same position | adopt (resident runs `--no-context-files`, so normally empty; never logged) |

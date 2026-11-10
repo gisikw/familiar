@@ -145,9 +145,6 @@ skip_version_check = 1
 # dir = "./state/subagents"
 # session_dir = "./state/pi/subagent-sessions"
 
-[zip]
-# model = "anthropic/claude-haiku-4-5"
-
 # The landed unified theme owns this section and is preserved alongside the
 # generic schema. Omit any key to keep the built-in gruvbox default.
 # Colors accept #rgb, #rrggbb, or #rrggbbaa; invalid colors fail boot loudly.

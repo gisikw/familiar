@@ -47,7 +47,7 @@ describe("pi 1.0.0 extension discovery contract", () => {
     const repo = resolve(import.meta.dir, "..", "..", "..", "..");
     const extensionRoot = join(repo, "integrations", "pi", "extensions");
     const expected = [
-      "footer", "handoff", "identity", "imp", "l1", "scheduler", "subscriber", "tiamat", "timegap", "web", "zip",
+      "footer", "handoff", "identity", "imp", "l1", "scheduler", "subscriber", "tiamat", "timegap", "web", "rewind",
     ];
     const rootScripts = readdirSync(extensionRoot)
       .filter((name: string) => name.endsWith(".ts") || name.endsWith(".js"));

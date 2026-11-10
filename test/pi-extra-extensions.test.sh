@@ -114,7 +114,7 @@ set -e
 jq -e --arg root "$REPO/integrations/pi/extensions" '
   ([
     "footer", "handoff", "identity", "imp", "l1", "scheduler", "subscriber",
-    "tiamat", "web", "zip"
+    "tiamat", "web", "rewind"
   ] | map($root + "/" + .)) as $builtins
   | ($builtins - .extensions | length) == 0
     and (.extensions | index($root + "/imp")) != null

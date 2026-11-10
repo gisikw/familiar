@@ -101,7 +101,7 @@ export function parseNominations(text: string): unknown[] | null {
  * The cue scope: "first mention" means first since my context last started
  * over. Presence keeps one session ID forever and compacts in place, so the
  * session ID alone would mean "first mention ever". Scope it to the latest
- * compaction on the current branch (handoff clears and zips both write one);
+ * compaction on the current branch (handoff clears write one);
  * derived from the session file, so it survives restarts.
  */
 export function cueScope(session: string, branch: readonly any[] | undefined): string {

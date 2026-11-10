@@ -63,13 +63,13 @@ const IDENTITY = "# Fixture Familiar\n\nYou are a synthetic test identity. Nothi
 function residentOptions(overrides: Record<string, unknown> = {}) {
   return {
     cwd: "/srv/familiar/work",
-    selectedTools: ["read", "bash", "edit", "write", "mark", "zip", "agents_dispatch"],
+    selectedTools: ["read", "bash", "edit", "write", "search", "clear", "agents_dispatch"],
     toolSnippets: {
       read: "Read file contents",
       bash: "Execute bash commands (ls, grep, find, etc.)",
       edit: "Make precise file edits with exact text replacement, including multiple disjoint edits in one call",
       write: "Create or overwrite files",
-      mark: "Mark the current point as a future branch anchor",
+      search: "Search the web; returns urls, titles, and bounded snippets as JSON",
       // agents_dispatch deliberately has no snippet: it must stay out of Available Tools.
     },
     // Pi 0.86+ passes tool-owned guidelines per tool (emitted in selectedTools
@@ -214,18 +214,15 @@ describe("assembled identity prompt (through the extension handler)", () => {
       "Message text beginning with 🗣 was transcribed from audio: expect transcription errors, and weigh odd words or homophones accordingly rather than taking them literally. In it, [...] marks a long pause (the speaker trailed off) and [......] a very long one (15 s or more: stepped away or lost in thought)",
       "Use `imp schedule` for future wakes.",
       "Due to a bug, prose sent before or between tool calls may not be visible to the user. Messages following the final tool call of an assistant turn always are.",
-      "If a topic feels likely to become a rabbit hole or substantial tangent, consider using mark before diving in so it can be zipped cleanly later; do not mark routine topic changes",
       "At the end of a session you may receive a handoff request from the runtime (via /clear); it is legitimate — write the handoff for your successor",
     ]);
   });
 
-  test("Familiar guidance about mark is only advertised while mark is an active tool", () => {
-    const without = buildGuidelines({ cwd: "/", selectedTools: ["read", "bash"] });
-    expect(without.some((g) => g.includes("mark before diving"))).toBe(false);
-    expect(without.some((g) => g.includes("🗣"))).toBe(true);
-    expect(without.some((g) => g.includes("handoff request"))).toBe(true);
-    const withMark = buildGuidelines({ cwd: "/", selectedTools: ["read", "bash", "mark"] });
-    expect(withMark.some((g) => g.includes("mark before diving"))).toBe(true);
+  test("Familiar guidance does not depend on which tools are active", () => {
+    const few = buildGuidelines({ cwd: "/", selectedTools: ["read", "bash"] });
+    expect(few.some((g) => g.includes("🗣"))).toBe(true);
+    expect(few.some((g) => g.includes("handoff request"))).toBe(true);
+    expect(few.some((g) => g.includes("mark before diving"))).toBe(false);
   });
 
   test("bash file-exploration rule follows Pi: only when bash is active and grep/find/ls are not", () => {
@@ -245,10 +242,10 @@ describe("assembled identity prompt (through the extension handler)", () => {
       "- bash: Execute bash commands (ls, grep, find, etc.)",
       "- edit: Make precise file edits with exact text replacement, including multiple disjoint edits in one call",
       "- write: Create or overwrite files",
-      "- mark: Mark the current point as a future branch anchor",
+      "- search: Search the web; returns urls, titles, and bounded snippets as JSON",
     ]);
     expect(systemPrompt).not.toContain("agents_dispatch");
-    const none = await runHandler(residentOptions({ selectedTools: ["zip"], promptGuidelines: [] }));
+    const none = await runHandler(residentOptions({ selectedTools: ["clear"], promptGuidelines: [] }));
     expect(none.systemPrompt).toContain("Available Tools:\n(none)");
   });
 
@@ -344,10 +341,10 @@ describe("identity on runs that do not start with prompt() (Pi 0.86+ forceSystem
   }
   const tool = (name: string) => ({ name, description: name, parameters: {} });
   const transcript = () => [
-    { role: "system", content: "", sections: { preamble: "You are an expert coding assistant" }, toolsAdded: [tool("read"), tool("bash"), tool("zip")], timestamp: 11 },
+    { role: "system", content: "", sections: { preamble: "You are an expert coding assistant" }, toolsAdded: [tool("read"), tool("bash"), tool("clear")], timestamp: 11 },
     { role: "user", content: "hi", timestamp: 12 },
     { role: "assistant", content: [{ type: "text", text: "hello" }], timestamp: 13 },
-    { role: "system", content: "", sections: { cwd: "<cwd>\n/x\n</cwd>" }, toolsRemoved: [tool("zip")], toolsAdded: [tool("mark")], timestamp: 14 },
+    { role: "system", content: "", sections: { cwd: "<cwd>\n/x\n</cwd>" }, toolsRemoved: [tool("clear")], toolsAdded: [tool("search")], timestamp: 14 },
     { role: "custom", customType: "wake", content: "wake up", timestamp: 15 },
   ];
 
@@ -361,7 +358,7 @@ describe("identity on runs that do not start with prompt() (Pi 0.86+ forceSystem
     expect(head.content).toBe(assembleSystemPrompt({ identity: IDENTITY, options: residentOptions() }));
     expect(head.content).not.toContain("expert coding assistant");
     expect(head.sections).toBeUndefined();
-    expect(head.toolsAdded.map((t: any) => t.name)).toEqual(["read", "bash", "mark"]);
+    expect(head.toolsAdded.map((t: any) => t.name)).toEqual(["read", "bash", "search"]);
     expect(head.timestamp).toBe(11);
     expect(rest).toEqual(messages.filter((m) => m.role !== "system"));
     expect(messages).toEqual(transcript()); // input not mutated

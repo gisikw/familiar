@@ -24,6 +24,3 @@ curl -fsS http://localhost:17777/health >/dev/null
 
 bun harness.ts
 
-# Zip extension: markers, scheduled editorial branching, paged recommendations,
-# and customized /tree summaries. Self-contained; model calls are stubbed.
-bun zip.ts

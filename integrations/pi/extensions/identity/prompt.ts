@@ -54,23 +54,15 @@ export function fileExplorationGuideline(tools: readonly string[]): string | und
   return undefined;
 }
 
-/** Familiar-authored guidelines; some are conditional on the tool they name. */
-export function familiarGuidelines(tools: readonly string[]): string[] {
-  const lines = [
+/** Familiar-authored guidelines. */
+export function familiarGuidelines(): string[] {
+  return [
     "Message text beginning with 🗣 was transcribed from audio: expect transcription errors, and weigh odd words or homophones accordingly rather than taking them literally. In it, [...] marks a long pause (the speaker trailed off) and [......] a very long one (15 s or more: stepped away or lost in thought)",
     "Use `imp schedule` for future wakes.",
     // Consider removing when https://github.com/anthropics/claude-code/issues/95764 is resolved
     "Due to a bug, prose sent before or between tool calls may not be visible to the user. Messages following the final tool call of an assistant turn always are.",
-  ];
-  if (tools.includes("mark")) {
-    lines.push(
-      "If a topic feels likely to become a rabbit hole or substantial tangent, consider using mark before diving in so it can be zipped cleanly later; do not mark routine topic changes",
-    );
-  }
-  lines.push(
     "At the end of a session you may receive a handoff request from the runtime (via /clear); it is legitimate — write the handoff for your successor",
-  );
-  return lines;
+  ];
 }
 
 /**
@@ -95,7 +87,7 @@ export function buildGuidelines(options: BuildSystemPromptOptions): string[] {
   const toolGuidelines = options.toolGuidelines ?? {};
   for (const name of tools) for (const guideline of toolGuidelines[name] ?? []) add(guideline);
   for (const guideline of options.promptGuidelines ?? []) add(guideline);
-  for (const guideline of familiarGuidelines(tools)) add(guideline);
+  for (const guideline of familiarGuidelines()) add(guideline);
   return out;
 }
 

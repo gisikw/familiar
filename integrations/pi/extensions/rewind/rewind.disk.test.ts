@@ -6,14 +6,8 @@ import { join } from "node:path";
 const piRoot = process.env.PI_PACKAGE_DIR;
 if (!piRoot) throw new Error("PI_PACKAGE_DIR is required (point it at Familiar's pinned Pi package)");
 const realCodingAgent = await import(join(piRoot, "dist/index.js"));
-const realPiAi = await import(join(piRoot, "node_modules/@earendil-works/pi-ai/dist/index.js"));
-const realPiTui = await import(join(piRoot, "node_modules/@earendil-works/pi-tui/dist/index.js"));
-const realTypebox = await import(join(piRoot, "node_modules/typebox/build/index.mjs"));
 mock.module("@earendil-works/pi-coding-agent", () => realCodingAgent);
-mock.module("@earendil-works/pi-ai", () => realPiAi);
-mock.module("@earendil-works/pi-tui", () => realPiTui);
-mock.module("typebox", () => realTypebox);
-const { default: zipExtension } = await import("./index.ts");
+const { default: rewindExtension } = await import("./index.ts");
 
 /*
  * /rewind is tree-style: the abandoned turns become an inactive branch in the
@@ -68,7 +62,7 @@ const harness = async (root: string) => {
   const pi = new Proxy({} as any, {
     get: (_t, key) => (key === "registerCommand" ? (name: string, spec: any) => commands.set(name, spec) : () => undefined),
   });
-  zipExtension(pi);
+  rewindExtension(pi);
 
   let editor = "";
   const notes: string[] = [];

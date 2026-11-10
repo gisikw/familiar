@@ -401,7 +401,7 @@ run_pi() {
         # builtin:llama.cpp predates them and remains enabled.
         extensions: (([
           "footer", "handoff", "identity", "imp", "l1", "subscriber",
-          "tiamat", "web", "scheduler", "zip"
+          "tiamat", "web", "scheduler", "rewind"
         ] | map($ext + "/" + .)) + $pluginExts + $extraExts
           + ["-builtin:mcp", "-builtin:codemode", "-builtin:tool-search"] | unique)
       }

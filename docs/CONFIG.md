@@ -76,7 +76,7 @@ same-session JSON-to-setup-token cutover.
 Use tables whose names match the established environment prefix: `[user]`, `[pi]`,
 `[anthropic]`, `[openai]`, `[tiamat]`, `[server]`, `[plugins]`, `[herdr]`,
 `[subagent]`, `[model]`, `[llama]`, `[stt]`, `[tts]`, `[searxng]`, `[brave]`,
-`[fetch]`, `[zip]`, and `[theme]`.
+`[fetch]`, and `[theme]`.
 Cross-cutting
 paths and runtime policy live under `[familiar]`; the loader deliberately does
 not double that prefix. `[familiar] use_stuff` is retired (Stuff is end-of-life):

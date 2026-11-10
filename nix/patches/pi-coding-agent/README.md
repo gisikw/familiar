@@ -374,7 +374,7 @@ and modelData are nixpkgs master's own 1.5.0 recipe; the build reproduced them.
   inside pi"; the wire guard recognizes both openings.
 - Workspaces: client, protocol and server are gone; durable, env and schema are
   copied at install.
-- Test fixes: the invoke-command runtime test uses the trigger signature; the zip
+- Test fixes: the invoke-command runtime test uses the trigger signature; the
   rewind disk test's fake `AgentSession` gets the two class fields `navigateTree`
   touches; identity parity/wire-guard tests accept the 1.5 wording and `<cwd>`.
 - Also fixed on the way (was broken on main): the worker runtime never shipped

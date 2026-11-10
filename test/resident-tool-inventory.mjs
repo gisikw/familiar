@@ -27,7 +27,7 @@ const residentNames = [
   "tiamat",
   "web",
   "scheduler",
-  "zip",
+  "rewind",
 ];
 const golemExtension = join(repo, "contrib", "familiar", "pi", "agents");
 const expectedGolemTools = [
@@ -43,10 +43,7 @@ const expectedGolemTools = [
 const expectedUnrelatedTools = [
   "clear",
   "fetch",
-  "mark",
-  "marks",
   "search",
-  "zip",
 ];
 
 const toolNames = (extensions) =>
