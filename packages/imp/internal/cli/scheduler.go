@@ -597,8 +597,11 @@ const schedulerHelp = `Usage:
                               (disturb: quiet fork returns wake you; soft: tasked
                                returns arrive as stubs and wait for imp pull;
                                both default until midnight)
-  imp pull [list] [--all]      (Soft Disturb inbox: unclaimed fork returns)
-  imp pull FORK-ID             (claim one: prints the full return, clears it from Open)
+  imp pull [list] [--all]      (unclaimed fork returns: Soft Disturb stubs, and any
+                               return DND is holding)
+  imp pull FORK-ID             (claim one: prints the full return, clears it from Open;
+                               only the session it was sent to may pull it: a fork
+                               reads state/forks/ID/ instead)
   imp push [--title TITLE] [--url URL] "message"   (to Kevin's phone; tap opens URL
                               in his browser instead of the sending session)
 
