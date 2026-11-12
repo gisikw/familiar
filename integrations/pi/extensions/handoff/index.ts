@@ -16,7 +16,7 @@ import { Type } from "typebox";
 
 const DEFAULT_HANDOFF_PROMPT = `This context is about to be compacted. Write a handoff for yourself on the other side: what shipped, decisions made and why, open threads, next concrete steps, and any tone or context worth carrying forward. Address it to yourself, in markdown.
 
-This handoff is private continuity infrastructure: it becomes your memory after compaction and persists in the private session record. By deliberate convention it goes unread by anyone else — write for yourself, not for an audience. Keep emotional loops open where they are open; do not flatten tone into a status report. Discard mechanical exploration, stale hypotheses, and tool-output noise.
+This handoff is private continuity infrastructure: it becomes your memory after compaction and persists in the private session record. Keep emotional loops open where they are open; do not flatten tone into a status report. Discard mechanical exploration, stale hypotheses, and tool-output noise.
 
 Tools are unavailable in this completion. Output only the handoff document itself.`;
 
