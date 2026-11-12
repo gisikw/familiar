@@ -23,8 +23,11 @@ type Handler = (event: any, ctx: any) => Promise<any>;
 
 const roots: string[] = [];
 let storeDir = "";
+let savedIdentityPath: string | undefined;
 
 beforeEach(() => {
+  savedIdentityPath = process.env.FAMILIAR_IDENTITY_PATH;
+  delete process.env.FAMILIAR_IDENTITY_PATH;
   storeDir = fs.mkdtempSync(path.join(os.tmpdir(), "familiar-subconscious-"));
   roots.push(storeDir);
   process.env.FAMILIAR_SUBCONSCIOUS_DIR = storeDir;
@@ -32,6 +35,8 @@ beforeEach(() => {
   process.env.FAMILIAR_SUBCONSCIOUS_TIMEOUT_MS = "200";
 });
 afterEach(() => {
+  if (savedIdentityPath === undefined) delete process.env.FAMILIAR_IDENTITY_PATH;
+  else process.env.FAMILIAR_IDENTITY_PATH = savedIdentityPath;
   while (roots.length) fs.rmSync(roots.pop()!, { recursive: true, force: true });
 });
 
@@ -86,6 +91,7 @@ async function harness(options: {
       },
     },
     getSystemPrompt: () => "SYSTEM PROMPT",
+    getSystemPromptOptions: () => ({ cwd: "/fixture", selectedTools: ["read"], toolSnippets: { read: "Read files" }, appendSystemPrompt: "fixture operator context" }),
     sessionManager: {
       getEntries: () => entries,
       getBranch: () => {
@@ -128,6 +134,33 @@ async function harness(options: {
 }
 
 describe("/clear curates the subconscious from the outgoing context", () => {
+  test("direct handoff and curation use normal-turn identity assembly, not the generic base prompt", async () => {
+    const identityDir = path.join(storeDir, "identity");
+    fs.mkdirSync(identityDir);
+    fs.writeFileSync(path.join(identityDir, "identity.md"), "Hey Kes, fixture identity");
+    process.env.FAMILIAR_IDENTITY_PATH = identityDir;
+    const h = await harness();
+    await h.commands.get("clear")!.handler("", h.ctx);
+    const result = await h.beforeCompact();
+    expect(result.compaction.summary).toContain("# Handoff");
+    expect(h.completions.length).toBe(2);
+    const { buildIdentityPrompt } = await import("../identity/index.ts");
+    const expected = await buildIdentityPrompt(h.ctx.getSystemPromptOptions() as any);
+    for (const completion of h.completions) {
+      expect(completion.request.systemPrompt).toBe(expected);
+      expect(completion.request.systemPrompt).toStartWith("Hey Kes, fixture identity");
+      expect(completion.request.systemPrompt).toContain("fixture operator context");
+      expect(completion.request.systemPrompt).not.toContain("SYSTEM PROMPT");
+    }
+    expect(h.completions[0].request.messages.at(-1).content[0].text).toContain("By deliberate convention it goes unread by anyone else");
+  });
+
+  test("an unreadable configured identity cancels compaction before any completion", async () => {
+    process.env.FAMILIAR_IDENTITY_PATH = path.join(storeDir, "missing-identity");
+    const h = await harness();
+    expect(await h.beforeCompact()).toEqual({ cancel: true });
+    expect(h.completions).toHaveLength(0);
+  });
   test("handoff first, then exactly one ephemeral curation, then the compaction", async () => {
     fs.mkdirSync(storeDir, { recursive: true });
     fs.writeFileSync(path.join(storeDir, "reminders.json"), JSON.stringify({

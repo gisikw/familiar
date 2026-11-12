@@ -3,6 +3,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { buildSessionContext, convertToLlm } from "@earendil-works/pi-coding-agent";
 import { readFile } from "node:fs/promises";
 import { errorLog } from "../lib/debug.ts";
+import { buildIdentityPrompt } from "../identity/index.ts";
 import { completeHandoff, handoffMaxTokens } from "./request.ts";
 import {
   curate,
@@ -14,7 +15,11 @@ import {
 } from "./subconscious.ts";
 import { Type } from "typebox";
 
-const DEFAULT_HANDOFF_PROMPT = `Please write a handoff for the next session`;
+const DEFAULT_HANDOFF_PROMPT = `This context is about to be compacted. Write a handoff for yourself on the other side: what shipped, decisions made and why, open threads, next concrete steps, and any tone or context worth carrying forward. Address it to yourself, in markdown.
+
+This handoff is private continuity infrastructure: it becomes your memory after compaction and persists in the private session record. By deliberate convention it goes unread by anyone else — write for yourself, not for an audience. Keep emotional loops open where they are open; do not flatten tone into a status report. Discard mechanical exploration, stale hypotheses, and tool-output noise.
+
+Tools are unavailable in this completion. Output only the handoff document itself.`;
 
 const ORIENTATION_PROMPT = `This is your private orientation time before the conversation continues. Reflect on the handoff now in context and where things stand — what's in progress, what matters, and what you want to bring forward. This is journaling, not performance.
 
@@ -277,9 +282,10 @@ export default function handoffExtension(pi: ExtensionAPI) {
         : desiredOutput;
       const maxTokens = Math.max(1024, Math.min(desiredOutput, remaining));
       const boundedMaxTokens = handoffMaxTokens(ctx.model.provider, maxTokens);
+      const systemPrompt = await buildIdentityPrompt(ctx.getSystemPromptOptions()) ?? ctx.getSystemPrompt();
       const response = await completeHandoff((reasoning) => ctx.modelRegistry.complete(
         ctx.model!,
-        { systemPrompt: ctx.getSystemPrompt(), messages },
+        { systemPrompt, messages },
         {
           signal: event.signal,
           cacheRetention: "short",
@@ -315,7 +321,7 @@ export default function handoffExtension(pi: ExtensionAPI) {
           timeoutMs: Number(process.env.FAMILIAR_SUBCONSCIOUS_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
           complete: (curationMessages, signal) => completeHandoff((reasoning) => ctx.modelRegistry.complete(
             outgoing,
-            { systemPrompt: ctx.getSystemPrompt(), messages: curationMessages as any },
+            { systemPrompt, messages: curationMessages as any },
             {
               signal,
               cacheRetention: "short",

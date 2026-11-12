@@ -91,7 +91,24 @@ export default function(pi: ExtensionAPI) {
     }
   });
 
-  const readIdentity = async (): Promise<string> => {
+  const buildPrompt = async (options: BuildSystemPromptOptions): Promise<string | undefined> => {
+    const systemPrompt = await buildIdentityPrompt(options);
+    if (systemPrompt) lastGood = systemPrompt;
+    return systemPrompt;
+  };
+}
+
+// Direct modelRegistry completions bypass the agent lifecycle and wire guard.
+// Use the same identity assembly as normal turns, not ctx.getSystemPrompt(),
+// which can still be Pi's unprojected generic base prompt.
+export async function buildIdentityPrompt(options: BuildSystemPromptOptions): Promise<string | undefined> {
+  if (!process.env.FAMILIAR_IDENTITY_PATH) return undefined;
+  const identity = await readIdentity();
+  if (!identity) throw new Error("Configured Familiar identity is empty");
+  return assembleSystemPrompt({ identity, options, impGuidance: impGuidance() });
+}
+
+const readIdentity = async (): Promise<string> => {
     const identityDir = process.env.FAMILIAR_IDENTITY_PATH;
     if (!identityDir) return "";
 
@@ -115,25 +132,6 @@ export default function(pi: ExtensionAPI) {
     return identity;
   };
 
-  const buildPrompt = async (options: BuildSystemPromptOptions): Promise<string | undefined> => {
-    if (!process.env.FAMILIAR_IDENTITY_PATH) return undefined;
-    const identity = await readIdentity();
-
-    // Context files may carry sensitive project instructions: they are
-    // assembled into the prompt and never logged.
-    const systemPrompt = assembleSystemPrompt({
-      identity,
-      options,
-      impGuidance: impGuidance(),
-    });
-
-    // Only cache a prompt that actually carries identity: an empty or
-    // unreadable identity dir would otherwise poison the fallback with a
-    // scaffolding-only prompt and make the degradation permanent.
-    if (identity) lastGood = systemPrompt;
-    return systemPrompt;
-  };
-}
 
 /**
  * Pi's built-in default prompt opens with one of these framings; Familiar's
