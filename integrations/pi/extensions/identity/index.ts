@@ -1,4 +1,4 @@
-import type { BuildSystemPromptOptions, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { BuildSystemPromptOptions, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { errorLog } from "../lib/debug.ts";
@@ -17,6 +17,20 @@ import { assembleSystemPrompt } from "./prompt.ts";
 //     identity; anything that must reach the model should ride
 //     systemPromptOptions or a returned message instead);
 //   - later handlers still receive and may extend the identity prompt.
+const promptOptionsBySession = new Map<string, BuildSystemPromptOptions>();
+
+export async function continuitySystemPrompt(ctx: ExtensionContext): Promise<string> {
+  const options = promptOptionsBySession.get(ctx.sessionManager.getSessionId());
+  if (options) return await buildIdentityPrompt(options) ?? ctx.getSystemPrompt();
+  // A clear before the first turn has no before_agent_start options yet.
+  // Preserve Pi's rendered tool/skill/project context, replacing its framing.
+  const base = ctx.getSystemPrompt();
+  if (!process.env.FAMILIAR_IDENTITY_PATH) return base;
+  const identity = await readIdentity();
+  if (!identity) throw new Error("Configured Familiar identity is empty");
+  return isPiDefaultPrompt(base) ? spliceIdentity(identity, base, impGuidance())! : base;
+}
+
 export default function(pi: ExtensionAPI) {
   // Last successfully built prompt. This handler runs before *every* turn and
   // reassembles identity from disk each time — which is what lets identity
@@ -30,6 +44,8 @@ export default function(pi: ExtensionAPI) {
   let lastGood: string | undefined;
 
   pi.on("before_agent_start", async (event, ctx) => {
+    const sessionId = ctx.sessionManager?.getSessionId();
+    if (sessionId) promptOptionsBySession.set(sessionId, event.systemPromptOptions);
     try {
       return { systemPrompt: await buildPrompt(event.systemPromptOptions) };
     } catch (err) {
@@ -51,7 +67,9 @@ export default function(pi: ExtensionAPI) {
     if (!event.messages.some((message) => message.role === "system")) return undefined;
     let prompt: string | undefined;
     try {
-      prompt = await buildPrompt(ctx.getSystemPromptOptions());
+      const options = promptOptionsBySession.get(ctx.sessionManager?.getSessionId())
+        ?? (ctx as any).getSystemPromptOptions?.();
+      prompt = options ? await buildPrompt(options) : lastGood;
     } catch (err) {
       errorLog("identity", { promptBuildFailed: String(err), degraded: lastGood ? "last-good" : "pi-default", event: "context_with_system" });
       prompt = lastGood;

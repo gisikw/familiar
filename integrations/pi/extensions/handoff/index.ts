@@ -3,7 +3,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { buildSessionContext, convertToLlm } from "@earendil-works/pi-coding-agent";
 import { readFile } from "node:fs/promises";
 import { errorLog } from "../lib/debug.ts";
-import { buildIdentityPrompt } from "../identity/index.ts";
+import { continuitySystemPrompt } from "../identity/index.ts";
 import { completeHandoff, handoffMaxTokens } from "./request.ts";
 import {
   curate,
@@ -282,7 +282,7 @@ export default function handoffExtension(pi: ExtensionAPI) {
         : desiredOutput;
       const maxTokens = Math.max(1024, Math.min(desiredOutput, remaining));
       const boundedMaxTokens = handoffMaxTokens(ctx.model.provider, maxTokens);
-      const systemPrompt = await buildIdentityPrompt(ctx.getSystemPromptOptions()) ?? ctx.getSystemPrompt();
+      const systemPrompt = await continuitySystemPrompt(ctx);
       const response = await completeHandoff((reasoning) => ctx.modelRegistry.complete(
         ctx.model!,
         { systemPrompt, messages },

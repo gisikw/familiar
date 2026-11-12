@@ -91,7 +91,6 @@ async function harness(options: {
       },
     },
     getSystemPrompt: () => "SYSTEM PROMPT",
-    getSystemPromptOptions: () => ({ cwd: "/fixture", selectedTools: ["read"], toolSnippets: { read: "Read files" }, appendSystemPrompt: "fixture operator context" }),
     sessionManager: {
       getEntries: () => entries,
       getBranch: () => {
@@ -140,12 +139,18 @@ describe("/clear curates the subconscious from the outgoing context", () => {
     fs.writeFileSync(path.join(identityDir, "identity.md"), "Hey Kes, fixture identity");
     process.env.FAMILIAR_IDENTITY_PATH = identityDir;
     const h = await harness();
+    const options = { cwd: "/fixture", selectedTools: ["read"], toolSnippets: { read: "Read files" }, appendSystemPrompt: "fixture operator context" };
+    const identityHandlers: Record<string, any> = {};
+    const { default: identityExtension } = await import("../identity/index.ts");
+    identityExtension({ on: (name: string, handler: any) => { identityHandlers[name] = handler; } } as any);
+    await identityHandlers.before_agent_start({ systemPromptOptions: options }, h.ctx);
+    expect("getSystemPromptOptions" in h.ctx).toBe(false);
     await h.commands.get("clear")!.handler("", h.ctx);
     const result = await h.beforeCompact();
     expect(result.compaction.summary).toContain("# Handoff");
     expect(h.completions.length).toBe(2);
     const { buildIdentityPrompt } = await import("../identity/index.ts");
-    const expected = await buildIdentityPrompt(h.ctx.getSystemPromptOptions() as any);
+    const expected = await buildIdentityPrompt(options as any);
     for (const completion of h.completions) {
       expect(completion.request.systemPrompt).toBe(expected);
       expect(completion.request.systemPrompt).toStartWith("Hey Kes, fixture identity");
