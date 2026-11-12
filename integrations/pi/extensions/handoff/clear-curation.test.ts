@@ -160,6 +160,38 @@ describe("/clear curates the subconscious from the outgoing context", () => {
     expect(h.completions[0].request.messages.at(-1).content[0].text).toContain("By deliberate convention it goes unread by anyone else");
   });
 
+  test("L1 intake also carries Familiar identity on an event context without command APIs", async () => {
+    const identityDir = path.join(storeDir, "identity");
+    fs.mkdirSync(identityDir);
+    fs.writeFileSync(path.join(identityDir, "identity.md"), "Hey Kes, L1 fixture identity");
+    process.env.FAMILIAR_IDENTITY_PATH = identityDir;
+    const h = await harness();
+    (h.ctx.sessionManager as any).getSessionFile = () => "/fixture/session.jsonl";
+    const handlers: Record<string, any> = {};
+    const previous = process.env.FAMILIAR_L1_ENABLED;
+    process.env.FAMILIAR_L1_ENABLED = "true";
+    try {
+      const { default: l1 } = await import("../l1/index.ts");
+      l1({ on: (name: string, handler: any) => { handlers[name] = handler; } } as any);
+      let received: any;
+      let resolve!: () => void;
+      const completed = new Promise<void>((done) => { resolve = done; });
+      h.ctx.modelRegistry.complete = async (_model: any, request: any) => {
+        received = request;
+        resolve();
+        return { stopReason: "stop", content: [{ type: "text", text: '{"nominations":[]}' }] } as any;
+      };
+      await handlers.session_before_compact({ willRetry: false }, h.ctx);
+      await Promise.race([completed, new Promise((_, reject) => setTimeout(() => reject(new Error("L1 completion not reached")), 1000))]);
+      expect("getSystemPromptOptions" in h.ctx).toBe(false);
+      expect(received.systemPrompt).toStartWith("Hey Kes, L1 fixture identity");
+      expect(received.messages.at(-1).content[0].text).toStartWith("[L1 intake");
+    } finally {
+      if (previous === undefined) delete process.env.FAMILIAR_L1_ENABLED;
+      else process.env.FAMILIAR_L1_ENABLED = previous;
+    }
+  });
+
   test("an unreadable configured identity cancels compaction before any completion", async () => {
     process.env.FAMILIAR_IDENTITY_PATH = path.join(storeDir, "missing-identity");
     const h = await harness();

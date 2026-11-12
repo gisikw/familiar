@@ -153,9 +153,11 @@ export default function(pi: ExtensionAPI) {
     const timer = setTimeout(() => controller.abort(), INTAKE_TIMEOUT_MS);
     void (async () => {
       try {
+        const { continuitySystemPrompt } = await import("../identity/index.ts");
+        const systemPrompt = await continuitySystemPrompt(ctx);
         const response: any = await completeHandoff((reasoning) => ctx.modelRegistry.complete(
           model,
-          { systemPrompt: ctx.getSystemPrompt(), messages },
+          { systemPrompt, messages },
           {
             signal: controller.signal,
             cacheRetention: "short",
