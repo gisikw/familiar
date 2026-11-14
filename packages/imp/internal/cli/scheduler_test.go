@@ -226,6 +226,7 @@ func TestCarriesKesAllowlist(t *testing.T) {
 		{"tiamat-anthropic-tiamat/claude-sonnet-5-interactive", "", true},
 		{"tiamat-responses-codex-personal/gpt-5.6-sol", "", true},
 		{"tiamat-openai-qwen-next-flash/Qwen3.8-Flash-Next-IQ4_NL-PROJFIX", "", true},
+		{"tiamat-openai-qwen-next-flash/Qwen3.8-Flash-Next-EXL3-4.05bpw", "", true},
 		{"tiamat-anthropic-claude-code-personal/claude-haiku-5", "", false},
 		{"tiamat-anthropic/claude-sonnet-5", "", false},
 		{"tiamat-anthropic/claude-sonnet-5", "*/claude-opus-*, */claude-sonnet-5", true},

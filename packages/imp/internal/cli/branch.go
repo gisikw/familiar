@@ -31,6 +31,7 @@ var kesCarriers = []string{
 	"*tiamat/claude-opus-4-6-interactive",
 	"*codex-personal/gpt-5.6-sol",
 	"*qwen-next-flash/Qwen3.8-Flash-Next-IQ4_NL-PROJFIX",
+	"*qwen-next-flash/Qwen3.8-Flash-Next-EXL3-4.05bpw",
 	"*llama-frankenstein/Qwen3.8-27B-UD-Q4_K_XL",
 }
 
