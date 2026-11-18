@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -279,5 +280,42 @@ func TestOpenCard(t *testing.T) {
 	hist, _ := os.ReadFile(filepath.Join(state, "open-closed.jsonl"))
 	if !strings.Contains(string(hist), `"card":"`+full+`"`) || !strings.Contains(string(hist), `"kind":"card"`) {
 		t.Fatalf("history: %s", hist)
+	}
+}
+
+// Kev, Nov 18: a pinned row ("The Brick Factory") kept vanishing. The 24-row cap
+// must drop the oldest unpinned row, record it in Recently closed, and never a pin.
+func TestOpenCapSparesPinnedRows(t *testing.T) {
+	home, state, getenv := openEnv(t)
+	var items []string
+	for i := 0; i < maxOpenItems; i++ {
+		items = append(items, fmt.Sprintf(`{"id":"r%02d","kind":"board","slug":"p%02d","title":"#p%02d","addedAt":"2026-11-01T00:00:00.000Z"}`, i, i, i))
+	}
+	os.WriteFile(filepath.Join(state, "open.json"), []byte(`{"v":1,"items":[`+strings.Join(items, ",")+`]}`), 0o600)
+	os.WriteFile(filepath.Join(state, "open-state.json"), []byte(`{"v":1,"items":{"r00":{"pinned":true},"r01":{"pinned":true}}}`), 0o600)
+	_ = home
+	code, out, errs := runOpen(getenv, "#newest")
+	if code != 0 || !strings.Contains(out, "made room: closed #p02") {
+		t.Fatalf("open: %d %q %q", code, out, errs)
+	}
+	b, _ := os.ReadFile(filepath.Join(state, "open.json"))
+	var doc struct {
+		Items []map[string]any `json:"items"`
+	}
+	json.Unmarshal(b, &doc)
+	if len(doc.Items) != maxOpenItems || doc.Items[0]["id"] != "r00" || doc.Items[1]["id"] != "r01" || doc.Items[2]["id"] != "r03" || doc.Items[maxOpenItems-1]["slug"] != "newest" {
+		t.Fatalf("items: %v", doc.Items)
+	}
+	c, _ := os.ReadFile(filepath.Join(state, "open-closed.jsonl"))
+	if !strings.Contains(string(c), `"slug":"p02"`) || !strings.Contains(string(c), `"reason":"auto"`) {
+		t.Fatalf("closed: %s", c)
+	}
+}
+
+func TestTrimOpenItemsAllPinned(t *testing.T) {
+	items := []map[string]any{{"id": "a"}, {"id": "b"}, {"id": "c"}}
+	kept, dropped := trimOpenItems(items, map[string]bool{"a": true, "b": true, "c": true}, 2)
+	if len(kept) != 2 || len(dropped) != 1 || dropped[0]["id"] != "a" || kept[1]["id"] != "c" {
+		t.Fatalf("kept %v dropped %v", kept, dropped)
 	}
 }

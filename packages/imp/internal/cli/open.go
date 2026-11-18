@@ -150,9 +150,8 @@ func openMain(args []string, out, errw io.Writer, getenv func(string) string) in
 		kept = append(kept, it)
 	}
 	items = append(kept, item)
-	if len(items) > maxOpenItems {
-		items = items[len(items)-maxOpenItems:]
-	}
+	var trimmed []map[string]any
+	items, trimmed = trimOpenItems(items, openPinned(file), maxOpenItems)
 	if str(item, "kind") == "doc" && !underDocRoots(str(item, "path"), getenv) {
 		if e := grantReaderPath(state, str(item, "path")); e != nil {
 			return branchError(errw, e)
@@ -160,6 +159,10 @@ func openMain(args []string, out, errw io.Writer, getenv func(string) string) in
 	}
 	if e := writeOpenFile(file, items); e != nil {
 		return branchError(errw, e)
+	}
+	for _, it := range trimmed {
+		appendOpenClosedAs(file, it, "auto")
+		fmt.Fprintf(out, "made room: closed %s\n", str(it, "title"))
 	}
 	fmt.Fprintf(out, "%s: %s (%s) · id %s\n", msg, str(item, "title"), key, str(item, "id"))
 	return 0
@@ -239,12 +242,62 @@ func openClose(file, which string, out, errw io.Writer, getenv func(string) stri
 // appendOpenClosed records a close in open-closed.jsonl beside open.json, the
 // history the Reader's "Recently closed" view lists. Best effort: a failure
 // here never undoes the close.
-func appendOpenClosed(file string, it map[string]any) {
+func appendOpenClosed(file string, it map[string]any) { appendOpenClosedAs(file, it, "manual") }
+
+// trimOpenItems keeps Open at max rows by dropping the oldest rows Kev has
+// not pinned (the newest, last, row is never dropped). Pinned rows go only if
+// every other row is already gone. Returns what stays and what was dropped.
+func trimOpenItems(items []map[string]any, pinned map[string]bool, max int) ([]map[string]any, []map[string]any) {
+	var dropped []map[string]any
+	for _, pass := range []bool{false, true} {
+		for len(items) > max {
+			at := -1
+			for i := 0; i < len(items)-1; i++ {
+				if pass || !pinned[str(items[i], "id")] {
+					at = i
+					break
+				}
+			}
+			if at < 0 {
+				break
+			}
+			dropped = append(dropped, items[at])
+			items = append(items[:at:at], items[at+1:]...)
+		}
+	}
+	return items, dropped
+}
+
+// openPinned reads the bridge's sidecar (open-state.json beside open.json):
+// which pushed ids Kev pinned. Missing or garbled means none.
+func openPinned(file string) map[string]bool {
+	out := map[string]bool{}
+	b, e := os.ReadFile(filepath.Join(filepath.Dir(file), "open-state.json"))
+	if e != nil {
+		return out
+	}
+	var raw struct {
+		Items map[string]struct {
+			Pinned bool `json:"pinned"`
+		} `json:"items"`
+	}
+	if json.Unmarshal(b, &raw) != nil {
+		return out
+	}
+	for id, s := range raw.Items {
+		if s.Pinned {
+			out[id] = true
+		}
+	}
+	return out
+}
+
+func appendOpenClosedAs(file string, it map[string]any, reason string) {
 	entry := map[string]any{
 		"kind":     str(it, "kind"),
 		"title":    str(it, "title"),
 		"closedAt": time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
-		"reason":   "manual",
+		"reason":   reason,
 	}
 	if p := str(it, "path"); p != "" {
 		entry["path"] = p
