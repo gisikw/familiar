@@ -115,3 +115,17 @@ func TestPlayFallsBackToGatewayWhenUINotListening(t *testing.T) {
 		t.Fatalf("code=%d err=%q", code, errw.String())
 	}
 }
+
+// FAMILIAR_YTDLP_BIN is the absolute binary path (flake.nix), not a bin dir.
+func TestPlayURLUsesAbsoluteYtdlpBin(t *testing.T) {
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "fake-ytdlp")
+	marker := filepath.Join(dir, "ran")
+	os.WriteFile(fake, []byte("#!/bin/sh\ntouch "+marker+"\necho "+filepath.Join(dir, "none.mp3")+"\n"), 0o755)
+	env := map[string]string{"FAMILIAR_STATE_DIR": dir, "FAMILIAR_YTDLP_BIN": fake}
+	var stdout, errw bytes.Buffer
+	playMain([]string{"https://example.invalid/a.mp3", "--cut-only"}, &stdout, &errw, func(k string) string { return env[k] })
+	if _, err := os.Stat(marker); err != nil || strings.Contains(errw.String(), "yt-dlp failed") {
+		t.Fatalf("fake yt-dlp not run: err=%q", errw.String())
+	}
+}

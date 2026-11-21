@@ -122,9 +122,14 @@ func playMain(args []string, out, errw io.Writer, getenv func(string) string) in
 	stamp := time.Now().Format("20060102-150405")
 	path := src
 	if isURL {
+		// FAMILIAR_YTDLP_BIN is the absolute binary (flake.nix), not a bin
+		// dir; a directory is tolerated for older shells that exported one.
 		ytdlp := "yt-dlp"
-		if d := getenv("FAMILIAR_YTDLP_BIN"); d != "" {
-			ytdlp = filepath.Join(d, "yt-dlp")
+		if p := getenv("FAMILIAR_YTDLP_BIN"); p != "" {
+			ytdlp = p
+			if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+				ytdlp = filepath.Join(p, "yt-dlp")
+			}
 		}
 		tmpl := filepath.Join(clips, stamp+"-src.%(ext)s")
 		cmd := exec.CommandContext(ctx, ytdlp, "-q", "--no-playlist", "-f", "bestaudio/best", "-o", tmpl, "--print", "after_move:filepath", src)
