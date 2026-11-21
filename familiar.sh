@@ -149,15 +149,29 @@ setup_stt() {
   fi
 }
 
+# The Nix dev shells supply a hash-pinned store path (FAMILIAR_STT_MODEL_PATH);
+# non-Nix installs fall back to a runtime download into $MODEL_DIR.
+stt_model_nix() {
+  [ -n "${FAMILIAR_STT_MODEL_PATH:-}" ] && [ -f "$FAMILIAR_STT_MODEL_PATH" ]
+}
+
+stt_model_path() {
+  if stt_model_nix; then
+    printf '%s' "$FAMILIAR_STT_MODEL_PATH"
+  else
+    printf '%s' "$MODEL_DIR/$FAMILIAR_STT_MODEL_FILE"
+  fi
+}
+
 run_stt() {
   ensure_devshell stt "$@"
-  if [ ! -f "$MODEL_DIR/$FAMILIAR_STT_MODEL_FILE" ]; then
+  if ! stt_model_nix && [ ! -f "$MODEL_DIR/$FAMILIAR_STT_MODEL_FILE" ]; then
     mkdir -p "$MODEL_DIR"
     curl -fL --retry 5 -C - -o "$MODEL_DIR/$FAMILIAR_STT_MODEL_FILE.part" "$FAMILIAR_STT_MODEL_URL" \
       && mv "$MODEL_DIR/$FAMILIAR_STT_MODEL_FILE.part" "$MODEL_DIR/$FAMILIAR_STT_MODEL_FILE"
   fi
   while true; do
-    STT_MODEL="$MODEL_DIR/$FAMILIAR_STT_MODEL_FILE" PORT=9932 \
+    STT_MODEL="$(stt_model_path)" PORT=9932 \
       bun "$REPO/scripts/stt-server.ts" || true;
     sleep 1;
   done
@@ -956,8 +970,8 @@ server() {
   if [ -z "${STT_UPSTREAM_URL:-}" ] || [ "${STT_FALLBACK:-1}" != 0 ]; then
     # Without an upstream this is the backend; with one it is the warm-spare
     # CPU fallback familiar-stt uses when the upstream is down or hung.
-    provision_server_model stt "${FAMILIAR_STT_MODEL_FILE:-}" "${FAMILIAR_STT_MODEL_URL:-}"
-    export STT_MODEL="$MODEL_DIR/$FAMILIAR_STT_MODEL_FILE"
+    stt_model_nix || provision_server_model stt "${FAMILIAR_STT_MODEL_FILE:-}" "${FAMILIAR_STT_MODEL_URL:-}"
+    export STT_MODEL="$(stt_model_path)"
   fi
 
   export LLAMA_BASE_URL="http://127.0.0.1:9931" NEED_LLAMA=1

@@ -38,11 +38,25 @@
           familiarRev = self.rev or self.dirtyRev or "unknown";
           extensionsSrc = ./integrations/pi/extensions;
         };
+        # Local STT model as a fixed-output derivation: hash-pinned, and the
+        # same store path fort-nix's apps/stt builds (identical name + sha256).
+        # Linux only (the server path is Linux-only); elsewhere familiar.sh
+        # still provisions $MODEL_DIR/$FAMILIAR_STT_MODEL_FILE at runtime.
+        sttModelRev = "d8d8c32cb2017c57e5307767343e97870f8a7f53";
+        sttModel = pkgs.fetchurl {
+          name = "parakeet-tdt-0.6b-v3-Q8_0.gguf";
+          url = "https://huggingface.co/handy-computer/parakeet-tdt-0.6b-v3-gguf/resolve/${sttModelRev}/parakeet-tdt-0.6b-v3-Q8_0.gguf";
+          sha256 = "5859f77944efcd8eafa23a6350731960b2b55b2203df51f319665c807d802cc7";
+        };
+        sttModelEnv = pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          FAMILIAR_STT_MODEL_PATH = "${sttModel}";
+        };
         modelEnv = {
           FAMILIAR_MODEL_FILE = "gemma-4-E4B-it-Q4_K_M.gguf";
           FAMILIAR_MODEL_URL = "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/${modelEnv.FAMILIAR_MODEL_FILE}";
           FAMILIAR_STT_MODEL_FILE = "parakeet-tdt-0.6b-v3-Q8_0.gguf";
-          FAMILIAR_STT_MODEL_URL = "https://huggingface.co/handy-computer/parakeet-tdt-0.6b-v3-gguf/resolve/main/${modelEnv.FAMILIAR_STT_MODEL_FILE}";
+          # Pinned to the same revision as sttModel below (non-Nix installs curl it).
+          FAMILIAR_STT_MODEL_URL = "https://huggingface.co/handy-computer/parakeet-tdt-0.6b-v3-gguf/resolve/${sttModelRev}/${modelEnv.FAMILIAR_STT_MODEL_FILE}";
           FAMILIAR_TTS_MODEL_FILE = "Kokoro_espeak_Q8.gguf";
           FAMILIAR_TTS_MODEL_URL = "https://huggingface.co/mmwillet2/Kokoro_GGUF/resolve/main/${modelEnv.FAMILIAR_TTS_MODEL_FILE}";
         };
@@ -118,7 +132,7 @@
         # Small CLI surface available both to resident Pi tool execution and to
         # foreground development shells. Keep language runtimes out of this set.
         residentCliTools = [ impPackage l1Package ] ++ (with pkgs; [ jq ripgrep fd netcat-openbsd ]);
-        piShell = pkgs.mkShell (modelEnv // {
+        piShell = pkgs.mkShell (modelEnv // sttModelEnv // {
           FAMILIAR_SHELL = "pi";
           # familiar.sh still adds this immediately before launching resident
           # Pi so deployed/stale shells retain the existing confined path.
@@ -224,7 +238,7 @@
             FAMILIAR_SHELL = "llama";
             packages = with pkgs; [ llama-cpp ];
           });
-          stt = pkgs.mkShell (modelEnv // {
+          stt = pkgs.mkShell (modelEnv // sttModelEnv // {
             FAMILIAR_SHELL = "stt";
             packages = with pkgs; [ transcribe-cpp bun ffmpeg curl ];
           });
